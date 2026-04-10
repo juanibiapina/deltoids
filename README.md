@@ -31,6 +31,7 @@ The command reads one JSON object from stdin:
 - Requested edit regions must not overlap.
 - All edits are validated before any write happens.
 - The file is not modified if any edit fails.
+- Success responses include a line-based `diff` string.
 
 ## Example
 
@@ -50,7 +51,7 @@ printf '%s' '{
 Success writes a JSON response to stdout:
 
 ```json
-{"ok":true,"path":"src/app.ts","replacedBlocks":1}
+{"ok":true,"path":"src/app.ts","replacedBlocks":1,"diff":"--- original\n+++ modified\n@@ -1 +1 @@\n-const x = 1;\n+const x = 2;\n"}
 ```
 
 Failure writes a JSON response to stderr and exits non-zero:

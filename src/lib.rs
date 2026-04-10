@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use similar::TextDiff;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +27,7 @@ pub struct SuccessResponse {
     pub path: String,
     #[serde(rename = "replacedBlocks")]
     pub replaced_blocks: usize,
+    pub diff: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,13 +51,16 @@ pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> 
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
+    let diff = render_diff(&original, &updated);
 
-    fs::write(path, updated).map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
+    fs::write(path, &updated)
+        .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
     Ok(SuccessResponse {
         ok: true,
         path: request.path,
         replaced_blocks: request.edits.len(),
+        diff,
     })
 }
 
@@ -75,6 +80,13 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn render_diff(original: &str, updated: &str) -> String {
+    let text_diff = TextDiff::from_lines(original, updated);
+    let mut diff = text_diff.unified_diff();
+    diff.context_radius(3).header("original", "modified");
+    diff.to_string()
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {
@@ -133,7 +145,7 @@ pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{TextEdit, apply_edits};
+    use super::{TextEdit, apply_edits, render_diff};
 
     #[test]
     fn applies_single_exact_edit() {
@@ -315,5 +327,25 @@ mod tests {
 
         assert!(error.contains("Could not find"));
         assert_eq!(original, "alpha\nbeta\ngamma\n");
+    }
+
+    #[test]
+    fn renders_a_line_based_diff() {
+        let diff = render_diff("const x = 1;\n", "const x = 2;\n");
+
+        assert!(diff.contains("--- original"));
+        assert!(diff.contains("+++ modified"));
+        assert!(diff.contains("-const x = 1;"));
+        assert!(diff.contains("+const x = 2;"));
+    }
+
+    #[test]
+    fn renders_multiple_changes_in_one_diff() {
+        let diff = render_diff("alpha\nbeta\ngamma\ndelta\n", "ALPHA\nbeta\nGAMMA\ndelta\n");
+
+        assert!(diff.contains("-alpha"));
+        assert!(diff.contains("+ALPHA"));
+        assert!(diff.contains("-gamma"));
+        assert!(diff.contains("+GAMMA"));
     }
 }

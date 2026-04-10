@@ -50,7 +50,7 @@ printf '%s' '{
 Success goes to stdout:
 
 ```json
-{"ok":true,"path":"src/app.ts","replacedBlocks":1}
+{"ok":true,"path":"src/app.ts","replacedBlocks":1,"diff":"--- original\n+++ modified\n@@ -1 +1 @@\n-const x = 1;\n+const count = 1;\n"}
 ```
 
 Failure goes to stderr and exits non-zero:

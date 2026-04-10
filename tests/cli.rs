@@ -48,6 +48,9 @@ fn edits_a_file_from_stdin_json() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
     assert_eq!(json["replacedBlocks"], 1);
+    let diff = json["diff"].as_str().unwrap();
+    assert!(diff.contains("-const x = 1;"));
+    assert!(diff.contains("+const x = 2;"));
 }
 
 #[test]
@@ -77,6 +80,11 @@ fn applies_multiple_edits_in_one_invocation() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
     assert_eq!(json["replacedBlocks"], 2);
+    let diff = json["diff"].as_str().unwrap();
+    assert!(diff.contains("-alpha"));
+    assert!(diff.contains("+ALPHA"));
+    assert!(diff.contains("-gamma"));
+    assert!(diff.contains("+GAMMA"));
 }
 
 #[test]

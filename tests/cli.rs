@@ -29,6 +29,7 @@ fn edits_a_file_from_stdin_json() {
     fs::write(&file_path, "const x = 1;\n").unwrap();
 
     let request = serde_json::json!({
+        "summary": "Update x constant",
         "path": file_path,
         "edits": [
             {
@@ -56,6 +57,7 @@ fn applies_multiple_edits_in_one_invocation() {
     fs::write(&file_path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
 
     let request = serde_json::json!({
+        "summary": "Uppercase two lines",
         "path": file_path,
         "edits": [
             { "oldText": "alpha\n", "newText": "ALPHA\n" },
@@ -85,6 +87,7 @@ fn fails_without_changing_the_file_when_text_is_missing() {
     fs::write(&file_path, original).unwrap();
 
     let request = serde_json::json!({
+        "summary": "Try a missing edit",
         "path": file_path,
         "edits": [
             {
@@ -127,6 +130,7 @@ fn fails_when_edits_is_empty() {
     fs::write(&file_path, original).unwrap();
 
     let request = serde_json::json!({
+        "summary": "Empty edit list",
         "path": file_path,
         "edits": []
     });
@@ -152,6 +156,7 @@ fn fails_when_old_text_is_empty() {
     fs::write(&file_path, original).unwrap();
 
     let request = serde_json::json!({
+        "summary": "Reject empty oldText",
         "path": file_path,
         "edits": [
             {
@@ -177,6 +182,7 @@ fn fails_when_old_text_is_empty() {
 #[test]
 fn fails_when_request_is_missing_path() {
     let request = serde_json::json!({
+        "summary": "Missing path",
         "edits": [
             {
                 "oldText": "a",
@@ -200,6 +206,7 @@ fn fails_when_request_is_missing_path() {
 #[test]
 fn fails_when_request_has_unknown_field() {
     let request = serde_json::json!({
+        "summary": "Unknown top-level field",
         "path": "file.txt",
         "edits": [],
         "extra": true
@@ -220,6 +227,7 @@ fn fails_when_request_has_unknown_field() {
 #[test]
 fn fails_when_edit_uses_snake_case_keys() {
     let request = serde_json::json!({
+        "summary": "Snake case keys",
         "path": "file.txt",
         "edits": [
             {
@@ -249,6 +257,7 @@ fn fails_when_match_is_duplicated() {
     fs::write(&file_path, original).unwrap();
 
     let request = serde_json::json!({
+        "summary": "Duplicate match",
         "path": file_path,
         "edits": [
             {
@@ -279,6 +288,7 @@ fn fails_when_edits_overlap() {
     fs::write(&file_path, original).unwrap();
 
     let request = serde_json::json!({
+        "summary": "Overlapping edits",
         "path": file_path,
         "edits": [
             {
@@ -301,6 +311,92 @@ fn fails_when_edits_overlap() {
 }
 
 #[test]
+fn fails_when_request_is_missing_summary() {
+    let request = serde_json::json!({
+        "path": "file.txt",
+        "edits": [
+            {
+                "oldText": "a",
+                "newText": "b"
+            }
+        ]
+    });
+
+    let output = run_edit(request.to_string().as_bytes());
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid request JSON")
+    );
+}
+
+#[test]
+fn fails_when_summary_is_empty() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("empty-summary.txt");
+    let original = "hello\n";
+    fs::write(&file_path, original).unwrap();
+
+    let request = serde_json::json!({
+        "summary": "",
+        "path": file_path,
+        "edits": [
+            {
+                "oldText": "hello",
+                "newText": "world"
+            }
+        ]
+    });
+
+    let output = run_edit(request.to_string().as_bytes());
+
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("summary must not be empty")
+    );
+}
+
+#[test]
+fn fails_when_summary_is_whitespace_only() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("whitespace-summary.txt");
+    let original = "hello\n";
+    fs::write(&file_path, original).unwrap();
+
+    let request = serde_json::json!({
+        "summary": " \n\t ",
+        "path": file_path,
+        "edits": [
+            {
+                "oldText": "hello",
+                "newText": "world"
+            }
+        ]
+    });
+
+    let output = run_edit(request.to_string().as_bytes());
+
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("summary must not be empty")
+    );
+}
+
+#[test]
 fn does_not_partially_apply_multi_edit_when_one_edit_fails() {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("no-partial-multi.txt");
@@ -308,6 +404,7 @@ fn does_not_partially_apply_multi_edit_when_one_edit_fails() {
     fs::write(&file_path, original).unwrap();
 
     let request = serde_json::json!({
+        "summary": "One edit fails",
         "path": file_path,
         "edits": [
             {

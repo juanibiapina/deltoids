@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditRequest {
+    pub summary: String,
     pub path: String,
     pub edits: Vec<TextEdit>,
 }
@@ -59,6 +60,10 @@ pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> 
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), String> {
+    if request.summary.trim().is_empty() {
+        return Err("summary must not be empty".to_string());
+    }
+
     if request.edits.is_empty() {
         return Err("edits must contain at least one replacement".to_string());
     }
@@ -235,6 +240,7 @@ mod tests {
     #[test]
     fn rejects_empty_edits_request() {
         let request = super::EditRequest {
+            summary: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: Vec::new(),
         };
@@ -246,6 +252,7 @@ mod tests {
     #[test]
     fn rejects_empty_old_text() {
         let request = super::EditRequest {
+            summary: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
                 old_text: String::new(),
@@ -255,6 +262,36 @@ mod tests {
 
         let error = super::validate_request(&request).unwrap_err();
         assert!(error.contains("edits[0].oldText must not be empty"));
+    }
+
+    #[test]
+    fn rejects_empty_summary() {
+        let request = super::EditRequest {
+            summary: String::new(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = super::validate_request(&request).unwrap_err();
+        assert!(error.contains("summary must not be empty"));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_summary() {
+        let request = super::EditRequest {
+            summary: " \n\t ".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = super::validate_request(&request).unwrap_err();
+        assert!(error.contains("summary must not be empty"));
     }
 
     #[test]

@@ -8,6 +8,7 @@ The command reads one JSON object from stdin:
 
 ```json
 {
+  "summary": "Update x constant",
   "path": "src/app.ts",
   "edits": [
     {
@@ -20,6 +21,7 @@ The command reads one JSON object from stdin:
 
 ## Behavior
 
+- `summary` is required and must not be empty.
 - `path` must point to an existing file.
 - `edits` must contain at least one replacement.
 - Request field names are exact JSON keys: `oldText` and `newText`.
@@ -34,6 +36,7 @@ The command reads one JSON object from stdin:
 
 ```bash
 printf '%s' '{
+  "summary": "Update x constant",
   "path": "src/app.ts",
   "edits": [
     {

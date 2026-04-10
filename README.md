@@ -1,0 +1,57 @@
+# edit
+
+CLI for agents to edit files.
+
+## Input
+
+The command reads one JSON object from stdin:
+
+```json
+{
+  "path": "src/app.ts",
+  "edits": [
+    {
+      "oldText": "const x = 1;",
+      "newText": "const x = 2;"
+    }
+  ]
+}
+```
+
+## Behavior
+
+- `path` must point to an existing file.
+- `edits` must contain at least one replacement.
+- Request field names are exact JSON keys: `oldText` and `newText`.
+- Unknown fields are rejected.
+- Each `oldText` must match exactly once in the original file.
+- All matches are resolved against the original file contents, not incrementally.
+- Requested edit regions must not overlap.
+- All edits are validated before any write happens.
+- The file is not modified if any edit fails.
+
+## Example
+
+```bash
+printf '%s' '{
+  "path": "src/app.ts",
+  "edits": [
+    {
+      "oldText": "const x = 1;",
+      "newText": "const x = 2;"
+    }
+  ]
+}' | edit
+```
+
+Success writes a JSON response to stdout:
+
+```json
+{"ok":true,"path":"src/app.ts","replacedBlocks":1}
+```
+
+Failure writes a JSON response to stderr and exits non-zero:
+
+```json
+{"ok":false,"error":"Could not find edits[0] in src/app.ts. The oldText must match exactly."}
+```

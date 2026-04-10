@@ -1,7 +1,12 @@
 use std::io::{self, Read};
 use std::process::ExitCode;
 
+use clap::Parser;
 use edit::{EditRequest, ErrorResponse, execute_request};
+
+#[derive(Debug, Parser)]
+#[command(name = "edit")]
+struct Cli {}
 
 fn main() -> ExitCode {
     match run() {
@@ -18,6 +23,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    let _cli = Cli::parse();
+
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)

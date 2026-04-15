@@ -2,9 +2,13 @@
 
 CLI for agents to edit files.
 
+## Overview
+
+Run `edit` with no stdin to print an agent-friendly overview with usage, rules, and an example.
+
 ## Input
 
-The command reads one JSON object from stdin:
+When stdin contains non-empty JSON, the command reads one JSON object:
 
 ```json
 {

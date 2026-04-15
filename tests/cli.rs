@@ -9,7 +9,12 @@ fn edit_binary() -> &'static str {
 }
 
 fn run_edit(input: &[u8]) -> Output {
+    run_edit_with_args(&[], input)
+}
+
+fn run_edit_with_args(args: &[&str], input: &[u8]) -> Output {
     Command::new(edit_binary())
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -113,6 +118,47 @@ fn fails_without_changing_the_file_when_text_is_missing() {
     let json: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(json["ok"], false);
     assert!(json["error"].as_str().unwrap().contains("Could not find"));
+}
+
+#[test]
+fn shows_overview_when_stdin_is_empty() {
+    let output = run_edit(b"");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("CLI for agents to edit files."));
+    assert!(stdout.contains("summary"));
+    assert!(stdout.contains("oldText"));
+    assert!(stdout.contains("newText"));
+    assert!(stdout.contains("printf '%s'"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn shows_agent_friendly_help_with_help_flag() {
+    let output = run_edit_with_args(&["--help"], b"");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Usage: edit"));
+    assert!(stdout.contains("CLI for agents to edit files."));
+    assert!(stdout.contains("oldText"));
+    assert!(stdout.contains("newText"));
+    assert!(stdout.contains("printf '%s'"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn shows_overview_when_stdin_is_whitespace_only() {
+    let output = run_edit(b" \n\t ");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("CLI for agents to edit files."));
+    assert!(stdout.contains("summary"));
+    assert!(stdout.contains("oldText"));
+    assert!(stdout.contains("newText"));
+    assert!(output.stderr.is_empty());
 }
 
 #[test]

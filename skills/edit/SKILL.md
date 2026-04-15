@@ -5,7 +5,7 @@ description: Use this tool to edit one file with exact text replacement. Best fo
 
 # Edit
 
-Use this CLI via bash as `edit`. It reads one JSON request from stdin and edits one file with exact text replacement.
+Use this CLI via bash as `edit`. Run `edit` with no stdin to get an overview with usage, rules, and an example. When stdin contains non-empty JSON, it reads one JSON request and edits one file with exact text replacement.
 
 ## Input
 

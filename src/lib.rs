@@ -63,6 +63,12 @@ pub struct ToolError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedTrace {
+    trace_id: String,
+    reused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MatchedEdit {
     index: usize,
     start: usize,
@@ -159,14 +165,20 @@ pub fn execute_request_with_trace(
     request: EditRequest,
     trace_id: Option<&str>,
 ) -> Result<SuccessResponse, ToolError> {
-    let reused_trace = trace_id.is_some();
-    let trace_id = trace_id
-        .map(str::to_owned)
-        .unwrap_or_else(|| Ulid::new().to_string());
+    let resolved_trace = resolve_trace_id(trace_id).map_err(|error| ToolError {
+        error,
+        trace_id: String::new(),
+        message: String::new(),
+    })?;
 
-    match try_execute_edit(&request, &trace_id, reused_trace) {
+    match try_execute_edit(&request, &resolved_trace.trace_id, resolved_trace.reused) {
         Ok(response) => Ok(response),
-        Err(error) => Err(log_edit_failure(request, trace_id, reused_trace, error)),
+        Err(error) => Err(log_edit_failure(
+            request,
+            resolved_trace.trace_id,
+            resolved_trace.reused,
+            error,
+        )),
     }
 }
 
@@ -178,14 +190,20 @@ pub fn execute_write_request_with_trace(
     request: WriteRequest,
     trace_id: Option<&str>,
 ) -> Result<SuccessResponse, ToolError> {
-    let reused_trace = trace_id.is_some();
-    let trace_id = trace_id
-        .map(str::to_owned)
-        .unwrap_or_else(|| Ulid::new().to_string());
+    let resolved_trace = resolve_trace_id(trace_id).map_err(|error| ToolError {
+        error,
+        trace_id: String::new(),
+        message: String::new(),
+    })?;
 
-    match try_execute_write(&request, &trace_id, reused_trace) {
+    match try_execute_write(&request, &resolved_trace.trace_id, resolved_trace.reused) {
         Ok(response) => Ok(response),
-        Err(error) => Err(log_write_failure(request, trace_id, reused_trace, error)),
+        Err(error) => Err(log_write_failure(
+            request,
+            resolved_trace.trace_id,
+            resolved_trace.reused,
+            error,
+        )),
     }
 }
 
@@ -369,6 +387,36 @@ fn tool_error(
     }
 }
 
+fn resolve_trace_id(trace_id: Option<&str>) -> Result<ResolvedTrace, String> {
+    match trace_id {
+        Some(trace_id) => {
+            validate_trace_id(trace_id)?;
+            if !trace_exists(trace_id)? {
+                return Err(format!("Trace does not exist: {trace_id}"));
+            }
+
+            Ok(ResolvedTrace {
+                trace_id: trace_id.to_string(),
+                reused: true,
+            })
+        }
+        None => Ok(ResolvedTrace {
+            trace_id: Ulid::new().to_string(),
+            reused: false,
+        }),
+    }
+}
+
+fn validate_trace_id(trace_id: &str) -> Result<(), String> {
+    Ulid::from_string(trace_id)
+        .map(|_| ())
+        .map_err(|_| format!("Invalid trace id: {trace_id}"))
+}
+
+fn trace_exists(trace_id: &str) -> Result<bool, String> {
+    Ok(trace_directory(trace_id)?.join("entries.jsonl").exists())
+}
+
 fn current_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
@@ -431,6 +479,8 @@ fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), Str
 }
 
 pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String> {
+    validate_trace_id(trace_id)?;
+
     let entries_path = trace_directory(trace_id)?.join("entries.jsonl");
     if !entries_path.exists() {
         return Err(format!("Trace not found: {trace_id}"));

@@ -158,6 +158,42 @@ fn reviews_trace_history_entries() {
 }
 
 #[test]
+fn rejects_an_invalid_trace_id_for_history_list() {
+    let data_home = tempdir().unwrap();
+    let trace_id = "../bad-trace-id";
+
+    let output = run_command(
+        edit_binary(),
+        &["history", "list", trace_id],
+        &[("XDG_DATA_HOME", data_home.path())],
+        b"",
+    );
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"], format!("Invalid trace id: {trace_id}"));
+}
+
+#[test]
+fn rejects_a_nonexistent_trace_id_for_history_show() {
+    let data_home = tempdir().unwrap();
+    let trace_id = "01JTESTTRACE00000000000000";
+
+    let output = run_command(
+        edit_binary(),
+        &["history", "show", trace_id, "1"],
+        &[("XDG_DATA_HOME", data_home.path())],
+        b"",
+    );
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"], format!("Trace not found: {trace_id}"));
+}
+
+#[test]
 fn lists_trace_history_entries() {
     let dir = tempdir().unwrap();
     let data_home = tempdir().unwrap();

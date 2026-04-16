@@ -13,6 +13,8 @@ Input:
 
 Rules:
 - Unknown JSON fields are rejected.
+- If you pass a trace id, it must be an existing ULID trace id.
+- Omit the trace id to start a new trace.
 - If the path exists, it must be a file.
 - Parent directories are created as needed.
 
@@ -88,8 +90,8 @@ fn run() -> Result<(), ErrorResponse> {
             ErrorResponse {
                 ok: false,
                 error: error.error,
-                trace_id: Some(error.trace_id),
-                message: Some(error.message),
+                trace_id: (!error.trace_id.is_empty()).then_some(error.trace_id),
+                message: (!error.message.is_empty()).then_some(error.message),
             }
         })?;
     println!(

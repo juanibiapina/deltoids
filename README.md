@@ -1,14 +1,8 @@
 # edit
 
-CLI for agents to edit files.
+CLI tools to trace `edit` and `write` file changes.
 
-## Overview
-
-Run `edit` with no stdin to print an agent-friendly overview with usage, rules, and an example.
-
-## Input
-
-When stdin contains non-empty JSON, the command reads one JSON object:
+## edit input
 
 ```json
 {
@@ -24,24 +18,35 @@ When stdin contains non-empty JSON, the command reads one JSON object:
 }
 ```
 
-## Behavior
+## write input
 
-- `summary` is required and must not be empty.
-- `path` must point to an existing UTF-8 text file.
-- `edits` must contain at least one replacement.
-- Each edit needs a non-empty `summary`.
-- Request field names are exact JSON keys: `oldText` and `newText`.
-- Unknown fields are rejected.
-- Each `oldText` must match exactly once in the original file.
-- All matches are resolved against the original file contents, not incrementally.
-- Requested edit regions must not overlap.
-- All edits are validated before any write happens.
-- The file is not modified if any edit fails.
-- Missing paths fail with `Path does not exist: <path>`.
-- Directory and other non-file paths fail with `Path is not a file: <path>`.
-- Success responses include a line-based `diff` string.
+```json
+{
+  "summary": "Rewrite config",
+  "path": "config.json",
+  "content": "{\n  \"version\": 2\n}\n"
+}
+```
 
-## Example
+## features
+
+- `edit` requires top-level `summary` and per-edit `summary`.
+- `write` rewrites full file contents and returns a diff.
+- Success and failure responses include `traceId` when the request was parsed.
+- Successful and failed attempts are appended to:
+  - `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`
+  - fallback: `~/.local/share/edit/traces/<trace-id>/entries.jsonl`
+- `edit` and `write` can share the same trace id.
+- `edit` shorthand:
+  - `edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"`
+- `write` shorthand:
+  - `write [trace-id] --path config.json --summary "Rewrite config" < config.json.new`
+- History commands:
+  - `edit history list <trace-id>`
+  - `edit history show <trace-id> <index>`
+  - `edit history review <trace-id>`
+
+## examples
 
 ```bash
 printf '%s' '{
@@ -57,14 +62,10 @@ printf '%s' '{
 }' | edit
 ```
 
-Success writes a JSON response to stdout:
-
-```json
-{"ok":true,"path":"src/app.ts","replacedBlocks":1,"diff":"--- original\n+++ modified\n@@ -1 +1 @@\n-const x = 1;\n+const x = 2;\n"}
-```
-
-Failure writes a JSON response to stderr and exits non-zero:
-
-```json
-{"ok":false,"error":"Could not find edits[0] in src/app.ts. The oldText must match exactly."}
+```bash
+printf '%s' '{
+  "summary": "Rewrite config",
+  "path": "config.json",
+  "content": "{\n  \"version\": 2\n}\n"
+}' | write
 ```

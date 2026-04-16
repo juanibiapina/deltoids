@@ -16,12 +16,14 @@ Rules:
 - If the path exists, it must be a file.
 - Parent directories are created as needed.
 
-Example:
+Examples:
 printf '%s' '{
   "summary": "Rewrite config",
   "path": "config.json",
   "content": "{\n  \"version\": 2\n}\n"
 }' | write
+
+write [trace-id] --path config.json --summary "Rewrite config" < config.json.new
 
 Output:
 - Success goes to stdout as JSON.

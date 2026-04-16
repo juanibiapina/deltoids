@@ -1,10 +1,17 @@
 use std::env;
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use edit::{
-    EditRequest, ErrorResponse, TextEdit, execute_request_with_trace, read_history_entries,
+    EditRequest, ErrorResponse, HistoryEntry, TextEdit, execute_request_with_trace,
+    read_history_entries,
 };
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
@@ -29,7 +36,7 @@ Rules:
 - If the path is not a file, the error is: Path is not a file: <path>
 - If any edit fails, nothing is written.
 
-Example:
+Examples:
 printf '%s' '{
   "summary": "Rename variable",
   "path": "src/app.ts",
@@ -41,6 +48,11 @@ printf '%s' '{
     }
   ]
 }' | edit
+
+edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"
+edit history list <trace-id>
+edit history show <trace-id> <index>
+edit history review <trace-id>
 
 Output:
 - Success goes to stdout as JSON.
@@ -133,8 +145,11 @@ fn maybe_run_history_command(args: &[String]) -> Option<Result<(), String>> {
         [history, show, trace_id, index] if history == "history" && show == "show" => {
             Some(run_history_show(trace_id, index))
         }
+        [history, review, trace_id] if history == "history" && review == "review" => {
+            Some(run_history_review(trace_id))
+        }
         [history, ..] if history == "history" => Some(Err(
-            "Usage: edit history list <trace-id>\n       edit history show <trace-id> <index>"
+            "Usage: edit history list <trace-id>\n       edit history show <trace-id> <index>\n       edit history review <trace-id>"
                 .to_string(),
         )),
         _ => None,
@@ -186,6 +201,207 @@ fn run_history_show(trace_id: &str, index: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn run_history_review(trace_id: &str) -> Result<(), String> {
+    let entries = read_history_entries(trace_id)?;
+    if entries.is_empty() {
+        return Err(format!("Trace has no entries: {trace_id}"));
+    }
+
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        run_history_review_tui(&entries)
+    } else {
+        run_history_review_scripted(&entries)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ReviewState {
+    selected: usize,
+    scroll: usize,
+}
+
+impl ReviewState {
+    fn move_down(&mut self, entry_count: usize) {
+        if entry_count == 0 {
+            return;
+        }
+        if self.selected + 1 < entry_count {
+            self.selected += 1;
+            self.scroll = 0;
+        }
+    }
+
+    fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+            self.scroll = 0;
+        }
+    }
+
+    fn page_down(&mut self, amount: usize, entry: &HistoryEntry) {
+        let max_scroll = detail_lines(entry).len().saturating_sub(1);
+        self.scroll = (self.scroll + amount).min(max_scroll);
+    }
+
+    fn page_up(&mut self, amount: usize) {
+        self.scroll = self.scroll.saturating_sub(amount);
+    }
+}
+
+fn run_history_review_scripted(entries: &[HistoryEntry]) -> Result<(), String> {
+    let mut state = ReviewState::default();
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|err| format!("Failed to read stdin: {err}"))?;
+
+    for ch in input.chars() {
+        match ch {
+            'j' => state.move_down(entries.len()),
+            'k' => state.move_up(),
+            'q' => break,
+            _ => {}
+        }
+    }
+
+    print!("{}", render_review(entries, &state, 100, 30));
+    Ok(())
+}
+
+fn run_history_review_tui(entries: &[HistoryEntry]) -> Result<(), String> {
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)
+        .map_err(|err| format!("Failed to enter review screen: {err}"))?;
+    terminal::enable_raw_mode().map_err(|err| format!("Failed to enable raw mode: {err}"))?;
+
+    let result = (|| -> Result<(), String> {
+        let mut state = ReviewState::default();
+        loop {
+            let (width, height) =
+                terminal::size().map_err(|err| format!("Failed to read terminal size: {err}"))?;
+            execute!(stdout, cursor::MoveTo(0, 0), Clear(ClearType::All))
+                .map_err(|err| format!("Failed to render review screen: {err}"))?;
+            write!(
+                stdout,
+                "{}",
+                render_review(entries, &state, width as usize, height as usize)
+            )
+            .map_err(|err| format!("Failed to write review screen: {err}"))?;
+            stdout
+                .flush()
+                .map_err(|err| format!("Failed to flush review screen: {err}"))?;
+
+            match event::read().map_err(|err| format!("Failed to read input event: {err}"))? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char('j') | KeyCode::Down => state.move_down(entries.len()),
+                    KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+                    KeyCode::PageDown => {
+                        state.page_down(height.saturating_sub(4) as usize, &entries[state.selected])
+                    }
+                    KeyCode::PageUp => state.page_up(height.saturating_sub(4) as usize),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        Ok(())
+    })();
+
+    let cleanup_raw = terminal::disable_raw_mode();
+    let cleanup_screen = execute!(stdout, LeaveAlternateScreen, cursor::Show);
+
+    cleanup_raw.map_err(|err| format!("Failed to disable raw mode: {err}"))?;
+    cleanup_screen.map_err(|err| format!("Failed to leave review screen: {err}"))?;
+    result
+}
+
+fn render_review(
+    entries: &[HistoryEntry],
+    state: &ReviewState,
+    width: usize,
+    height: usize,
+) -> String {
+    let left_width = (width / 3).max(24).min(width.saturating_sub(20));
+    let right_width = width.saturating_sub(left_width + 3);
+
+    let left_lines = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let marker = if index == state.selected { ">" } else { " " };
+            let status = if entry.ok { "ok" } else { "fail" };
+            fit_line(
+                &format!(
+                    "{marker} {} {} {} {}",
+                    index + 1,
+                    entry.tool,
+                    status,
+                    entry.summary
+                ),
+                left_width,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let detail = detail_lines(&entries[state.selected]);
+    let visible_detail = detail
+        .iter()
+        .skip(state.scroll)
+        .take(height.max(1))
+        .map(|line| fit_line(line, right_width))
+        .collect::<Vec<_>>();
+
+    let row_count = height
+        .max(left_lines.len())
+        .max(visible_detail.len())
+        .max(1);
+    let mut output = String::new();
+    for row in 0..row_count {
+        let left = left_lines.get(row).map(String::as_str).unwrap_or("");
+        let right = visible_detail.get(row).map(String::as_str).unwrap_or("");
+        output.push_str(&format!("{left:<left_width$} | {right}\n"));
+    }
+    output
+}
+
+fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
+    let mut lines = vec![
+        format!("tool: {}", entry.tool),
+        format!("summary: {}", entry.summary),
+        format!("path: {}", entry.path),
+    ];
+
+    if entry.tool == "edit" {
+        for (index, edit) in entry.edits.iter().enumerate() {
+            lines.push(format!("edit {}: {}", index + 1, edit.summary));
+        }
+    }
+
+    if entry.ok {
+        lines.push("diff:".to_string());
+        if let Some(diff) = &entry.diff {
+            lines.extend(diff.lines().map(str::to_string));
+        }
+    } else if let Some(error) = &entry.error {
+        lines.push(format!("error: {error}"));
+    }
+
+    lines
+}
+
+fn fit_line(line: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    for ch in line.chars().take(width) {
+        result.push(ch);
+    }
+    result
 }
 
 fn simple_error(error: String) -> ErrorResponse {

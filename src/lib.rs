@@ -49,6 +49,17 @@ pub struct SuccessResponse {
 pub struct ErrorResponse {
     pub ok: bool,
     pub error: String,
+    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolError {
+    pub error: String,
+    pub trace_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +86,21 @@ struct EditHistoryEntry {
 }
 
 #[derive(Debug, Serialize)]
+struct EditFailureHistoryEntry {
+    v: u8,
+    tool: &'static str,
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    timestamp: String,
+    cwd: String,
+    path: String,
+    summary: String,
+    ok: bool,
+    edits: Vec<TextEdit>,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
 struct WriteHistoryEntry {
     v: u8,
     tool: &'static str,
@@ -89,15 +115,65 @@ struct WriteHistoryEntry {
     diff: String,
 }
 
-pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> {
+#[derive(Debug, Serialize)]
+struct WriteFailureHistoryEntry {
+    v: u8,
+    tool: &'static str,
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    timestamp: String,
+    cwd: String,
+    path: String,
+    summary: String,
+    ok: bool,
+    content: String,
+    error: String,
+}
+
+pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
     execute_request_with_trace(request, None)
 }
 
 pub fn execute_request_with_trace(
     request: EditRequest,
     trace_id: Option<&str>,
+) -> Result<SuccessResponse, ToolError> {
+    let reused_trace = trace_id.is_some();
+    let trace_id = trace_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Ulid::new().to_string());
+
+    match try_execute_edit(&request, &trace_id, reused_trace) {
+        Ok(response) => Ok(response),
+        Err(error) => Err(log_edit_failure(request, trace_id, reused_trace, error)),
+    }
+}
+
+pub fn execute_write_request(request: WriteRequest) -> Result<SuccessResponse, ToolError> {
+    execute_write_request_with_trace(request, None)
+}
+
+pub fn execute_write_request_with_trace(
+    request: WriteRequest,
+    trace_id: Option<&str>,
+) -> Result<SuccessResponse, ToolError> {
+    let reused_trace = trace_id.is_some();
+    let trace_id = trace_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Ulid::new().to_string());
+
+    match try_execute_write(&request, &trace_id, reused_trace) {
+        Ok(response) => Ok(response),
+        Err(error) => Err(log_write_failure(request, trace_id, reused_trace, error)),
+    }
+}
+
+fn try_execute_edit(
+    request: &EditRequest,
+    trace_id: &str,
+    reused_trace: bool,
 ) -> Result<SuccessResponse, String> {
-    validate_request(&request)?;
+    validate_request(request)?;
 
     let path = Path::new(&request.path);
     validate_target_path(path, &request.path)?;
@@ -110,16 +186,12 @@ pub fn execute_request_with_trace(
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
-    let reused_trace = trace_id.is_some();
-    let trace_id = trace_id
-        .map(str::to_owned)
-        .unwrap_or_else(|| Ulid::new().to_string());
     append_trace_entry(
-        &trace_id,
+        trace_id,
         &EditHistoryEntry {
             v: 1,
             tool: "edit",
-            trace_id: trace_id.clone(),
+            trace_id: trace_id.to_string(),
             timestamp: current_timestamp(),
             cwd: current_working_directory()?,
             path: request.path.clone(),
@@ -132,22 +204,19 @@ pub fn execute_request_with_trace(
 
     Ok(SuccessResponse {
         ok: true,
-        path: request.path,
-        trace_id: trace_id.clone(),
-        message: success_message(&trace_id, reused_trace),
+        path: request.path.clone(),
+        trace_id: trace_id.to_string(),
+        message: success_message(trace_id, reused_trace),
         diff,
     })
 }
 
-pub fn execute_write_request(request: WriteRequest) -> Result<SuccessResponse, String> {
-    execute_write_request_with_trace(request, None)
-}
-
-pub fn execute_write_request_with_trace(
-    request: WriteRequest,
-    trace_id: Option<&str>,
+fn try_execute_write(
+    request: &WriteRequest,
+    trace_id: &str,
+    reused_trace: bool,
 ) -> Result<SuccessResponse, String> {
-    validate_write_request(&request)?;
+    validate_write_request(request)?;
 
     let path = Path::new(&request.path);
     validate_write_target_path(path, &request.path)?;
@@ -174,16 +243,12 @@ pub fn execute_write_request_with_trace(
     fs::write(path, &request.content)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
-    let reused_trace = trace_id.is_some();
-    let trace_id = trace_id
-        .map(str::to_owned)
-        .unwrap_or_else(|| Ulid::new().to_string());
     append_trace_entry(
-        &trace_id,
+        trace_id,
         &WriteHistoryEntry {
             v: 1,
             tool: "write",
-            trace_id: trace_id.clone(),
+            trace_id: trace_id.to_string(),
             timestamp: current_timestamp(),
             cwd: current_working_directory()?,
             path: request.path.clone(),
@@ -196,9 +261,9 @@ pub fn execute_write_request_with_trace(
 
     Ok(SuccessResponse {
         ok: true,
-        path: request.path,
-        trace_id: trace_id.clone(),
-        message: success_message(&trace_id, reused_trace),
+        path: request.path.clone(),
+        trace_id: trace_id.to_string(),
+        message: success_message(trace_id, reused_trace),
         diff,
     })
 }
@@ -210,6 +275,76 @@ fn success_message(trace_id: &str, reused_trace: bool) -> String {
         format!(
             "Started trace {trace_id}. Reuse this trace id for later edits in the same session."
         )
+    }
+}
+
+fn log_edit_failure(
+    request: EditRequest,
+    trace_id: String,
+    reused_trace: bool,
+    error: String,
+) -> ToolError {
+    let logging_error = append_trace_entry(
+        &trace_id,
+        &EditFailureHistoryEntry {
+            v: 1,
+            tool: "edit",
+            trace_id: trace_id.clone(),
+            timestamp: current_timestamp(),
+            cwd: current_working_directory().unwrap_or_else(|_| String::new()),
+            path: request.path,
+            summary: request.summary,
+            ok: false,
+            edits: request.edits,
+            error: error.clone(),
+        },
+    )
+    .err();
+
+    tool_error(trace_id, reused_trace, error, logging_error)
+}
+
+fn log_write_failure(
+    request: WriteRequest,
+    trace_id: String,
+    reused_trace: bool,
+    error: String,
+) -> ToolError {
+    let logging_error = append_trace_entry(
+        &trace_id,
+        &WriteFailureHistoryEntry {
+            v: 1,
+            tool: "write",
+            trace_id: trace_id.clone(),
+            timestamp: current_timestamp(),
+            cwd: current_working_directory().unwrap_or_else(|_| String::new()),
+            path: request.path,
+            summary: request.summary,
+            ok: false,
+            content: request.content,
+            error: error.clone(),
+        },
+    )
+    .err();
+
+    tool_error(trace_id, reused_trace, error, logging_error)
+}
+
+fn tool_error(
+    trace_id: String,
+    reused_trace: bool,
+    error: String,
+    logging_error: Option<String>,
+) -> ToolError {
+    ToolError {
+        error: match logging_error {
+            Some(logging_error) => {
+                format!("{error} Failed to record trace {trace_id}: {logging_error}")
+            }
+            None => error,
+        },
+        trace_id: trace_id.clone(),
+        message: success_message(&trace_id, reused_trace),
     }
 }
 
@@ -648,7 +783,7 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(error.contains("summary must not be empty"));
+        assert!(error.error.contains("summary must not be empty"));
     }
 
     #[test]

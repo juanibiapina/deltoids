@@ -65,8 +65,7 @@ struct Cli {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            let response = ErrorResponse { ok: false, error };
+        Err(response) => {
             eprintln!(
                 "{}",
                 serde_json::to_string(&response).expect("error response should serialize")
@@ -76,11 +75,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<(), ErrorResponse> {
     let cli = Cli::parse();
 
     let request = if uses_shorthand(&cli) {
-        edit_request_from_shorthand(&cli)?
+        edit_request_from_shorthand(&cli).map_err(simple_error)?
     } else {
         let mut stdin = io::stdin();
         if stdin.is_terminal() {
@@ -91,22 +90,40 @@ fn run() -> Result<(), String> {
         let mut input = String::new();
         stdin
             .read_to_string(&mut input)
-            .map_err(|err| format!("Failed to read stdin: {err}"))?;
+            .map_err(|err| simple_error(format!("Failed to read stdin: {err}")))?;
 
         if should_show_overview(false, &input) {
             print_overview();
             return Ok(());
         }
 
-        serde_json::from_str(&input).map_err(|err| format!("Invalid request JSON: {err}"))?
+        serde_json::from_str(&input)
+            .map_err(|err| simple_error(format!("Invalid request JSON: {err}")))?
     };
 
-    let response = execute_request_with_trace(request, cli.trace_id.as_deref())?;
+    let response =
+        execute_request_with_trace(request, cli.trace_id.as_deref()).map_err(|error| {
+            ErrorResponse {
+                ok: false,
+                error: error.error,
+                trace_id: Some(error.trace_id),
+                message: Some(error.message),
+            }
+        })?;
     println!(
         "{}",
         serde_json::to_string(&response).expect("success response should serialize")
     );
     Ok(())
+}
+
+fn simple_error(error: String) -> ErrorResponse {
+    ErrorResponse {
+        ok: false,
+        error,
+        trace_id: None,
+        message: None,
+    }
 }
 
 fn uses_shorthand(cli: &Cli) -> bool {

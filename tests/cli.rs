@@ -167,6 +167,58 @@ fn applies_multiple_edits_in_one_invocation() {
 }
 
 #[test]
+fn logs_failed_edits_and_returns_trace_id() {
+    let dir = tempdir().unwrap();
+    let data_home = tempdir().unwrap();
+    let file_path = dir.path().join("missing.txt");
+    let original = "hello\nworld\n";
+    fs::write(&file_path, original).unwrap();
+
+    let request = serde_json::json!({
+        "summary": "Try a missing edit",
+        "path": file_path,
+        "edits": [
+            {
+                "summary": "Edit change",
+                "oldText": "nope",
+                "newText": "yep"
+            }
+        ]
+    });
+
+    let output = run_edit_with_args_and_env(
+        &[],
+        &[("XDG_DATA_HOME", data_home.path())],
+        request.to_string().as_bytes(),
+    );
+
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
+
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    let trace_id = json["traceId"].as_str().unwrap();
+    assert_eq!(json["ok"], false);
+    assert!(json["message"].as_str().unwrap().contains(trace_id));
+    assert!(json["error"].as_str().unwrap().contains("Could not find"));
+
+    let trace_path = data_home
+        .path()
+        .join("edit")
+        .join("traces")
+        .join(trace_id)
+        .join("entries.jsonl");
+    let history = fs::read_to_string(trace_path).unwrap();
+    let entry: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    assert_eq!(entry["tool"], "edit");
+    assert_eq!(entry["traceId"], trace_id);
+    assert_eq!(entry["ok"], false);
+    assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
+    assert_eq!(entry["summary"], "Try a missing edit");
+    assert_eq!(entry["edits"][0]["summary"], "Edit change");
+    assert!(entry["error"].as_str().unwrap().contains("Could not find"));
+}
+
+#[test]
 fn fails_without_changing_the_file_when_text_is_missing() {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("missing.txt");

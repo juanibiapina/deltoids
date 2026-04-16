@@ -34,6 +34,44 @@ fn run_write_with_env(envs: &[(&str, &std::path::Path)], input: &[u8]) -> Output
 }
 
 #[test]
+fn rewrites_a_file_with_shorthand_flags() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("shorthand.json");
+    fs::write(&file_path, "{\n  \"version\": 1\n}\n").unwrap();
+
+    let output = Command::new(write_binary())
+        .args([
+            "--path",
+            file_path.to_string_lossy().as_ref(),
+            "--summary",
+            "Rewrite config",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"{\n  \"version\": 2\n}\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read_to_string(&file_path).unwrap(),
+        "{\n  \"version\": 2\n}\n"
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
+}
+
+#[test]
 fn rewrites_a_file_from_stdin_json() {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("config.json");

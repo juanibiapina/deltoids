@@ -36,6 +36,10 @@ Output:
 )]
 struct Cli {
     trace_id: Option<String>,
+    #[arg(long)]
+    path: Option<String>,
+    #[arg(long)]
+    summary: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -55,24 +59,27 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
 
-    let mut stdin = io::stdin();
-    if stdin.is_terminal() {
-        print_overview();
-        return Ok(());
-    }
+    let request = if uses_shorthand(&cli) {
+        write_request_from_shorthand(&cli)?
+    } else {
+        let mut stdin = io::stdin();
+        if stdin.is_terminal() {
+            print_overview();
+            return Ok(());
+        }
 
-    let mut input = String::new();
-    stdin
-        .read_to_string(&mut input)
-        .map_err(|err| format!("Failed to read stdin: {err}"))?;
+        let mut input = String::new();
+        stdin
+            .read_to_string(&mut input)
+            .map_err(|err| format!("Failed to read stdin: {err}"))?;
 
-    if should_show_overview(false, &input) {
-        print_overview();
-        return Ok(());
-    }
+        if should_show_overview(false, &input) {
+            print_overview();
+            return Ok(());
+        }
 
-    let request: WriteRequest =
-        serde_json::from_str(&input).map_err(|err| format!("Invalid request JSON: {err}"))?;
+        serde_json::from_str(&input).map_err(|err| format!("Invalid request JSON: {err}"))?
+    };
 
     let response = execute_write_request_with_trace(request, cli.trace_id.as_deref())?;
     println!(
@@ -80,6 +87,32 @@ fn run() -> Result<(), String> {
         serde_json::to_string(&response).expect("success response should serialize")
     );
     Ok(())
+}
+
+fn uses_shorthand(cli: &Cli) -> bool {
+    cli.path.is_some() || cli.summary.is_some()
+}
+
+fn write_request_from_shorthand(cli: &Cli) -> Result<WriteRequest, String> {
+    let path = cli
+        .path
+        .clone()
+        .ok_or_else(|| "--path and --summary are required together".to_string())?;
+    let summary = cli
+        .summary
+        .clone()
+        .ok_or_else(|| "--path and --summary are required together".to_string())?;
+
+    let mut content = String::new();
+    io::stdin()
+        .read_to_string(&mut content)
+        .map_err(|err| format!("Failed to read stdin: {err}"))?;
+
+    Ok(WriteRequest {
+        summary,
+        path,
+        content,
+    })
 }
 
 fn print_overview() {

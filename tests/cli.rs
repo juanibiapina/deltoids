@@ -196,6 +196,33 @@ fn fails_without_changing_the_file_when_text_is_missing() {
 }
 
 #[test]
+fn edits_a_file_with_shorthand_flags() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("shorthand.txt");
+    fs::write(&file_path, "const x = 1;\n").unwrap();
+
+    let output = run_edit_with_args(
+        &[
+            "--path",
+            file_path.to_string_lossy().as_ref(),
+            "--summary",
+            "Update x constant",
+            "--old",
+            "const x = 1;",
+            "--new",
+            "const x = 2;",
+        ],
+        b"",
+    );
+
+    assert!(output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "const x = 2;\n");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
+}
+
+#[test]
 fn shows_overview_when_stdin_is_empty() {
     let output = run_edit(b"");
 

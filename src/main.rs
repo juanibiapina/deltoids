@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{EditRequest, ErrorResponse, execute_request_with_trace};
+use edit::{EditRequest, ErrorResponse, TextEdit, execute_request_with_trace};
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
 
@@ -52,6 +52,14 @@ Output:
 )]
 struct Cli {
     trace_id: Option<String>,
+    #[arg(long)]
+    path: Option<String>,
+    #[arg(long)]
+    summary: Option<String>,
+    #[arg(long = "old")]
+    old_text: Option<String>,
+    #[arg(long = "new")]
+    new_text: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -71,24 +79,27 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
 
-    let mut stdin = io::stdin();
-    if stdin.is_terminal() {
-        print_overview();
-        return Ok(());
-    }
+    let request = if uses_shorthand(&cli) {
+        edit_request_from_shorthand(&cli)?
+    } else {
+        let mut stdin = io::stdin();
+        if stdin.is_terminal() {
+            print_overview();
+            return Ok(());
+        }
 
-    let mut input = String::new();
-    stdin
-        .read_to_string(&mut input)
-        .map_err(|err| format!("Failed to read stdin: {err}"))?;
+        let mut input = String::new();
+        stdin
+            .read_to_string(&mut input)
+            .map_err(|err| format!("Failed to read stdin: {err}"))?;
 
-    if should_show_overview(false, &input) {
-        print_overview();
-        return Ok(());
-    }
+        if should_show_overview(false, &input) {
+            print_overview();
+            return Ok(());
+        }
 
-    let request: EditRequest =
-        serde_json::from_str(&input).map_err(|err| format!("Invalid request JSON: {err}"))?;
+        serde_json::from_str(&input).map_err(|err| format!("Invalid request JSON: {err}"))?
+    };
 
     let response = execute_request_with_trace(request, cli.trace_id.as_deref())?;
     println!(
@@ -96,6 +107,39 @@ fn run() -> Result<(), String> {
         serde_json::to_string(&response).expect("success response should serialize")
     );
     Ok(())
+}
+
+fn uses_shorthand(cli: &Cli) -> bool {
+    cli.path.is_some() || cli.summary.is_some() || cli.old_text.is_some() || cli.new_text.is_some()
+}
+
+fn edit_request_from_shorthand(cli: &Cli) -> Result<EditRequest, String> {
+    let path = cli
+        .path
+        .clone()
+        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+    let summary = cli
+        .summary
+        .clone()
+        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+    let old_text = cli
+        .old_text
+        .clone()
+        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+    let new_text = cli
+        .new_text
+        .clone()
+        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+
+    Ok(EditRequest {
+        summary: summary.clone(),
+        path,
+        edits: vec![TextEdit {
+            summary,
+            old_text,
+            new_text,
+        }],
+    })
 }
 
 fn print_overview() {

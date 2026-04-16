@@ -16,6 +16,7 @@ When stdin contains non-empty JSON, the command reads one JSON object:
   "path": "src/app.ts",
   "edits": [
     {
+      "summary": "Update x constant",
       "oldText": "const x = 1;",
       "newText": "const x = 2;"
     }
@@ -28,6 +29,7 @@ When stdin contains non-empty JSON, the command reads one JSON object:
 - `summary` is required and must not be empty.
 - `path` must point to an existing UTF-8 text file.
 - `edits` must contain at least one replacement.
+- Each edit needs a non-empty `summary`.
 - Request field names are exact JSON keys: `oldText` and `newText`.
 - Unknown fields are rejected.
 - Each `oldText` must match exactly once in the original file.
@@ -47,6 +49,7 @@ printf '%s' '{
   "path": "src/app.ts",
   "edits": [
     {
+      "summary": "Update x constant",
       "oldText": "const x = 1;",
       "newText": "const x = 2;"
     }

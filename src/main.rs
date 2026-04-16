@@ -12,6 +12,7 @@ Input:
 - edits: one or more replacements.
 
 Each edit must use:
+- summary: short description of that edit. Required. Must not be empty.
 - oldText
 - newText
 
@@ -31,6 +32,7 @@ printf '%s' '{
   "path": "src/app.ts",
   "edits": [
     {
+      "summary": "Rename x to count",
       "oldText": "const x = 1;",
       "newText": "const count = 1;"
     }

@@ -15,6 +15,7 @@ pub struct EditRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextEdit {
+    pub summary: String,
     #[serde(rename = "oldText")]
     pub old_text: String,
     #[serde(rename = "newText")]
@@ -76,6 +77,10 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
     }
 
     for (index, edit) in request.edits.iter().enumerate() {
+        if edit.summary.trim().is_empty() {
+            return Err(format!("edits[{index}].summary must not be empty"));
+        }
+
         if edit.old_text.is_empty() {
             return Err(format!("edits[{index}].oldText must not be empty"));
         }
@@ -84,7 +89,7 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_target_path(path: &Path, display_path: &str) -> Result<(), String> {
+pub fn validate_target_path(path: &Path, display_path: &str) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("Path does not exist: {display_path}"));
     }
@@ -96,7 +101,7 @@ fn validate_target_path(path: &Path, display_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn render_diff(original: &str, updated: &str) -> String {
+pub fn render_diff(original: &str, updated: &str) -> String {
     let text_diff = TextDiff::from_lines(original, updated);
     let mut diff = text_diff.unified_diff();
     diff.context_radius(3).header("original", "modified");
@@ -159,13 +164,14 @@ pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{TextEdit, apply_edits, render_diff};
+    use super::{EditRequest, TextEdit, apply_edits, render_diff, validate_request};
 
     #[test]
     fn applies_single_exact_edit() {
         let result = apply_edits(
             "Hello, world!",
             &[TextEdit {
+                summary: "Replace world".to_string(),
                 old_text: "world".to_string(),
                 new_text: "pi".to_string(),
             }],
@@ -182,10 +188,12 @@ mod tests {
             "foo\nbar\nbaz\n",
             &[
                 TextEdit {
+                    summary: "Expand foo".to_string(),
                     old_text: "foo\n".to_string(),
                     new_text: "foo bar\n".to_string(),
                 },
                 TextEdit {
+                    summary: "Uppercase bar".to_string(),
                     old_text: "bar\n".to_string(),
                     new_text: "BAR\n".to_string(),
                 },
@@ -202,6 +210,7 @@ mod tests {
         let error = apply_edits(
             "hello\n",
             &[TextEdit {
+                summary: "Replace missing".to_string(),
                 old_text: "missing".to_string(),
                 new_text: "x".to_string(),
             }],
@@ -217,6 +226,7 @@ mod tests {
         let error = apply_edits(
             "foo foo foo",
             &[TextEdit {
+                summary: "Replace foo".to_string(),
                 old_text: "foo".to_string(),
                 new_text: "bar".to_string(),
             }],
@@ -233,10 +243,12 @@ mod tests {
             "one\ntwo\nthree\n",
             &[
                 TextEdit {
+                    summary: "Uppercase first block".to_string(),
                     old_text: "one\ntwo\n".to_string(),
                     new_text: "ONE\nTWO\n".to_string(),
                 },
                 TextEdit {
+                    summary: "Uppercase second block".to_string(),
                     old_text: "two\nthree\n".to_string(),
                     new_text: "TWO\nTHREE\n".to_string(),
                 },
@@ -253,6 +265,7 @@ mod tests {
         let error = apply_edits(
             "same",
             &[TextEdit {
+                summary: "No-op replace".to_string(),
                 old_text: "same".to_string(),
                 new_text: "same".to_string(),
             }],
@@ -265,58 +278,93 @@ mod tests {
 
     #[test]
     fn rejects_empty_edits_request() {
-        let request = super::EditRequest {
+        let request = EditRequest {
             summary: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: Vec::new(),
         };
 
-        let error = super::validate_request(&request).unwrap_err();
+        let error = validate_request(&request).unwrap_err();
         assert!(error.contains("edits must contain at least one replacement"));
     }
 
     #[test]
-    fn rejects_empty_old_text() {
-        let request = super::EditRequest {
+    fn rejects_empty_edit_summary() {
+        let request = EditRequest {
             summary: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
+                summary: String::new(),
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("edits[0].summary must not be empty"));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_edit_summary() {
+        let request = EditRequest {
+            summary: "Test edit".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                summary: " \n\t ".to_string(),
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("edits[0].summary must not be empty"));
+    }
+
+    #[test]
+    fn rejects_empty_old_text() {
+        let request = EditRequest {
+            summary: "Test edit".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                summary: "Replace text".to_string(),
                 old_text: String::new(),
                 new_text: "replacement".to_string(),
             }],
         };
 
-        let error = super::validate_request(&request).unwrap_err();
+        let error = validate_request(&request).unwrap_err();
         assert!(error.contains("edits[0].oldText must not be empty"));
     }
 
     #[test]
     fn rejects_empty_summary() {
-        let request = super::EditRequest {
+        let request = EditRequest {
             summary: String::new(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
+                summary: "Replace before".to_string(),
                 old_text: "before".to_string(),
                 new_text: "after".to_string(),
             }],
         };
 
-        let error = super::validate_request(&request).unwrap_err();
+        let error = validate_request(&request).unwrap_err();
         assert!(error.contains("summary must not be empty"));
     }
 
     #[test]
     fn rejects_whitespace_only_summary() {
-        let request = super::EditRequest {
+        let request = EditRequest {
             summary: " \n\t ".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
+                summary: "Replace before".to_string(),
                 old_text: "before".to_string(),
                 new_text: "after".to_string(),
             }],
         };
 
-        let error = super::validate_request(&request).unwrap_err();
+        let error = validate_request(&request).unwrap_err();
         assert!(error.contains("summary must not be empty"));
     }
 
@@ -327,10 +375,12 @@ mod tests {
             original,
             &[
                 TextEdit {
+                    summary: "Uppercase alpha".to_string(),
                     old_text: "alpha\n".to_string(),
                     new_text: "ALPHA\n".to_string(),
                 },
                 TextEdit {
+                    summary: "Try missing line".to_string(),
                     old_text: "missing\n".to_string(),
                     new_text: "MISSING\n".to_string(),
                 },

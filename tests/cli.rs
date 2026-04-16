@@ -38,6 +38,7 @@ fn edits_a_file_from_stdin_json() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -68,8 +69,10 @@ fn applies_multiple_edits_in_one_invocation() {
         "summary": "Uppercase two lines",
         "path": file_path,
         "edits": [
-            { "oldText": "alpha\n", "newText": "ALPHA\n" },
-            { "oldText": "gamma\n", "newText": "GAMMA\n" }
+            { "summary": "Edit change",
+                "oldText": "alpha\n", "newText": "ALPHA\n" },
+            { "summary": "Edit change",
+                "oldText": "gamma\n", "newText": "GAMMA\n" }
         ]
     });
 
@@ -104,6 +107,7 @@ fn fails_without_changing_the_file_when_text_is_missing() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "nope",
                 "newText": "yep"
             }
@@ -214,6 +218,7 @@ fn fails_when_old_text_is_empty() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "",
                 "newText": "world"
             }
@@ -239,6 +244,7 @@ fn fails_when_request_is_missing_path() {
         "summary": "Missing path",
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "a",
                 "newText": "b"
             }
@@ -267,6 +273,7 @@ fn fails_when_target_path_does_not_exist() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "a",
                 "newText": "b"
             }
@@ -293,6 +300,7 @@ fn fails_when_target_path_is_a_directory() {
         "path": dir.path(),
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "a",
                 "newText": "b"
             }
@@ -368,6 +376,7 @@ fn fails_when_match_is_duplicated() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "foo",
                 "newText": "bar"
             }
@@ -399,10 +408,12 @@ fn fails_when_edits_overlap() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "one\ntwo\n",
                 "newText": "ONE\nTWO\n"
             },
             {
+                "summary": "Edit change",
                 "oldText": "two\nthree\n",
                 "newText": "TWO\nTHREE\n"
             }
@@ -423,6 +434,7 @@ fn fails_when_request_is_missing_summary() {
         "path": "file.txt",
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "a",
                 "newText": "b"
             }
@@ -453,6 +465,7 @@ fn fails_when_summary_is_empty() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "hello",
                 "newText": "world"
             }
@@ -484,6 +497,7 @@ fn fails_when_summary_is_whitespace_only() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "hello",
                 "newText": "world"
             }
@@ -515,10 +529,12 @@ fn does_not_partially_apply_multi_edit_when_one_edit_fails() {
         "path": file_path,
         "edits": [
             {
+                "summary": "Edit change",
                 "oldText": "alpha\n",
                 "newText": "ALPHA\n"
             },
             {
+                "summary": "Edit change",
                 "oldText": "missing\n",
                 "newText": "MISSING\n"
             }
@@ -531,4 +547,36 @@ fn does_not_partially_apply_multi_edit_when_one_edit_fails() {
     assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
     let json: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert!(json["error"].as_str().unwrap().contains("Could not find"));
+}
+
+#[test]
+fn fails_when_edit_summary_is_empty() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("empty-edit-summary.txt");
+    let original = "hello\n";
+    fs::write(&file_path, original).unwrap();
+
+    let request = serde_json::json!({
+        "summary": "Reject empty edit summary",
+        "path": file_path,
+        "edits": [
+            {
+                "summary": "",
+                "oldText": "hello",
+                "newText": "world"
+            }
+        ]
+    });
+
+    let output = run_edit(request.to_string().as_bytes());
+
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("edits[0].summary must not be empty")
+    );
 }

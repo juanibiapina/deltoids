@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{ErrorResponse, WriteRequest, execute_write_request};
+use edit::{ErrorResponse, WriteRequest, execute_write_request_with_trace};
 
 const OVERVIEW: &str = r#"CLI for agents to rewrite files.
 
@@ -34,7 +34,9 @@ Output:
     about = "CLI for agents to rewrite files.",
     after_help = OVERVIEW
 )]
-struct Cli {}
+struct Cli {
+    trace_id: Option<String>,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -51,7 +53,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
 
     let mut stdin = io::stdin();
     if stdin.is_terminal() {
@@ -72,7 +74,7 @@ fn run() -> Result<(), String> {
     let request: WriteRequest =
         serde_json::from_str(&input).map_err(|err| format!("Invalid request JSON: {err}"))?;
 
-    let response = execute_write_request(request)?;
+    let response = execute_write_request_with_trace(request, cli.trace_id.as_deref())?;
     println!(
         "{}",
         serde_json::to_string(&response).expect("success response should serialize")

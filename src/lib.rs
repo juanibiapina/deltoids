@@ -22,12 +22,27 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteRequest {
+    pub summary: String,
+    pub path: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SuccessResponse {
     pub ok: bool,
     pub path: String,
     #[serde(rename = "replacedBlocks")]
     pub replaced_blocks: usize,
+    pub diff: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WriteSuccessResponse {
+    pub ok: bool,
+    pub path: String,
     pub diff: String,
 }
 
@@ -67,6 +82,41 @@ pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> 
     })
 }
 
+pub fn execute_write_request(request: WriteRequest) -> Result<WriteSuccessResponse, String> {
+    validate_write_request(&request)?;
+
+    let path = Path::new(&request.path);
+    validate_write_target_path(path, &request.path)?;
+
+    let original = if path.exists() {
+        fs::read_to_string(path)
+            .map_err(|err| format!("Failed to read {}: {}", request.path, err))?
+    } else {
+        String::new()
+    };
+    let diff = render_diff(&original, &request.content);
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "Failed to create parent directories for {}: {}",
+                    request.path, err
+                )
+            })?;
+        }
+    }
+
+    fs::write(path, &request.content)
+        .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
+
+    Ok(WriteSuccessResponse {
+        ok: true,
+        path: request.path,
+        diff,
+    })
+}
+
 fn validate_request(request: &EditRequest) -> Result<(), String> {
     if request.summary.trim().is_empty() {
         return Err("summary must not be empty".to_string());
@@ -89,12 +139,28 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_write_request(request: &WriteRequest) -> Result<(), String> {
+    if request.summary.trim().is_empty() {
+        return Err("summary must not be empty".to_string());
+    }
+
+    Ok(())
+}
+
 pub fn validate_target_path(path: &Path, display_path: &str) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("Path does not exist: {display_path}"));
     }
 
     if !path.is_file() {
+        return Err(format!("Path is not a file: {display_path}"));
+    }
+
+    Ok(())
+}
+
+pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(), String> {
+    if path.exists() && !path.is_file() {
         return Err(format!("Path is not a file: {display_path}"));
     }
 
@@ -164,7 +230,12 @@ pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{EditRequest, TextEdit, apply_edits, render_diff, validate_request};
+    use std::fs;
+
+    use super::{
+        EditRequest, TextEdit, WriteRequest, apply_edits, execute_write_request, render_diff,
+        validate_request,
+    };
 
     #[test]
     fn applies_single_exact_edit() {
@@ -365,6 +436,40 @@ mod tests {
         };
 
         let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("summary must not be empty"));
+    }
+
+    #[test]
+    fn writes_full_content_and_returns_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, "{\n  \"version\": 1\n}\n").unwrap();
+
+        let response = execute_write_request(WriteRequest {
+            summary: "Rewrite config".to_string(),
+            path: path.to_string_lossy().into_owned(),
+            content: "{\n  \"version\": 2\n}\n".to_string(),
+        })
+        .unwrap();
+
+        assert!(response.ok);
+        assert!(response.diff.contains("-  \"version\": 1"));
+        assert!(response.diff.contains("+  \"version\": 2"));
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "{\n  \"version\": 2\n}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_write_summary() {
+        let error = execute_write_request(WriteRequest {
+            summary: String::new(),
+            path: "test.txt".to_string(),
+            content: "hello\n".to_string(),
+        })
+        .unwrap_err();
+
         assert!(error.contains("summary must not be empty"));
     }
 

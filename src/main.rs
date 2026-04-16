@@ -11,7 +11,7 @@ use crossterm::{
 };
 use edit::{
     EditRequest, ErrorResponse, HistoryEntry, TextEdit, execute_request_with_trace,
-    read_history_entries,
+    list_traces_for_current_directory, read_history_entries,
 };
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
@@ -52,9 +52,10 @@ printf '%s' '{
 }' | edit
 
 edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"
-edit history list <trace-id>
-edit history show <trace-id> <index>
-edit history review <trace-id>
+edit traces list
+edit traces list <trace-id>
+edit traces show <trace-id> <index>
+edit traces review <trace-id>
 
 Output:
 - Success goes to stdout as JSON.
@@ -94,7 +95,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), ErrorResponse> {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
-    if let Some(result) = maybe_run_history_command(&raw_args) {
+    if let Some(result) = maybe_run_trace_command(&raw_args) {
         return result.map_err(simple_error);
     }
 
@@ -139,23 +140,43 @@ fn run() -> Result<(), ErrorResponse> {
     Ok(())
 }
 
-fn maybe_run_history_command(args: &[String]) -> Option<Result<(), String>> {
+fn maybe_run_trace_command(args: &[String]) -> Option<Result<(), String>> {
     match args {
-        [history, list, trace_id] if history == "history" && list == "list" => {
+        [traces, list] if traces == "traces" && list == "list" => Some(run_traces_list()),
+        [traces, list, trace_id] if traces == "traces" && list == "list" => {
             Some(run_history_list(trace_id))
         }
-        [history, show, trace_id, index] if history == "history" && show == "show" => {
+        [traces, show, trace_id, index] if traces == "traces" && show == "show" => {
             Some(run_history_show(trace_id, index))
         }
-        [history, review, trace_id] if history == "history" && review == "review" => {
+        [traces, review, trace_id] if traces == "traces" && review == "review" => {
             Some(run_history_review(trace_id))
         }
-        [history, ..] if history == "history" => Some(Err(
-            "Usage: edit history list <trace-id>\n       edit history show <trace-id> <index>\n       edit history review <trace-id>"
-                .to_string(),
-        )),
+        [traces, ..] if traces == "traces" => Some(Err(trace_usage().to_string())),
+        [trace, ..] if trace == "trace" => Some(Err(trace_usage().to_string())),
+        [history, ..] if history == "history" => Some(Err(trace_usage().to_string())),
         _ => None,
     }
+}
+
+fn trace_usage() -> &'static str {
+    "Usage: edit traces list\n       edit traces list <trace-id>\n       edit traces show <trace-id> <index>\n       edit traces review <trace-id>"
+}
+
+fn run_traces_list() -> Result<(), String> {
+    let traces = list_traces_for_current_directory()?;
+    for trace in traces {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            trace.trace_id,
+            trace.entry_count,
+            trace.last_timestamp,
+            trace.last_tool,
+            trace.last_path,
+            trace.last_summary
+        );
+    }
+    Ok(())
 }
 
 fn run_history_list(trace_id: &str) -> Result<(), String> {
@@ -178,9 +199,9 @@ fn run_history_show(trace_id: &str, index: &str) -> Result<(), String> {
     let entries = read_history_entries(trace_id)?;
     let index = index
         .parse::<usize>()
-        .map_err(|_| format!("Invalid history index: {index}"))?;
+        .map_err(|_| format!("Invalid trace entry index: {index}"))?;
     if index == 0 || index > entries.len() {
-        return Err(format!("History index out of range: {index}"));
+        return Err(format!("Trace entry index out of range: {index}"));
     }
 
     let entry = &entries[index - 1];

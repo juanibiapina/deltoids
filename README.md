@@ -42,10 +42,11 @@ CLI tools to trace `edit` and `write` file changes.
   - `edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"`
 - `write` shorthand:
   - `write [trace-id] --path config.json --summary "Rewrite config" < config.json.new`
-- History commands:
-  - `edit history list <trace-id>`
-  - `edit history show <trace-id> <index>`
-  - `edit history review <trace-id>`
+- Trace commands:
+  - `edit traces list`
+  - `edit traces list <trace-id>`
+  - `edit traces show <trace-id> <index>`
+  - `edit traces review <trace-id>`
 
 ## examples
 

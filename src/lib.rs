@@ -157,6 +157,16 @@ pub struct HistoryEntry {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceSummary {
+    pub trace_id: String,
+    pub entry_count: usize,
+    pub last_timestamp: String,
+    pub last_tool: String,
+    pub last_path: String,
+    pub last_summary: String,
+}
+
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
     execute_request_with_trace(request, None)
 }
@@ -486,7 +496,62 @@ pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String>
         return Err(format!("Trace not found: {trace_id}"));
     }
 
-    let contents = fs::read_to_string(&entries_path)
+    read_history_entries_from_path(&entries_path)
+}
+
+pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> {
+    let cwd = current_working_directory()?;
+    let trace_root = trace_root_directory()?;
+    if !trace_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut traces = Vec::new();
+    let directories = fs::read_dir(&trace_root)
+        .map_err(|err| format!("Failed to read {}: {}", trace_root.display(), err))?;
+    for directory in directories {
+        let directory =
+            directory.map_err(|err| format!("Failed to read {}: {}", trace_root.display(), err))?;
+        let trace_dir = directory.path();
+        if !trace_dir.is_dir() {
+            continue;
+        }
+
+        let trace_id = directory.file_name().to_string_lossy().into_owned();
+        if validate_trace_id(&trace_id).is_err() {
+            continue;
+        }
+
+        let entries_path = trace_dir.join("entries.jsonl");
+        if !entries_path.exists() {
+            continue;
+        }
+
+        let entries = read_history_entries_from_path(&entries_path)?;
+        let matching_entries = entries
+            .iter()
+            .filter(|entry| entry.cwd == cwd)
+            .collect::<Vec<_>>();
+        let Some(last_entry) = matching_entries.last() else {
+            continue;
+        };
+
+        traces.push(TraceSummary {
+            trace_id,
+            entry_count: matching_entries.len(),
+            last_timestamp: last_entry.timestamp.clone(),
+            last_tool: last_entry.tool.clone(),
+            last_path: last_entry.path.clone(),
+            last_summary: last_entry.summary.clone(),
+        });
+    }
+
+    traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
+    Ok(traces)
+}
+
+fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntry>, String> {
+    let contents = fs::read_to_string(entries_path)
         .map_err(|err| format!("Failed to read {}: {}", entries_path.display(), err))?;
     let mut entries = Vec::new();
     for (index, line) in contents.lines().enumerate() {

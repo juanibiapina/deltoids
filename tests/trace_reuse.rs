@@ -73,11 +73,7 @@ fn rejects_a_nonexistent_explicit_trace_id_for_edit() {
     assert!(json["traceId"].is_null());
     assert!(json["message"].is_null());
 
-    let trace_path = data_home
-        .path()
-        .join("edit")
-        .join("traces")
-        .join(trace_id);
+    let trace_path = data_home.path().join("edit").join("traces").join(trace_id);
     assert!(!trace_path.exists());
 }
 
@@ -109,11 +105,7 @@ fn rejects_a_nonexistent_explicit_trace_id_for_write() {
     assert!(json["traceId"].is_null());
     assert!(json["message"].is_null());
 
-    let trace_path = data_home
-        .path()
-        .join("edit")
-        .join("traces")
-        .join(trace_id);
+    let trace_path = data_home.path().join("edit").join("traces").join(trace_id);
     assert!(!trace_path.exists());
 }
 
@@ -201,7 +193,10 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     assert!(!second_output.status.success());
     let second_json: Value = serde_json::from_slice(&second_output.stderr).unwrap();
     assert_eq!(second_json["traceId"], trace_id);
-    assert_eq!(second_json["message"], format!("Appended to trace {trace_id}."));
+    assert_eq!(
+        second_json["message"],
+        format!("Appended to trace {trace_id}.")
+    );
 
     let history_path = data_home
         .path()

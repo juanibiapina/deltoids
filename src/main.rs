@@ -1,8 +1,11 @@
+use std::env;
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{EditRequest, ErrorResponse, TextEdit, execute_request_with_trace};
+use edit::{
+    EditRequest, ErrorResponse, TextEdit, execute_request_with_trace, read_history_entries,
+};
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
 
@@ -76,6 +79,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), ErrorResponse> {
+    let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(result) = maybe_run_history_command(&raw_args) {
+        return result.map_err(simple_error);
+    }
+
     let cli = Cli::parse();
 
     let request = if uses_shorthand(&cli) {
@@ -114,6 +122,34 @@ fn run() -> Result<(), ErrorResponse> {
         "{}",
         serde_json::to_string(&response).expect("success response should serialize")
     );
+    Ok(())
+}
+
+fn maybe_run_history_command(args: &[String]) -> Option<Result<(), String>> {
+    match args {
+        [history, list, trace_id] if history == "history" && list == "list" => {
+            Some(run_history_list(trace_id))
+        }
+        [history, ..] if history == "history" => {
+            Some(Err("Usage: edit history list <trace-id>".to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn run_history_list(trace_id: &str) -> Result<(), String> {
+    let entries = read_history_entries(trace_id)?;
+    for (index, entry) in entries.iter().enumerate() {
+        let status = if entry.ok { "ok" } else { "fail" };
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            index + 1,
+            entry.tool,
+            status,
+            entry.path,
+            entry.summary
+        );
+    }
     Ok(())
 }
 

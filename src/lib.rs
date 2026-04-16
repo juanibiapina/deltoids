@@ -130,6 +130,27 @@ struct WriteFailureHistoryEntry {
     error: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryEntry {
+    pub v: u8,
+    pub tool: String,
+    #[serde(rename = "traceId")]
+    pub trace_id: String,
+    pub timestamp: String,
+    pub cwd: String,
+    pub path: String,
+    pub summary: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub edits: Vec<TextEdit>,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub diff: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
     execute_request_with_trace(request, None)
 }
@@ -407,6 +428,34 @@ fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), Str
     result?;
     unlock_result.map_err(|err| format!("Failed to unlock trace {}: {}", trace_id, err))?;
     Ok(())
+}
+
+pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String> {
+    let entries_path = trace_directory(trace_id)?.join("entries.jsonl");
+    if !entries_path.exists() {
+        return Err(format!("Trace not found: {trace_id}"));
+    }
+
+    let contents = fs::read_to_string(&entries_path)
+        .map_err(|err| format!("Failed to read {}: {}", entries_path.display(), err))?;
+    let mut entries = Vec::new();
+    for (index, line) in contents.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry = serde_json::from_str(line).map_err(|err| {
+            format!(
+                "Failed to parse history entry {} in {}: {}",
+                index + 1,
+                entries_path.display(),
+                err
+            )
+        })?;
+        entries.push(entry);
+    }
+
+    Ok(entries)
 }
 
 fn trace_directory(trace_id: &str) -> Result<PathBuf, String> {

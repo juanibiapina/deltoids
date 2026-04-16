@@ -130,9 +130,13 @@ fn maybe_run_history_command(args: &[String]) -> Option<Result<(), String>> {
         [history, list, trace_id] if history == "history" && list == "list" => {
             Some(run_history_list(trace_id))
         }
-        [history, ..] if history == "history" => {
-            Some(Err("Usage: edit history list <trace-id>".to_string()))
+        [history, show, trace_id, index] if history == "history" && show == "show" => {
+            Some(run_history_show(trace_id, index))
         }
+        [history, ..] if history == "history" => Some(Err(
+            "Usage: edit history list <trace-id>\n       edit history show <trace-id> <index>"
+                .to_string(),
+        )),
         _ => None,
     }
 }
@@ -150,6 +154,37 @@ fn run_history_list(trace_id: &str) -> Result<(), String> {
             entry.summary
         );
     }
+    Ok(())
+}
+
+fn run_history_show(trace_id: &str, index: &str) -> Result<(), String> {
+    let entries = read_history_entries(trace_id)?;
+    let index = index
+        .parse::<usize>()
+        .map_err(|_| format!("Invalid history index: {index}"))?;
+    if index == 0 || index > entries.len() {
+        return Err(format!("History index out of range: {index}"));
+    }
+
+    let entry = &entries[index - 1];
+    println!("tool: {}", entry.tool);
+    println!("summary: {}", entry.summary);
+
+    if entry.tool == "edit" {
+        for (edit_index, edit) in entry.edits.iter().enumerate() {
+            println!("edit {}: {}", edit_index + 1, edit.summary);
+        }
+    }
+
+    if entry.ok {
+        if let Some(diff) = &entry.diff {
+            println!("diff:");
+            print!("{diff}");
+        }
+    } else if let Some(error) = &entry.error {
+        println!("error: {error}");
+    }
+
     Ok(())
 }
 

@@ -9,15 +9,30 @@ fn edit_binary() -> &'static str {
 }
 
 fn run_edit(input: &[u8]) -> Output {
-    run_edit_with_args(&[], input)
+    run_edit_with_args_and_env(&[], &[], input)
 }
 
 fn run_edit_with_args(args: &[&str], input: &[u8]) -> Output {
-    Command::new(edit_binary())
+    run_edit_with_args_and_env(args, &[], input)
+}
+
+fn run_edit_with_args_and_env(
+    args: &[&str],
+    envs: &[(&str, &std::path::Path)],
+    input: &[u8],
+) -> Output {
+    let mut command = Command::new(edit_binary());
+    command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+
+    command
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
@@ -25,6 +40,60 @@ fn run_edit_with_args(args: &[&str], input: &[u8]) -> Output {
             child.wait_with_output()
         })
         .unwrap()
+}
+
+#[test]
+fn starts_a_trace_and_logs_successful_edits() {
+    let dir = tempdir().unwrap();
+    let data_home = tempdir().unwrap();
+    let file_path = dir.path().join("app.txt");
+    fs::write(&file_path, "const x = 1;\n").unwrap();
+
+    let request = serde_json::json!({
+        "summary": "Update x constant",
+        "path": file_path,
+        "edits": [
+            {
+                "summary": "Edit change",
+                "oldText": "const x = 1;",
+                "newText": "const x = 2;"
+            }
+        ]
+    });
+
+    let output = run_edit_with_args_and_env(
+        &[],
+        &[("XDG_DATA_HOME", data_home.path())],
+        request.to_string().as_bytes(),
+    );
+
+    assert!(output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "const x = 2;\n");
+
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let trace_id = json["traceId"].as_str().unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
+    assert!(json["message"].as_str().unwrap().contains(trace_id));
+    let diff = json["diff"].as_str().unwrap();
+    assert!(diff.contains("-const x = 1;"));
+    assert!(diff.contains("+const x = 2;"));
+
+    let trace_path = data_home
+        .path()
+        .join("edit")
+        .join("traces")
+        .join(trace_id)
+        .join("entries.jsonl");
+    let history = fs::read_to_string(trace_path).unwrap();
+    let entry: Value = serde_json::from_str(history.lines().next().unwrap()).unwrap();
+    assert_eq!(entry["tool"], "edit");
+    assert_eq!(entry["traceId"], trace_id);
+    assert_eq!(entry["ok"], true);
+    assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
+    assert_eq!(entry["summary"], "Update x constant");
+    assert_eq!(entry["edits"][0]["summary"], "Edit change");
+    assert!(entry["diff"].as_str().unwrap().contains("+const x = 2;"));
 }
 
 #[test]
@@ -53,7 +122,8 @@ fn edits_a_file_from_stdin_json() {
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["ok"], true);
     assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
-    assert_eq!(json["replacedBlocks"], 1);
+    assert!(json["traceId"].as_str().unwrap().len() >= 10);
+    assert!(json["message"].as_str().unwrap().contains("Started trace"));
     let diff = json["diff"].as_str().unwrap();
     assert!(diff.contains("-const x = 1;"));
     assert!(diff.contains("+const x = 2;"));
@@ -87,7 +157,8 @@ fn applies_multiple_edits_in_one_invocation() {
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["ok"], true);
     assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
-    assert_eq!(json["replacedBlocks"], 2);
+    assert!(json["traceId"].as_str().unwrap().len() >= 10);
+    assert!(json["message"].as_str().unwrap().contains("Started trace"));
     let diff = json["diff"].as_str().unwrap();
     assert!(diff.contains("-alpha"));
     assert!(diff.contains("+ALPHA"));

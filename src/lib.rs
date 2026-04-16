@@ -1,8 +1,13 @@
-use std::fs;
-use std::path::Path;
+use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
+use chrono::{SecondsFormat, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
+use ulid::Ulid;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -12,7 +17,7 @@ pub struct EditRequest {
     pub edits: Vec<TextEdit>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextEdit {
     pub summary: String,
@@ -34,15 +39,9 @@ pub struct WriteRequest {
 pub struct SuccessResponse {
     pub ok: bool,
     pub path: String,
-    #[serde(rename = "replacedBlocks")]
-    pub replaced_blocks: usize,
-    pub diff: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WriteSuccessResponse {
-    pub ok: bool,
-    pub path: String,
+    #[serde(rename = "traceId")]
+    pub trace_id: String,
+    pub message: String,
     pub diff: String,
 }
 
@@ -60,7 +59,44 @@ struct MatchedEdit {
     new_text: String,
 }
 
+#[derive(Debug, Serialize)]
+struct EditHistoryEntry {
+    v: u8,
+    tool: &'static str,
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    timestamp: String,
+    cwd: String,
+    path: String,
+    summary: String,
+    ok: bool,
+    edits: Vec<TextEdit>,
+    diff: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteHistoryEntry {
+    v: u8,
+    tool: &'static str,
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    timestamp: String,
+    cwd: String,
+    path: String,
+    summary: String,
+    ok: bool,
+    content: String,
+    diff: String,
+}
+
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> {
+    execute_request_with_trace(request, None)
+}
+
+pub fn execute_request_with_trace(
+    request: EditRequest,
+    trace_id: Option<&str>,
+) -> Result<SuccessResponse, String> {
     validate_request(&request)?;
 
     let path = Path::new(&request.path);
@@ -74,15 +110,43 @@ pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
+    let reused_trace = trace_id.is_some();
+    let trace_id = trace_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Ulid::new().to_string());
+    append_trace_entry(
+        &trace_id,
+        &EditHistoryEntry {
+            v: 1,
+            tool: "edit",
+            trace_id: trace_id.clone(),
+            timestamp: current_timestamp(),
+            cwd: current_working_directory()?,
+            path: request.path.clone(),
+            summary: request.summary.clone(),
+            ok: true,
+            edits: request.edits.clone(),
+            diff: diff.clone(),
+        },
+    )?;
+
     Ok(SuccessResponse {
         ok: true,
         path: request.path,
-        replaced_blocks: request.edits.len(),
+        trace_id: trace_id.clone(),
+        message: success_message(&trace_id, reused_trace),
         diff,
     })
 }
 
-pub fn execute_write_request(request: WriteRequest) -> Result<WriteSuccessResponse, String> {
+pub fn execute_write_request(request: WriteRequest) -> Result<SuccessResponse, String> {
+    execute_write_request_with_trace(request, None)
+}
+
+pub fn execute_write_request_with_trace(
+    request: WriteRequest,
+    trace_id: Option<&str>,
+) -> Result<SuccessResponse, String> {
     validate_write_request(&request)?;
 
     let path = Path::new(&request.path);
@@ -110,11 +174,124 @@ pub fn execute_write_request(request: WriteRequest) -> Result<WriteSuccessRespon
     fs::write(path, &request.content)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
-    Ok(WriteSuccessResponse {
+    let reused_trace = trace_id.is_some();
+    let trace_id = trace_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Ulid::new().to_string());
+    append_trace_entry(
+        &trace_id,
+        &WriteHistoryEntry {
+            v: 1,
+            tool: "write",
+            trace_id: trace_id.clone(),
+            timestamp: current_timestamp(),
+            cwd: current_working_directory()?,
+            path: request.path.clone(),
+            summary: request.summary.clone(),
+            ok: true,
+            content: request.content.clone(),
+            diff: diff.clone(),
+        },
+    )?;
+
+    Ok(SuccessResponse {
         ok: true,
         path: request.path,
+        trace_id: trace_id.clone(),
+        message: success_message(&trace_id, reused_trace),
         diff,
     })
+}
+
+fn success_message(trace_id: &str, reused_trace: bool) -> String {
+    if reused_trace {
+        format!("Appended to trace {trace_id}.")
+    } else {
+        format!(
+            "Started trace {trace_id}. Reuse this trace id for later edits in the same session."
+        )
+    }
+}
+
+fn current_timestamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn current_working_directory() -> Result<String, String> {
+    env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|err| format!("Failed to read current directory: {err}"))
+}
+
+fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), String> {
+    let trace_dir = trace_directory(trace_id)?;
+    fs::create_dir_all(&trace_dir).map_err(|err| {
+        format!(
+            "Failed to create trace directory {}: {}",
+            trace_dir.display(),
+            err
+        )
+    })?;
+
+    let lock_path = trace_dir.join(".lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|err| format!("Failed to open trace lock {}: {}", lock_path.display(), err))?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|err| format!("Failed to lock trace {}: {}", trace_id, err))?;
+
+    let result = (|| {
+        let entries_path = trace_dir.join("entries.jsonl");
+        let mut entries_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&entries_path)
+            .map_err(|err| {
+                format!(
+                    "Failed to open trace entries {}: {}",
+                    entries_path.display(),
+                    err
+                )
+            })?;
+        serde_json::to_writer(&mut entries_file, entry)
+            .map_err(|err| format!("Failed to serialize trace entry: {err}"))?;
+        writeln!(&mut entries_file).map_err(|err| {
+            format!(
+                "Failed to append trace entry {}: {}",
+                entries_path.display(),
+                err
+            )
+        })
+    })();
+
+    let unlock_result = lock_file.unlock();
+    result?;
+    unlock_result.map_err(|err| format!("Failed to unlock trace {}: {}", trace_id, err))?;
+    Ok(())
+}
+
+fn trace_directory(trace_id: &str) -> Result<PathBuf, String> {
+    Ok(trace_root_directory()?.join(trace_id))
+}
+
+fn trace_root_directory() -> Result<PathBuf, String> {
+    Ok(data_home_directory()?.join("edit").join("traces"))
+}
+
+fn data_home_directory() -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("XDG_DATA_HOME") {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Some(home) = env::var_os("HOME") {
+        return Ok(PathBuf::from(home).join(".local").join("share"));
+    }
+
+    Err("Could not determine data home directory".to_string())
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), String> {
@@ -453,6 +630,7 @@ mod tests {
         .unwrap();
 
         assert!(response.ok);
+        assert!(response.trace_id.len() >= 10);
         assert!(response.diff.contains("-  \"version\": 1"));
         assert!(response.diff.contains("+  \"version\": 2"));
         assert_eq!(

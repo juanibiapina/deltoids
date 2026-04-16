@@ -48,6 +48,8 @@ pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, String> 
     validate_request(&request)?;
 
     let path = Path::new(&request.path);
+    validate_target_path(path, &request.path)?;
+
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
@@ -77,6 +79,18 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
         if edit.old_text.is_empty() {
             return Err(format!("edits[{index}].oldText must not be empty"));
         }
+    }
+
+    Ok(())
+}
+
+fn validate_target_path(path: &Path, display_path: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("Path does not exist: {display_path}"));
+    }
+
+    if !path.is_file() {
+        return Err(format!("Path is not a file: {display_path}"));
     }
 
     Ok(())

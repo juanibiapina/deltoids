@@ -8,7 +8,7 @@ const OVERVIEW: &str = r#"CLI for agents to edit files.
 
 Input:
 - summary: short description of the change. Required. Must not be empty.
-- path: file to edit. Must exist.
+- path: UTF-8 text file to edit. Must exist and be a file.
 - edits: one or more replacements.
 
 Each edit must use:
@@ -21,6 +21,8 @@ Rules:
 - All edits are matched against the original file, not after earlier edits are applied.
 - Edit regions must not overlap.
 - Unknown JSON fields are rejected.
+- If the path does not exist, the error is: Path does not exist: <path>
+- If the path is not a file, the error is: Path is not a file: <path>
 - If any edit fails, nothing is written.
 
 Example:

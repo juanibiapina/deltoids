@@ -258,6 +258,59 @@ fn fails_when_request_is_missing_path() {
 }
 
 #[test]
+fn fails_when_target_path_does_not_exist() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("missing.txt");
+
+    let request = serde_json::json!({
+        "summary": "Missing target file",
+        "path": file_path,
+        "edits": [
+            {
+                "oldText": "a",
+                "newText": "b"
+            }
+        ]
+    });
+
+    let output = run_edit(request.to_string().as_bytes());
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(
+        json["error"].as_str().unwrap(),
+        format!("Path does not exist: {}", file_path.to_string_lossy())
+    );
+}
+
+#[test]
+fn fails_when_target_path_is_a_directory() {
+    let dir = tempdir().unwrap();
+
+    let request = serde_json::json!({
+        "summary": "Directory target",
+        "path": dir.path(),
+        "edits": [
+            {
+                "oldText": "a",
+                "newText": "b"
+            }
+        ]
+    });
+
+    let output = run_edit(request.to_string().as_bytes());
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(
+        json["error"].as_str().unwrap(),
+        format!("Path is not a file: {}", dir.path().to_string_lossy())
+    );
+}
+
+#[test]
 fn fails_when_request_has_unknown_field() {
     let request = serde_json::json!({
         "summary": "Unknown top-level field",

@@ -26,7 +26,7 @@ When stdin contains non-empty JSON, the command reads one JSON object:
 ## Behavior
 
 - `summary` is required and must not be empty.
-- `path` must point to an existing file.
+- `path` must point to an existing UTF-8 text file.
 - `edits` must contain at least one replacement.
 - Request field names are exact JSON keys: `oldText` and `newText`.
 - Unknown fields are rejected.
@@ -35,6 +35,8 @@ When stdin contains non-empty JSON, the command reads one JSON object:
 - Requested edit regions must not overlap.
 - All edits are validated before any write happens.
 - The file is not modified if any edit fails.
+- Missing paths fail with `Path does not exist: <path>`.
+- Directory and other non-file paths fail with `Path is not a file: <path>`.
 - Success responses include a line-based `diff` string.
 
 ## Example

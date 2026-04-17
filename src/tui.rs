@@ -27,14 +27,19 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::highlight::highlighted_spans;
+use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
+use crate::intraline::{self, EmphKind, EmphSection, LineEmphasis};
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
 const TOKYONIGHT_BLUE: Color = Color::Rgb(122, 162, 247);
 const TOKYONIGHT_DIM: Color = Color::Rgb(86, 95, 137);
-const DIFF_ADDED_BG: Color = Color::Rgb(29, 43, 52);
-const DIFF_DELETED_BG: Color = Color::Rgb(48, 31, 39);
+const DIFF_ADDED_BG: Color = Color::Rgb(0x20, 0x30, 0x3b);
+const DIFF_DELETED_BG: Color = Color::Rgb(0x37, 0x22, 0x2c);
+const DIFF_ADDED_EMPH_BG: Color = Color::Rgb(0x2c, 0x5a, 0x66);
+const DIFF_ADDED_NON_EMPH_BG: Color = DIFF_ADDED_BG;
+const DIFF_DELETED_EMPH_BG: Color = Color::Rgb(0x71, 0x31, 0x37);
+const DIFF_DELETED_NON_EMPH_BG: Color = DIFF_DELETED_BG;
 const SELECTION_BG: Color = Color::Rgb(45, 63, 118);
 const DIFF_SCROLL_STEP: usize = 3;
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -805,24 +810,181 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
 
     let lines = detail_lines(entry);
     let mut rendered = render_detail_header(entry, width);
-    let mut index = 0usize;
 
     if !rendered.is_empty() && !lines.is_empty() {
         rendered.push(Line::from(""));
     }
 
+    // Group lines into runs: subhunks (consecutive -/+ lines) and
+    // non-subhunk lines (context, hunk headers, edit summaries, etc.).
+    let groups = group_into_subhunks(&lines);
+
+    for group in &groups {
+        match group {
+            LineGroup::Subhunk { start, end } => {
+                render_subhunk(entry, &lines[*start..*end], width, &mut rendered);
+            }
+            LineGroup::EditBlock(edit_lines) => {
+                rendered.extend(render_edit_block(edit_lines, width));
+            }
+            LineGroup::Other { index } => {
+                rendered.extend(render_detail_line(entry, &lines[*index], width));
+            }
+        }
+    }
+
+    rendered
+}
+
+/// A group of consecutive lines in the detail view.
+#[derive(Debug, Clone)]
+enum LineGroup {
+    /// A subhunk: consecutive minus/plus diff lines.
+    Subhunk { start: usize, end: usize },
+    /// A block of consecutive edit-summary lines.
+    EditBlock(Vec<String>),
+    /// A single non-subhunk line (context, hunk header, etc.).
+    Other { index: usize },
+}
+
+/// Group detail lines into subhunks and other lines.
+///
+/// A subhunk is a maximal run of lines starting with `-` or `+` (but not
+/// `---` or `+++`). Edit-summary blocks are grouped together. Everything
+/// else is a single `Other` entry.
+fn group_into_subhunks(lines: &[String]) -> Vec<LineGroup> {
+    let mut groups = Vec::new();
+    let mut index = 0;
+
     while index < lines.len() {
-        if let Some((edit_lines, next_index)) = edit_block_markers(&lines, index) {
-            rendered.extend(render_edit_block(&edit_lines, width));
+        if let Some((edit_lines, next_index)) = edit_block_markers(lines, index) {
+            groups.push(LineGroup::EditBlock(edit_lines));
             index = next_index;
             continue;
         }
 
-        rendered.extend(render_detail_line(entry, &lines[index], width));
-        index += 1;
+        if is_diff_change_line(&lines[index]) {
+            let start = index;
+            while index < lines.len() && is_diff_change_line(&lines[index]) {
+                index += 1;
+            }
+            groups.push(LineGroup::Subhunk { start, end: index });
+        } else {
+            groups.push(LineGroup::Other { index });
+            index += 1;
+        }
     }
 
-    rendered
+    groups
+}
+
+/// Check if a line is a diff change line (starts with `-` or `+`,
+/// but not `---` or `+++`).
+fn is_diff_change_line(line: &str) -> bool {
+    (line.starts_with('-') && !line.starts_with("---"))
+        || (line.starts_with('+') && !line.starts_with("+++"))
+}
+
+/// Render a subhunk with within-line emphasis.
+///
+/// Extracts minus and plus lines, computes emphasis via the intraline
+/// module, and renders each line with the appropriate backgrounds.
+fn render_subhunk(
+    entry: &HistoryEntry,
+    lines: &[String],
+    width: usize,
+    rendered: &mut Vec<Line<'static>>,
+) {
+    // Separate minus and plus lines, preserving their order in the subhunk.
+    let mut minus_contents: Vec<&str> = Vec::new();
+    let mut plus_contents: Vec<&str> = Vec::new();
+    let mut line_kinds: Vec<char> = Vec::new(); // '-' or '+'
+
+    for line in lines {
+        if let Some(content) = line.strip_prefix('-') {
+            minus_contents.push(content);
+            line_kinds.push('-');
+        } else if let Some(content) = line.strip_prefix('+') {
+            plus_contents.push(content);
+            line_kinds.push('+');
+        }
+    }
+
+    let (minus_emphasis, plus_emphasis) =
+        intraline::compute_subhunk_emphasis(&minus_contents, &plus_contents);
+
+    // Render in unified order (minus lines first, then plus lines, within
+    // the subhunk). The lines are already in unified order from the diff.
+    let mut mi = 0usize;
+    let mut pi = 0usize;
+
+    for kind in &line_kinds {
+        match kind {
+            '-' => {
+                let content = minus_contents[mi];
+                let emphasis = &minus_emphasis[mi];
+                rendered.push(render_emphasized_line(
+                    content,
+                    emphasis,
+                    DIFF_DELETED_BG,
+                    DIFF_DELETED_EMPH_BG,
+                    DIFF_DELETED_NON_EMPH_BG,
+                    &entry.path,
+                    width,
+                ));
+                mi += 1;
+            }
+            '+' => {
+                let content = plus_contents[pi];
+                let emphasis = &plus_emphasis[pi];
+                rendered.push(render_emphasized_line(
+                    content,
+                    emphasis,
+                    DIFF_ADDED_BG,
+                    DIFF_ADDED_EMPH_BG,
+                    DIFF_ADDED_NON_EMPH_BG,
+                    &entry.path,
+                    width,
+                ));
+                pi += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Render a single diff line with emphasis information.
+fn render_emphasized_line(
+    content: &str,
+    emphasis: &LineEmphasis,
+    plain_bg: Color,
+    emph_bg: Color,
+    non_emph_bg: Color,
+    path: &str,
+    width: usize,
+) -> Line<'static> {
+    match emphasis {
+        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, path, width),
+        LineEmphasis::Paired(sections) => {
+            let bg_for_section = |section: &EmphSection| -> Color {
+                match section.kind {
+                    EmphKind::Emph => emph_bg,
+                    EmphKind::NonEmph => non_emph_bg,
+                }
+            };
+            let padding_bg = non_emph_bg;
+            let (mut spans, visual_width) =
+                highlighted_spans_with_emphasis(path, content, sections, bg_for_section, width);
+            let padding = width.saturating_sub(visual_width);
+            if padding > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(padding),
+                    Style::default().bg(padding_bg),
+                ));
+            }
+            Line::from(spans)
+        }
+    }
 }
 
 fn render_detail_header(entry: &HistoryEntry, width: usize) -> Vec<Line<'static>> {
@@ -1728,5 +1890,178 @@ mod tests {
         // Malformed line with no parseable info.
         let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80);
         assert_eq!(lines.len(), 1, "should fall back to single empty line");
+    }
+
+    #[test]
+    fn group_into_subhunks_groups_change_lines() {
+        let lines: Vec<String> = vec![
+            "@@ -1,3 +1,3 @@".into(),
+            "-old line 1".into(),
+            "-old line 2".into(),
+            "+new line 1".into(),
+            "+new line 2".into(),
+            " context".into(),
+        ];
+        let groups = group_into_subhunks(&lines);
+        assert_eq!(groups.len(), 3); // hunk header, subhunk, context
+        assert!(matches!(groups[0], LineGroup::Other { index: 0 }));
+        assert!(matches!(groups[1], LineGroup::Subhunk { start: 1, end: 5 }));
+        assert!(matches!(groups[2], LineGroup::Other { index: 5 }));
+    }
+
+    #[test]
+    fn group_into_subhunks_splits_on_context_lines() {
+        let lines: Vec<String> = vec![
+            "-old1".into(),
+            "+new1".into(),
+            " context".into(),
+            "-old2".into(),
+            "+new2".into(),
+        ];
+        let groups = group_into_subhunks(&lines);
+        assert_eq!(groups.len(), 3);
+        assert!(matches!(groups[0], LineGroup::Subhunk { start: 0, end: 2 }));
+        assert!(matches!(groups[1], LineGroup::Other { index: 2 }));
+        assert!(matches!(groups[2], LineGroup::Subhunk { start: 3, end: 5 }));
+    }
+
+    #[test]
+    fn group_into_subhunks_handles_edit_summaries() {
+        let lines: Vec<String> = vec![
+            "edit-summary: first".into(),
+            "edit-summary: second".into(),
+            "@@ -1 +1 @@".into(),
+            "-old".into(),
+            "+new".into(),
+        ];
+        let groups = group_into_subhunks(&lines);
+        assert!(matches!(groups[0], LineGroup::EditBlock(_)));
+        assert!(matches!(groups[1], LineGroup::Other { index: 2 }));
+        assert!(matches!(groups[2], LineGroup::Subhunk { start: 3, end: 5 }));
+    }
+
+    #[test]
+    fn is_diff_change_line_recognizes_minus_and_plus() {
+        assert!(is_diff_change_line("-old line"));
+        assert!(is_diff_change_line("+new line"));
+        assert!(!is_diff_change_line("--- a/file"));
+        assert!(!is_diff_change_line("+++ b/file"));
+        assert!(!is_diff_change_line(" context"));
+        assert!(!is_diff_change_line("@@ -1 +1 @@"));
+    }
+
+    #[test]
+    fn render_emphasized_line_plain_uses_flat_bg() {
+        let line = render_emphasized_line(
+            "const x = 1;",
+            &LineEmphasis::Plain,
+            DIFF_DELETED_BG,
+            DIFF_DELETED_EMPH_BG,
+            DIFF_DELETED_NON_EMPH_BG,
+            "test.rs",
+            80,
+        );
+        // All spans should have the plain deleted background.
+        for span in &line.spans {
+            assert_eq!(
+                span.style.bg,
+                Some(DIFF_DELETED_BG),
+                "plain line should use flat bg, got {:?}",
+                span.style.bg
+            );
+        }
+    }
+
+    #[test]
+    fn render_emphasized_line_paired_uses_emph_and_non_emph_bg() {
+        use crate::intraline::{EmphKind, EmphSection};
+        let sections = vec![
+            EmphSection {
+                kind: EmphKind::NonEmph,
+                text: "const x = ".to_string(),
+            },
+            EmphSection {
+                kind: EmphKind::Emph,
+                text: "1".to_string(),
+            },
+            EmphSection {
+                kind: EmphKind::NonEmph,
+                text: ";".to_string(),
+            },
+        ];
+        let line = render_emphasized_line(
+            "const x = 1;",
+            &LineEmphasis::Paired(sections),
+            DIFF_DELETED_BG,
+            DIFF_DELETED_EMPH_BG,
+            DIFF_DELETED_NON_EMPH_BG,
+            "test.rs",
+            80,
+        );
+        // Should have at least one span with emph bg and one with non-emph bg.
+        let has_emph_bg = line.spans.iter().any(|s| s.style.bg == Some(DIFF_DELETED_EMPH_BG));
+        let has_non_emph_bg = line
+            .spans
+            .iter()
+            .any(|s| s.style.bg == Some(DIFF_DELETED_NON_EMPH_BG));
+        assert!(has_emph_bg, "paired line should have emph bg spans");
+        assert!(has_non_emph_bg, "paired line should have non-emph bg spans");
+    }
+
+    #[test]
+    fn render_subhunk_pairs_similar_lines() {
+        let entry = edit_entry();
+        let lines = vec![
+            "-const x = 1;".to_string(),
+            "+const x = 2;".to_string(),
+        ];
+        let mut rendered = Vec::new();
+        render_subhunk(&entry, &lines, 80, &mut rendered);
+        assert_eq!(rendered.len(), 2);
+
+        // Paired minus line should have emph bg on the changed token.
+        let minus_has_emph = rendered[0]
+            .spans
+            .iter()
+            .any(|s| s.style.bg == Some(DIFF_DELETED_EMPH_BG));
+        assert!(
+            minus_has_emph,
+            "paired minus line should have emph bg on changed token"
+        );
+
+        // Paired plus line should have emph bg on the changed token.
+        let plus_has_emph = rendered[1]
+            .spans
+            .iter()
+            .any(|s| s.style.bg == Some(DIFF_ADDED_EMPH_BG));
+        assert!(
+            plus_has_emph,
+            "paired plus line should have emph bg on changed token"
+        );
+    }
+
+    #[test]
+    fn render_subhunk_leaves_dissimilar_lines_plain() {
+        let entry = edit_entry();
+        let lines = vec![
+            "-aaa bbb ccc ddd eee".to_string(),
+            "+xxx yyy zzz www qqq".to_string(),
+        ];
+        let mut rendered = Vec::new();
+        render_subhunk(&entry, &lines, 80, &mut rendered);
+        assert_eq!(rendered.len(), 2);
+
+        // Dissimilar lines should use the plain background.
+        let minus_has_plain = rendered[0]
+            .spans
+            .iter()
+            .all(|s| s.style.bg == Some(DIFF_DELETED_BG));
+        assert!(minus_has_plain, "unpaired minus should use plain bg");
+
+        let plus_has_plain = rendered[1]
+            .spans
+            .iter()
+            .all(|s| s.style.bg == Some(DIFF_ADDED_BG));
+        assert!(plus_has_plain, "unpaired plus should use plain bg");
     }
 }

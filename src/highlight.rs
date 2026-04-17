@@ -203,6 +203,156 @@ pub(crate) fn highlighted_spans(
     }
 }
 
+use crate::intraline::EmphSection;
+
+/// Produce syntax-highlighted spans with per-section background colors.
+///
+/// Each `EmphSection` maps to a substring of `line`. The `bg_for_section`
+/// callback returns the background color for that section. Syntax foreground
+/// colors are preserved.
+pub(crate) fn highlighted_spans_with_emphasis(
+    path: &str,
+    line: &str,
+    sections: &[EmphSection],
+    bg_for_section: impl Fn(&EmphSection) -> ratatui::style::Color,
+    max_width: usize,
+) -> (Vec<Span<'static>>, usize) {
+    if max_width == 0 {
+        return (Vec::new(), 0);
+    }
+
+    let syntax = syntax_for_path(path);
+    let mut highlighter = HighlightLines::new(syntax, theme());
+
+    // Build a byte-offset to section-index map.
+    let section_ranges = build_section_byte_ranges(sections);
+
+    match highlighter.highlight_line(line, syntax_set()) {
+        Ok(ranges) => {
+            truncate_with_emphasis(ranges, sections, &section_ranges, &bg_for_section, max_width)
+        }
+        Err(_) => plain_text_with_emphasis(line, sections, &section_ranges, &bg_for_section, max_width),
+    }
+}
+
+/// For each emphasis section, compute its byte range in the original line.
+fn build_section_byte_ranges(sections: &[EmphSection]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::with_capacity(sections.len());
+    let mut offset = 0;
+    for section in sections {
+        let start = offset;
+        let end = start + section.text.len();
+        ranges.push((start, end));
+        offset = end;
+    }
+    ranges
+}
+
+/// Find which emphasis section a byte offset falls in.
+fn section_index_at(byte_offset: usize, ranges: &[(usize, usize)]) -> Option<usize> {
+    for (i, &(start, end)) in ranges.iter().enumerate() {
+        if byte_offset >= start && byte_offset < end {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn truncate_with_emphasis(
+    ranges: Vec<(syntect::highlighting::Style, &str)>,
+    sections: &[EmphSection],
+    section_ranges: &[(usize, usize)],
+    bg_for_section: &impl Fn(&EmphSection) -> ratatui::style::Color,
+    max_width: usize,
+) -> (Vec<Span<'static>>, usize) {
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut current_style: Option<Style> = None;
+    let mut width = 0;
+    let mut byte_offset = 0usize;
+
+    'outer: for (syn_style, segment) in ranges {
+        for ch in segment.chars() {
+            let ch_byte_len = ch.len_utf8();
+            let (text, ch_width) = if ch == '\t' {
+                ("    ", TAB_WIDTH)
+            } else {
+                let w = ch.width().unwrap_or(0);
+                if w == 0 {
+                    byte_offset += ch_byte_len;
+                    continue;
+                }
+                let mut t = String::new();
+                t.push(ch);
+                // Determine background from emphasis section.
+                let bg = section_index_at(byte_offset, section_ranges)
+                    .map(|i| bg_for_section(&sections[i]))
+                    .unwrap_or(ratatui::style::Color::Reset);
+                let style = to_ratatui_style(Style::default().bg(bg), syn_style);
+                push_styled_text(&mut spans, &mut buffer, &mut current_style, style, &t);
+                width += w;
+                byte_offset += ch_byte_len;
+                if width >= max_width {
+                    break 'outer;
+                }
+                continue;
+            };
+
+            if width + ch_width > max_width {
+                break 'outer;
+            }
+
+            let bg = section_index_at(byte_offset, section_ranges)
+                .map(|i| bg_for_section(&sections[i]))
+                .unwrap_or(ratatui::style::Color::Reset);
+            let style = to_ratatui_style(Style::default().bg(bg), syn_style);
+            push_styled_text(&mut spans, &mut buffer, &mut current_style, style, text);
+            width += ch_width;
+            byte_offset += ch_byte_len;
+        }
+    }
+
+    flush_styled_text(&mut spans, &mut buffer, &mut current_style);
+    (spans, width)
+}
+
+fn plain_text_with_emphasis(
+    line: &str,
+    sections: &[EmphSection],
+    section_ranges: &[(usize, usize)],
+    bg_for_section: &impl Fn(&EmphSection) -> ratatui::style::Color,
+    max_width: usize,
+) -> (Vec<Span<'static>>, usize) {
+    let mut spans = Vec::new();
+    let mut buffer = String::new();
+    let mut current_style: Option<Style> = None;
+    let mut width = 0;
+    let mut byte_offset = 0usize;
+
+    for ch in line.chars() {
+        let ch_byte_len = ch.len_utf8();
+        let ch_width = if ch == '\t' { TAB_WIDTH } else { ch.width().unwrap_or(0) };
+        if ch_width == 0 {
+            byte_offset += ch_byte_len;
+            continue;
+        }
+        if width + ch_width > max_width {
+            break;
+        }
+        let bg = section_index_at(byte_offset, section_ranges)
+            .map(|i| bg_for_section(&sections[i]))
+            .unwrap_or(ratatui::style::Color::Reset);
+        let style = Style::default().bg(bg);
+        let text = if ch == '\t' { "    ".to_string() } else { ch.to_string() };
+        push_styled_text(&mut spans, &mut buffer, &mut current_style, style, &text);
+        width += ch_width;
+        byte_offset += ch_byte_len;
+    }
+
+    flush_styled_text(&mut spans, &mut buffer, &mut current_style);
+    (spans, width)
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::style::Color;

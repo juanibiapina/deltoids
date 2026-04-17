@@ -76,11 +76,20 @@ enum Focus {
 }
 
 #[derive(Debug, Clone)]
+struct DiffCache {
+    trace_index: usize,
+    entry_index: usize,
+    width: usize,
+    lines: Vec<Line<'static>>,
+}
+
+#[derive(Debug, Clone)]
 struct AppState {
     focus: Focus,
     trace_index: usize,
     entry_indices: Vec<usize>,
     diff_scroll: usize,
+    diff_cache: Option<DiffCache>,
 }
 
 impl AppState {
@@ -90,6 +99,7 @@ impl AppState {
             trace_index: 0,
             entry_indices: vec![0; trace_count],
             diff_scroll: 0,
+            diff_cache: None,
         }
     }
 
@@ -386,19 +396,47 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
         );
     frame.render_stateful_widget(traces_list, sidebar[1], &mut traces_state);
 
-    // Diff pane (right, full height)
+    // Diff pane (right, full height). Render into the cache when the
+    // selection or available width changes; otherwise reuse the previous
+    // frame's lines so scroll keys stay snappy on large diffs.
     let detail_width = body[1].width.saturating_sub(2) as usize;
-    let detail_lines_rendered = render_detail_for(active_trace, state.entry_index(), detail_width);
-    let detail_row_count = detail_lines_rendered.len();
-    let diff = Paragraph::new(detail_lines_rendered)
-        .block(pane_block(
-            " [3] Diff ",
-            pane_border_color(state.focus == Focus::Diff, TOKYONIGHT_ORANGE),
-        ))
-        .scroll((state.diff_scroll as u16, 0));
+    let entry_index = state.entry_index();
+    let cache_valid = state
+        .diff_cache
+        .as_ref()
+        .is_some_and(|cache| {
+            cache.trace_index == state.trace_index
+                && cache.entry_index == entry_index
+                && cache.width == detail_width
+        });
+    if !cache_valid {
+        let lines = render_detail_for(active_trace, entry_index, detail_width);
+        state.diff_cache = Some(DiffCache {
+            trace_index: state.trace_index,
+            entry_index,
+            width: detail_width,
+            lines,
+        });
+    }
+    let diff_viewport = body[1].height.saturating_sub(2) as usize;
+    let detail_row_count = state
+        .diff_cache
+        .as_ref()
+        .map(|cache| cache.lines.len())
+        .unwrap_or(0);
+    let start = state.diff_scroll.min(detail_row_count);
+    let end = start.saturating_add(diff_viewport.max(1)).min(detail_row_count);
+    let visible_lines: Vec<Line<'static>> = state
+        .diff_cache
+        .as_ref()
+        .map(|cache| cache.lines[start..end].to_vec())
+        .unwrap_or_default();
+    let diff = Paragraph::new(visible_lines).block(pane_block(
+        " [3] Diff ",
+        pane_border_color(state.focus == Focus::Diff, TOKYONIGHT_ORANGE),
+    ));
     frame.render_widget(diff, body[1]);
 
-    let diff_viewport = body[1].height.saturating_sub(2) as usize;
     if detail_row_count > diff_viewport {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .symbols(scrollbar_symbols::VERTICAL)

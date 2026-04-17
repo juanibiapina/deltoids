@@ -1,6 +1,6 @@
 # edit
 
-CLI tools that trace `edit` and `write` file changes.
+CLI tools that trace `edit` and `write` file changes, with a TUI to browse traces.
 
 ## edit input
 
@@ -42,11 +42,23 @@ CLI tools that trace `edit` and `write` file changes.
   - `edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"`
 - `write` shorthand:
   - `write [trace-id] --path config.json --summary "Rewrite config" < config.json.new`
-- Trace commands:
-  - `edit traces list`
-  - `edit traces list <trace-id>`
-  - `edit traces show <trace-id> <index>`
-  - `edit traces review <trace-id>` opens a terminal UI with syntax-highlighted diffs.
+
+## edit-tui
+
+Run `edit-tui` in a directory to browse the traces produced from that directory.
+
+Layout (lazygit-inspired):
+
+- Left sidebar, top: entries (edits/writes) of the selected trace.
+- Left sidebar, bottom: traces for the current working directory.
+- Right: diff of the selected entry.
+
+Keys:
+
+- `Tab`: switch focus between traces and entries.
+- `j` / `k` / arrows: move within the focused pane.
+- `PgUp` / `PgDn`: scroll the diff pane.
+- `q` / `Esc`: quit.
 
 ## examples
 

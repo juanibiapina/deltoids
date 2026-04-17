@@ -1,3 +1,6 @@
+mod highlight;
+pub mod tui;
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -707,11 +710,27 @@ pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::OnceLock;
 
     use super::{
         EditRequest, TextEdit, WriteRequest, apply_edits, execute_write_request, render_diff,
         validate_request,
     };
+
+    /// Pin `XDG_DATA_HOME` to a shared per-process tempdir so unit tests that
+    /// call into the tracing paths never touch the user's real data home.
+    fn isolate_data_home() {
+        static TEST_DATA_HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = TEST_DATA_HOME
+            .get_or_init(|| tempfile::tempdir().expect("test data home tempdir"));
+        // SAFETY: every test that writes traces calls this helper, which always
+        // sets `XDG_DATA_HOME` to the same tempdir for the entire test binary.
+        // The value is stable once initialised, so repeated sets from parallel
+        // tests are race-free in practice.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+        }
+    }
 
     #[test]
     fn applies_single_exact_edit() {
@@ -917,6 +936,7 @@ mod tests {
 
     #[test]
     fn writes_full_content_and_returns_diff() {
+        isolate_data_home();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         fs::write(&path, "{\n  \"version\": 1\n}\n").unwrap();
@@ -940,6 +960,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_write_summary() {
+        isolate_data_home();
         let error = execute_write_request(WriteRequest {
             summary: String::new(),
             path: "test.txt".to_string(),

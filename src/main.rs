@@ -1,15 +1,8 @@
-mod highlight;
-mod review;
-
-use std::env;
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{
-    EditRequest, ErrorResponse, TextEdit, execute_request_with_trace,
-    list_traces_for_current_directory, read_history_entries,
-};
+use edit::{EditRequest, ErrorResponse, TextEdit, execute_request_with_trace};
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
 
@@ -49,10 +42,8 @@ printf '%s' '{
 }' | edit
 
 edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"
-edit traces list
-edit traces list <trace-id>
-edit traces show <trace-id> <index>
-edit traces review <trace-id>
+
+To review traces, run the `edit-tui` binary.
 
 Output:
 - Success goes to stdout as JSON.
@@ -91,11 +82,6 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), ErrorResponse> {
-    let raw_args = env::args().skip(1).collect::<Vec<_>>();
-    if let Some(result) = maybe_run_trace_command(&raw_args) {
-        return result.map_err(simple_error);
-    }
-
     let cli = Cli::parse();
 
     let request = if uses_shorthand(&cli) {
@@ -135,101 +121,6 @@ fn run() -> Result<(), ErrorResponse> {
         serde_json::to_string(&response).expect("success response should serialize")
     );
     Ok(())
-}
-
-fn maybe_run_trace_command(args: &[String]) -> Option<Result<(), String>> {
-    match args {
-        [traces, list] if traces == "traces" && list == "list" => Some(run_traces_list()),
-        [traces, list, trace_id] if traces == "traces" && list == "list" => {
-            Some(run_history_list(trace_id))
-        }
-        [traces, show, trace_id, index] if traces == "traces" && show == "show" => {
-            Some(run_history_show(trace_id, index))
-        }
-        [traces, review, trace_id] if traces == "traces" && review == "review" => {
-            Some(run_history_review(trace_id))
-        }
-        [traces, ..] if traces == "traces" => Some(Err(trace_usage().to_string())),
-        [trace, ..] if trace == "trace" => Some(Err(trace_usage().to_string())),
-        [history, ..] if history == "history" => Some(Err(trace_usage().to_string())),
-        _ => None,
-    }
-}
-
-fn trace_usage() -> &'static str {
-    "Usage: edit traces list\n       edit traces list <trace-id>\n       edit traces show <trace-id> <index>\n       edit traces review <trace-id>"
-}
-
-fn run_traces_list() -> Result<(), String> {
-    let traces = list_traces_for_current_directory()?;
-    for trace in traces {
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            trace.trace_id,
-            trace.entry_count,
-            trace.last_timestamp,
-            trace.last_tool,
-            trace.last_path,
-            trace.last_summary
-        );
-    }
-    Ok(())
-}
-
-fn run_history_list(trace_id: &str) -> Result<(), String> {
-    let entries = read_history_entries(trace_id)?;
-    for (index, entry) in entries.iter().enumerate() {
-        let status = if entry.ok { "ok" } else { "fail" };
-        println!(
-            "{}\t{}\t{}\t{}\t{}",
-            index + 1,
-            entry.tool,
-            status,
-            entry.path,
-            entry.summary
-        );
-    }
-    Ok(())
-}
-
-fn run_history_show(trace_id: &str, index: &str) -> Result<(), String> {
-    let entries = read_history_entries(trace_id)?;
-    let index = index
-        .parse::<usize>()
-        .map_err(|_| format!("Invalid trace entry index: {index}"))?;
-    if index == 0 || index > entries.len() {
-        return Err(format!("Trace entry index out of range: {index}"));
-    }
-
-    let entry = &entries[index - 1];
-    println!("tool: {}", entry.tool);
-    println!("summary: {}", entry.summary);
-
-    if entry.tool == "edit" {
-        for (edit_index, edit) in entry.edits.iter().enumerate() {
-            println!("edit {}: {}", edit_index + 1, edit.summary);
-        }
-    }
-
-    if entry.ok {
-        if let Some(diff) = &entry.diff {
-            println!("diff:");
-            print!("{diff}");
-        }
-    } else if let Some(error) = &entry.error {
-        println!("error: {error}");
-    }
-
-    Ok(())
-}
-
-fn run_history_review(trace_id: &str) -> Result<(), String> {
-    let entries = read_history_entries(trace_id)?;
-    if entries.is_empty() {
-        return Err(format!("Trace has no entries: {trace_id}"));
-    }
-
-    review::run(&entries)
 }
 
 fn simple_error(error: String) -> ErrorResponse {

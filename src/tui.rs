@@ -380,6 +380,13 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_stateful_widget(entries_list, sidebar[0], &mut entries_state);
+    render_pane_scrollbar(
+        frame,
+        sidebar[0],
+        entries_count,
+        state.entry_index(),
+        pane_inner_height(sidebar[0]),
+    );
 
     // Traces pane (bottom-left)
     let trace_items = traces
@@ -405,6 +412,13 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_stateful_widget(traces_list, sidebar[1], &mut traces_state);
+    render_pane_scrollbar(
+        frame,
+        sidebar[1],
+        traces_count,
+        state.trace_index,
+        pane_inner_height(sidebar[1]),
+    );
 
     // Diff pane (right, full height). Render into the cache when the
     // selection or available width changes; otherwise reuse the previous
@@ -447,34 +461,54 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     ));
     frame.render_widget(diff, body[1]);
 
-    if detail_row_count > diff_viewport {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .symbols(scrollbar_symbols::VERTICAL)
-            .thumb_symbol("\u{2590}")
-            .track_style(Style::default().fg(TOKYONIGHT_BLUE))
-            .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
-            .begin_symbol(None)
-            .end_symbol(None);
-        // ratatui anchors the thumb at the bottom only when
-        // `position == content_length - 1`, so use the number of distinct
-        // scroll positions (max_scroll + 1) as the content length and pass
-        // the viewport size so the thumb is still proportional to the
-        // visible slice.
-        let max_scroll = max_detail_scroll(detail_row_count, diff_viewport);
-        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
-            .position(state.diff_scroll)
-            .viewport_content_length(diff_viewport);
-        frame.render_stateful_widget(
-            scrollbar,
-            body[1].inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
+    // ratatui anchors the thumb at the bottom only when
+    // `position == content_length - 1`, so use the number of distinct
+    // scroll positions (max_scroll + 1) as the content length. The
+    // viewport size keeps the thumb proportional to the visible slice.
+    let max_scroll = max_detail_scroll(detail_row_count, diff_viewport);
+    render_pane_scrollbar(
+        frame,
+        body[1],
+        max_scroll + 1,
+        state.diff_scroll,
+        diff_viewport,
+    );
 
     frame.render_widget(help_bar(), root[1]);
+}
+
+fn render_pane_scrollbar(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    content_length: usize,
+    position: usize,
+    viewport: usize,
+) {
+    if content_length <= viewport.max(1) {
+        return;
+    }
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .symbols(scrollbar_symbols::VERTICAL)
+        .thumb_symbol("\u{2590}")
+        .track_style(Style::default().fg(TOKYONIGHT_BLUE))
+        .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
+        .begin_symbol(None)
+        .end_symbol(None);
+    let mut scrollbar_state = ScrollbarState::new(content_length)
+        .position(position)
+        .viewport_content_length(viewport);
+    frame.render_stateful_widget(
+        scrollbar,
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
+}
+
+fn pane_inner_height(area: ratatui::layout::Rect) -> usize {
+    area.height.saturating_sub(2) as usize
 }
 
 fn pane_block(title: &'static str, color: Color) -> Block<'static> {

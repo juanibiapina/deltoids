@@ -561,13 +561,11 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     ));
     frame.render_widget(diff, body[1]);
 
-    // The shared helper checks content_length <= viewport to hide the
-    // scrollbar.  For the diff pane we pass max_scroll+1 as content
-    // length (so the thumb reaches the bottom), which is always smaller
-    // than the viewport.  Inline the scrollbar here with the correct
-    // visibility check against the actual row count.
+    // The shared helper hides the scrollbar when content_length <= viewport.
+    // Keep the visibility check inline for the diff pane, but use the full
+    // rendered row count as content length so the thumb reaches the bottom
+    // when the diff scroll reaches max_scroll.
     if detail_row_count > diff_viewport.max(1) {
-        let max_scroll = max_detail_scroll(detail_row_count, diff_viewport);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .symbols(scrollbar_symbols::VERTICAL)
             .thumb_symbol("\u{2590}")
@@ -575,7 +573,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
             .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
             .begin_symbol(None)
             .end_symbol(None);
-        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
+        let mut scrollbar_state = ScrollbarState::new(detail_row_count)
             .position(state.diff_scroll)
             .viewport_content_length(diff_viewport);
         frame.render_stateful_widget(
@@ -810,12 +808,7 @@ fn display_width(text: &str) -> usize {
         .sum()
 }
 
-fn syntax_diff_line(
-    content: &str,
-    bg: Color,
-    path: &str,
-    width: usize,
-) -> Line<'static> {
+fn syntax_diff_line(content: &str, bg: Color, path: &str, width: usize) -> Line<'static> {
     let base_style = Style::default().bg(bg);
 
     let (mut spans, visual_width) = highlighted_spans(path, content, base_style, width);
@@ -853,7 +846,7 @@ fn render_hunk_separator(line: &str, path: &str, width: usize) -> Vec<Line<'stat
         None => String::new(),
     };
     let prefix_width = display_width(&prefix);
-    let max_label_width = width.saturating_sub(3);
+    let max_label_width = width.saturating_sub(2);
 
     if context.is_empty() {
         let label = match line_number {
@@ -861,9 +854,9 @@ fn render_hunk_separator(line: &str, path: &str, width: usize) -> Vec<Line<'stat
             None => return vec![Line::from("")],
         };
         let label_width = display_width(&label);
-        let top = format!(" {}╮", "─".repeat(label_width + 1));
-        let mid = format!(" {label} │");
-        let bot = format!(" {}╯", "─".repeat(label_width + 1));
+        let top = format!("{}╮", "─".repeat(label_width + 1));
+        let mid = format!("{label} │");
+        let bot = format!("{}╯", "─".repeat(label_width + 1));
         return vec![
             Line::from(Span::styled(top, border)),
             Line::from(Span::styled(mid, border)),
@@ -879,10 +872,10 @@ fn render_hunk_separator(line: &str, path: &str, width: usize) -> Vec<Line<'stat
         available_context_width.max(1),
     );
     let label_width = prefix_width + code_width;
-    let top = format!(" {}╮", "─".repeat(label_width + 1));
-    let bot = format!(" {}╯", "─".repeat(label_width + 1));
+    let top = format!("{}╮", "─".repeat(label_width + 1));
+    let bot = format!("{}╯", "─".repeat(label_width + 1));
 
-    let mut mid_spans = vec![Span::raw(" ")];
+    let mut mid_spans = Vec::new();
     if !prefix.is_empty() {
         mid_spans.push(Span::styled(prefix, border));
     }
@@ -1026,11 +1019,10 @@ fn render_scripted(
     let sidebar_rows = [entries_rows, traces_rows].concat();
 
     // Right: diff for selected entry, spans full body height
-    let detail = active_trace
-        .entries
-        .get(state.entry_index())
-        .map(detail_lines)
-        .unwrap_or_default();
+    let detail = render_detail_for(active_trace, state.entry_index(), right_width)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
     let diff_rows = detail
         .iter()
         .skip(state.diff_scroll)
@@ -1077,7 +1069,10 @@ mod tests {
                 new_text: "const x = 2;".to_string(),
             }],
             content: String::new(),
-            diff: Some("--- a/app.txt\n+++ b/app.txt\n-const x = 1;\n+const x = 2;\n".to_string()),
+            diff: Some(
+                "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn update() {\n-const x = 1;\n+const x = 2;\n"
+                    .to_string(),
+            ),
             error: None,
         }
     }
@@ -1095,7 +1090,7 @@ mod tests {
             edits: Vec::new(),
             content: "{\n  \"version\": 2\n}\n".to_string(),
             diff: Some(
-                "--- a/config.json\n+++ b/config.json\n   \"version\": 1\n+  \"version\": 2\n"
+                "--- a/config.json\n+++ b/config.json\n@@ -1,3 +1,3 @@\n   \"version\": 1\n+  \"version\": 2\n"
                     .to_string(),
             ),
             error: None,
@@ -1425,12 +1420,12 @@ mod tests {
         let mid = lines[1].to_string();
         let bot = lines[2].to_string();
 
-        assert!(top.starts_with(" ─"), "top should start with leading space and ─");
+        assert!(top.starts_with('─'), "top should start with ─");
         assert!(top.ends_with('\u{256e}'), "top should end with ╮");
-        assert!(mid.starts_with(" 42: fn hello() {"), "mid should contain line number and context");
+        assert!(mid.starts_with("42: fn hello() {"), "mid should contain line number and context");
         assert!(mid.ends_with('│'), "mid should end with │");
         assert!(lines[1].spans.len() >= 2, "mid line should be split into styled spans");
-        assert!(bot.starts_with(" ─"), "bot should start with leading space and ─");
+        assert!(bot.starts_with('─'), "bot should start with ─");
         assert!(bot.ends_with('\u{256f}'), "bot should end with ╯");
     }
 

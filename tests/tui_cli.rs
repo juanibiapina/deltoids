@@ -198,7 +198,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
     assert!(stdout.contains("> \u{2713} Rewrite config"));
     assert!(stdout.contains("summary: Rewrite config"));
-    assert!(stdout.contains("+  \"version\": 2"));
+    assert!(stdout.contains("\"version\": 2"));
     assert!(stdout.contains("* [2] Traces"));
 }
 

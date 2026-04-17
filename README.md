@@ -43,13 +43,15 @@ CLI tools that trace `edit` and `write` file changes, with a TUI to browse trace
 - `write` shorthand:
   - `write [trace-id] --path config.json --summary "Rewrite config" < config.json.new`
 
+See [docs/delta-within-line-diff-reference.md](docs/delta-within-line-diff-reference.md) for the reference algorithm used to match delta's within-line diff behavior.
+
 ## diff scope context
 
-Diff hunk headers include the enclosing function or scope, powered by tree-sitter.
-For example, a change inside `impl Config > fn compute` produces:
+Diff hunk headers include the enclosing source line, powered by tree-sitter.
+For example, a change inside `fn compute(&self) -> i32 {` produces:
 
 ```
-@@ -13,7 +13,7 @@ impl Config > fn compute
+@@ -13,7 +13,7 @@ fn compute(&self) -> i32 {
 ```
 
 Supported languages: Rust, Python, JavaScript, TypeScript (including TSX), Go, Ruby, Java, C, C++, Bash, Lua, CSS, and HCL/Terraform. Files with unrecognized extensions produce standard hunk headers without scope context.
@@ -62,7 +64,7 @@ Layout (lazygit-inspired):
 
 - Left sidebar, top: entries (edits/writes) of the selected trace.
 - Left sidebar, bottom: traces for the current working directory.
-- Right: diff of the selected entry.
+- Right: detail for the selected entry, including top-level summary, path, blue hunk headers, and diff.
 
 The view auto-refreshes when traces change on disk, so new edits from other processes appear without restarting.
 

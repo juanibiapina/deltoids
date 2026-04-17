@@ -55,10 +55,17 @@ Layout (lazygit-inspired):
 
 Keys:
 
-- `Tab`: switch focus between traces and entries.
-- `j` / `k` / arrows: move within the focused pane.
-- `PgUp` / `PgDn`: scroll the diff pane.
+- `Tab`: cycle focus across entries, traces, and diff.
+- `1` / `2` / `3`: focus the entries, traces, or diff pane directly.
+- `j` / `k` / arrows: move within the focused pane (scrolls the diff when it is focused).
+- `PgUp` / `PgDn`: page-scroll the diff pane regardless of focus.
 - `q` / `Esc`: quit.
+
+Visual aids:
+
+- Each pane has an index prefix in its title (`[1] Entries`, `[2] Traces`, `[3] Diff`).
+- List panes show a `N of M` position in the bottom-right corner.
+- The diff pane renders a vertical scrollbar on the right edge when the content overflows.
 
 ## examples
 

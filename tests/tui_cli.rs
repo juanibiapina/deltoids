@@ -130,8 +130,8 @@ fn renders_traces_and_entries_for_current_directory() {
 
     assert!(tui_output.status.success());
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
-    assert!(stdout.contains("Traces"));
-    assert!(stdout.contains("Entries"));
+    assert!(stdout.contains("[1] Entries 1 of 2"));
+    assert!(stdout.contains("[2] Traces 1 of 1"));
     assert!(stdout.contains("edit ok Update x constant"));
     assert!(stdout.contains("write ok Rewrite config"));
     assert!(stdout.contains(&trace_id[..10]));
@@ -199,7 +199,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     assert!(stdout.contains("> write ok Rewrite config"));
     assert!(stdout.contains("tool: write"));
     assert!(stdout.contains("+  \"version\": 2"));
-    assert!(stdout.contains("* Traces"));
+    assert!(stdout.contains("* [2] Traces"));
 }
 
 #[test]

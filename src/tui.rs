@@ -13,10 +13,14 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
+    symbols::scrollbar as scrollbar_symbols,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
 };
 
 use crate::highlight::highlighted_spans;
@@ -26,8 +30,9 @@ const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
 const TOKYONIGHT_BLUE: Color = Color::Rgb(122, 162, 247);
 const TOKYONIGHT_CYAN: Color = Color::Rgb(101, 188, 255);
 const TOKYONIGHT_DIM: Color = Color::Rgb(86, 95, 137);
-const LAZYGIT_ADDED_BG: Color = Color::Rgb(29, 43, 52);
-const LAZYGIT_DELETED_BG: Color = Color::Rgb(48, 31, 39);
+const DIFF_ADDED_BG: Color = Color::Rgb(29, 43, 52);
+const DIFF_DELETED_BG: Color = Color::Rgb(48, 31, 39);
+const SELECTION_BG: Color = Color::Rgb(45, 63, 118);
 
 /// Entry point. Loads traces for the current directory and opens the TUI
 /// (or renders a scripted view when stdout is not a terminal).
@@ -67,6 +72,7 @@ struct LoadedTrace {
 enum Focus {
     Traces,
     Entries,
+    Diff,
 }
 
 #[derive(Debug, Clone)]
@@ -116,19 +122,49 @@ fn handle_key(
 ) -> AppCommand {
     match key {
         KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
-        KeyCode::Tab | KeyCode::BackTab => {
+        KeyCode::Tab => {
             state.focus = match state.focus {
-                Focus::Traces => Focus::Entries,
                 Focus::Entries => Focus::Traces,
+                Focus::Traces => Focus::Diff,
+                Focus::Diff => Focus::Entries,
             };
             AppCommand::Continue
         }
+        KeyCode::BackTab => {
+            state.focus = match state.focus {
+                Focus::Entries => Focus::Diff,
+                Focus::Traces => Focus::Entries,
+                Focus::Diff => Focus::Traces,
+            };
+            AppCommand::Continue
+        }
+        KeyCode::Char('1') => {
+            state.focus = Focus::Entries;
+            AppCommand::Continue
+        }
+        KeyCode::Char('2') => {
+            state.focus = Focus::Traces;
+            AppCommand::Continue
+        }
+        KeyCode::Char('3') => {
+            state.focus = Focus::Diff;
+            AppCommand::Continue
+        }
         KeyCode::Char('j') | KeyCode::Down => {
-            move_down(state, traces);
+            if state.focus == Focus::Diff {
+                let max_scroll = max_detail_scroll(detail_row_count, detail_height);
+                state.diff_scroll = (state.diff_scroll + 1).min(max_scroll);
+            } else {
+                move_down(state, traces);
+            }
             AppCommand::Continue
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            move_up(state, traces);
+            if state.focus == Focus::Diff {
+                state.diff_scroll = state.diff_scroll.saturating_sub(1);
+            } else {
+                move_up(state, traces);
+            }
             AppCommand::Continue
         }
         KeyCode::PageDown => {
@@ -163,6 +199,7 @@ fn move_down(state: &mut AppState, traces: &[LoadedTrace]) {
                 state.diff_scroll = 0;
             }
         }
+        Focus::Diff => {}
     }
 }
 
@@ -181,6 +218,7 @@ fn move_up(state: &mut AppState, _traces: &[LoadedTrace]) {
                 state.diff_scroll = 0;
             }
         }
+        Focus::Diff => {}
     }
 }
 
@@ -276,10 +314,21 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     if traces.is_empty() {
         let message = Paragraph::new("No traces found for this directory.")
             .style(Style::default().fg(TOKYONIGHT_DIM))
-            .block(pane_block(" Entries ", TOKYONIGHT_BLUE));
+            .block(pane_block_with_footer(
+                " [1] Entries ",
+                TOKYONIGHT_BLUE,
+                Some(position_footer(0, 0)),
+            ));
         frame.render_widget(message, sidebar[0]);
-        frame.render_widget(pane_block(" Traces ", TOKYONIGHT_BLUE), sidebar[1]);
-        frame.render_widget(pane_block(" Diff ", TOKYONIGHT_BLUE), body[1]);
+        frame.render_widget(
+            pane_block_with_footer(
+                " [2] Traces ",
+                TOKYONIGHT_BLUE,
+                Some(position_footer(0, 0)),
+            ),
+            sidebar[1],
+        );
+        frame.render_widget(pane_block(" [3] Diff ", TOKYONIGHT_BLUE), body[1]);
         frame.render_widget(help_bar(), root[1]);
         return;
     }
@@ -292,15 +341,22 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
         .iter()
         .map(|entry| ListItem::new(entry_label(entry)))
         .collect::<Vec<_>>();
+    let entries_count = active_trace.entries.len();
+    let entries_position = if entries_count == 0 {
+        0
+    } else {
+        state.entry_index() + 1
+    };
     let mut entries_state = ListState::default().with_selected(Some(state.entry_index()));
     let entries_list = List::new(entry_items)
-        .block(pane_block(
-            " Entries ",
+        .block(pane_block_with_footer(
+            " [1] Entries ",
             pane_border_color(state.focus == Focus::Entries, TOKYONIGHT_ORANGE),
+            Some(position_footer(entries_position, entries_count)),
         ))
         .highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(SELECTION_BG)
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_stateful_widget(entries_list, sidebar[0], &mut entries_state);
@@ -310,15 +366,22 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
         .iter()
         .map(|loaded| ListItem::new(trace_label(&loaded.trace)))
         .collect::<Vec<_>>();
+    let traces_count = traces.len();
+    let traces_position = if traces_count == 0 {
+        0
+    } else {
+        state.trace_index + 1
+    };
     let mut traces_state = ListState::default().with_selected(Some(state.trace_index));
     let traces_list = List::new(trace_items)
-        .block(pane_block(
-            " Traces ",
-            pane_border_color(state.focus == Focus::Traces, TOKYONIGHT_CYAN),
+        .block(pane_block_with_footer(
+            " [2] Traces ",
+            pane_border_color(state.focus == Focus::Traces, TOKYONIGHT_ORANGE),
+            Some(position_footer(traces_position, traces_count)),
         ))
         .highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .bg(SELECTION_BG)
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_stateful_widget(traces_list, sidebar[1], &mut traces_state);
@@ -326,13 +389,35 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     // Diff pane (right, full height)
     let detail_width = body[1].width.saturating_sub(2) as usize;
     let detail_lines_rendered = render_detail_for(active_trace, state.entry_index(), detail_width);
+    let detail_row_count = detail_lines_rendered.len();
     let diff = Paragraph::new(detail_lines_rendered)
         .block(pane_block(
-            " Diff ",
-            pane_border_color(false, TOKYONIGHT_BLUE),
+            " [3] Diff ",
+            pane_border_color(state.focus == Focus::Diff, TOKYONIGHT_ORANGE),
         ))
         .scroll((state.diff_scroll as u16, 0));
     frame.render_widget(diff, body[1]);
+
+    let diff_viewport = body[1].height.saturating_sub(2) as usize;
+    if detail_row_count > diff_viewport {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .symbols(scrollbar_symbols::VERTICAL)
+            .thumb_symbol("\u{2590}")
+            .track_style(Style::default().fg(TOKYONIGHT_BLUE))
+            .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
+            .begin_symbol(None)
+            .end_symbol(None);
+        let mut scrollbar_state =
+            ScrollbarState::new(detail_row_count).position(state.diff_scroll);
+        frame.render_stateful_widget(
+            scrollbar,
+            body[1].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 
     frame.render_widget(help_bar(), root[1]);
 }
@@ -345,12 +430,28 @@ fn pane_block(title: &'static str, color: Color) -> Block<'static> {
         .border_style(Style::default().fg(color))
 }
 
+fn pane_block_with_footer(
+    title: &'static str,
+    color: Color,
+    footer: Option<String>,
+) -> Block<'static> {
+    let mut block = pane_block(title, color);
+    if let Some(footer) = footer {
+        block = block.title_bottom(Line::from(footer).right_aligned());
+    }
+    block
+}
+
+fn position_footer(position: usize, total: usize) -> String {
+    format!(" {position} of {total} ")
+}
+
 fn pane_border_color(active: bool, active_color: Color) -> Color {
     if active { active_color } else { TOKYONIGHT_BLUE }
 }
 
 fn help_bar() -> Paragraph<'static> {
-    Paragraph::new("Tab switch  j/k move  PgUp/PgDn scroll  q quit")
+    Paragraph::new("Tab/1/2/3 focus  j/k move  PgUp/PgDn scroll  q quit")
         .style(Style::default().fg(Color::DarkGray))
 }
 
@@ -451,7 +552,7 @@ fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'sta
             content,
             "+",
             Color::Green,
-            LAZYGIT_ADDED_BG,
+            DIFF_ADDED_BG,
             &entry.path,
             width,
         );
@@ -461,7 +562,7 @@ fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'sta
             content,
             "-",
             Color::Red,
-            LAZYGIT_DELETED_BG,
+            DIFF_DELETED_BG,
             &entry.path,
             width,
         );
@@ -540,14 +641,30 @@ fn run_scripted(traces: &[LoadedTrace]) -> Result<(), String> {
 
     for ch in input.chars() {
         match ch {
-            'j' => move_down(&mut state, traces),
-            'k' => move_up(&mut state, traces),
+            'j' => {
+                if state.focus == Focus::Diff {
+                    state.diff_scroll += 1;
+                } else {
+                    move_down(&mut state, traces);
+                }
+            }
+            'k' => {
+                if state.focus == Focus::Diff {
+                    state.diff_scroll = state.diff_scroll.saturating_sub(1);
+                } else {
+                    move_up(&mut state, traces);
+                }
+            }
             '\t' => {
                 state.focus = match state.focus {
-                    Focus::Traces => Focus::Entries,
                     Focus::Entries => Focus::Traces,
+                    Focus::Traces => Focus::Diff,
+                    Focus::Diff => Focus::Entries,
                 };
             }
+            '1' => state.focus = Focus::Entries,
+            '2' => state.focus = Focus::Traces,
+            '3' => state.focus = Focus::Diff,
             'q' => break,
             _ => {}
         }
@@ -580,7 +697,16 @@ fn render_scripted(
     } else {
         " "
     };
-    let mut entries_section = vec![format!("{focus_entries_marker} Entries")];
+    let entries_count = active_trace.entries.len();
+    let entries_position = if entries_count == 0 {
+        0
+    } else {
+        state.entry_index() + 1
+    };
+    let mut entries_section = vec![format!(
+        "{focus_entries_marker} [1] Entries {}",
+        position_footer(entries_position, entries_count).trim()
+    )];
     for (index, entry) in active_trace.entries.iter().enumerate() {
         let marker = if index == state.entry_index() {
             ">"
@@ -599,7 +725,16 @@ fn render_scripted(
     } else {
         " "
     };
-    let mut traces_section = vec![format!("{focus_traces_marker} Traces")];
+    let traces_count = traces.len();
+    let traces_position = if traces_count == 0 {
+        0
+    } else {
+        state.trace_index + 1
+    };
+    let mut traces_section = vec![format!(
+        "{focus_traces_marker} [2] Traces {}",
+        position_footer(traces_position, traces_count).trim()
+    )];
     for (index, loaded) in traces.iter().enumerate() {
         let marker = if index == state.trace_index { ">" } else { " " };
         traces_section.push(fit_line(
@@ -701,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_focus() {
+    fn tab_cycles_focus() {
         let traces = vec![LoadedTrace {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "Update x"),
             entries: vec![edit_entry()],
@@ -714,7 +849,48 @@ mod tests {
         assert_eq!(state.focus, Focus::Traces);
 
         handle_key(&mut state, &traces, KeyCode::Tab, 0, 0);
+        assert_eq!(state.focus, Focus::Diff);
+
+        handle_key(&mut state, &traces, KeyCode::Tab, 0, 0);
         assert_eq!(state.focus, Focus::Entries);
+
+        handle_key(&mut state, &traces, KeyCode::BackTab, 0, 0);
+        assert_eq!(state.focus, Focus::Diff);
+    }
+
+    #[test]
+    fn number_shortcuts_set_focus() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.focus = Focus::Traces;
+
+        handle_key(&mut state, &traces, KeyCode::Char('1'), 0, 0);
+        assert_eq!(state.focus, Focus::Entries);
+
+        handle_key(&mut state, &traces, KeyCode::Char('2'), 0, 0);
+        assert_eq!(state.focus, Focus::Traces);
+
+        handle_key(&mut state, &traces, KeyCode::Char('3'), 0, 0);
+        assert_eq!(state.focus, Focus::Diff);
+    }
+
+    #[test]
+    fn j_scrolls_diff_when_focused_on_diff() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.focus = Focus::Diff;
+
+        handle_key(&mut state, &traces, KeyCode::Char('j'), 10, 4);
+        assert_eq!(state.diff_scroll, 1);
+
+        handle_key(&mut state, &traces, KeyCode::Char('k'), 10, 4);
+        assert_eq!(state.diff_scroll, 0);
     }
 
     #[test]
@@ -796,7 +972,8 @@ mod tests {
         assert!(output.contains("edit ok Update x constant"));
         assert!(output.contains("write ok Rewrite config"));
         assert!(output.contains("01JTESTTRA"));
-        assert!(output.contains("Traces"));
+        assert!(output.contains("[1] Entries 1 of 2"));
+        assert!(output.contains("[2] Traces 1 of 2"));
         assert!(output.contains("tool: edit"));
     }
 

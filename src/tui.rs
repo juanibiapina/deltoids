@@ -32,7 +32,6 @@ use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
 const TOKYONIGHT_BLUE: Color = Color::Rgb(122, 162, 247);
-const TOKYONIGHT_CYAN: Color = Color::Rgb(101, 188, 255);
 const TOKYONIGHT_DIM: Color = Color::Rgb(86, 95, 137);
 const DIFF_ADDED_BG: Color = Color::Rgb(29, 43, 52);
 const DIFF_DELETED_BG: Color = Color::Rgb(48, 31, 39);
@@ -336,7 +335,11 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
         let (detail_row_count, detail_height) = terminal
             .draw(|frame| draw(frame, &traces, &mut state))
             .map(|completed| {
-                let detail_row_count = detail_rows(&traces, &state).len();
+                let detail_row_count = state
+                    .diff_cache
+                    .as_ref()
+                    .map(|cache| cache.lines.len())
+                    .unwrap_or(0);
                 let height = completed.area.height.saturating_sub(3) as usize;
                 (detail_row_count, height)
             })
@@ -349,8 +352,8 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
             None => POLL_TIMEOUT,
         };
 
-        let has_event = event::poll(timeout)
-            .map_err(|err| format!("Failed to poll input event: {err}"))?;
+        let has_event =
+            event::poll(timeout).map_err(|err| format!("Failed to poll input event: {err}"))?;
 
         if has_event {
             match event::read().map_err(|err| format!("Failed to read input event: {err}"))? {
@@ -441,11 +444,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
             ));
         frame.render_widget(message, sidebar[0]);
         frame.render_widget(
-            pane_block_with_footer(
-                " [2] Traces ",
-                TOKYONIGHT_BLUE,
-                Some(position_footer(0, 0)),
-            ),
+            pane_block_with_footer(" [2] Traces ", TOKYONIGHT_BLUE, Some(position_footer(0, 0))),
             sidebar[1],
         );
         frame.render_widget(pane_block(" [3] Diff ", TOKYONIGHT_BLUE), body[1]);
@@ -525,14 +524,11 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     // frame's lines so scroll keys stay snappy on large diffs.
     let detail_width = body[1].width.saturating_sub(2) as usize;
     let entry_index = state.entry_index();
-    let cache_valid = state
-        .diff_cache
-        .as_ref()
-        .is_some_and(|cache| {
-            cache.trace_index == state.trace_index
-                && cache.entry_index == entry_index
-                && cache.width == detail_width
-        });
+    let cache_valid = state.diff_cache.as_ref().is_some_and(|cache| {
+        cache.trace_index == state.trace_index
+            && cache.entry_index == entry_index
+            && cache.width == detail_width
+    });
     if !cache_valid {
         let lines = render_detail_for(active_trace, entry_index, detail_width);
         state.diff_cache = Some(DiffCache {
@@ -549,7 +545,9 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
         .map(|cache| cache.lines.len())
         .unwrap_or(0);
     let start = state.diff_scroll.min(detail_row_count);
-    let end = start.saturating_add(diff_viewport.max(1)).min(detail_row_count);
+    let end = start
+        .saturating_add(diff_viewport.max(1))
+        .min(detail_row_count);
     let visible_lines: Vec<Line<'static>> = state
         .diff_cache
         .as_ref()
@@ -648,7 +646,11 @@ fn position_footer(position: usize, total: usize) -> String {
 }
 
 fn pane_border_color(active: bool, active_color: Color) -> Color {
-    if active { active_color } else { TOKYONIGHT_BLUE }
+    if active {
+        active_color
+    } else {
+        TOKYONIGHT_BLUE
+    }
 }
 
 fn help_bar() -> Paragraph<'static> {
@@ -693,33 +695,16 @@ fn short_trace_id(trace_id: &str) -> String {
     }
 }
 
-fn detail_rows(traces: &[LoadedTrace], state: &AppState) -> Vec<String> {
-    let Some(trace) = traces.get(state.trace_index) else {
-        return Vec::new();
-    };
-    let Some(entry) = trace.entries.get(state.entry_index()) else {
-        return Vec::new();
-    };
-    detail_lines(entry)
-}
-
 fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
-    let mut lines = vec![
-        format!("summary: {}", entry.summary),
-        format!("path: {}", collapse_home(&entry.path)),
-    ];
-
     if entry.ok {
         if entry.diff.is_some() {
-            lines.push(String::new());
-            lines.extend(detail_diff_lines(entry));
+            return detail_diff_lines(entry);
         }
     } else if let Some(error) = &entry.error {
-        lines.push(String::new());
-        lines.push(format!("error: {error}"));
+        return vec![format!("error: {error}")];
     }
 
-    lines
+    Vec::new()
 }
 
 fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
@@ -732,7 +717,10 @@ fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
         .map(str::to_string)
         .collect::<Vec<_>>();
 
-    let hunk_count = diff_lines.iter().filter(|line| line.starts_with("@@")).count();
+    let hunk_count = diff_lines
+        .iter()
+        .filter(|line| line.starts_with("@@"))
+        .count();
     if entry.edits.is_empty() || hunk_count == 0 {
         return diff_lines;
     }
@@ -773,6 +761,24 @@ fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
     result
 }
 
+fn diff_hunk_count(entry: &HistoryEntry) -> usize {
+    entry
+        .diff
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.starts_with("@@"))
+        .count()
+}
+
+fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
 fn collapse_home(path: &str) -> String {
     let Some(home) = std::env::var_os("HOME") else {
         return path.to_string();
@@ -798,8 +804,12 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
     };
 
     let lines = detail_lines(entry);
-    let mut rendered = Vec::new();
+    let mut rendered = render_detail_header(entry, width);
     let mut index = 0usize;
+
+    if !rendered.is_empty() && !lines.is_empty() {
+        rendered.push(Line::from(""));
+    }
 
     while index < lines.len() {
         if let Some((edit_lines, next_index)) = edit_block_markers(&lines, index) {
@@ -815,13 +825,31 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
     rendered
 }
 
+fn render_detail_header(entry: &HistoryEntry, width: usize) -> Vec<Line<'static>> {
+    let path = collapse_home(&entry.path);
+    let metadata = header_metadata_line(entry);
+    render_header_block(&entry.summary, &path, &metadata, width)
+}
+
+fn header_metadata_line(entry: &HistoryEntry) -> String {
+    let mut parts = vec![
+        entry.tool.clone(),
+        if entry.ok {
+            "ok".to_string()
+        } else {
+            "error".to_string()
+        },
+    ];
+
+    if !entry.edits.is_empty() {
+        parts.push(count_label(entry.edits.len(), "edit", "edits"));
+    }
+
+    parts.push(count_label(diff_hunk_count(entry), "hunk", "hunks"));
+    parts.join(" • ")
+}
+
 fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
-    if let Some(rest) = line.strip_prefix("summary: ") {
-        return vec![labeled_line("summary", rest, TOKYONIGHT_CYAN)];
-    }
-    if let Some(rest) = line.strip_prefix("path: ") {
-        return vec![labeled_line("path", rest, TOKYONIGHT_BLUE)];
-    }
     if line.starts_with("edit-summary: ") {
         return vec![Line::from(Span::raw(line.to_string()))];
     }
@@ -847,7 +875,12 @@ fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<
         return vec![syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width)];
     }
     if let Some(content) = line.strip_prefix('-').filter(|_| !line.starts_with("---")) {
-        return vec![syntax_diff_line(content, DIFF_DELETED_BG, &entry.path, width)];
+        return vec![syntax_diff_line(
+            content,
+            DIFF_DELETED_BG,
+            &entry.path,
+            width,
+        )];
     }
     if let Some(content) = line.strip_prefix(' ') {
         return vec![syntax_diff_line(content, Color::Reset, &entry.path, width)];
@@ -871,14 +904,60 @@ fn display_width(text: &str) -> usize {
         .sum()
 }
 
+fn render_header_block(
+    summary: &str,
+    path: &str,
+    metadata: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let summary_style = Style::default()
+        .fg(TOKYONIGHT_ORANGE)
+        .add_modifier(Modifier::BOLD);
+
+    if width < 4 {
+        return vec![Line::from(Span::styled(
+            fit_line(summary, width),
+            summary_style,
+        ))];
+    }
+
+    let border = Style::default().fg(TOKYONIGHT_ORANGE);
+    let path_style = Style::default().fg(TOKYONIGHT_BLUE);
+    let metadata_style = Style::default().fg(TOKYONIGHT_DIM);
+    let content_width = width.saturating_sub(2);
+    let top = format!("{}╮", "─".repeat(content_width + 1));
+    let bot = format!("{}╯", "─".repeat(content_width + 1));
+
+    vec![
+        Line::from(Span::styled(top, border)),
+        boxed_content_line(summary, summary_style, border, content_width),
+        boxed_content_line(path, path_style, border, content_width),
+        boxed_content_line(metadata, metadata_style, border, content_width),
+        Line::from(Span::styled(bot, border)),
+    ]
+}
+
+fn boxed_content_line(
+    content: &str,
+    content_style: Style,
+    border_style: Style,
+    content_width: usize,
+) -> Line<'static> {
+    let fitted = fit_line(content, content_width);
+    let padding = content_width.saturating_sub(display_width(&fitted));
+    Line::from(vec![
+        Span::styled(fitted, content_style),
+        Span::styled(" ".repeat(padding), content_style),
+        Span::styled(" │", border_style),
+    ])
+}
+
 fn edit_block_markers(lines: &[String], start: usize) -> Option<(Vec<String>, usize)> {
     if start >= lines.len() {
         return None;
     }
 
-    let Some(first) = lines[start].strip_prefix("edit-summary: ") else {
-        return None;
-    };
+    let first = lines[start].strip_prefix("edit-summary: ")?;
 
     let mut items = vec![first.to_string()];
     let mut index = start + 1;
@@ -1376,7 +1455,8 @@ mod tests {
         assert!(output.contains("01JTESTTRA"));
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
-        assert!(output.contains("summary: Update x constant"));
+        assert!(output.contains("/tmp/project/app.txt"));
+        assert!(output.contains("edit • ok • 1 edit • 1 hunk"));
         assert!(output.contains("Edit change"));
     }
 
@@ -1400,7 +1480,10 @@ mod tests {
             .iter()
             .position(|line| line == "edit-summary: Edit change")
             .unwrap();
-        let hunk_index = lines.iter().position(|line| line.starts_with("@@")).unwrap();
+        let hunk_index = lines
+            .iter()
+            .position(|line| line.starts_with("@@"))
+            .unwrap();
 
         assert!(edit_index < hunk_index);
     }
@@ -1421,8 +1504,7 @@ mod tests {
             },
         ];
         entry.diff = Some(
-            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn hello() {\n-old\n+new\n"
-                .to_string(),
+            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn hello() {\n-old\n+new\n".to_string(),
         );
 
         let lines = detail_diff_lines(&entry);
@@ -1443,7 +1525,8 @@ mod tests {
         let output = render_scripted(&traces, &state, 140, 30);
 
         assert!(output.contains("> \u{2713} Rewrite config"));
-        assert!(output.contains("summary: Rewrite config"));
+        assert!(output.contains("Rewrite config"));
+        assert!(output.contains("write • ok • 1 hunk"));
     }
 
     #[test]
@@ -1451,9 +1534,15 @@ mod tests {
         // SAFETY: single-threaded test module and HOME is only read via
         // collapse_home here.
         unsafe { std::env::set_var("HOME", "/home/alice") };
-        assert_eq!(collapse_home("/home/alice/project/app.rs"), "~/project/app.rs");
+        assert_eq!(
+            collapse_home("/home/alice/project/app.rs"),
+            "~/project/app.rs"
+        );
         assert_eq!(collapse_home("/home/alice"), "~");
-        assert_eq!(collapse_home("/home/alice-extra/app.rs"), "/home/alice-extra/app.rs");
+        assert_eq!(
+            collapse_home("/home/alice-extra/app.rs"),
+            "/home/alice-extra/app.rs"
+        );
         assert_eq!(collapse_home("/other/path"), "/other/path");
     }
 
@@ -1568,6 +1657,30 @@ mod tests {
     }
 
     #[test]
+    fn render_detail_header_uses_box_with_summary_path_and_metadata() {
+        let lines = render_detail_header(&edit_entry(), 80);
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].to_string().starts_with('─'));
+        assert!(lines[1].to_string().starts_with("Update x constant"));
+        assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
+        assert!(lines[2].to_string().starts_with("/tmp/project/app.txt"));
+        assert_eq!(lines[2].spans[0].style.fg, Some(TOKYONIGHT_BLUE));
+        assert!(
+            lines[3]
+                .to_string()
+                .starts_with("edit • ok • 1 edit • 1 hunk")
+        );
+        assert_eq!(lines[4].to_string().chars().last(), Some('╯'));
+    }
+
+    #[test]
+    fn render_detail_header_falls_back_cleanly_when_narrow() {
+        let lines = render_detail_header(&edit_entry(), 3);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].to_string(), "Upd");
+    }
+
+    #[test]
     fn render_edit_block_uses_orange_box() {
         let lines = render_edit_block(&["Rename renderer".to_string()], 80);
         assert_eq!(lines.len(), 3);
@@ -1588,9 +1701,15 @@ mod tests {
 
         assert!(top.starts_with('─'), "top should start with ─");
         assert!(top.ends_with('\u{256e}'), "top should end with ╮");
-        assert!(mid.starts_with("42: fn hello() {"), "mid should contain line number and context");
+        assert!(
+            mid.starts_with("42: fn hello() {"),
+            "mid should contain line number and context"
+        );
         assert!(mid.ends_with('│'), "mid should end with │");
-        assert!(lines[1].spans.len() >= 2, "mid line should be split into styled spans");
+        assert!(
+            lines[1].spans.len() >= 2,
+            "mid line should be split into styled spans"
+        );
         assert!(bot.starts_with('─'), "bot should start with ─");
         assert!(bot.ends_with('\u{256f}'), "bot should end with ╯");
     }

@@ -723,8 +723,8 @@ mod tests {
     /// call into the tracing paths never touch the user's real data home.
     fn isolate_data_home() {
         static TEST_DATA_HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
-        let dir = TEST_DATA_HOME
-            .get_or_init(|| tempfile::tempdir().expect("test data home tempdir"));
+        let dir =
+            TEST_DATA_HOME.get_or_init(|| tempfile::tempdir().expect("test data home tempdir"));
         // SAFETY: every test that writes traces calls this helper, which always
         // sets `XDG_DATA_HOME` to the same tempdir for the entire test binary.
         // The value is stable once initialised, so repeated sets from parallel
@@ -1010,7 +1010,11 @@ mod tests {
 
     #[test]
     fn renders_multiple_changes_in_one_diff() {
-        let diff = render_diff("alpha\nbeta\ngamma\ndelta\n", "ALPHA\nbeta\nGAMMA\ndelta\n", "test.txt");
+        let diff = render_diff(
+            "alpha\nbeta\ngamma\ndelta\n",
+            "ALPHA\nbeta\nGAMMA\ndelta\n",
+            "test.txt",
+        );
 
         assert!(diff.contains("-alpha"));
         assert!(diff.contains("+ALPHA"));

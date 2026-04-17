@@ -135,7 +135,8 @@ fn renders_traces_and_entries_for_current_directory() {
     assert!(stdout.contains("\u{2713} Update x constant"));
     assert!(stdout.contains("\u{2713} Rewrite config"));
     assert!(stdout.contains(&trace_id[..10]));
-    assert!(stdout.contains("summary: Update x constant"));
+    assert!(stdout.contains("app.txt"));
+    assert!(stdout.contains("edit • ok • 1 edit • 1 hunk"));
     assert!(stdout.contains("Edit change"));
 }
 
@@ -198,7 +199,8 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     assert!(tui_output.status.success());
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
     assert!(stdout.contains("> \u{2713} Rewrite config"));
-    assert!(stdout.contains("summary: Rewrite config"));
+    assert!(stdout.contains("config.json"));
+    assert!(stdout.contains("write • ok • 1 hunk"));
     assert!(stdout.contains("\"version\": 2"));
     assert!(stdout.contains("* [2] Traces"));
 }
@@ -256,11 +258,11 @@ fn shows_only_traces_for_the_current_directory() {
         Some(second_dir.path()),
     );
     assert!(second_output.status.success());
-    let second_trace_id = serde_json::from_slice::<Value>(&second_output.stdout).unwrap()
-        ["traceId"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let second_trace_id =
+        serde_json::from_slice::<Value>(&second_output.stdout).unwrap()["traceId"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
     let tui_output = run_command_in_dir(
         tui_binary(),
@@ -289,4 +291,3 @@ fn edit_no_longer_has_trace_subcommands() {
 
     assert!(!output.status.success());
 }
-

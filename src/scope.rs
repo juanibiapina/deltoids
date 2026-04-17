@@ -127,12 +127,7 @@ fn lang_config(path: &str) -> Option<LangConfig> {
 
 /// Find the first source line of the innermost enclosing scope node.
 /// Returns the line trimmed of leading whitespace, like delta/git.
-fn enclosing_scope(
-    root: Node,
-    source: &[u8],
-    line: usize,
-    config: &LangConfig,
-) -> Option<String> {
+fn enclosing_scope(root: Node, source: &[u8], line: usize, config: &LangConfig) -> Option<String> {
     let point = Point::new(line, 0);
     let node = root.descendant_for_point_range(point, point)?;
 
@@ -150,9 +145,7 @@ fn enclosing_scope(
 /// Return the 0-indexed source line, trimmed of leading whitespace.
 fn source_first_line(source: &[u8], line: usize) -> Option<String> {
     let text = std::str::from_utf8(source).ok()?;
-    text.lines()
-        .nth(line)
-        .map(|l| l.trim_start().to_string())
+    text.lines().nth(line).map(|l| l.trim_start().to_string())
 }
 
 /// Parse the old-file start line from a unified diff hunk header.

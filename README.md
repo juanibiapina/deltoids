@@ -64,7 +64,7 @@ Layout (lazygit-inspired):
 
 - Left sidebar, top: entries (edits/writes) of the selected trace.
 - Left sidebar, bottom: traces for the current working directory.
-- Right: detail for the selected entry, including top-level summary, path, orange summary blocks, blue hunk headers, and diff.
+- Right: detail for the selected entry, including a combined header block with summary, path, and metadata, followed by orange summary blocks, blue hunk headers, and diff.
 
 The view auto-refreshes when traces change on disk, so new edits from other processes appear without restarting.
 
@@ -81,6 +81,7 @@ Visual aids:
 
 - Each pane has an index prefix in its title (`[1] Entries`, `[2] Traces`, `[3] Diff`).
 - List panes show a `N of M` position in the bottom-right corner.
+- The diff pane starts with a combined header block that makes the summary, path, and entry metadata easy to scan.
 - The diff pane renders a vertical scrollbar on the right edge when the content overflows.
 - Orange summary blocks are separate from blue source-location hunk headers.
 

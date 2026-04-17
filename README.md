@@ -43,6 +43,17 @@ CLI tools that trace `edit` and `write` file changes, with a TUI to browse trace
 - `write` shorthand:
   - `write [trace-id] --path config.json --summary "Rewrite config" < config.json.new`
 
+## diff scope context
+
+Diff hunk headers include the enclosing function or scope, powered by tree-sitter.
+For example, a change inside `impl Config > fn compute` produces:
+
+```
+@@ -13,7 +13,7 @@ impl Config > fn compute
+```
+
+Supported languages: Rust, Python, JavaScript, TypeScript (including TSX), Go, Ruby, Java, C, C++, Bash, Lua, CSS, and HCL/Terraform. Files with unrecognized extensions produce standard hunk headers without scope context.
+
 ## edit-tui
 
 Run `edit-tui` in a directory to browse the traces produced from that directory.

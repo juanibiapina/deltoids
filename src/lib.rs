@@ -1,4 +1,5 @@
 mod highlight;
+pub mod scope;
 pub mod tui;
 
 use std::env;
@@ -233,7 +234,7 @@ fn try_execute_edit(
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
-    let diff = render_diff(&original, &updated);
+    let diff = render_diff(&original, &updated, &request.path);
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -279,7 +280,7 @@ fn try_execute_write(
     } else {
         String::new()
     };
-    let diff = render_diff(&original, &request.content);
+    let diff = render_diff(&original, &request.content, &request.path);
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -646,11 +647,12 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
     Ok(())
 }
 
-pub fn render_diff(original: &str, updated: &str) -> String {
+pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
     let text_diff = TextDiff::from_lines(original, updated);
     let mut diff = text_diff.unified_diff();
     diff.context_radius(3).header("original", "modified");
-    diff.to_string()
+    let raw = diff.to_string();
+    scope::inject_scope_context(&raw, original, path)
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {
@@ -998,7 +1000,7 @@ mod tests {
 
     #[test]
     fn renders_a_line_based_diff() {
-        let diff = render_diff("const x = 1;\n", "const x = 2;\n");
+        let diff = render_diff("const x = 1;\n", "const x = 2;\n", "test.txt");
 
         assert!(diff.contains("--- original"));
         assert!(diff.contains("+++ modified"));
@@ -1008,7 +1010,7 @@ mod tests {
 
     #[test]
     fn renders_multiple_changes_in_one_diff() {
-        let diff = render_diff("alpha\nbeta\ngamma\ndelta\n", "ALPHA\nbeta\nGAMMA\ndelta\n");
+        let diff = render_diff("alpha\nbeta\ngamma\ndelta\n", "ALPHA\nbeta\nGAMMA\ndelta\n", "test.txt");
 
         assert!(diff.contains("-alpha"));
         assert!(diff.contains("+ALPHA"));

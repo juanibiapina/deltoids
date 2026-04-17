@@ -1,6 +1,6 @@
 # edit
 
-CLI tools to trace `edit` and `write` file changes.
+CLI tools that trace `edit` and `write` file changes.
 
 ## edit input
 
@@ -46,7 +46,7 @@ CLI tools to trace `edit` and `write` file changes.
   - `edit traces list`
   - `edit traces list <trace-id>`
   - `edit traces show <trace-id> <index>`
-  - `edit traces review <trace-id>`
+  - `edit traces review <trace-id>` opens a terminal UI with syntax-highlighted diffs.
 
 ## examples
 

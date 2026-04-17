@@ -164,8 +164,10 @@ fn reviews_trace_history_entries() {
 
     assert!(review_output.status.success());
     let stdout = String::from_utf8(review_output.stdout).unwrap();
-    assert!(stdout.contains("1 edit ok"));
-    assert!(stdout.contains("2 write ok"));
+    assert!(stdout.contains("edit ok"));
+    assert!(stdout.contains("write ok"));
+    assert!(!stdout.contains("1 edit ok"));
+    assert!(!stdout.contains("2 write ok"));
     assert!(stdout.contains("tool: write"));
     assert!(stdout.contains("summary: Rewrite config"));
     assert!(stdout.contains("+  \"version\": 2"));

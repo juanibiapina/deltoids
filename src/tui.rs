@@ -25,6 +25,7 @@ use ratatui::{
         ScrollbarOrientation, ScrollbarState,
     },
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::highlighted_spans;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
@@ -752,19 +753,19 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
     };
     detail_lines(entry)
         .iter()
-        .map(|line| render_detail_line(entry, line, width))
+        .flat_map(|line| render_detail_line(entry, line, width))
         .collect()
 }
 
-fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'static> {
+fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
     if let Some(rest) = line.strip_prefix("summary: ") {
-        return labeled_line("summary", rest, TOKYONIGHT_CYAN);
+        return vec![labeled_line("summary", rest, TOKYONIGHT_CYAN)];
     }
     if let Some(rest) = line.strip_prefix("path: ") {
-        return labeled_line("path", rest, TOKYONIGHT_BLUE);
+        return vec![labeled_line("path", rest, TOKYONIGHT_BLUE)];
     }
     if let Some(rest) = line.strip_prefix("error: ") {
-        return labeled_line("error", rest, Color::Red);
+        return vec![labeled_line("error", rest, Color::Red)];
     }
 
     render_diff_line(entry, line, width)
@@ -780,21 +781,33 @@ fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
     ])
 }
 
-fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'static> {
+fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
-        return syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width);
+        return vec![syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width)];
     }
     if let Some(content) = line.strip_prefix('-').filter(|_| !line.starts_with("---")) {
-        return syntax_diff_line(content, DIFF_DELETED_BG, &entry.path, width);
+        return vec![syntax_diff_line(content, DIFF_DELETED_BG, &entry.path, width)];
     }
     if let Some(content) = line.strip_prefix(' ') {
-        return syntax_diff_line(content, Color::Reset, &entry.path, width);
+        return vec![syntax_diff_line(content, Color::Reset, &entry.path, width)];
     }
     if line.starts_with("@@") {
-        return render_hunk_separator(line, width);
+        return render_hunk_separator(line, &entry.path, width);
     }
 
-    Line::from(Span::raw(fit_line(line, width)))
+    vec![Line::from(Span::raw(fit_line(line, width)))]
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| {
+            if ch == '\t' {
+                4
+            } else {
+                ch.width().unwrap_or(0)
+            }
+        })
+        .sum()
 }
 
 fn syntax_diff_line(
@@ -814,7 +827,15 @@ fn syntax_diff_line(
     Line::from(spans)
 }
 
-fn render_hunk_separator(line: &str, width: usize) -> Line<'static> {
+/// Parse the new-file start line from a unified diff hunk header.
+/// Input: `@@ -74,15 +75,14 @@` -> Some(75)
+fn parse_hunk_new_start(line: &str) -> Option<usize> {
+    let after_plus = line.find('+').map(|i| &line[i + 1..])?;
+    let end = after_plus.find([',', ' '])?;
+    after_plus[..end].parse().ok()
+}
+
+fn render_hunk_separator(line: &str, path: &str, width: usize) -> Vec<Line<'static>> {
     // Parse optional function context from `@@ -N,M +N,M @@ context`.
     let context = line
         .find("@@ ")
@@ -824,25 +845,55 @@ fn render_hunk_separator(line: &str, width: usize) -> Line<'static> {
         })
         .unwrap_or("");
 
-    let rule_char = "─";
-    let dim = Style::default().fg(TOKYONIGHT_DIM);
+    let line_number = parse_hunk_new_start(line);
+    let border = Style::default().fg(TOKYONIGHT_BLUE);
+
+    let prefix = match line_number {
+        Some(n) => format!("{n}: "),
+        None => String::new(),
+    };
+    let prefix_width = display_width(&prefix);
+    let max_label_width = width.saturating_sub(3);
 
     if context.is_empty() {
-        let rule = rule_char.repeat(width);
-        return Line::from(Span::styled(rule, dim));
+        let label = match line_number {
+            Some(n) => n.to_string(),
+            None => return vec![Line::from("")],
+        };
+        let label_width = display_width(&label);
+        let top = format!(" {}╮", "─".repeat(label_width + 1));
+        let mid = format!(" {label} │");
+        let bot = format!(" {}╯", "─".repeat(label_width + 1));
+        return vec![
+            Line::from(Span::styled(top, border)),
+            Line::from(Span::styled(mid, border)),
+            Line::from(Span::styled(bot, border)),
+        ];
     }
 
-    let label = format!(" {context} ");
-    let label_len = label.chars().count();
-    let remaining = width.saturating_sub(label_len);
-    let left = remaining / 2;
-    let right = remaining.saturating_sub(left);
+    let available_context_width = max_label_width.saturating_sub(prefix_width);
+    let (mut code_spans, code_width) = highlighted_spans(
+        path,
+        context,
+        Style::default(),
+        available_context_width.max(1),
+    );
+    let label_width = prefix_width + code_width;
+    let top = format!(" {}╮", "─".repeat(label_width + 1));
+    let bot = format!(" {}╯", "─".repeat(label_width + 1));
 
-    Line::from(vec![
-        Span::styled(rule_char.repeat(left), dim),
-        Span::styled(label, Style::default().fg(TOKYONIGHT_BLUE)),
-        Span::styled(rule_char.repeat(right), dim),
-    ])
+    let mut mid_spans = vec![Span::raw(" ")];
+    if !prefix.is_empty() {
+        mid_spans.push(Span::styled(prefix, border));
+    }
+    mid_spans.append(&mut code_spans);
+    mid_spans.push(Span::styled(" │", border));
+
+    vec![
+        Line::from(Span::styled(top, border)),
+        Line::from(mid_spans),
+        Line::from(Span::styled(bot, border)),
+    ]
 }
 
 fn fit_line(line: &str, width: usize) -> String {
@@ -1355,5 +1406,47 @@ mod tests {
             "01JTESTTRACE00000000000000"
         );
         assert!(state.diff_cache.is_none());
+    }
+
+    #[test]
+    fn parse_hunk_new_start_extracts_line_number() {
+        assert_eq!(parse_hunk_new_start("@@ -74,15 +75,14 @@"), Some(75));
+        assert_eq!(parse_hunk_new_start("@@ -1 +1,3 @@"), Some(1));
+        assert_eq!(parse_hunk_new_start("@@ -10,5 +20 @@"), Some(20));
+        assert_eq!(parse_hunk_new_start("not a hunk"), None);
+    }
+
+    #[test]
+    fn hunk_separator_renders_boxed_label_with_line_number_and_context() {
+        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80);
+        assert_eq!(lines.len(), 3, "expected 3 lines for box");
+
+        let top = lines[0].to_string();
+        let mid = lines[1].to_string();
+        let bot = lines[2].to_string();
+
+        assert!(top.starts_with(" ─"), "top should start with leading space and ─");
+        assert!(top.ends_with('\u{256e}'), "top should end with ╮");
+        assert!(mid.starts_with(" 42: fn hello() {"), "mid should contain line number and context");
+        assert!(mid.ends_with('│'), "mid should end with │");
+        assert!(lines[1].spans.len() >= 2, "mid line should be split into styled spans");
+        assert!(bot.starts_with(" ─"), "bot should start with leading space and ─");
+        assert!(bot.ends_with('\u{256f}'), "bot should end with ╯");
+    }
+
+    #[test]
+    fn hunk_separator_renders_line_number_only_when_no_context() {
+        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80);
+        assert_eq!(lines.len(), 3);
+        let mid = lines[1].to_string();
+        assert!(mid.contains("7"), "mid should contain line number");
+        assert!(!mid.contains(':'), "no colon when there is no context");
+    }
+
+    #[test]
+    fn hunk_separator_renders_empty_for_no_info() {
+        // Malformed line with no parseable info.
+        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80);
+        assert_eq!(lines.len(), 1, "should fall back to single empty line");
     }
 }

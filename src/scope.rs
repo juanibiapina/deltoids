@@ -10,213 +10,11 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Point};
 use tree_sitter_language::LanguageFn;
 
-/// Scope node kinds and how to extract a label from each, per language.
+/// Scope node kinds per language. Tree-sitter finds the enclosing scope
+/// node and we use its first source line as context (like delta/git).
 struct LangConfig {
     language: LanguageFn,
     scope_kinds: &'static [&'static str],
-    label: fn(Node, &[u8]) -> Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Per-language label extractors
-// ---------------------------------------------------------------------------
-
-/// Generic: read the `name` field as-is.
-fn label_name(prefix: &str, node: Node, source: &[u8]) -> Option<String> {
-    let name = node.child_by_field_name("name")?;
-    Some(format!("{prefix} {}", name.utf8_text(source).ok()?))
-}
-
-fn label_rust(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_item" => label_name("fn", node, source),
-        "impl_item" => {
-            let ty = node
-                .child_by_field_name("type")?
-                .utf8_text(source)
-                .ok()?;
-            if let Some(tr) = node.child_by_field_name("trait") {
-                let tr = tr.utf8_text(source).ok()?;
-                Some(format!("impl {tr} for {ty}"))
-            } else {
-                Some(format!("impl {ty}"))
-            }
-        }
-        "struct_item" => label_name("struct", node, source),
-        "enum_item" => label_name("enum", node, source),
-        "trait_item" => label_name("trait", node, source),
-        "mod_item" => label_name("mod", node, source),
-        _ => None,
-    }
-}
-
-fn label_python(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_definition" => label_name("def", node, source),
-        "class_definition" => label_name("class", node, source),
-        _ => None,
-    }
-}
-
-fn label_javascript(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_declaration" => label_name("function", node, source),
-        "class_declaration" => label_name("class", node, source),
-        "method_definition" => label_name("method", node, source),
-        _ => None,
-    }
-}
-
-fn label_typescript(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_declaration" => label_name("function", node, source),
-        "class_declaration" => label_name("class", node, source),
-        "method_definition" => label_name("method", node, source),
-        "interface_declaration" => label_name("interface", node, source),
-        "type_alias_declaration" => label_name("type", node, source),
-        _ => None,
-    }
-}
-
-fn label_go(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_declaration" => label_name("func", node, source),
-        "method_declaration" => label_name("func", node, source),
-        "type_declaration" => {
-            // type_declaration wraps type_spec which has the name
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "type_spec"
-                    && let Some(name) = child.child_by_field_name("name")
-                {
-                    return Some(format!("type {}", name.utf8_text(source).ok()?));
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn label_ruby(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "method" => label_name("def", node, source),
-        "singleton_method" => label_name("def self.", node, source),
-        "class" => label_name("class", node, source),
-        "module" => label_name("module", node, source),
-        _ => None,
-    }
-}
-
-fn label_java(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "class_declaration" => label_name("class", node, source),
-        "interface_declaration" => label_name("interface", node, source),
-        "method_declaration" => label_name("method", node, source),
-        "constructor_declaration" => label_name("constructor", node, source),
-        _ => None,
-    }
-}
-
-fn label_c(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_definition" => {
-            // name is nested: declarator (function_declarator) -> declarator (identifier)
-            let decl = node.child_by_field_name("declarator")?;
-            let name = decl
-                .child_by_field_name("declarator")
-                .and_then(|n| n.utf8_text(source).ok())
-                .or_else(|| {
-                    // fallback: first named child of declarator
-                    let mut c = decl.walk();
-                    decl.children(&mut c)
-                        .find(|n| n.kind() == "identifier")
-                        .and_then(|n| n.utf8_text(source).ok())
-                })?;
-            Some(format!("fn {name}"))
-        }
-        "struct_specifier" => label_name("struct", node, source),
-        _ => None,
-    }
-}
-
-fn label_cpp(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_definition" => {
-            let decl = node.child_by_field_name("declarator")?;
-            let name = decl
-                .child_by_field_name("declarator")
-                .and_then(|n| n.utf8_text(source).ok())
-                .or_else(|| {
-                    let mut c = decl.walk();
-                    decl.children(&mut c)
-                        .find(|n| n.kind() == "identifier" || n.kind() == "field_identifier")
-                        .and_then(|n| n.utf8_text(source).ok())
-                })?;
-            Some(format!("fn {name}"))
-        }
-        "class_specifier" => label_name("class", node, source),
-        "namespace_definition" => label_name("namespace", node, source),
-        _ => None,
-    }
-}
-
-fn label_bash(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_definition" => label_name("fn", node, source),
-        _ => None,
-    }
-}
-
-fn label_lua(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "function_declaration" => label_name("function", node, source),
-        _ => None,
-    }
-}
-
-fn label_css(node: Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "rule_set" => {
-            let sel = node.child_by_field_name("selectors")?;
-            let text = sel.utf8_text(source).ok()?;
-            Some(text.to_string())
-        }
-        "media_statement" => Some("@media".to_string()),
-        _ => None,
-    }
-}
-
-fn label_hcl(node: Node, source: &[u8]) -> Option<String> {
-    if node.kind() != "block" {
-        return None;
-    }
-    // HCL block: identifier followed by string_lit labels
-    // e.g. resource "aws_instance" "example" { ... }
-    let mut parts = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "identifier" => {
-                if let Ok(t) = child.utf8_text(source) {
-                    parts.push(t.to_string());
-                }
-            }
-            "string_lit" => {
-                if let Ok(t) = child.utf8_text(source) {
-                    // Strip quotes
-                    let trimmed = t.trim_matches('"');
-                    parts.push(trimmed.to_string());
-                }
-            }
-            _ => break,
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,12 +35,10 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "trait_item",
                 "mod_item",
             ],
-            label: label_rust,
         }),
         "py" | "pyi" => Some(LangConfig {
             language: tree_sitter_python::LANGUAGE,
             scope_kinds: &["function_definition", "class_definition"],
-            label: label_python,
         }),
         "js" | "mjs" | "cjs" | "jsx" => Some(LangConfig {
             language: tree_sitter_javascript::LANGUAGE,
@@ -251,7 +47,6 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "class_declaration",
                 "method_definition",
             ],
-            label: label_javascript,
         }),
         "ts" | "mts" | "cts" => Some(LangConfig {
             language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -262,7 +57,6 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "interface_declaration",
                 "type_alias_declaration",
             ],
-            label: label_typescript,
         }),
         "tsx" => Some(LangConfig {
             language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -273,7 +67,6 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "interface_declaration",
                 "type_alias_declaration",
             ],
-            label: label_typescript,
         }),
         "go" => Some(LangConfig {
             language: tree_sitter_go::LANGUAGE,
@@ -282,12 +75,10 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "method_declaration",
                 "type_declaration",
             ],
-            label: label_go,
         }),
         "rb" | "rake" | "gemspec" => Some(LangConfig {
             language: tree_sitter_ruby::LANGUAGE,
             scope_kinds: &["method", "singleton_method", "class", "module"],
-            label: label_ruby,
         }),
         "java" => Some(LangConfig {
             language: tree_sitter_java::LANGUAGE,
@@ -297,12 +88,10 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "method_declaration",
                 "constructor_declaration",
             ],
-            label: label_java,
         }),
         "c" | "h" => Some(LangConfig {
             language: tree_sitter_c::LANGUAGE,
             scope_kinds: &["function_definition", "struct_specifier"],
-            label: label_c,
         }),
         "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => Some(LangConfig {
             language: tree_sitter_cpp::LANGUAGE,
@@ -311,27 +100,22 @@ fn lang_config(path: &str) -> Option<LangConfig> {
                 "class_specifier",
                 "namespace_definition",
             ],
-            label: label_cpp,
         }),
         "sh" | "bash" | "zsh" => Some(LangConfig {
             language: tree_sitter_bash::LANGUAGE,
             scope_kinds: &["function_definition"],
-            label: label_bash,
         }),
         "lua" => Some(LangConfig {
             language: tree_sitter_lua::LANGUAGE,
             scope_kinds: &["function_declaration"],
-            label: label_lua,
         }),
         "css" | "scss" => Some(LangConfig {
             language: tree_sitter_css::LANGUAGE,
             scope_kinds: &["rule_set", "media_statement"],
-            label: label_css,
         }),
         "tf" | "hcl" => Some(LangConfig {
             language: tree_sitter_hcl::LANGUAGE,
             scope_kinds: &["block"],
-            label: label_hcl,
         }),
         _ => None,
     }
@@ -341,7 +125,8 @@ fn lang_config(path: &str) -> Option<LangConfig> {
 // Core algorithm
 // ---------------------------------------------------------------------------
 
-/// Find the enclosing scope chain for a given 0-indexed line.
+/// Find the first source line of the innermost enclosing scope node.
+/// Returns the line trimmed of leading whitespace, like delta/git.
 fn enclosing_scope(
     root: Node,
     source: &[u8],
@@ -351,22 +136,23 @@ fn enclosing_scope(
     let point = Point::new(line, 0);
     let node = root.descendant_for_point_range(point, point)?;
 
-    let mut scopes = Vec::new();
     let mut current = Some(node);
     while let Some(n) = current {
-        if config.scope_kinds.contains(&n.kind())
-            && let Some(label) = (config.label)(n, source)
-        {
-            scopes.push(label);
+        if config.scope_kinds.contains(&n.kind()) {
+            let start_line = n.start_position().row;
+            return source_first_line(source, start_line);
         }
         current = n.parent();
     }
-    scopes.reverse();
-    if scopes.is_empty() {
-        None
-    } else {
-        Some(scopes.join(" > "))
-    }
+    None
+}
+
+/// Return the 0-indexed source line, trimmed of leading whitespace.
+fn source_first_line(source: &[u8], line: usize) -> Option<String> {
+    let text = std::str::from_utf8(source).ok()?;
+    text.lines()
+        .nth(line)
+        .map(|l| l.trim_start().to_string())
 }
 
 /// Parse the old-file start line from a unified diff hunk header.
@@ -383,7 +169,7 @@ fn parse_hunk_old_start(line: &str) -> Option<usize> {
 /// scope in the original file. The scope label is appended after the
 /// closing `@@`:
 ///
-///   `@@ -13,7 +13,7 @@ impl Config > fn compute`
+///   `@@ -13,7 +13,7 @@ fn compute(&self) -> i32 {`
 pub fn inject_scope_context(diff: &str, original: &str, path: &str) -> String {
     let config = match lang_config(path) {
         Some(c) => c,
@@ -461,32 +247,32 @@ mod tests {
     }
 
     #[test]
-    fn injects_rust_scope() {
+    fn injects_rust_scope_with_full_signature() {
         let original = "\
 fn foo() {
     let x = 1;
     let y = 2;
 }
 
-fn bar() {
+fn bar(a: i32, b: i32) -> i32 {
     let a = 1;
     let b = 2;
     let c = 3;
+    a + b + c
 }
 ";
         let updated = original.replace("let b = 2", "let b = 99");
         let diff = raw_diff(original, &updated);
         let enriched = inject_scope_context(&diff, original, "test.rs");
-        // The @@ line should now contain "fn bar"
         let hunk_line = enriched.lines().find(|l| l.starts_with("@@")).unwrap();
         assert!(
-            hunk_line.contains("fn bar"),
-            "expected 'fn bar' in hunk header, got: {hunk_line}"
+            hunk_line.contains("fn bar(a: i32, b: i32) -> i32 {"),
+            "expected full signature, got: {hunk_line}"
         );
     }
 
     #[test]
-    fn injects_rust_impl_scope() {
+    fn injects_innermost_scope() {
         let original = "\
 struct Foo;
 
@@ -501,9 +287,10 @@ impl Foo {
         let diff = raw_diff(original, &updated);
         let enriched = inject_scope_context(&diff, original, "src/lib.rs");
         let hunk_line = enriched.lines().find(|l| l.starts_with("@@")).unwrap();
+        // Should show the innermost scope's source line, not a synthetic chain.
         assert!(
-            hunk_line.contains("impl Foo > fn compute"),
-            "expected nested scope, got: {hunk_line}"
+            hunk_line.contains("fn compute(&self) -> i32 {"),
+            "expected innermost scope source line, got: {hunk_line}"
         );
     }
 
@@ -522,8 +309,8 @@ class Calc:
         let enriched = inject_scope_context(&diff, original, "calc.py");
         let hunk_line = enriched.lines().find(|l| l.starts_with("@@")).unwrap();
         assert!(
-            hunk_line.contains("class Calc") && hunk_line.contains("def sub"),
-            "expected Python scope, got: {hunk_line}"
+            hunk_line.contains("def sub(self, a, b):"),
+            "expected Python source line, got: {hunk_line}"
         );
     }
 
@@ -541,8 +328,8 @@ class Foo {
         let enriched = inject_scope_context(&diff, original, "foo.js");
         let hunk_line = enriched.lines().find(|l| l.starts_with("@@")).unwrap();
         assert!(
-            hunk_line.contains("class Foo") && hunk_line.contains("method getValue"),
-            "expected JS scope, got: {hunk_line}"
+            hunk_line.contains("getValue() {"),
+            "expected JS source line, got: {hunk_line}"
         );
     }
 
@@ -560,8 +347,8 @@ func hello() {
         let enriched = inject_scope_context(&diff, original, "main.go");
         let hunk_line = enriched.lines().find(|l| l.starts_with("@@")).unwrap();
         assert!(
-            hunk_line.contains("func hello"),
-            "expected Go scope, got: {hunk_line}"
+            hunk_line.contains("func hello() {"),
+            "expected Go source line, got: {hunk_line}"
         );
     }
 

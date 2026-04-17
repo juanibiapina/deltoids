@@ -176,6 +176,12 @@ fn handle_key(
             state.focus = Focus::Diff;
             AppCommand::Continue
         }
+        KeyCode::Enter => {
+            if state.focus == Focus::Traces {
+                state.focus = Focus::Entries;
+            }
+            AppCommand::Continue
+        }
         KeyCode::Char('J') => {
             let max_scroll = max_detail_scroll(detail_row_count, detail_height);
             state.diff_scroll = (state.diff_scroll + DIFF_SCROLL_STEP).min(max_scroll);
@@ -1636,6 +1642,23 @@ mod tests {
             handle_key(&mut state, &traces, KeyCode::Esc, 0, 0),
             AppCommand::Quit
         );
+    }
+
+    #[test]
+    fn enter_on_traces_selects_entries_pane() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.focus = Focus::Traces;
+
+        handle_key(&mut state, &traces, KeyCode::Enter, 0, 0);
+        assert_eq!(state.focus, Focus::Entries);
+
+        // Enter on Entries does nothing.
+        handle_key(&mut state, &traces, KeyCode::Enter, 0, 0);
+        assert_eq!(state.focus, Focus::Entries);
     }
 
     #[test]

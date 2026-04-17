@@ -1066,6 +1066,69 @@ fn display_width(text: &str) -> usize {
         .sum()
 }
 
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for word in text.split_whitespace() {
+        let word_width = display_width(word);
+
+        if word_width > max_width {
+            // Word too long for a single line: flush current, then split by character.
+            if !current.is_empty() {
+                lines.push(current);
+                current = String::new();
+                current_width = 0;
+            }
+            let mut chunk = String::new();
+            let mut chunk_width = 0usize;
+            for ch in word.chars() {
+                let ch_width = if ch == '\t' { 4 } else { ch.width().unwrap_or(0) };
+                if chunk_width + ch_width > max_width && !chunk.is_empty() {
+                    lines.push(chunk);
+                    chunk = String::new();
+                    chunk_width = 0;
+                }
+                chunk.push(ch);
+                chunk_width += ch_width;
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+                current_width = chunk_width;
+            }
+            continue;
+        }
+
+        if current.is_empty() {
+            current = word.to_string();
+            current_width = word_width;
+        } else if current_width + 1 + word_width <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_width += 1 + word_width;
+        } else {
+            lines.push(current);
+            current = word.to_string();
+            current_width = word_width;
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 fn render_header_block(
     summary: &str,
     path: &str,
@@ -1083,35 +1146,25 @@ fn render_header_block(
         ))];
     }
 
-    let border = Style::default().fg(TOKYONIGHT_ORANGE);
     let path_style = Style::default().fg(TOKYONIGHT_BLUE);
     let metadata_style = Style::default().fg(TOKYONIGHT_DIM);
-    let content_width = width.saturating_sub(2);
-    let top = format!("{}╮", "─".repeat(content_width + 1));
-    let bot = format!("{}╯", "─".repeat(content_width + 1));
+    let border = Style::default().fg(TOKYONIGHT_BLUE);
+    let bot = format!("─{}", "─".repeat(width.saturating_sub(1)));
 
-    vec![
-        Line::from(Span::styled(top, border)),
-        boxed_content_line(summary, summary_style, border, content_width),
-        boxed_content_line(path, path_style, border, content_width),
-        boxed_content_line(metadata, metadata_style, border, content_width),
-        Line::from(Span::styled(bot, border)),
-    ]
-}
-
-fn boxed_content_line(
-    content: &str,
-    content_style: Style,
-    border_style: Style,
-    content_width: usize,
-) -> Line<'static> {
-    let fitted = fit_line(content, content_width);
-    let padding = content_width.saturating_sub(display_width(&fitted));
-    Line::from(vec![
-        Span::styled(fitted, content_style),
-        Span::styled(" ".repeat(padding), content_style),
-        Span::styled(" │", border_style),
-    ])
+    let mut lines = Vec::new();
+    for wrapped in wrap_text(summary, width) {
+        lines.push(Line::from(Span::styled(wrapped, summary_style)));
+    }
+    lines.push(Line::from(Span::styled(
+        fit_line(path, width),
+        path_style,
+    )));
+    lines.push(Line::from(Span::styled(
+        fit_line(metadata, width),
+        metadata_style,
+    )));
+    lines.push(Line::from(Span::styled(bot, border)));
+    lines
 }
 
 fn edit_block_markers(lines: &[String], start: usize) -> Option<(Vec<String>, usize)> {
@@ -1819,20 +1872,54 @@ mod tests {
     }
 
     #[test]
-    fn render_detail_header_uses_box_with_summary_path_and_metadata() {
+    fn render_detail_header_uses_summary_path_metadata_and_rule() {
         let lines = render_detail_header(&edit_entry(), 80);
-        assert_eq!(lines.len(), 5);
-        assert!(lines[0].to_string().starts_with('─'));
-        assert!(lines[1].to_string().starts_with("Update x constant"));
-        assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
-        assert!(lines[2].to_string().starts_with("/tmp/project/app.txt"));
-        assert_eq!(lines[2].spans[0].style.fg, Some(TOKYONIGHT_BLUE));
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].to_string().starts_with("Update x constant"));
+        assert_eq!(lines[0].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
+        assert!(lines[1].to_string().starts_with("/tmp/project/app.txt"));
+        assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_BLUE));
         assert!(
-            lines[3]
+            lines[2]
                 .to_string()
                 .starts_with("edit • ok • 1 edit • 1 hunk")
         );
-        assert_eq!(lines[4].to_string().chars().last(), Some('╯'));
+        let bottom = lines[3].to_string();
+        assert!(bottom.starts_with('─'));
+        assert!(!bottom.contains('╯'), "bottom rule should have no corner");
+        assert!(!bottom.contains('│'), "no right border");
+    }
+
+    #[test]
+    fn render_detail_header_wraps_long_summary() {
+        let mut entry = edit_entry();
+        entry.summary = "This is a long summary that should wrap onto multiple lines".to_string();
+        let lines = render_detail_header(&entry, 30);
+        // Summary wraps into multiple lines, then path, metadata, rule.
+        assert!(
+            lines.len() > 4,
+            "long summary should produce more than 4 lines, got {}",
+            lines.len()
+        );
+        // All summary lines are orange bold.
+        let rule_index = lines
+            .iter()
+            .position(|l| l.to_string().starts_with('─'))
+            .expect("should have a bottom rule");
+        for line in &lines[..rule_index - 2] {
+            assert_eq!(
+                line.spans[0].style.fg,
+                Some(TOKYONIGHT_ORANGE),
+                "wrapped summary line should be orange"
+            );
+        }
+        // No right border on any line.
+        for line in &lines {
+            assert!(
+                !line.to_string().contains('│'),
+                "no line should have right border"
+            );
+        }
     }
 
     #[test]
@@ -1840,6 +1927,50 @@ mod tests {
         let lines = render_detail_header(&edit_entry(), 3);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].to_string(), "Upd");
+    }
+
+    #[test]
+    fn wrap_text_fits_on_one_line() {
+        assert_eq!(wrap_text("short", 80), vec!["short"]);
+    }
+
+    #[test]
+    fn wrap_text_wraps_at_word_boundary() {
+        assert_eq!(
+            wrap_text("hello world foo", 11),
+            vec!["hello world", "foo"]
+        );
+    }
+
+    #[test]
+    fn wrap_text_splits_long_word_by_character() {
+        assert_eq!(
+            wrap_text("abcdefghij", 4),
+            vec!["abcd", "efgh", "ij"]
+        );
+    }
+
+    #[test]
+    fn wrap_text_empty_string() {
+        assert_eq!(wrap_text("", 80), vec![""]);
+    }
+
+    #[test]
+    fn wrap_text_exact_fit() {
+        assert_eq!(wrap_text("abcd", 4), vec!["abcd"]);
+    }
+
+    #[test]
+    fn wrap_text_single_word_longer_than_width() {
+        assert_eq!(wrap_text("abcdef", 4), vec!["abcd", "ef"]);
+    }
+
+    #[test]
+    fn wrap_text_mixed_short_and_long_words() {
+        assert_eq!(
+            wrap_text("hi abcdefgh there", 6),
+            vec!["hi", "abcdef", "gh", "there"]
+        );
     }
 
     #[test]

@@ -147,7 +147,7 @@ fn handle_key(
     detail_height: usize,
 ) -> AppCommand {
     match key {
-        KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
+        KeyCode::Char('q') => AppCommand::Quit,
         KeyCode::Tab => {
             state.focus = match state.focus {
                 Focus::Entries => Focus::Traces,
@@ -1632,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_quits() {
+    fn esc_does_not_quit() {
         let traces = vec![LoadedTrace {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
             entries: vec![edit_entry()],
@@ -1640,7 +1640,7 @@ mod tests {
         let mut state = AppState::new(traces.len());
         assert_eq!(
             handle_key(&mut state, &traces, KeyCode::Esc, 0, 0),
-            AppCommand::Quit
+            AppCommand::Continue
         );
     }
 

@@ -53,6 +53,8 @@ Layout (lazygit-inspired):
 - Left sidebar, bottom: traces for the current working directory.
 - Right: diff of the selected entry.
 
+The view auto-refreshes when traces change on disk, so new edits from other processes appear without restarting.
+
 Keys:
 
 - `Tab`: cycle focus across entries, traces, and diff.

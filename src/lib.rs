@@ -580,7 +580,7 @@ fn trace_directory(trace_id: &str) -> Result<PathBuf, String> {
     Ok(trace_root_directory()?.join(trace_id))
 }
 
-fn trace_root_directory() -> Result<PathBuf, String> {
+pub fn trace_root_directory() -> Result<PathBuf, String> {
     Ok(data_home_directory()?.join("edit").join("traces"))
 }
 

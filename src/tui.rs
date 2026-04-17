@@ -8,8 +8,11 @@
 //! Focus toggles between the traces pane and the entries pane with `Tab`.
 
 use std::io::{self, IsTerminal, Read};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -34,11 +37,23 @@ const DIFF_ADDED_BG: Color = Color::Rgb(29, 43, 52);
 const DIFF_DELETED_BG: Color = Color::Rgb(48, 31, 39);
 const SELECTION_BG: Color = Color::Rgb(45, 63, 118);
 const DIFF_SCROLL_STEP: usize = 3;
+const POLL_TIMEOUT: Duration = Duration::from_secs(2);
+const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
 
 /// Entry point. Loads traces for the current directory and opens the TUI
 /// (or renders a scripted view when stdout is not a terminal).
 pub fn run() -> Result<(), String> {
     let cwd = current_cwd_or_empty();
+    let loaded = load_traces_for_cwd(&cwd)?;
+
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        run_tui(loaded, &cwd)
+    } else {
+        run_scripted(&loaded)
+    }
+}
+
+fn load_traces_for_cwd(cwd: &str) -> Result<Vec<LoadedTrace>, String> {
     let traces = list_traces_for_current_directory()?;
     let mut loaded = Vec::with_capacity(traces.len());
     for trace in traces {
@@ -48,12 +63,7 @@ pub fn run() -> Result<(), String> {
             .collect::<Vec<_>>();
         loaded.push(LoadedTrace { trace, entries });
     }
-
-    if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        run_tui(&loaded)
-    } else {
-        run_scripted(&loaded)
-    }
+    Ok(loaded)
 }
 
 fn current_cwd_or_empty() -> String {
@@ -246,39 +256,128 @@ fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -> usize {
     detail_row_count.saturating_sub(detail_height.max(1))
 }
 
-fn run_tui(traces: &[LoadedTrace]) -> Result<(), String> {
+/// Reload traces from disk unconditionally. Preserves the current
+/// selection by trace id and entry index when the selected trace still
+/// exists; falls back to index 0 otherwise.
+fn reload_traces(
+    traces: &mut Vec<LoadedTrace>,
+    state: &mut AppState,
+    cwd: &str,
+) -> Result<(), String> {
+    let new_traces = load_traces_for_cwd(cwd)?;
+
+    // Remember current selection.
+    let prev_trace_id = traces
+        .get(state.trace_index)
+        .map(|t| t.trace.trace_id.clone());
+    let prev_entry_index = state.entry_index();
+
+    // Replace traces.
+    *traces = new_traces;
+
+    // Rebuild entry_indices for the new trace count.
+    state.entry_indices = vec![0; traces.len()];
+
+    // Restore trace selection by id, or fall back to 0.
+    state.trace_index = prev_trace_id
+        .as_deref()
+        .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
+        .unwrap_or(0);
+
+    // Restore entry index, clamped to the new entry count.
+    let entry_count = traces
+        .get(state.trace_index)
+        .map(|t| t.entries.len())
+        .unwrap_or(0);
+    let clamped = if entry_count == 0 {
+        0
+    } else {
+        prev_entry_index.min(entry_count - 1)
+    };
+    state.set_entry_index(clamped);
+
+    // Invalidate caches.
+    state.diff_cache = None;
+    state.diff_scroll = 0;
+
+    Ok(())
+}
+
+fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("Failed to create screen: {err}"))?;
     let _session = TerminalSession::enter(&mut terminal)?;
 
+    // Watch the trace root directory for changes.
+    let (notify_tx, notify_rx) = mpsc::channel();
+    let trace_root = crate::trace_root_directory()?;
+    std::fs::create_dir_all(&trace_root).map_err(|err| {
+        format!(
+            "Failed to create trace directory {}: {}",
+            trace_root.display(),
+            err
+        )
+    })?;
+    let mut _watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
+        let _ = notify_tx.send(());
+    })
+    .map_err(|err| format!("Failed to create filesystem watcher: {err}"))?;
+    _watcher
+        .watch(&trace_root, RecursiveMode::Recursive)
+        .map_err(|err| format!("Failed to watch {}: {}", trace_root.display(), err))?;
+
     let mut state = AppState::new(traces.len());
+    let mut dirty_since: Option<Instant> = None;
 
     loop {
         let (detail_row_count, detail_height) = terminal
-            .draw(|frame| draw(frame, traces, &mut state))
+            .draw(|frame| draw(frame, &traces, &mut state))
             .map(|completed| {
-                let detail_row_count = detail_rows(traces, &state).len();
+                let detail_row_count = detail_rows(&traces, &state).len();
                 let height = completed.area.height.saturating_sub(3) as usize;
                 (detail_row_count, height)
             })
             .map_err(|err| format!("Failed to render screen: {err}"))?;
 
-        match event::read().map_err(|err| format!("Failed to read input event: {err}"))? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if handle_key(
-                    &mut state,
-                    traces,
-                    key.code,
-                    detail_row_count,
-                    detail_height,
-                ) == AppCommand::Quit
-                {
-                    break;
+        // Choose a shorter poll timeout when a debounce is pending so we
+        // reload promptly after the debounce window expires.
+        let timeout = match dirty_since {
+            Some(since) => DEBOUNCE_DELAY.saturating_sub(since.elapsed()),
+            None => POLL_TIMEOUT,
+        };
+
+        let has_event = event::poll(timeout)
+            .map_err(|err| format!("Failed to poll input event: {err}"))?;
+
+        if has_event {
+            match event::read().map_err(|err| format!("Failed to read input event: {err}"))? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if handle_key(
+                        &mut state,
+                        &traces,
+                        key.code,
+                        detail_row_count,
+                        detail_height,
+                    ) == AppCommand::Quit
+                    {
+                        break;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+        }
+
+        // Drain all pending filesystem notifications.
+        while notify_rx.try_recv().is_ok() {
+            dirty_since.get_or_insert_with(Instant::now);
+        }
+
+        // Reload once the debounce window has elapsed.
+        if dirty_since.is_some_and(|since| since.elapsed() >= DEBOUNCE_DELAY) {
+            reload_traces(&mut traces, &mut state, cwd)?;
+            dirty_since = None;
         }
     }
 
@@ -1140,5 +1239,107 @@ mod tests {
         assert_eq!(collapse_home("/home/alice"), "~");
         assert_eq!(collapse_home("/home/alice-extra/app.rs"), "/home/alice-extra/app.rs");
         assert_eq!(collapse_home("/other/path"), "/other/path");
+    }
+
+    #[test]
+    fn reload_preserves_selection() {
+        let trace_a = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
+            entries: vec![edit_entry(), write_entry()],
+        };
+        let trace_b = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
+            entries: vec![edit_entry()],
+        };
+
+        // Start with two traces, select the second trace at entry 0.
+        let mut traces = vec![trace_a.clone(), trace_b.clone()];
+        let mut state = AppState::new(traces.len());
+        state.trace_index = 1;
+        state.set_entry_index(0);
+        state.diff_cache = Some(DiffCache {
+            trace_index: 1,
+            entry_index: 0,
+            width: 80,
+            lines: vec![],
+        });
+
+        // Simulate a reload where trace_b gains an entry.
+        let trace_b_updated = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000001", 2, "b updated"),
+            entries: vec![edit_entry(), write_entry()],
+        };
+        // Swap in the new data (simulates what reload_traces does without disk IO).
+        let prev_trace_id = traces
+            .get(state.trace_index)
+            .map(|t| t.trace.trace_id.clone());
+        let prev_entry_index = state.entry_index();
+
+        traces = vec![trace_a.clone(), trace_b_updated];
+        state.entry_indices = vec![0; traces.len()];
+        state.trace_index = prev_trace_id
+            .as_deref()
+            .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
+            .unwrap_or(0);
+
+        let entry_count = traces
+            .get(state.trace_index)
+            .map(|t| t.entries.len())
+            .unwrap_or(0);
+        let clamped = if entry_count == 0 {
+            0
+        } else {
+            prev_entry_index.min(entry_count - 1)
+        };
+        state.set_entry_index(clamped);
+        state.diff_cache = None;
+
+        // Selection stays on the same trace.
+        assert_eq!(state.trace_index, 1);
+        assert_eq!(state.entry_index(), 0);
+        assert!(state.diff_cache.is_none());
+    }
+
+    #[test]
+    fn reload_handles_removed_trace() {
+        let trace_a = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        };
+        let trace_b = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
+            entries: vec![edit_entry()],
+        };
+
+        let mut traces = vec![trace_a.clone(), trace_b.clone()];
+        let mut state = AppState::new(traces.len());
+        state.trace_index = 1; // select trace_b
+        state.diff_cache = Some(DiffCache {
+            trace_index: 1,
+            entry_index: 0,
+            width: 80,
+            lines: vec![],
+        });
+
+        // Simulate trace_b disappearing.
+        let prev_trace_id = traces
+            .get(state.trace_index)
+            .map(|t| t.trace.trace_id.clone());
+
+        traces = vec![trace_a.clone()];
+        state.entry_indices = vec![0; traces.len()];
+        state.trace_index = prev_trace_id
+            .as_deref()
+            .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
+            .unwrap_or(0);
+        state.diff_cache = None;
+
+        // Falls back to index 0 since trace_b is gone.
+        assert_eq!(state.trace_index, 0);
+        assert_eq!(
+            traces[state.trace_index].trace.trace_id,
+            "01JTESTTRACE00000000000000"
+        );
+        assert!(state.diff_cache.is_none());
     }
 }

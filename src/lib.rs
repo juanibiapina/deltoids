@@ -1,6 +1,7 @@
 mod highlight;
 pub mod intraline;
 pub mod scope;
+pub mod syntax;
 pub mod tui;
 
 use std::env;

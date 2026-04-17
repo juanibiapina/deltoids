@@ -5,121 +5,7 @@
 //! injected into unified diff `@@` hunk headers so the TUI can display which
 //! function a change belongs to.
 
-use std::path::Path;
-
-use tree_sitter::{Node, Parser, Point};
-use tree_sitter_language::LanguageFn;
-
-/// Scope node kinds per language. Tree-sitter finds the enclosing scope
-/// node and we use its first source line as context (like delta/git).
-struct LangConfig {
-    language: LanguageFn,
-    scope_kinds: &'static [&'static str],
-}
-
-// ---------------------------------------------------------------------------
-// Language registry
-// ---------------------------------------------------------------------------
-
-/// Detect language from file extension and return its config.
-fn lang_config(path: &str) -> Option<LangConfig> {
-    let ext = Path::new(path).extension()?.to_str()?;
-    match ext {
-        "rs" => Some(LangConfig {
-            language: tree_sitter_rust::LANGUAGE,
-            scope_kinds: &[
-                "function_item",
-                "impl_item",
-                "struct_item",
-                "enum_item",
-                "trait_item",
-                "mod_item",
-            ],
-        }),
-        "py" | "pyi" => Some(LangConfig {
-            language: tree_sitter_python::LANGUAGE,
-            scope_kinds: &["function_definition", "class_definition"],
-        }),
-        "js" | "mjs" | "cjs" | "jsx" => Some(LangConfig {
-            language: tree_sitter_javascript::LANGUAGE,
-            scope_kinds: &[
-                "function_declaration",
-                "class_declaration",
-                "method_definition",
-            ],
-        }),
-        "ts" | "mts" | "cts" => Some(LangConfig {
-            language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-            scope_kinds: &[
-                "function_declaration",
-                "class_declaration",
-                "method_definition",
-                "interface_declaration",
-                "type_alias_declaration",
-            ],
-        }),
-        "tsx" => Some(LangConfig {
-            language: tree_sitter_typescript::LANGUAGE_TSX,
-            scope_kinds: &[
-                "function_declaration",
-                "class_declaration",
-                "method_definition",
-                "interface_declaration",
-                "type_alias_declaration",
-            ],
-        }),
-        "go" => Some(LangConfig {
-            language: tree_sitter_go::LANGUAGE,
-            scope_kinds: &[
-                "function_declaration",
-                "method_declaration",
-                "type_declaration",
-            ],
-        }),
-        "rb" | "rake" | "gemspec" => Some(LangConfig {
-            language: tree_sitter_ruby::LANGUAGE,
-            scope_kinds: &["method", "singleton_method", "class", "module"],
-        }),
-        "java" => Some(LangConfig {
-            language: tree_sitter_java::LANGUAGE,
-            scope_kinds: &[
-                "class_declaration",
-                "interface_declaration",
-                "method_declaration",
-                "constructor_declaration",
-            ],
-        }),
-        "c" | "h" => Some(LangConfig {
-            language: tree_sitter_c::LANGUAGE,
-            scope_kinds: &["function_definition", "struct_specifier"],
-        }),
-        "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => Some(LangConfig {
-            language: tree_sitter_cpp::LANGUAGE,
-            scope_kinds: &[
-                "function_definition",
-                "class_specifier",
-                "namespace_definition",
-            ],
-        }),
-        "sh" | "bash" | "zsh" => Some(LangConfig {
-            language: tree_sitter_bash::LANGUAGE,
-            scope_kinds: &["function_definition"],
-        }),
-        "lua" => Some(LangConfig {
-            language: tree_sitter_lua::LANGUAGE,
-            scope_kinds: &["function_declaration"],
-        }),
-        "css" | "scss" => Some(LangConfig {
-            language: tree_sitter_css::LANGUAGE,
-            scope_kinds: &["rule_set", "media_statement"],
-        }),
-        "tf" | "hcl" => Some(LangConfig {
-            language: tree_sitter_hcl::LANGUAGE,
-            scope_kinds: &["block"],
-        }),
-        _ => None,
-    }
-}
+use tree_sitter::{Node, Point};
 
 // ---------------------------------------------------------------------------
 // Core algorithm
@@ -127,13 +13,18 @@ fn lang_config(path: &str) -> Option<LangConfig> {
 
 /// Find the first source line of the innermost enclosing scope node.
 /// Returns the line trimmed of leading whitespace, like delta/git.
-fn enclosing_scope(root: Node, source: &[u8], line: usize, config: &LangConfig) -> Option<String> {
+fn enclosing_scope(
+    root: Node,
+    source: &[u8],
+    line: usize,
+    scope_kinds: &[&str],
+) -> Option<String> {
     let point = Point::new(line, 0);
     let node = root.descendant_for_point_range(point, point)?;
 
     let mut current = Some(node);
     while let Some(n) = current {
-        if config.scope_kinds.contains(&n.kind()) {
+        if scope_kinds.contains(&n.kind()) {
             let start_line = n.start_position().row;
             return source_first_line(source, start_line);
         }
@@ -164,20 +55,11 @@ fn parse_hunk_old_start(line: &str) -> Option<usize> {
 ///
 ///   `@@ -13,7 +13,7 @@ fn compute(&self) -> i32 {`
 pub fn inject_scope_context(diff: &str, original: &str, path: &str) -> String {
-    let config = match lang_config(path) {
-        Some(c) => c,
+    let parsed = match crate::syntax::parse_file(path, original) {
+        Some(p) => p,
         None => return diff.to_string(),
     };
-
-    let mut parser = Parser::new();
-    if parser.set_language(&config.language.into()).is_err() {
-        return diff.to_string();
-    }
-    let tree = match parser.parse(original, None) {
-        Some(t) => t,
-        None => return diff.to_string(),
-    };
-    let root = tree.root_node();
+    let root = parsed.tree.root_node();
     let source = original.as_bytes();
 
     let diff_lines: Vec<&str> = diff.lines().collect();
@@ -201,7 +83,7 @@ pub fn inject_scope_context(diff: &str, original: &str, path: &str) -> String {
                     let change_line = start + offset;
                     // Convert 1-indexed diff line to 0-indexed tree-sitter line.
                     let ts_line = change_line.saturating_sub(1);
-                    return enclosing_scope(root, source, ts_line, &config);
+                    return enclosing_scope(root, source, ts_line, parsed.scope_kinds);
                 }
                 if l.starts_with(' ') {
                     offset += 1;

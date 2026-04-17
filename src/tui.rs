@@ -33,6 +33,7 @@ const TOKYONIGHT_DIM: Color = Color::Rgb(86, 95, 137);
 const DIFF_ADDED_BG: Color = Color::Rgb(29, 43, 52);
 const DIFF_DELETED_BG: Color = Color::Rgb(48, 31, 39);
 const SELECTION_BG: Color = Color::Rgb(45, 63, 118);
+const DIFF_SCROLL_STEP: usize = 3;
 
 /// Entry point. Loads traces for the current directory and opens the TUI
 /// (or renders a scripted view when stdout is not a terminal).
@@ -160,10 +161,19 @@ fn handle_key(
             state.focus = Focus::Diff;
             AppCommand::Continue
         }
+        KeyCode::Char('J') => {
+            let max_scroll = max_detail_scroll(detail_row_count, detail_height);
+            state.diff_scroll = (state.diff_scroll + DIFF_SCROLL_STEP).min(max_scroll);
+            AppCommand::Continue
+        }
+        KeyCode::Char('K') => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP);
+            AppCommand::Continue
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             if state.focus == Focus::Diff {
                 let max_scroll = max_detail_scroll(detail_row_count, detail_height);
-                state.diff_scroll = (state.diff_scroll + 1).min(max_scroll);
+                state.diff_scroll = (state.diff_scroll + DIFF_SCROLL_STEP).min(max_scroll);
             } else {
                 move_down(state, traces);
             }
@@ -171,7 +181,7 @@ fn handle_key(
         }
         KeyCode::Char('k') | KeyCode::Up => {
             if state.focus == Focus::Diff {
-                state.diff_scroll = state.diff_scroll.saturating_sub(1);
+                state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP);
             } else {
                 move_up(state, traces);
             }
@@ -349,7 +359,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     let entry_items = active_trace
         .entries
         .iter()
-        .map(|entry| ListItem::new(entry_label(entry)))
+        .map(|entry| ListItem::new(entry_label_line(entry)))
         .collect::<Vec<_>>();
     let entries_count = active_trace.entries.len();
     let entries_position = if entries_count == 0 {
@@ -445,8 +455,15 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
             .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
             .begin_symbol(None)
             .end_symbol(None);
-        let mut scrollbar_state =
-            ScrollbarState::new(detail_row_count).position(state.diff_scroll);
+        // ratatui anchors the thumb at the bottom only when
+        // `position == content_length - 1`, so use the number of distinct
+        // scroll positions (max_scroll + 1) as the content length and pass
+        // the viewport size so the thumb is still proportional to the
+        // visible slice.
+        let max_scroll = max_detail_scroll(detail_row_count, diff_viewport);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
+            .position(state.diff_scroll)
+            .viewport_content_length(diff_viewport);
         frame.render_stateful_widget(
             scrollbar,
             body[1].inner(Margin {
@@ -489,13 +506,29 @@ fn pane_border_color(active: bool, active_color: Color) -> Color {
 }
 
 fn help_bar() -> Paragraph<'static> {
-    Paragraph::new("Tab/1/2/3 focus  j/k move  PgUp/PgDn scroll  q quit")
+    Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
         .style(Style::default().fg(Color::DarkGray))
 }
 
-fn entry_label(entry: &HistoryEntry) -> String {
-    let status = if entry.ok { "ok" } else { "fail" };
-    format!("{} {} {}", entry.tool, status, entry.summary)
+fn entry_icon(ok: bool) -> (&'static str, Color) {
+    if ok {
+        ("\u{2713}", Color::Green)
+    } else {
+        ("\u{2717}", Color::Red)
+    }
+}
+
+fn entry_label_line(entry: &HistoryEntry) -> Line<'static> {
+    let (icon, color) = entry_icon(entry.ok);
+    Line::from(vec![
+        Span::styled(icon.to_string(), Style::default().fg(color)),
+        Span::raw(format!(" {}", entry.summary)),
+    ])
+}
+
+fn entry_label_plain(entry: &HistoryEntry) -> String {
+    let (icon, _) = entry_icon(entry.ok);
+    format!("{icon} {}", entry.summary)
 }
 
 fn trace_label(summary: &TraceSummary) -> String {
@@ -526,13 +559,11 @@ fn detail_rows(traces: &[LoadedTrace], state: &AppState) -> Vec<String> {
 
 fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
     let mut lines = vec![
-        format!("tool: {}", entry.tool),
         format!("summary: {}", entry.summary),
-        format!("path: {}", entry.path),
+        format!("path: {}", collapse_home(&entry.path)),
     ];
 
     if entry.ok {
-        lines.push("diff:".to_string());
         if let Some(diff) = &entry.diff {
             lines.extend(diff.lines().map(str::to_string));
         }
@@ -541,6 +572,25 @@ fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
     }
 
     lines
+}
+
+fn collapse_home(path: &str) -> String {
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.to_string();
+    };
+    let home = home.to_string_lossy();
+    if home.is_empty() {
+        return path.to_string();
+    }
+    if let Some(rest) = path.strip_prefix(home.as_ref()) {
+        if rest.is_empty() {
+            return "~".to_string();
+        }
+        if rest.starts_with('/') {
+            return format!("~{rest}");
+        }
+    }
+    path.to_string()
 }
 
 fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> Vec<Line<'static>> {
@@ -554,16 +604,6 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
 }
 
 fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'static> {
-    if line == "diff:" {
-        return Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(TOKYONIGHT_CYAN),
-        ));
-    }
-
-    if let Some(rest) = line.strip_prefix("tool: ") {
-        return labeled_line("tool", rest, TOKYONIGHT_CYAN);
-    }
     if let Some(rest) = line.strip_prefix("summary: ") {
         return labeled_line("summary", rest, TOKYONIGHT_CYAN);
     }
@@ -681,14 +721,14 @@ fn run_scripted(traces: &[LoadedTrace]) -> Result<(), String> {
         match ch {
             'j' => {
                 if state.focus == Focus::Diff {
-                    state.diff_scroll += 1;
+                    state.diff_scroll += DIFF_SCROLL_STEP;
                 } else {
                     move_down(&mut state, traces);
                 }
             }
             'k' => {
                 if state.focus == Focus::Diff {
-                    state.diff_scroll = state.diff_scroll.saturating_sub(1);
+                    state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP);
                 } else {
                     move_up(&mut state, traces);
                 }
@@ -700,6 +740,8 @@ fn run_scripted(traces: &[LoadedTrace]) -> Result<(), String> {
                     Focus::Diff => Focus::Entries,
                 };
             }
+            'J' => state.diff_scroll += DIFF_SCROLL_STEP,
+            'K' => state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP),
             '1' => state.focus = Focus::Entries,
             '2' => state.focus = Focus::Traces,
             '3' => state.focus = Focus::Diff,
@@ -752,7 +794,7 @@ fn render_scripted(
             " "
         };
         entries_section.push(fit_line(
-            &format!("{marker} {}", entry_label(entry)),
+            &format!("{marker} {}", entry_label_plain(entry)),
             left_width,
         ));
     }
@@ -916,6 +958,23 @@ mod tests {
     }
 
     #[test]
+    fn shift_jk_scrolls_diff_from_any_focus() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.focus = Focus::Entries;
+
+        handle_key(&mut state, &traces, KeyCode::Char('J'), 20, 4);
+        assert_eq!(state.diff_scroll, DIFF_SCROLL_STEP);
+
+        state.focus = Focus::Traces;
+        handle_key(&mut state, &traces, KeyCode::Char('K'), 20, 4);
+        assert_eq!(state.diff_scroll, 0);
+    }
+
+    #[test]
     fn j_scrolls_diff_when_focused_on_diff() {
         let traces = vec![LoadedTrace {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
@@ -924,10 +983,10 @@ mod tests {
         let mut state = AppState::new(traces.len());
         state.focus = Focus::Diff;
 
-        handle_key(&mut state, &traces, KeyCode::Char('j'), 10, 4);
-        assert_eq!(state.diff_scroll, 1);
+        handle_key(&mut state, &traces, KeyCode::Char('j'), 20, 4);
+        assert_eq!(state.diff_scroll, DIFF_SCROLL_STEP);
 
-        handle_key(&mut state, &traces, KeyCode::Char('k'), 10, 4);
+        handle_key(&mut state, &traces, KeyCode::Char('k'), 20, 4);
         assert_eq!(state.diff_scroll, 0);
     }
 
@@ -1007,12 +1066,12 @@ mod tests {
 
         let output = render_scripted(&traces, &state, 140, 30);
 
-        assert!(output.contains("edit ok Update x constant"));
-        assert!(output.contains("write ok Rewrite config"));
+        assert!(output.contains("\u{2713} Update x constant"));
+        assert!(output.contains("\u{2713} Rewrite config"));
         assert!(output.contains("01JTESTTRA"));
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
-        assert!(output.contains("tool: edit"));
+        assert!(output.contains("summary: Update x constant"));
     }
 
     #[test]
@@ -1034,7 +1093,18 @@ mod tests {
 
         let output = render_scripted(&traces, &state, 140, 30);
 
-        assert!(output.contains("> write ok Rewrite config"));
-        assert!(output.contains("tool: write"));
+        assert!(output.contains("> \u{2713} Rewrite config"));
+        assert!(output.contains("summary: Rewrite config"));
+    }
+
+    #[test]
+    fn collapse_home_handles_home_prefix() {
+        // SAFETY: single-threaded test module and HOME is only read via
+        // collapse_home here.
+        unsafe { std::env::set_var("HOME", "/home/alice") };
+        assert_eq!(collapse_home("/home/alice/project/app.rs"), "~/project/app.rs");
+        assert_eq!(collapse_home("/home/alice"), "~");
+        assert_eq!(collapse_home("/home/alice-extra/app.rs"), "/home/alice-extra/app.rs");
+        assert_eq!(collapse_home("/other/path"), "/other/path");
     }
 }

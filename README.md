@@ -58,6 +58,7 @@ Keys:
 - `Tab`: cycle focus across entries, traces, and diff.
 - `1` / `2` / `3`: focus the entries, traces, or diff pane directly.
 - `j` / `k` / arrows: move within the focused pane (scrolls the diff when it is focused).
+- `Shift+J` / `Shift+K`: scroll the diff pane without leaving the entries or traces pane.
 - `PgUp` / `PgDn`: page-scroll the diff pane regardless of focus.
 - `q` / `Esc`: quit.
 

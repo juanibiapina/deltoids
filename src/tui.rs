@@ -560,18 +560,32 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     ));
     frame.render_widget(diff, body[1]);
 
-    // ratatui anchors the thumb at the bottom only when
-    // `position == content_length - 1`, so use the number of distinct
-    // scroll positions (max_scroll + 1) as the content length. The
-    // viewport size keeps the thumb proportional to the visible slice.
-    let max_scroll = max_detail_scroll(detail_row_count, diff_viewport);
-    render_pane_scrollbar(
-        frame,
-        body[1],
-        max_scroll + 1,
-        state.diff_scroll,
-        diff_viewport,
-    );
+    // The shared helper checks content_length <= viewport to hide the
+    // scrollbar.  For the diff pane we pass max_scroll+1 as content
+    // length (so the thumb reaches the bottom), which is always smaller
+    // than the viewport.  Inline the scrollbar here with the correct
+    // visibility check against the actual row count.
+    if detail_row_count > diff_viewport.max(1) {
+        let max_scroll = max_detail_scroll(detail_row_count, diff_viewport);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .symbols(scrollbar_symbols::VERTICAL)
+            .thumb_symbol("\u{2590}")
+            .track_style(Style::default().fg(TOKYONIGHT_BLUE))
+            .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
+            .begin_symbol(None)
+            .end_symbol(None);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
+            .position(state.diff_scroll)
+            .viewport_content_length(diff_viewport);
+        frame.render_stateful_widget(
+            scrollbar,
+            body[1].inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
+    }
 
     frame.render_widget(help_bar(), root[1]);
 }
@@ -698,9 +712,15 @@ fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
 
     if entry.ok {
         if let Some(diff) = &entry.diff {
-            lines.extend(diff.lines().map(str::to_string));
+            lines.push(String::new());
+            lines.extend(
+                diff.lines()
+                    .filter(|line| !line.starts_with("---") && !line.starts_with("+++"))
+                    .map(str::to_string),
+            );
         }
     } else if let Some(error) = &entry.error {
+        lines.push(String::new());
         lines.push(format!("error: {error}"));
     }
 
@@ -752,53 +772,26 @@ fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'s
 
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(color)),
+        Span::styled(
+            format!("{label}: "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(value.to_string()),
     ])
 }
 
 fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'static> {
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
-        return syntax_diff_line(
-            content,
-            "+",
-            Color::Green,
-            DIFF_ADDED_BG,
-            &entry.path,
-            width,
-        );
+        return syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width);
     }
     if let Some(content) = line.strip_prefix('-').filter(|_| !line.starts_with("---")) {
-        return syntax_diff_line(
-            content,
-            "-",
-            Color::Red,
-            DIFF_DELETED_BG,
-            &entry.path,
-            width,
-        );
+        return syntax_diff_line(content, DIFF_DELETED_BG, &entry.path, width);
     }
     if let Some(content) = line.strip_prefix(' ') {
-        return syntax_diff_line(
-            content,
-            " ",
-            Color::DarkGray,
-            Color::Reset,
-            &entry.path,
-            width,
-        );
+        return syntax_diff_line(content, Color::Reset, &entry.path, width);
     }
     if line.starts_with("@@") {
-        return Line::from(Span::styled(
-            fit_line(line, width),
-            Style::default().fg(TOKYONIGHT_CYAN),
-        ));
-    }
-    if line.starts_with("+++") || line.starts_with("---") {
-        return Line::from(Span::styled(
-            fit_line(line, width),
-            Style::default().fg(TOKYONIGHT_BLUE),
-        ));
+        return render_hunk_separator(line, width);
     }
 
     Line::from(Span::raw(fit_line(line, width)))
@@ -806,29 +799,50 @@ fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Line<'sta
 
 fn syntax_diff_line(
     content: &str,
-    marker: &str,
-    marker_fg: Color,
     bg: Color,
     path: &str,
     width: usize,
 ) -> Line<'static> {
     let base_style = Style::default().bg(bg);
-    let marker_style = base_style.fg(marker_fg);
-    let content_width = width.saturating_sub(2);
 
-    let mut spans = vec![
-        Span::styled(marker.to_string(), marker_style),
-        Span::styled(" ".to_string(), base_style),
-    ];
-    let (mut content_spans, visual_width) =
-        highlighted_spans(path, content, base_style, content_width);
-    spans.append(&mut content_spans);
-    let padding = content_width.saturating_sub(visual_width);
+    let (mut spans, visual_width) = highlighted_spans(path, content, base_style, width);
+    let padding = width.saturating_sub(visual_width);
     if padding > 0 {
         spans.push(Span::styled(" ".repeat(padding), base_style));
     }
 
     Line::from(spans)
+}
+
+fn render_hunk_separator(line: &str, width: usize) -> Line<'static> {
+    // Parse optional function context from `@@ -N,M +N,M @@ context`.
+    let context = line
+        .find("@@ ")
+        .and_then(|start| {
+            let rest = &line[start + 3..];
+            rest.find("@@").map(|end| rest[end + 2..].trim())
+        })
+        .unwrap_or("");
+
+    let rule_char = "─";
+    let dim = Style::default().fg(TOKYONIGHT_DIM);
+
+    if context.is_empty() {
+        let rule = rule_char.repeat(width);
+        return Line::from(Span::styled(rule, dim));
+    }
+
+    let label = format!(" {context} ");
+    let label_len = label.chars().count();
+    let remaining = width.saturating_sub(label_len);
+    let left = remaining / 2;
+    let right = remaining.saturating_sub(left);
+
+    Line::from(vec![
+        Span::styled(rule_char.repeat(left), dim),
+        Span::styled(label, Style::default().fg(TOKYONIGHT_BLUE)),
+        Span::styled(rule_char.repeat(right), dim),
+    ])
 }
 
 fn fit_line(line: &str, width: usize) -> String {

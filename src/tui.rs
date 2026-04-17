@@ -564,30 +564,13 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
     ));
     frame.render_widget(diff, body[1]);
 
-    // The shared helper hides the scrollbar when content_length <= viewport.
-    // Keep the visibility check inline for the diff pane, but use the full
-    // rendered row count as content length so the thumb reaches the bottom
-    // when the diff scroll reaches max_scroll.
-    if detail_row_count > diff_viewport.max(1) {
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .symbols(scrollbar_symbols::VERTICAL)
-            .thumb_symbol("\u{2590}")
-            .track_style(Style::default().fg(TOKYONIGHT_BLUE))
-            .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
-            .begin_symbol(None)
-            .end_symbol(None);
-        let mut scrollbar_state = ScrollbarState::new(detail_row_count)
-            .position(state.diff_scroll)
-            .viewport_content_length(diff_viewport);
-        frame.render_stateful_widget(
-            scrollbar,
-            body[1].inner(Margin {
-                vertical: 1,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
+    render_pane_scrollbar(
+        frame,
+        body[1],
+        detail_row_count,
+        state.diff_scroll,
+        diff_viewport,
+    );
 
     frame.render_widget(help_bar(), root[1]);
 }
@@ -609,8 +592,14 @@ fn render_pane_scrollbar(
         .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
         .begin_symbol(None)
         .end_symbol(None);
-    let mut scrollbar_state = ScrollbarState::new(content_length)
-        .position(position)
+    // Ratatui puts the thumb at the track bottom only when position ==
+    // content_length - 1.  Our scroll offset maxes out at content_length -
+    // viewport, so pass max_scroll + 1 as the content length and clamp
+    // position accordingly.  This makes the thumb reach the bottom for both
+    // offset-based (diff) and selection-based (list) panes.
+    let max_scroll = content_length.saturating_sub(viewport);
+    let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+        .position(position.min(max_scroll))
         .viewport_content_length(viewport);
     frame.render_stateful_widget(
         scrollbar,

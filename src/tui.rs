@@ -710,13 +710,9 @@ fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
     ];
 
     if entry.ok {
-        if let Some(diff) = &entry.diff {
+        if entry.diff.is_some() {
             lines.push(String::new());
-            lines.extend(
-                diff.lines()
-                    .filter(|line| !line.starts_with("---") && !line.starts_with("+++"))
-                    .map(str::to_string),
-            );
+            lines.extend(detail_diff_lines(entry));
         }
     } else if let Some(error) = &entry.error {
         lines.push(String::new());
@@ -724,6 +720,57 @@ fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
     }
 
     lines
+}
+
+fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
+    let diff_lines = entry
+        .diff
+        .as_deref()
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.starts_with("---") && !line.starts_with("+++"))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    let hunk_count = diff_lines.iter().filter(|line| line.starts_with("@@")).count();
+    if entry.edits.is_empty() || hunk_count == 0 {
+        return diff_lines;
+    }
+
+    let mut result = Vec::with_capacity(diff_lines.len() + entry.edits.len() * 2);
+    let mut next_edit_index = 0usize;
+    let mut seen_hunks = 0usize;
+
+    for line in diff_lines {
+        if line.starts_with("@@") {
+            if !result.is_empty() && !result.last().is_some_and(String::is_empty) {
+                result.push(String::new());
+            }
+
+            let remaining_hunks = hunk_count.saturating_sub(seen_hunks);
+            let remaining_edits = entry.edits.len().saturating_sub(next_edit_index);
+            let edits_for_this_hunk = if remaining_edits == 0 {
+                0
+            } else if remaining_edits <= remaining_hunks {
+                1
+            } else {
+                remaining_edits - (remaining_hunks - 1)
+            };
+
+            let edit_slice = &entry.edits[next_edit_index..next_edit_index + edits_for_this_hunk];
+            result.extend(
+                edit_slice
+                    .iter()
+                    .map(|edit| format!("edit-summary: {}", edit.summary)),
+            );
+            next_edit_index += edits_for_this_hunk;
+            seen_hunks += 1;
+        }
+
+        result.push(line);
+    }
+
+    result
 }
 
 fn collapse_home(path: &str) -> String {
@@ -749,10 +796,23 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
     let Some(entry) = trace.entries.get(entry_index) else {
         return Vec::new();
     };
-    detail_lines(entry)
-        .iter()
-        .flat_map(|line| render_detail_line(entry, line, width))
-        .collect()
+
+    let lines = detail_lines(entry);
+    let mut rendered = Vec::new();
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        if let Some((edit_lines, next_index)) = edit_block_markers(&lines, index) {
+            rendered.extend(render_edit_block(&edit_lines, width));
+            index = next_index;
+            continue;
+        }
+
+        rendered.extend(render_detail_line(entry, &lines[index], width));
+        index += 1;
+    }
+
+    rendered
 }
 
 fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
@@ -761,6 +821,9 @@ fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Lin
     }
     if let Some(rest) = line.strip_prefix("path: ") {
         return vec![labeled_line("path", rest, TOKYONIGHT_BLUE)];
+    }
+    if line.starts_with("edit-summary: ") {
+        return vec![Line::from(Span::raw(line.to_string()))];
     }
     if let Some(rest) = line.strip_prefix("error: ") {
         return vec![labeled_line("error", rest, Color::Red)];
@@ -806,6 +869,55 @@ fn display_width(text: &str) -> usize {
             }
         })
         .sum()
+}
+
+fn edit_block_markers(lines: &[String], start: usize) -> Option<(Vec<String>, usize)> {
+    if start >= lines.len() {
+        return None;
+    }
+
+    let Some(first) = lines[start].strip_prefix("edit-summary: ") else {
+        return None;
+    };
+
+    let mut items = vec![first.to_string()];
+    let mut index = start + 1;
+    while index < lines.len() {
+        let Some(rest) = lines[index].strip_prefix("edit-summary: ") else {
+            break;
+        };
+        items.push(rest.to_string());
+        index += 1;
+    }
+
+    Some((items, index))
+}
+
+fn render_edit_block(lines: &[String], width: usize) -> Vec<Line<'static>> {
+    let border = Style::default().fg(TOKYONIGHT_ORANGE);
+    let content_width = lines
+        .iter()
+        .map(|line| display_width(line))
+        .max()
+        .unwrap_or(0)
+        .min(width.saturating_sub(2));
+
+    let top = format!("{}╮", "─".repeat(content_width + 1));
+    let bot = format!("{}╯", "─".repeat(content_width + 1));
+    let mut rendered = vec![Line::from(Span::styled(top, border))];
+
+    for line in lines {
+        let fitted = fit_line(line, content_width);
+        let padding = content_width.saturating_sub(display_width(&fitted));
+        rendered.push(Line::from(vec![
+            Span::styled(fitted, border),
+            Span::styled(" ".repeat(padding), border),
+            Span::styled(" │", border),
+        ]));
+    }
+
+    rendered.push(Line::from(Span::styled(bot, border)));
+    rendered
 }
 
 fn syntax_diff_line(content: &str, bg: Color, path: &str, width: usize) -> Line<'static> {
@@ -1265,6 +1377,7 @@ mod tests {
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
         assert!(output.contains("summary: Update x constant"));
+        assert!(output.contains("Edit change"));
     }
 
     #[test]
@@ -1272,6 +1385,49 @@ mod tests {
         let state = AppState::new(0);
         let output = render_scripted(&[], &state, 140, 30);
         assert!(output.contains("No traces"));
+    }
+
+    #[test]
+    fn detail_diff_lines_places_edit_summary_before_hunk() {
+        let mut entry = edit_entry();
+        entry.diff = Some(
+            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn hello() {\n-const x = 1;\n+const x = 2;\n"
+                .to_string(),
+        );
+
+        let lines = detail_diff_lines(&entry);
+        let edit_index = lines
+            .iter()
+            .position(|line| line == "edit-summary: Edit change")
+            .unwrap();
+        let hunk_index = lines.iter().position(|line| line.starts_with("@@")).unwrap();
+
+        assert!(edit_index < hunk_index);
+    }
+
+    #[test]
+    fn detail_diff_lines_groups_multiple_summaries_for_one_hunk() {
+        let mut entry = edit_entry();
+        entry.edits = vec![
+            TextEdit {
+                summary: "first change".to_string(),
+                old_text: "a".to_string(),
+                new_text: "b".to_string(),
+            },
+            TextEdit {
+                summary: "second change".to_string(),
+                old_text: "c".to_string(),
+                new_text: "d".to_string(),
+            },
+        ];
+        entry.diff = Some(
+            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn hello() {\n-old\n+new\n"
+                .to_string(),
+        );
+
+        let lines = detail_diff_lines(&entry);
+        assert!(lines.contains(&"edit-summary: first change".to_string()));
+        assert!(lines.contains(&"edit-summary: second change".to_string()));
     }
 
     #[test]
@@ -1409,6 +1565,16 @@ mod tests {
         assert_eq!(parse_hunk_new_start("@@ -1 +1,3 @@"), Some(1));
         assert_eq!(parse_hunk_new_start("@@ -10,5 +20 @@"), Some(20));
         assert_eq!(parse_hunk_new_start("not a hunk"), None);
+    }
+
+    #[test]
+    fn render_edit_block_uses_orange_box() {
+        let lines = render_edit_block(&["Rename renderer".to_string()], 80);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].to_string().starts_with('─'));
+        assert!(lines[1].to_string().starts_with("Rename renderer"));
+        assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
+        assert!(lines[2].to_string().ends_with('╯'));
     }
 
     #[test]

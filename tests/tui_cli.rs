@@ -136,6 +136,7 @@ fn renders_traces_and_entries_for_current_directory() {
     assert!(stdout.contains("\u{2713} Rewrite config"));
     assert!(stdout.contains(&trace_id[..10]));
     assert!(stdout.contains("summary: Update x constant"));
+    assert!(stdout.contains("Edit change"));
 }
 
 #[test]

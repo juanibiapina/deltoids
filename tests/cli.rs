@@ -28,6 +28,15 @@ fn run_edit_with_args_and_env(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    let data_home_fallback = if envs.iter().any(|(k, _)| *k == "XDG_DATA_HOME") {
+        None
+    } else {
+        Some(tempdir().unwrap())
+    };
+    if let Some(ref data_home) = data_home_fallback {
+        command.env("XDG_DATA_HOME", data_home.path());
+    }
+
     for (key, value) in envs {
         command.env(key, value);
     }

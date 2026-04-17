@@ -19,6 +19,15 @@ fn run_write_with_env(envs: &[(&str, &std::path::Path)], input: &[u8]) -> Output
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    let data_home_fallback = if envs.iter().any(|(k, _)| *k == "XDG_DATA_HOME") {
+        None
+    } else {
+        Some(tempdir().unwrap())
+    };
+    if let Some(ref data_home) = data_home_fallback {
+        command.env("XDG_DATA_HOME", data_home.path());
+    }
+
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -36,6 +45,7 @@ fn run_write_with_env(envs: &[(&str, &std::path::Path)], input: &[u8]) -> Output
 #[test]
 fn rewrites_a_file_with_shorthand_flags() {
     let dir = tempdir().unwrap();
+    let data_home = tempdir().unwrap();
     let file_path = dir.path().join("shorthand.json");
     fs::write(&file_path, "{\n  \"version\": 1\n}\n").unwrap();
 
@@ -46,6 +56,7 @@ fn rewrites_a_file_with_shorthand_flags() {
             "--summary",
             "Rewrite config",
         ])
+        .env("XDG_DATA_HOME", data_home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

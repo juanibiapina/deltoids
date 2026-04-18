@@ -6,7 +6,11 @@
 //! function a change belongs to.
 
 use serde::{Deserialize, Serialize};
+use similar::{DiffOp, DiffTag, TextDiff};
 use tree_sitter::{Node, Point};
+
+const MAX_SCOPE_LINES: usize = 50;
+const DEFAULT_CONTEXT: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -181,6 +185,262 @@ pub fn compute_hunk_scopes(diff: &str, original: &str, path: &str) -> Vec<HunkSc
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Scope-expanded diff
+// ---------------------------------------------------------------------------
+
+/// Generate a unified diff with scope-expanded context.
+///
+/// For each change, if the innermost enclosing scope is ≤ 50 lines,
+/// the context is expanded to cover the full scope. Otherwise, 3 lines
+/// of context are used (the standard default).
+///
+/// Falls back to standard 3-line context for unsupported languages.
+pub fn scope_expanded_diff(original: &str, updated: &str, path: &str) -> String {
+    let text_diff = TextDiff::from_lines(original, updated);
+    let ops = text_diff.ops().to_vec();
+
+    // No changes -> empty string (matching similar's behavior)
+    if ops.iter().all(|op| op.tag() == DiffTag::Equal) {
+        return String::new();
+    }
+
+    // Parse for scope info; fallback to standard diff if unsupported
+    let parsed = match crate::syntax::parse_file(path, original) {
+        Some(p) => p,
+        None => return crate::raw_unified_diff(original, updated),
+    };
+
+    let root = parsed.tree.root_node();
+    let source_bytes = original.as_bytes();
+    let total_old = text_diff.old_len();
+
+    let merged = compute_merged_context_ranges(
+        &ops,
+        root,
+        source_bytes,
+        parsed.scope_kinds,
+        total_old,
+    );
+
+    if merged.is_empty() {
+        return String::new();
+    }
+
+    // Build hunks
+    use std::fmt::Write;
+    let mut output = String::new();
+    writeln!(output, "--- original").unwrap();
+    writeln!(output, "+++ modified").unwrap();
+
+    for &(ctx_start, ctx_end) in &merged {
+        write_hunk(&text_diff, &ops, ctx_start, ctx_end, &mut output);
+    }
+
+    output
+}
+
+fn compute_merged_context_ranges(
+    ops: &[DiffOp],
+    root: Node,
+    source_bytes: &[u8],
+    scope_kinds: &[&str],
+    total_old: usize,
+) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
+    for op in ops {
+        if op.tag() == DiffTag::Equal {
+            continue;
+        }
+
+        let old_range = op.old_range();
+        let scope_line = if old_range.is_empty() {
+            old_range.start.saturating_sub(1)
+        } else {
+            old_range.start
+        };
+
+        let scopes = enclosing_scopes(root, source_bytes, scope_line, scope_kinds);
+        let innermost = scopes.last();
+
+        let (start, end) = match innermost {
+            Some(s) if (s.end_line - s.start_line + 1) <= MAX_SCOPE_LINES => {
+                // Convert 1-indexed to 0-indexed
+                (s.start_line - 1, s.end_line - 1)
+            }
+            _ => default_context_range(&old_range, total_old),
+        };
+
+        ranges.push((start, end));
+    }
+
+    // Merge overlapping/adjacent ranges
+    ranges.sort();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 + 1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    merged
+}
+
+fn default_context_range(
+    old_range: &std::ops::Range<usize>,
+    total_old: usize,
+) -> (usize, usize) {
+    let start = old_range.start.saturating_sub(DEFAULT_CONTEXT);
+    let change_end = if old_range.is_empty() {
+        old_range.start
+    } else {
+        old_range.end
+    };
+    let end = if total_old == 0 {
+        0
+    } else {
+        (change_end + DEFAULT_CONTEXT - 1).min(total_old - 1)
+    };
+    (start, end)
+}
+
+fn write_hunk(
+    text_diff: &TextDiff<'_, '_, str>,
+    ops: &[DiffOp],
+    ctx_start: usize,
+    ctx_end: usize,
+    out: &mut String,
+) {
+    use std::fmt::Write;
+
+    let hunk_old_start = ctx_start;
+    let mut hunk_new_start: Option<usize> = None;
+    let mut old_count = 0usize;
+    let mut new_count = 0usize;
+    let mut body = String::new();
+
+    for op in ops {
+        let old_range = op.old_range();
+        let new_range = op.new_range();
+
+        match op.tag() {
+            DiffTag::Equal => {
+                let vis_start = old_range.start.max(ctx_start);
+                let vis_end = old_range.end.min(ctx_end + 1);
+                if vis_start >= vis_end {
+                    continue;
+                }
+
+                let offset = vis_start - old_range.start;
+                if hunk_new_start.is_none() {
+                    hunk_new_start = Some(new_range.start + offset);
+                }
+
+                for i in vis_start..vis_end {
+                    let slice = text_diff.old_slice(i).unwrap();
+                    write!(body, " {slice}").unwrap();
+                    if !slice.ends_with('\n') {
+                        body.push('\n');
+                        body.push_str("\\ No newline at end of file\n");
+                    }
+                    old_count += 1;
+                    new_count += 1;
+                }
+            }
+            DiffTag::Delete => {
+                if old_range.end <= ctx_start || old_range.start > ctx_end {
+                    continue;
+                }
+
+                if hunk_new_start.is_none() {
+                    hunk_new_start = Some(new_range.start);
+                }
+
+                for i in old_range.clone() {
+                    let slice = text_diff.old_slice(i).unwrap();
+                    write!(body, "-{slice}").unwrap();
+                    if !slice.ends_with('\n') {
+                        body.push('\n');
+                        body.push_str("\\ No newline at end of file\n");
+                    }
+                    old_count += 1;
+                }
+            }
+            DiffTag::Insert => {
+                if old_range.start < ctx_start || old_range.start > ctx_end + 1 {
+                    continue;
+                }
+
+                if hunk_new_start.is_none() {
+                    hunk_new_start = Some(new_range.start);
+                }
+
+                for i in new_range.clone() {
+                    let slice = text_diff.new_slice(i).unwrap();
+                    write!(body, "+{slice}").unwrap();
+                    if !slice.ends_with('\n') {
+                        body.push('\n');
+                        body.push_str("\\ No newline at end of file\n");
+                    }
+                    new_count += 1;
+                }
+            }
+            DiffTag::Replace => {
+                if old_range.end <= ctx_start || old_range.start > ctx_end {
+                    continue;
+                }
+
+                if hunk_new_start.is_none() {
+                    hunk_new_start = Some(new_range.start);
+                }
+
+                for i in old_range.clone() {
+                    let slice = text_diff.old_slice(i).unwrap();
+                    write!(body, "-{slice}").unwrap();
+                    if !slice.ends_with('\n') {
+                        body.push('\n');
+                        body.push_str("\\ No newline at end of file\n");
+                    }
+                    old_count += 1;
+                }
+                for i in new_range.clone() {
+                    let slice = text_diff.new_slice(i).unwrap();
+                    write!(body, "+{slice}").unwrap();
+                    if !slice.ends_with('\n') {
+                        body.push('\n');
+                        body.push_str("\\ No newline at end of file\n");
+                    }
+                    new_count += 1;
+                }
+            }
+        }
+    }
+
+    if body.is_empty() {
+        return;
+    }
+
+    let hunk_new_start = hunk_new_start.unwrap_or(0);
+    let old_hdr = format_hunk_range(hunk_old_start, old_count);
+    let new_hdr = format_hunk_range(hunk_new_start, new_count);
+    writeln!(out, "@@ -{old_hdr} +{new_hdr} @@").unwrap();
+    out.push_str(&body);
+}
+
+fn format_hunk_range(start: usize, count: usize) -> String {
+    let display_start = start + 1;
+    match count {
+        0 => format!("{},{}", display_start.saturating_sub(1), 0),
+        1 => format!("{display_start}"),
+        _ => format!("{display_start},{count}"),
+    }
 }
 
 /// Inject scope context into `@@` hunk headers of a unified diff.
@@ -565,5 +825,172 @@ impl Foo {
         // Both old and new start should be populated from the @@ header
         assert!(scopes[0].hunk_old_start > 0);
         assert!(scopes[0].hunk_new_start > 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // scope_expanded_diff tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn expanded_diff_covers_full_function() {
+        // A 10-line function: change inside should show the full function.
+        let original = "\
+fn setup() {}
+
+fn compute(x: i32) -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = x + a + b + c + d;
+    e
+}
+
+fn teardown() {}
+";
+        let updated = original.replace("let c = 3", "let c = 99");
+        let diff = scope_expanded_diff(original, &updated, "test.rs");
+
+        // The full function should be visible as context
+        assert!(diff.contains(" fn compute(x: i32) -> i32 {"), "should show fn header");
+        assert!(diff.contains(" }\n"), "should show closing brace");
+        assert!(diff.contains("-    let c = 3;"), "should show removed line");
+        assert!(diff.contains("+    let c = 99;"), "should show added line");
+    }
+
+    #[test]
+    fn expanded_diff_covers_full_struct() {
+        let original = "\
+fn unrelated() {}
+
+struct Config {
+    name: String,
+    value: i32,
+    enabled: bool,
+}
+
+fn also_unrelated() {}
+";
+        let updated = original.replace("value: i32", "value: u64");
+        let diff = scope_expanded_diff(original, &updated, "test.rs");
+
+        assert!(diff.contains(" struct Config {"), "should show struct header");
+        assert!(diff.contains(" }\n"), "should show closing brace");
+        assert!(!diff.contains("unrelated"), "should not show unrelated functions");
+    }
+
+    #[test]
+    fn expanded_diff_top_level_uses_3_line_context() {
+        // Top-level change (no enclosing scope) should use 3-line context.
+        let original = "\
+let a = 1;
+let b = 2;
+let c = 3;
+let d = 4;
+let e = 5;
+let f = 6;
+let g = 7;
+let h = 8;
+";
+        let updated = original.replace("let e = 5", "let e = 99");
+        let diff = scope_expanded_diff(original, &updated, "test.rs");
+
+        // 3 lines of context before and after the change
+        assert!(diff.contains(" let b = 2;\n"), "should show 3rd line before change");
+        assert!(diff.contains(" let h = 8;\n"), "should show 3rd line after change");
+        assert!(!diff.contains("let a = 1"), "should not show 4th line before change");
+    }
+
+    #[test]
+    fn expanded_diff_large_scope_falls_back_to_3_lines() {
+        // Build a function with > 50 lines.
+        let mut lines = vec!["fn big_function() {".to_string()];
+        for i in 0..55 {
+            lines.push(format!("    let x{i} = {i};"));
+        }
+        lines.push("}".to_string());
+        lines.push(String::new());
+        let original = lines.join("\n");
+
+        // Change a line in the middle (line ~30)
+        let updated = original.replace("let x30 = 30", "let x30 = 999");
+        let diff = scope_expanded_diff(&original, &updated, "test.rs");
+
+        // Should NOT show the full function (too big)
+        assert!(!diff.contains("fn big_function"), "should not show full scope > 50 lines");
+        // Should show 3-line context
+        assert!(diff.contains("let x27"), "should show 3rd line before change");
+        assert!(diff.contains("let x33"), "should show 3rd line after change");
+    }
+
+    #[test]
+    fn expanded_diff_two_functions_separate_hunks() {
+        // Two functions with enough gap between them to force separate hunks.
+        let original = "\
+fn first() {
+    let a = 1;
+    let b = 2;
+}
+
+
+
+
+
+
+
+fn second() {
+    let c = 3;
+    let d = 4;
+}
+";
+        let updated = original
+            .replace("let a = 1", "let a = 10")
+            .replace("let c = 3", "let c = 30");
+        let diff = scope_expanded_diff(original, &updated, "test.rs");
+
+        // Should have two separate hunks
+        let hunk_count = diff.lines().filter(|l| l.starts_with("@@")).count();
+        assert_eq!(hunk_count, 2, "expected 2 hunks, got diff:\n{diff}");
+
+        // Each hunk should cover its function
+        assert!(diff.contains(" fn first()"), "should show first function header");
+        assert!(diff.contains(" fn second()"), "should show second function header");
+    }
+
+    #[test]
+    fn expanded_diff_two_changes_same_function_one_hunk() {
+        let original = "\
+fn compute() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    a + b + c + d
+}
+";
+        let updated = original
+            .replace("let a = 1", "let a = 10")
+            .replace("let d = 4", "let d = 40");
+        let diff = scope_expanded_diff(original, &updated, "test.rs");
+
+        // Both changes are in the same function, so one hunk
+        let hunk_count = diff.lines().filter(|l| l.starts_with("@@")).count();
+        assert_eq!(hunk_count, 1, "expected 1 hunk, got diff:\n{diff}");
+    }
+
+    #[test]
+    fn expanded_diff_unsupported_language_uses_3_line_context() {
+        let original = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n";
+        let updated = original.replace("line5", "LINE5");
+        let diff = scope_expanded_diff(original, &updated, "data.xyz");
+
+        // Unsupported language falls back to standard 3-line context
+        assert!(diff.contains("--- original"));
+        assert!(diff.contains("+++ modified"));
+        assert!(diff.contains("-line5"));
+        assert!(diff.contains("+LINE5"));
+        // 3-line context
+        assert!(diff.contains(" line2\n"), "should show 3rd line before change");
+        assert!(diff.contains(" line8\n"), "should show 3rd line after change");
     }
 }

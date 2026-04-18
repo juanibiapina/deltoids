@@ -705,9 +705,18 @@ fn short_trace_id(trace_id: &str) -> String {
     }
 }
 
+/// Return the best available diff text for TUI display.
+/// Prefers the scope-expanded diff; falls back to the standard diff.
+fn tui_diff(entry: &HistoryEntry) -> Option<&str> {
+    entry
+        .expanded_diff
+        .as_deref()
+        .or(entry.diff.as_deref())
+}
+
 fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
     if entry.ok {
-        if entry.diff.is_some() {
+        if tui_diff(entry).is_some() {
             return detail_diff_lines(entry);
         }
     } else if let Some(error) = &entry.error {
@@ -718,9 +727,7 @@ fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
 }
 
 fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
-    let diff_lines = entry
-        .diff
-        .as_deref()
+    let diff_lines = tui_diff(entry)
         .unwrap_or_default()
         .lines()
         .filter(|line| !line.starts_with("---") && !line.starts_with("+++"))
@@ -772,9 +779,7 @@ fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
 }
 
 fn diff_hunk_count(entry: &HistoryEntry) -> usize {
-    entry
-        .diff
-        .as_deref()
+    tui_diff(entry)
         .unwrap_or_default()
         .lines()
         .filter(|line| line.starts_with("@@"))
@@ -1608,6 +1613,7 @@ mod tests {
                     .to_string(),
             ),
             error: None,
+            expanded_diff: None,
             scopes: Vec::new(),
         }
     }
@@ -1629,6 +1635,7 @@ mod tests {
                     .to_string(),
             ),
             error: None,
+            expanded_diff: None,
             scopes: Vec::new(),
         }
     }

@@ -310,7 +310,16 @@ fn reload_traces(
 
     // Invalidate caches.
     state.diff_cache = None;
-    state.diff_scroll = 0;
+
+    // Reset scroll only when the selected entry changed (trace disappeared
+    // or entry index was clamped). When the same entry is still selected the
+    // user may be reviewing the diff, so preserve their scroll position.
+    let selection_changed = prev_trace_id.as_deref()
+        != traces.get(state.trace_index).map(|t| t.trace.trace_id.as_str())
+        || clamped != prev_entry_index;
+    if selection_changed {
+        state.diff_scroll = 0;
+    }
 
     Ok(())
 }
@@ -1999,6 +2008,110 @@ mod tests {
             "01JTESTTRACE00000000000000"
         );
         assert!(state.diff_cache.is_none());
+    }
+
+    /// Helper that simulates `reload_traces` selection-restore and scroll
+    /// logic without disk IO.
+    fn simulate_reload(
+        traces: &mut Vec<LoadedTrace>,
+        state: &mut AppState,
+        new_traces: Vec<LoadedTrace>,
+    ) {
+        let prev_trace_id = traces
+            .get(state.trace_index)
+            .map(|t| t.trace.trace_id.clone());
+        let prev_entry_index = state.entry_index();
+
+        *traces = new_traces;
+        state.entry_indices = vec![0; traces.len()];
+        state.trace_index = prev_trace_id
+            .as_deref()
+            .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
+            .unwrap_or(0);
+
+        let entry_count = traces
+            .get(state.trace_index)
+            .map(|t| t.entries.len())
+            .unwrap_or(0);
+        let clamped = if entry_count == 0 {
+            0
+        } else {
+            prev_entry_index.min(entry_count - 1)
+        };
+        state.set_entry_index(clamped);
+        state.diff_cache = None;
+
+        let selection_changed = prev_trace_id.as_deref()
+            != traces.get(state.trace_index).map(|t| t.trace.trace_id.as_str())
+            || clamped != prev_entry_index;
+        if selection_changed {
+            state.diff_scroll = 0;
+        }
+    }
+
+    #[test]
+    fn reload_preserves_scroll_when_selection_unchanged() {
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        };
+        let mut traces = vec![trace.clone()];
+        let mut state = AppState::new(traces.len());
+        state.diff_scroll = 42;
+
+        // Reload with same trace, same entries.
+        let updated = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a updated"),
+            entries: vec![edit_entry(), write_entry()],
+        };
+        simulate_reload(&mut traces, &mut state, vec![updated]);
+
+        assert_eq!(state.diff_scroll, 42, "scroll should be preserved");
+    }
+
+    #[test]
+    fn reload_resets_scroll_when_trace_disappears() {
+        let trace_a = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        };
+        let trace_b = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
+            entries: vec![edit_entry()],
+        };
+        let mut traces = vec![trace_a.clone(), trace_b];
+        let mut state = AppState::new(traces.len());
+        state.trace_index = 1;
+        state.set_entry_index(0);
+        state.diff_scroll = 15;
+
+        // trace_b disappears.
+        simulate_reload(&mut traces, &mut state, vec![trace_a]);
+
+        assert_eq!(state.trace_index, 0);
+        assert_eq!(state.diff_scroll, 0, "scroll should reset when trace gone");
+    }
+
+    #[test]
+    fn reload_resets_scroll_when_entry_index_clamped() {
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 3, "a"),
+            entries: vec![edit_entry(), write_entry(), edit_entry()],
+        };
+        let mut traces = vec![trace];
+        let mut state = AppState::new(traces.len());
+        state.set_entry_index(2);
+        state.diff_scroll = 20;
+
+        // Entries shrink to 1, so entry_index 2 gets clamped to 0.
+        let shrunk = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a shrunk"),
+            entries: vec![edit_entry()],
+        };
+        simulate_reload(&mut traces, &mut state, vec![shrunk]);
+
+        assert_eq!(state.entry_index(), 0);
+        assert_eq!(state.diff_scroll, 0, "scroll should reset when entry clamped");
     }
 
     #[test]

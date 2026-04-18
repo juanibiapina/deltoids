@@ -29,6 +29,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
 use crate::intraline::{self, EmphKind, EmphSection, LineEmphasis};
+use crate::scope::HunkScopes;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
@@ -1014,7 +1015,7 @@ fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Lin
         return vec![labeled_line("error", rest, Color::Red)];
     }
 
-    render_diff_line(entry, line, width)
+    render_diff_line(entry, line, width, &entry.scopes)
 }
 
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
@@ -1027,7 +1028,12 @@ fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
     ])
 }
 
-fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
+fn render_diff_line(
+    entry: &HistoryEntry,
+    line: &str,
+    width: usize,
+    scopes: &[HunkScopes],
+) -> Vec<Line<'static>> {
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
         return vec![syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width)];
     }
@@ -1043,7 +1049,14 @@ fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<
         return vec![syntax_diff_line(content, Color::Reset, &entry.path, width)];
     }
     if line.starts_with("@@") {
-        return render_hunk_separator(line, &entry.path, width);
+        // Look up structural scopes for this hunk.
+        let ancestors = parse_hunk_new_start(line).and_then(|new_start| {
+            scopes
+                .iter()
+                .find(|s| s.hunk_new_start == new_start)
+                .map(|s| s.ancestors.as_slice())
+        });
+        return render_hunk_separator(line, &entry.path, width, ancestors);
     }
 
     vec![Line::from(Span::raw(fit_line(line, width)))]
@@ -1229,7 +1242,118 @@ fn parse_hunk_new_start(line: &str) -> Option<usize> {
     after_plus[..end].parse().ok()
 }
 
-fn render_hunk_separator(line: &str, path: &str, width: usize) -> Vec<Line<'static>> {
+fn render_hunk_separator(
+    line: &str,
+    path: &str,
+    width: usize,
+    ancestors: Option<&[crate::scope::ScopeNode]>,
+) -> Vec<Line<'static>> {
+    // If we have structural scope ancestors, render the multi-line breadcrumb box.
+    if let Some(ancestors) = ancestors {
+        if !ancestors.is_empty() {
+            return render_breadcrumb_box(ancestors, path, width);
+        }
+    }
+
+    // Fall back to the legacy single-line rendering.
+    render_hunk_separator_legacy(line, path, width)
+}
+
+fn render_breadcrumb_box(
+    ancestors: &[crate::scope::ScopeNode],
+    path: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(TOKYONIGHT_BLUE);
+    let max_content_width = width.saturating_sub(2); // room for " │"
+
+    // Compute the widest line number for right-alignment.
+    let max_line_num = ancestors
+        .iter()
+        .map(|a| a.start_line)
+        .max()
+        .unwrap_or(0);
+    let num_col_width = max_line_num.to_string().len();
+
+    // Build content rows: ancestor lines with optional "..." gaps between.
+    struct Row {
+        line_num: Option<usize>,
+        text: Option<String>, // None for "..." rows
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, ancestor) in ancestors.iter().enumerate() {
+        if i > 0 {
+            let prev = &ancestors[i - 1];
+            if prev.start_line + 1 < ancestor.start_line {
+                rows.push(Row {
+                    line_num: None,
+                    text: None,
+                });
+            }
+        }
+        rows.push(Row {
+            line_num: Some(ancestor.start_line),
+            text: Some(ancestor.text.clone()),
+        });
+    }
+
+    // Compute the widest rendered line for box width.
+    let prefix_width = num_col_width + 2; // "NNN: "
+    let mut max_row_width = 0usize;
+    for row in &rows {
+        let row_width = match &row.text {
+            Some(text) => prefix_width + display_width(text),
+            None => prefix_width + 3, // "..."
+        };
+        max_row_width = max_row_width.max(row_width);
+    }
+    let content_width = max_row_width.min(max_content_width);
+
+    let top = format!("{}╮", "─".repeat(content_width + 1));
+    let bot = format!("{}╯", "─".repeat(content_width + 1));
+
+    let mut lines = vec![Line::from(Span::styled(top, border))];
+
+    for row in &rows {
+        match &row.text {
+            Some(text) => {
+                let num_str = format!("{:>width$}: ", row.line_num.unwrap_or(0), width = num_col_width);
+                let available_text_width = content_width.saturating_sub(prefix_width);
+                let (mut code_spans, code_width) = highlighted_spans(
+                    path,
+                    text,
+                    Style::default(),
+                    available_text_width.max(1),
+                );
+                let padding = content_width.saturating_sub(prefix_width + code_width);
+
+                let mut spans = vec![Span::styled(num_str, border)];
+                spans.append(&mut code_spans);
+                if padding > 0 {
+                    spans.push(Span::raw(" ".repeat(padding)));
+                }
+                spans.push(Span::styled(" │", border));
+                lines.push(Line::from(spans));
+            }
+            None => {
+                // "..." gap row
+                let dots = format!("{:>width$}  ...", "", width = num_col_width);
+                let padding = content_width.saturating_sub(display_width(&dots));
+                let mut spans = vec![Span::styled(dots, border)];
+                if padding > 0 {
+                    spans.push(Span::raw(" ".repeat(padding)));
+                }
+                spans.push(Span::styled(" │", border));
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+
+    lines.push(Line::from(Span::styled(bot, border)));
+    lines
+}
+
+fn render_hunk_separator_legacy(line: &str, path: &str, width: usize) -> Vec<Line<'static>> {
     // Parse optional function context from `@@ -N,M +N,M @@ context`.
     let context = line
         .find("@@ ")
@@ -1475,6 +1599,7 @@ mod tests {
                     .to_string(),
             ),
             error: None,
+            scopes: Vec::new(),
         }
     }
 
@@ -1495,6 +1620,7 @@ mod tests {
                     .to_string(),
             ),
             error: None,
+            scopes: Vec::new(),
         }
     }
 
@@ -1997,7 +2123,7 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_boxed_label_with_line_number_and_context() {
-        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80);
+        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80, None);
         assert_eq!(lines.len(), 3, "expected 3 lines for box");
 
         let top = lines[0].to_string();
@@ -2021,7 +2147,7 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_line_number_only_when_no_context() {
-        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80);
+        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None);
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
         assert!(mid.contains("7"), "mid should contain line number");
@@ -2031,7 +2157,7 @@ mod tests {
     #[test]
     fn hunk_separator_renders_empty_for_no_info() {
         // Malformed line with no parseable info.
-        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80);
+        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None);
         assert_eq!(lines.len(), 1, "should fall back to single empty line");
     }
 
@@ -2206,5 +2332,153 @@ mod tests {
             .iter()
             .all(|s| s.style.bg == Some(DIFF_ADDED_BG));
         assert!(plus_has_plain, "unpaired plus should use plain bg");
+    }
+
+    // -----------------------------------------------------------------------
+    // Breadcrumb box tests
+    // -----------------------------------------------------------------------
+
+    fn scope_node(kind: &str, name: &str, start: usize, end: usize, text: &str) -> crate::scope::ScopeNode {
+        crate::scope::ScopeNode {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            start_line: start,
+            end_line: end,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn breadcrumb_box_renders_multi_ancestor_with_line_numbers() {
+        let ancestors = vec![
+            scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
+            scope_node("function_item", "compute", 75, 80, "    fn compute(&self) -> i32 {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -74,7 +75,7 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+        );
+        // top border + 2 ancestor lines + dots row + bottom border = 5
+        assert_eq!(lines.len(), 5, "expected 5 lines for breadcrumb box with gap");
+
+        let top = lines[0].to_string();
+        assert!(top.starts_with('\u{2500}'), "top starts with ─");
+        assert!(top.ends_with('\u{256e}'), "top ends with ╮");
+
+        // First ancestor line should contain " 3: impl Foo {"
+        let mid1 = lines[1].to_string();
+        assert!(mid1.contains(" 3:"), "first ancestor should show line 3");
+        assert!(mid1.contains("impl Foo"), "first ancestor should show impl Foo");
+        assert!(mid1.ends_with('│'), "ancestor line ends with │");
+
+        // Dots line
+        let dots = lines[2].to_string();
+        assert!(dots.contains("..."), "gap marker should contain ...");
+
+        // Second ancestor line should contain "75:"
+        let mid2 = lines[3].to_string();
+        assert!(mid2.contains("75:"), "second ancestor should show line 75");
+        assert!(mid2.contains("fn compute"), "second ancestor should show fn compute");
+
+        let bot = lines[4].to_string();
+        assert!(bot.ends_with('\u{256f}'), "bot ends with ╯");
+    }
+
+    #[test]
+    fn breadcrumb_box_no_dots_for_adjacent_ancestors() {
+        let ancestors = vec![
+            scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
+            scope_node("function_item", "new", 4, 10, "    fn new() -> Self {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -4,3 +4,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+        );
+        // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
+        assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
+        // No dots line
+        for line in &lines {
+            assert!(!line.to_string().contains("..."), "no dots for adjacent scopes");
+        }
+    }
+
+    #[test]
+    fn breadcrumb_box_single_ancestor() {
+        let ancestors = vec![
+            scope_node("function_item", "bar", 6, 10, "fn bar(a: i32, b: i32) -> i32 {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -6,3 +6,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+        );
+        // top + 1 ancestor + bottom = 3
+        assert_eq!(lines.len(), 3);
+        let mid = lines[1].to_string();
+        assert!(mid.contains("6:"), "should show line number");
+        assert!(mid.contains("fn bar"), "should show function");
+    }
+
+    #[test]
+    fn breadcrumb_box_empty_ancestors_falls_back_to_legacy() {
+        // Empty ancestors should fall back to legacy @@ parsing
+        let lines = render_hunk_separator(
+            "@@ -1,3 +7,3 @@ fn hello() {",
+            "src/lib.rs",
+            80,
+            Some(&[]),
+        );
+        // Legacy rendering: top + mid + bot = 3
+        assert_eq!(lines.len(), 3);
+        let mid = lines[1].to_string();
+        assert!(mid.contains("7:"), "legacy: line number from @@");
+        assert!(mid.contains("fn hello"), "legacy: context from @@");
+    }
+
+    #[test]
+    fn breadcrumb_box_line_numbers_right_aligned() {
+        let ancestors = vec![
+            scope_node("impl_item", "Server", 1, 200, "impl Server {"),
+            scope_node("function_item", "handle", 120, 150, "    if let Some(val) = body {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -120,3 +120,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+        );
+        // Line numbers should be right-aligned: "  1:" and "120:"
+        let mid1 = lines[1].to_string();
+        let mid2 = lines[3].to_string(); // after dots row
+        assert!(
+            mid1.starts_with("  1:"),
+            "line 1 should be padded to 3 digits, got: {mid1:?}"
+        );
+        assert!(
+            mid2.starts_with("120:"),
+            "line 120 should take full width, got: {mid2:?}"
+        );
+    }
+
+    #[test]
+    fn breadcrumb_box_deep_nesting() {
+        let ancestors = vec![
+            scope_node("impl_item", "Server", 1, 200, "impl Server {"),
+            scope_node("function_item", "handle", 45, 180, "    fn handle(&self, req: Request) {"),
+            scope_node("function_item", "body", 120, 140, "        if let Some(val) = body {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -120,3 +120,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+        );
+        // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
+        assert_eq!(lines.len(), 7, "expected 7 lines for deep nesting with two gaps");
     }
 }

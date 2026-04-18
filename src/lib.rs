@@ -95,6 +95,7 @@ struct EditHistoryEntry {
     ok: bool,
     edits: Vec<TextEdit>,
     diff: String,
+    scopes: Vec<scope::HunkScopes>,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +126,7 @@ struct WriteHistoryEntry {
     ok: bool,
     content: String,
     diff: String,
+    scopes: Vec<scope::HunkScopes>,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,6 +163,8 @@ pub struct HistoryEntry {
     pub diff: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<scope::HunkScopes>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,7 +240,9 @@ fn try_execute_edit(
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
-    let diff = render_diff(&original, &updated, &request.path);
+    let raw_diff = raw_unified_diff(&original, &updated);
+    let scopes = scope::compute_hunk_scopes(&raw_diff, &original, &request.path);
+    let diff = scope::inject_scope_context(&raw_diff, &original, &request.path);
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -254,6 +260,7 @@ fn try_execute_edit(
             ok: true,
             edits: request.edits.clone(),
             diff: diff.clone(),
+            scopes,
         },
     )?;
 
@@ -282,7 +289,9 @@ fn try_execute_write(
     } else {
         String::new()
     };
-    let diff = render_diff(&original, &request.content, &request.path);
+    let raw_diff = raw_unified_diff(&original, &request.content);
+    let scopes = scope::compute_hunk_scopes(&raw_diff, &original, &request.path);
+    let diff = scope::inject_scope_context(&raw_diff, &original, &request.path);
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -311,6 +320,7 @@ fn try_execute_write(
             ok: true,
             content: request.content.clone(),
             diff: diff.clone(),
+            scopes,
         },
     )?;
 
@@ -649,11 +659,16 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
     Ok(())
 }
 
-pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
+/// Generate a plain unified diff without scope injection.
+fn raw_unified_diff(original: &str, updated: &str) -> String {
     let text_diff = TextDiff::from_lines(original, updated);
     let mut diff = text_diff.unified_diff();
     diff.context_radius(3).header("original", "modified");
-    let raw = diff.to_string();
+    diff.to_string()
+}
+
+pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
+    let raw = raw_unified_diff(original, updated);
     scope::inject_scope_context(&raw, original, path)
 }
 

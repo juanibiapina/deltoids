@@ -16,6 +16,27 @@ const DEFAULT_CONTEXT: usize = 3;
 // Data types
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineKind {
+    Added,
+    Removed,
+    Context,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hunk {
+    pub old_start: usize,
+    pub new_start: usize,
+    pub lines: Vec<DiffLine>,
+    pub ancestors: Vec<ScopeNode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopeNode {
     pub kind: String,
@@ -128,6 +149,96 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     let end = after_plus.find([',', ' '])?;
     let new_start = after_plus[..end].parse().ok()?;
     Some((old_start, new_start))
+}
+
+/// Parse a unified diff and enrich each hunk with scope information.
+///
+/// Takes a raw unified diff and the original (old) file content.
+/// Returns one `Hunk` per `@@` header, with lines parsed and ancestors populated.
+pub fn enrich_diff(diff: &str, old_content: &str, path: &str) -> Vec<Hunk> {
+    let parsed = crate::syntax::parse_file(path, old_content);
+    let mut hunks = Vec::new();
+    let lines: Vec<&str> = diff.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with("@@") {
+            let (old_start, new_start) = parse_hunk_header(line).unwrap_or((1, 1));
+            let hunk_start_idx = i;
+            let mut diff_lines = Vec::new();
+
+            i += 1;
+            while i < lines.len() && !lines[i].starts_with("@@") {
+                let l = lines[i];
+                if l.starts_with('+') && !l.starts_with("+++") {
+                    diff_lines.push(DiffLine {
+                        kind: LineKind::Added,
+                        content: l[1..].to_string(),
+                    });
+                } else if l.starts_with('-') && !l.starts_with("---") {
+                    diff_lines.push(DiffLine {
+                        kind: LineKind::Removed,
+                        content: l[1..].to_string(),
+                    });
+                } else if l.starts_with(' ') {
+                    diff_lines.push(DiffLine {
+                        kind: LineKind::Context,
+                        content: l[1..].to_string(),
+                    });
+                }
+                i += 1;
+            }
+
+            // Compute ancestors from first changed line
+            let ancestors = match &parsed {
+                Some(p) => {
+                    let change_line = find_first_change_line(&lines, hunk_start_idx, old_start);
+                    match change_line {
+                        Some(cl) => {
+                            let ts_line = cl.saturating_sub(1);
+                            enclosing_scopes(
+                                p.tree.root_node(),
+                                old_content.as_bytes(),
+                                ts_line,
+                                p.scope_kinds,
+                            )
+                        }
+                        None => Vec::new(),
+                    }
+                }
+                None => Vec::new(),
+            };
+
+            hunks.push(Hunk {
+                old_start,
+                new_start,
+                lines: diff_lines,
+                ancestors,
+            });
+        } else {
+            i += 1;
+        }
+    }
+
+    hunks
+}
+
+/// Find the line number of the first changed line in a hunk.
+fn find_first_change_line(lines: &[&str], hunk_start: usize, old_start: usize) -> Option<usize> {
+    let mut offset = 0;
+    for l in &lines[(hunk_start + 1)..] {
+        if l.starts_with("@@") || l.starts_with("---") || l.starts_with("+++") {
+            break;
+        }
+        if l.starts_with('-') || l.starts_with('+') {
+            return Some(old_start + offset);
+        }
+        if l.starts_with(' ') {
+            offset += 1;
+        }
+    }
+    None
 }
 
 /// Compute structural scope ancestors for each hunk in a diff.
@@ -508,6 +619,124 @@ mod tests {
         let mut diff = text_diff.unified_diff();
         diff.context_radius(3).header("original", "modified");
         diff.to_string()
+    }
+
+    // -----------------------------------------------------------------------
+    // enrich_diff tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enrich_diff_empty_returns_empty() {
+        let hunks = enrich_diff("", "", "test.rs");
+        assert!(hunks.is_empty());
+    }
+
+    #[test]
+    fn enrich_diff_single_added_line() {
+        let diff = "\
+--- original
++++ modified
+@@ -1 +1,2 @@
+ line1
++line2
+";
+        let hunks = enrich_diff(diff, "line1\n", "test.txt");
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[0].new_start, 1);
+        assert_eq!(hunks[0].lines.len(), 2);
+        assert_eq!(hunks[0].lines[0].kind, LineKind::Context);
+        assert_eq!(hunks[0].lines[0].content, "line1");
+        assert_eq!(hunks[0].lines[1].kind, LineKind::Added);
+        assert_eq!(hunks[0].lines[1].content, "line2");
+    }
+
+    #[test]
+    fn enrich_diff_multiple_hunks() {
+        let diff = "\
+--- original
++++ modified
+@@ -1,3 +1,3 @@
+ line1
+-line2
++LINE2
+ line3
+@@ -10,3 +10,3 @@
+ line10
+-line11
++LINE11
+ line12
+";
+        let hunks = enrich_diff(diff, "", "test.txt");
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[1].old_start, 10);
+    }
+
+    #[test]
+    fn enrich_diff_populates_ancestors_for_rust() {
+        let original = "\
+fn compute() {
+    let x = 1;
+    let y = 2;
+}
+";
+        let updated = original.replace("let x = 1", "let x = 10");
+        let diff = raw_diff(original, &updated);
+        let hunks = enrich_diff(&diff, original, "test.rs");
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].ancestors.len(), 1);
+        assert_eq!(hunks[0].ancestors[0].kind, "function_item");
+        assert_eq!(hunks[0].ancestors[0].name, "compute");
+    }
+
+    #[test]
+    fn enrich_diff_nested_scope_impl_and_function() {
+        let original = "\
+struct Foo;
+
+impl Foo {
+    fn compute(&self) -> i32 {
+        let x = 1;
+        x + 1
+    }
+}
+";
+        let updated = original.replace("x + 1", "x + 2");
+        let diff = raw_diff(original, &updated);
+        let hunks = enrich_diff(&diff, original, "test.rs");
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].ancestors.len(), 2);
+        assert_eq!(hunks[0].ancestors[0].kind, "impl_item");
+        assert_eq!(hunks[0].ancestors[0].name, "Foo");
+        assert_eq!(hunks[0].ancestors[1].kind, "function_item");
+        assert_eq!(hunks[0].ancestors[1].name, "compute");
+    }
+
+    #[test]
+    fn enrich_diff_unsupported_language_empty_ancestors() {
+        let diff = "\
+--- original
++++ modified
+@@ -1,3 +1,3 @@
+ line1
+-line2
++LINE2
+ line3
+";
+        let hunks = enrich_diff(diff, "line1\nline2\nline3\n", "data.xyz");
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].ancestors.is_empty());
+    }
+
+    #[test]
+    fn enrich_diff_top_level_code_empty_ancestors() {
+        let original = "let x = 1;\nlet y = 2;\n";
+        let updated = "let x = 1;\nlet y = 3;\n";
+        let diff = raw_diff(original, updated);
+        let hunks = enrich_diff(&diff, original, "test.rs");
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].ancestors.is_empty());
     }
 
     #[test]

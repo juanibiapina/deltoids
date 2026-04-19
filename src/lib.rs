@@ -95,6 +95,7 @@ struct EditHistoryEntry {
     #[serde(rename = "expandedDiff")]
     expanded_diff: String,
     scopes: Vec<deltoids::scope::HunkScopes>,
+    hunks: Vec<deltoids::Hunk>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +129,7 @@ struct WriteHistoryEntry {
     #[serde(rename = "expandedDiff")]
     expanded_diff: String,
     scopes: Vec<deltoids::scope::HunkScopes>,
+    hunks: Vec<deltoids::Hunk>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +170,8 @@ pub struct HistoryEntry {
     pub expanded_diff: Option<String>,
     #[serde(default)]
     pub scopes: Vec<deltoids::scope::HunkScopes>,
+    #[serde(default)]
+    pub hunks: Vec<deltoids::Hunk>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,9 +247,10 @@ fn try_execute_edit(
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
-    let raw_diff = deltoids::raw_unified_diff(&original, &updated);
+    let raw_diff = raw_unified_diff(&original, &updated);
     let expanded = deltoids::scope::scope_expanded_diff(&original, &updated, &request.path);
     let scopes = deltoids::scope::compute_hunk_scopes(&expanded, &original, &request.path);
+    let hunks = deltoids::enrich_diff(&expanded, &original, &request.path);
     let diff = deltoids::scope::inject_scope_context(&raw_diff, &original, &request.path);
     let expanded_diff = deltoids::scope::inject_scope_context(&expanded, &original, &request.path);
 
@@ -255,7 +260,7 @@ fn try_execute_edit(
     append_trace_entry(
         trace_id,
         &EditHistoryEntry {
-            v: 1,
+            v: 2,
             tool: "edit",
             trace_id: trace_id.to_string(),
             timestamp: current_timestamp(),
@@ -267,6 +272,7 @@ fn try_execute_edit(
             diff: diff.clone(),
             expanded_diff,
             scopes,
+            hunks,
         },
     )?;
 
@@ -295,9 +301,10 @@ fn try_execute_write(
     } else {
         String::new()
     };
-    let raw_diff = deltoids::raw_unified_diff(&original, &request.content);
+    let raw_diff = raw_unified_diff(&original, &request.content);
     let expanded = deltoids::scope::scope_expanded_diff(&original, &request.content, &request.path);
     let scopes = deltoids::scope::compute_hunk_scopes(&expanded, &original, &request.path);
+    let hunks = deltoids::enrich_diff(&expanded, &original, &request.path);
     let diff = deltoids::scope::inject_scope_context(&raw_diff, &original, &request.path);
     let expanded_diff = deltoids::scope::inject_scope_context(&expanded, &original, &request.path);
 
@@ -318,7 +325,7 @@ fn try_execute_write(
     append_trace_entry(
         trace_id,
         &WriteHistoryEntry {
-            v: 1,
+            v: 2,
             tool: "write",
             trace_id: trace_id.to_string(),
             timestamp: current_timestamp(),
@@ -330,6 +337,7 @@ fn try_execute_write(
             diff: diff.clone(),
             expanded_diff,
             scopes,
+            hunks,
         },
     )?;
 
@@ -668,8 +676,17 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
     Ok(())
 }
 
+/// Generate a plain unified diff.
+pub(crate) fn raw_unified_diff(original: &str, updated: &str) -> String {
+    use similar::TextDiff;
+    let text_diff = TextDiff::from_lines(original, updated);
+    let mut diff = text_diff.unified_diff();
+    diff.context_radius(3).header("original", "modified");
+    diff.to_string()
+}
+
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
-    let raw = deltoids::raw_unified_diff(original, updated);
+    let raw = raw_unified_diff(original, updated);
     deltoids::scope::inject_scope_context(&raw, original, path)
 }
 

@@ -727,6 +727,12 @@ fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
 }
 
 fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
+    // Use hunks if available (v2 entries)
+    if !entry.hunks.is_empty() {
+        return detail_diff_lines_from_hunks(entry);
+    }
+
+    // Fall back to parsing diff text (v1 entries)
     let diff_lines = tui_diff(entry)
         .unwrap_or_default()
         .lines()
@@ -773,6 +779,62 @@ fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
         }
 
         result.push(line);
+    }
+
+    result
+}
+
+fn detail_diff_lines_from_hunks(entry: &HistoryEntry) -> Vec<String> {
+    use deltoids::LineKind;
+
+    let mut result = Vec::new();
+    let hunk_count = entry.hunks.len();
+    let mut next_edit_index = 0usize;
+
+    for (hunk_index, hunk) in entry.hunks.iter().enumerate() {
+        // Add blank line between hunks
+        if !result.is_empty() {
+            result.push(String::new());
+        }
+
+        // Add edit summaries before the hunk
+        if !entry.edits.is_empty() {
+            let remaining_hunks = hunk_count.saturating_sub(hunk_index);
+            let remaining_edits = entry.edits.len().saturating_sub(next_edit_index);
+            let edits_for_this_hunk = if remaining_edits == 0 {
+                0
+            } else if remaining_edits <= remaining_hunks {
+                1
+            } else {
+                remaining_edits - (remaining_hunks - 1)
+            };
+
+            let edit_slice = &entry.edits[next_edit_index..next_edit_index + edits_for_this_hunk];
+            result.extend(
+                edit_slice
+                    .iter()
+                    .map(|edit| format!("edit-summary: {}", edit.summary)),
+            );
+            next_edit_index += edits_for_this_hunk;
+        }
+
+        // Add the @@ header line
+        let old_count = hunk.lines.iter().filter(|l| l.kind != LineKind::Added).count();
+        let new_count = hunk.lines.iter().filter(|l| l.kind != LineKind::Removed).count();
+        result.push(format!(
+            "@@ -{},{} +{},{} @@",
+            hunk.old_start, old_count, hunk.new_start, new_count
+        ));
+
+        // Add the diff lines
+        for line in &hunk.lines {
+            let prefix = match line.kind {
+                LineKind::Added => '+',
+                LineKind::Removed => '-',
+                LineKind::Context => ' ',
+            };
+            result.push(format!("{}{}", prefix, line.content));
+        }
     }
 
     result
@@ -1627,6 +1689,7 @@ mod tests {
             error: None,
             expanded_diff: None,
             scopes: Vec::new(),
+            hunks: Vec::new(),
         }
     }
 
@@ -1649,6 +1712,7 @@ mod tests {
             error: None,
             expanded_diff: None,
             scopes: Vec::new(),
+            hunks: Vec::new(),
         }
     }
 
@@ -1891,6 +1955,63 @@ mod tests {
         let lines = detail_diff_lines(&entry);
         assert!(lines.contains(&"edit-summary: first change".to_string()));
         assert!(lines.contains(&"edit-summary: second change".to_string()));
+    }
+
+    #[test]
+    fn detail_diff_lines_renders_from_hunks_when_available() {
+        use deltoids::{DiffLine, Hunk, LineKind, ScopeNode};
+
+        let mut entry = edit_entry();
+        entry.diff = None; // No diff text
+        entry.hunks = vec![Hunk {
+            old_start: 5,
+            new_start: 5,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Context,
+                    content: "context line".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: "old line".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "new line".to_string(),
+                },
+            ],
+            ancestors: vec![ScopeNode {
+                kind: "function_item".to_string(),
+                name: "my_func".to_string(),
+                start_line: 3,
+                end_line: 10,
+                text: "fn my_func() {".to_string(),
+            }],
+        }];
+
+        let lines = detail_diff_lines(&entry);
+
+        // Should have hunk separator + diff lines
+        assert!(lines.iter().any(|l| l.starts_with("@@")), "should have hunk header");
+        assert!(lines.iter().any(|l| l == " context line"), "should have context line");
+        assert!(lines.iter().any(|l| l == "-old line"), "should have removed line");
+        assert!(lines.iter().any(|l| l == "+new line"), "should have added line");
+    }
+
+    #[test]
+    fn detail_diff_lines_falls_back_to_diff_text_when_hunks_empty() {
+        let mut entry = edit_entry();
+        entry.diff = Some(
+            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+        );
+        entry.hunks = Vec::new(); // v1 entry
+
+        let lines = detail_diff_lines(&entry);
+
+        // Should parse from diff text
+        assert!(lines.iter().any(|l| l.starts_with("@@")), "should have hunk header");
+        assert!(lines.iter().any(|l| l == "-old"), "should have removed line");
+        assert!(lines.iter().any(|l| l == "+new"), "should have added line");
     }
 
     #[test]

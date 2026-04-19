@@ -1,6 +1,8 @@
 pub mod scope;
 pub mod syntax;
 
+pub use scope::{DiffLine, Hunk, LineKind, ScopeNode, enrich_diff};
+
 use similar::TextDiff;
 
 /// Generate a plain unified diff without scope injection.

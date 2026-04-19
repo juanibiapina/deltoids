@@ -1,4 +1,4 @@
-pub mod scope;
+mod scope;
 pub mod syntax;
 
 pub use scope::{DiffLine, Hunk, LineKind, ScopeNode, enrich_diff};

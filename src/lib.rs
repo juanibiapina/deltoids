@@ -92,9 +92,6 @@ struct EditHistoryEntry {
     ok: bool,
     edits: Vec<TextEdit>,
     diff: String,
-    #[serde(rename = "expandedDiff")]
-    expanded_diff: String,
-    scopes: Vec<deltoids::scope::HunkScopes>,
     hunks: Vec<deltoids::Hunk>,
 }
 
@@ -126,9 +123,6 @@ struct WriteHistoryEntry {
     ok: bool,
     content: String,
     diff: String,
-    #[serde(rename = "expandedDiff")]
-    expanded_diff: String,
-    scopes: Vec<deltoids::scope::HunkScopes>,
     hunks: Vec<deltoids::Hunk>,
 }
 
@@ -166,10 +160,6 @@ pub struct HistoryEntry {
     pub diff: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
-    #[serde(default, rename = "expandedDiff")]
-    pub expanded_diff: Option<String>,
-    #[serde(default)]
-    pub scopes: Vec<deltoids::scope::HunkScopes>,
     #[serde(default)]
     pub hunks: Vec<deltoids::Hunk>,
 }
@@ -248,11 +238,8 @@ fn try_execute_edit(
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
     let raw_diff = raw_unified_diff(&original, &updated);
-    let expanded = deltoids::scope::scope_expanded_diff(&original, &updated, &request.path);
-    let scopes = deltoids::scope::compute_hunk_scopes(&expanded, &original, &request.path);
-    let hunks = deltoids::enrich_diff(&expanded, &original, &request.path);
-    let diff = deltoids::scope::inject_scope_context(&raw_diff, &original, &request.path);
-    let expanded_diff = deltoids::scope::inject_scope_context(&expanded, &original, &request.path);
+    let hunks = deltoids::enrich_diff(&raw_diff, &original, &request.path);
+    let diff = inject_scope_from_hunks(&raw_diff, &hunks);
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -270,8 +257,6 @@ fn try_execute_edit(
             ok: true,
             edits: request.edits.clone(),
             diff: diff.clone(),
-            expanded_diff,
-            scopes,
             hunks,
         },
     )?;
@@ -302,11 +287,8 @@ fn try_execute_write(
         String::new()
     };
     let raw_diff = raw_unified_diff(&original, &request.content);
-    let expanded = deltoids::scope::scope_expanded_diff(&original, &request.content, &request.path);
-    let scopes = deltoids::scope::compute_hunk_scopes(&expanded, &original, &request.path);
-    let hunks = deltoids::enrich_diff(&expanded, &original, &request.path);
-    let diff = deltoids::scope::inject_scope_context(&raw_diff, &original, &request.path);
-    let expanded_diff = deltoids::scope::inject_scope_context(&expanded, &original, &request.path);
+    let hunks = deltoids::enrich_diff(&raw_diff, &original, &request.path);
+    let diff = inject_scope_from_hunks(&raw_diff, &hunks);
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -335,8 +317,6 @@ fn try_execute_write(
             ok: true,
             content: request.content.clone(),
             diff: diff.clone(),
-            expanded_diff,
-            scopes,
             hunks,
         },
     )?;
@@ -685,9 +665,39 @@ pub(crate) fn raw_unified_diff(original: &str, updated: &str) -> String {
     diff.to_string()
 }
 
+/// Inject scope context from hunks into @@ headers.
+///
+/// For each hunk header in the diff, appends the innermost ancestor's text
+/// (trimmed) if available.
+fn inject_scope_from_hunks(diff: &str, hunks: &[deltoids::Hunk]) -> String {
+    let diff_lines: Vec<&str> = diff.lines().collect();
+    let mut result = Vec::with_capacity(diff_lines.len());
+    let mut hunk_idx = 0;
+
+    for line in diff_lines {
+        if line.starts_with("@@") {
+            if let Some(hunk) = hunks.get(hunk_idx) {
+                if let Some(innermost) = hunk.ancestors.last() {
+                    result.push(format!("{} {}", line, innermost.text.trim()));
+                } else {
+                    result.push(line.to_string());
+                }
+                hunk_idx += 1;
+            } else {
+                result.push(line.to_string());
+            }
+        } else {
+            result.push(line.to_string());
+        }
+    }
+
+    result.join("\n")
+}
+
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
     let raw = raw_unified_diff(original, updated);
-    deltoids::scope::inject_scope_context(&raw, original, path)
+    let hunks = deltoids::enrich_diff(&raw, original, path);
+    inject_scope_from_hunks(&raw, &hunks)
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {

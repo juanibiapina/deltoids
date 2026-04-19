@@ -29,7 +29,6 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
 use crate::intraline::{self, EmphKind, EmphSection, LineEmphasis};
-use deltoids::scope::HunkScopes;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
@@ -705,83 +704,18 @@ fn short_trace_id(trace_id: &str) -> String {
     }
 }
 
-/// Return the best available diff text for TUI display.
-/// Prefers the scope-expanded diff; falls back to the standard diff.
-fn tui_diff(entry: &HistoryEntry) -> Option<&str> {
-    entry
-        .expanded_diff
-        .as_deref()
-        .or(entry.diff.as_deref())
-}
-
 fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
     if entry.ok {
-        if tui_diff(entry).is_some() {
-            return detail_diff_lines(entry);
+        // v1 entries have empty hunks - show deprecation message
+        if entry.hunks.is_empty() {
+            return vec!["(old format, cannot display)".to_string()];
         }
+        return detail_diff_lines_from_hunks(entry);
     } else if let Some(error) = &entry.error {
         return vec![format!("error: {error}")];
     }
 
     Vec::new()
-}
-
-fn detail_diff_lines(entry: &HistoryEntry) -> Vec<String> {
-    // Use hunks if available (v2 entries)
-    if !entry.hunks.is_empty() {
-        return detail_diff_lines_from_hunks(entry);
-    }
-
-    // Fall back to parsing diff text (v1 entries)
-    let diff_lines = tui_diff(entry)
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| !line.starts_with("---") && !line.starts_with("+++"))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-
-    let hunk_count = diff_lines
-        .iter()
-        .filter(|line| line.starts_with("@@"))
-        .count();
-    if entry.edits.is_empty() || hunk_count == 0 {
-        return diff_lines;
-    }
-
-    let mut result = Vec::with_capacity(diff_lines.len() + entry.edits.len() * 2);
-    let mut next_edit_index = 0usize;
-    let mut seen_hunks = 0usize;
-
-    for line in diff_lines {
-        if line.starts_with("@@") {
-            if !result.is_empty() && !result.last().is_some_and(String::is_empty) {
-                result.push(String::new());
-            }
-
-            let remaining_hunks = hunk_count.saturating_sub(seen_hunks);
-            let remaining_edits = entry.edits.len().saturating_sub(next_edit_index);
-            let edits_for_this_hunk = if remaining_edits == 0 {
-                0
-            } else if remaining_edits <= remaining_hunks {
-                1
-            } else {
-                remaining_edits - (remaining_hunks - 1)
-            };
-
-            let edit_slice = &entry.edits[next_edit_index..next_edit_index + edits_for_this_hunk];
-            result.extend(
-                edit_slice
-                    .iter()
-                    .map(|edit| format!("edit-summary: {}", edit.summary)),
-            );
-            next_edit_index += edits_for_this_hunk;
-            seen_hunks += 1;
-        }
-
-        result.push(line);
-    }
-
-    result
 }
 
 fn detail_diff_lines_from_hunks(entry: &HistoryEntry) -> Vec<String> {
@@ -841,11 +775,7 @@ fn detail_diff_lines_from_hunks(entry: &HistoryEntry) -> Vec<String> {
 }
 
 fn diff_hunk_count(entry: &HistoryEntry) -> usize {
-    tui_diff(entry)
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| line.starts_with("@@"))
-        .count()
+    entry.hunks.len()
 }
 
 fn count_label(count: usize, singular: &str, plural: &str) -> String {
@@ -1091,7 +1021,7 @@ fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Lin
         return vec![labeled_line("error", rest, Color::Red)];
     }
 
-    render_diff_line(entry, line, width, &entry.scopes, entry.expanded_diff.is_some())
+    render_diff_line(entry, line, width)
 }
 
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
@@ -1108,8 +1038,6 @@ fn render_diff_line(
     entry: &HistoryEntry,
     line: &str,
     width: usize,
-    scopes: &[HunkScopes],
-    scope_expanded: bool,
 ) -> Vec<Line<'static>> {
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
         return vec![syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width)];
@@ -1126,14 +1054,15 @@ fn render_diff_line(
         return vec![syntax_diff_line(content, Color::Reset, &entry.path, width)];
     }
     if line.starts_with("@@") {
-        // Look up structural scopes for this hunk.
+        // Look up structural scopes for this hunk from entry.hunks.
         let ancestors = parse_hunk_new_start(line).and_then(|new_start| {
-            scopes
+            entry
+                .hunks
                 .iter()
-                .find(|s| s.hunk_new_start == new_start)
-                .map(|s| s.ancestors.as_slice())
+                .find(|h| h.new_start == new_start)
+                .map(|h| h.ancestors.as_slice())
         });
-        return render_hunk_separator(line, &entry.path, width, ancestors, scope_expanded);
+        return render_hunk_separator(line, &entry.path, width, ancestors);
     }
 
     vec![Line::from(Span::raw(fit_line(line, width)))]
@@ -1323,22 +1252,11 @@ fn render_hunk_separator(
     line: &str,
     path: &str,
     width: usize,
-    ancestors: Option<&[deltoids::scope::ScopeNode]>,
-    scope_expanded: bool,
+    ancestors: Option<&[deltoids::ScopeNode]>,
 ) -> Vec<Line<'static>> {
     // If we have structural scope ancestors, render the multi-line breadcrumb box.
     if let Some(ancestors) = ancestors {
         if !ancestors.is_empty() {
-            if scope_expanded {
-                // The expanded diff already shows the innermost scope as
-                // context, so drop it from the breadcrumb box.
-                let outer = &ancestors[..ancestors.len() - 1];
-                if !outer.is_empty() {
-                    return render_breadcrumb_box(outer, path, width);
-                }
-                // Single ancestor with expanded context: skip the box entirely.
-                return vec![Line::raw(String::new())];
-            }
             return render_breadcrumb_box(ancestors, path, width);
         }
     }
@@ -1348,7 +1266,7 @@ fn render_hunk_separator(
 }
 
 fn render_breadcrumb_box(
-    ancestors: &[deltoids::scope::ScopeNode],
+    ancestors: &[deltoids::ScopeNode],
     path: &str,
     width: usize,
 ) -> Vec<Line<'static>> {
@@ -1687,8 +1605,6 @@ mod tests {
                     .to_string(),
             ),
             error: None,
-            expanded_diff: None,
-            scopes: Vec::new(),
             hunks: Vec::new(),
         }
     }
@@ -1710,8 +1626,6 @@ mod tests {
                     .to_string(),
             ),
             error: None,
-            expanded_diff: None,
-            scopes: Vec::new(),
             hunks: Vec::new(),
         }
     }
@@ -1901,8 +1815,9 @@ mod tests {
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
         assert!(output.contains("/tmp/project/app.txt"));
-        assert!(output.contains("edit • ok • 1 edit • 1 hunk"));
-        assert!(output.contains("Edit change"));
+        assert!(output.contains("edit • ok • 1 edit • 0 hunks"));
+        // v1 entries show deprecation message instead of diff content
+        assert!(output.contains("(old format, cannot display)"));
     }
 
     #[test]
@@ -1913,56 +1828,10 @@ mod tests {
     }
 
     #[test]
-    fn detail_diff_lines_places_edit_summary_before_hunk() {
-        let mut entry = edit_entry();
-        entry.diff = Some(
-            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn hello() {\n-const x = 1;\n+const x = 2;\n"
-                .to_string(),
-        );
-
-        let lines = detail_diff_lines(&entry);
-        let edit_index = lines
-            .iter()
-            .position(|line| line == "edit-summary: Edit change")
-            .unwrap();
-        let hunk_index = lines
-            .iter()
-            .position(|line| line.starts_with("@@"))
-            .unwrap();
-
-        assert!(edit_index < hunk_index);
-    }
-
-    #[test]
-    fn detail_diff_lines_groups_multiple_summaries_for_one_hunk() {
-        let mut entry = edit_entry();
-        entry.edits = vec![
-            TextEdit {
-                summary: "first change".to_string(),
-                old_text: "a".to_string(),
-                new_text: "b".to_string(),
-            },
-            TextEdit {
-                summary: "second change".to_string(),
-                old_text: "c".to_string(),
-                new_text: "d".to_string(),
-            },
-        ];
-        entry.diff = Some(
-            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn hello() {\n-old\n+new\n".to_string(),
-        );
-
-        let lines = detail_diff_lines(&entry);
-        assert!(lines.contains(&"edit-summary: first change".to_string()));
-        assert!(lines.contains(&"edit-summary: second change".to_string()));
-    }
-
-    #[test]
-    fn detail_diff_lines_renders_from_hunks_when_available() {
+    fn detail_lines_renders_from_hunks() {
         use deltoids::{DiffLine, Hunk, LineKind, ScopeNode};
 
         let mut entry = edit_entry();
-        entry.diff = None; // No diff text
         entry.hunks = vec![Hunk {
             old_start: 5,
             new_start: 5,
@@ -1989,29 +1858,22 @@ mod tests {
             }],
         }];
 
-        let lines = detail_diff_lines(&entry);
+        let lines = detail_lines(&entry);
 
         // Should have hunk separator + diff lines
-        assert!(lines.iter().any(|l| l.starts_with("@@")), "should have hunk header");
-        assert!(lines.iter().any(|l| l == " context line"), "should have context line");
-        assert!(lines.iter().any(|l| l == "-old line"), "should have removed line");
-        assert!(lines.iter().any(|l| l == "+new line"), "should have added line");
+        assert!(lines.iter().any(|l: &String| l.starts_with("@@")), "should have hunk header");
+        assert!(lines.iter().any(|l: &String| l == " context line"), "should have context line");
+        assert!(lines.iter().any(|l: &String| l == "-old line"), "should have removed line");
+        assert!(lines.iter().any(|l: &String| l == "+new line"), "should have added line");
     }
 
     #[test]
-    fn detail_diff_lines_falls_back_to_diff_text_when_hunks_empty() {
-        let mut entry = edit_entry();
-        entry.diff = Some(
-            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
-        );
-        entry.hunks = Vec::new(); // v1 entry
+    fn detail_lines_shows_deprecation_for_v1_entry() {
+        let entry = edit_entry(); // v1 entry with empty hunks
 
-        let lines = detail_diff_lines(&entry);
+        let lines = detail_lines(&entry);
 
-        // Should parse from diff text
-        assert!(lines.iter().any(|l| l.starts_with("@@")), "should have hunk header");
-        assert!(lines.iter().any(|l| l == "-old"), "should have removed line");
-        assert!(lines.iter().any(|l| l == "+new"), "should have added line");
+        assert_eq!(lines, vec!["(old format, cannot display)".to_string()]);
     }
 
     #[test]
@@ -2028,7 +1890,7 @@ mod tests {
 
         assert!(output.contains("> \u{2713} Rewrite config"));
         assert!(output.contains("Rewrite config"));
-        assert!(output.contains("write • ok • 1 hunk"));
+        assert!(output.contains("write • ok • 0 hunks"));
     }
 
     #[test]
@@ -2270,10 +2132,11 @@ mod tests {
         assert_eq!(lines[0].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
         assert!(lines[1].to_string().starts_with("/tmp/project/app.txt"));
         assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_BLUE));
+        // v1 entries have 0 hunks
         assert!(
             lines[2]
                 .to_string()
-                .starts_with("edit • ok • 1 edit • 1 hunk")
+                .starts_with("edit • ok • 1 edit • 0 hunks")
         );
         let bottom = lines[3].to_string();
         assert!(bottom.starts_with('─'));
@@ -2376,7 +2239,7 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_boxed_label_with_line_number_and_context() {
-        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80, None, false);
+        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80, None);
         assert_eq!(lines.len(), 3, "expected 3 lines for box");
 
         let top = lines[0].to_string();
@@ -2400,7 +2263,7 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_line_number_only_when_no_context() {
-        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None, false);
+        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None);
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
         assert!(mid.contains("7"), "mid should contain line number");
@@ -2410,7 +2273,7 @@ mod tests {
     #[test]
     fn hunk_separator_renders_empty_for_no_info() {
         // Malformed line with no parseable info.
-        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None, false);
+        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None);
         assert_eq!(lines.len(), 1, "should fall back to single empty line");
     }
 
@@ -2591,8 +2454,8 @@ mod tests {
     // Breadcrumb box tests
     // -----------------------------------------------------------------------
 
-    fn scope_node(kind: &str, name: &str, start: usize, end: usize, text: &str) -> deltoids::scope::ScopeNode {
-        deltoids::scope::ScopeNode {
+    fn scope_node(kind: &str, name: &str, start: usize, end: usize, text: &str) -> deltoids::ScopeNode {
+        deltoids::ScopeNode {
             kind: kind.to_string(),
             name: name.to_string(),
             start_line: start,
@@ -2612,7 +2475,6 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
-            false,
         );
         // top border + 2 ancestor lines + dots row + bottom border = 5
         assert_eq!(lines.len(), 5, "expected 5 lines for breadcrumb box with gap");
@@ -2651,7 +2513,6 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
-            false,
         );
         // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
         assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
@@ -2671,7 +2532,6 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
-            false,
         );
         // top + 1 ancestor + bottom = 3
         assert_eq!(lines.len(), 3);
@@ -2688,7 +2548,6 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&[]),
-            false,
         );
         // Legacy rendering: top + mid + bot = 3
         assert_eq!(lines.len(), 3);
@@ -2708,7 +2567,6 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
-            false,
         );
         // Line numbers should be right-aligned: "  1:" and "120:"
         let mid1 = lines[1].to_string();
@@ -2735,68 +2593,9 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
-            false,
         );
         // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
         assert_eq!(lines.len(), 7, "expected 7 lines for deep nesting with two gaps");
     }
 
-    #[test]
-    fn breadcrumb_expanded_single_ancestor_skips_box() {
-        let ancestors = vec![
-            scope_node("function_item", "bar", 6, 10, "fn bar(a: i32) -> i32 {"),
-        ];
-        let lines = render_hunk_separator(
-            "@@ -6,5 +6,5 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            true,
-        );
-        // Single ancestor with expanded diff: box is skipped entirely
-        assert_eq!(lines.len(), 1, "expected single empty line, got {lines:?}");
-        assert!(lines[0].to_string().is_empty(), "should be an empty line");
-    }
-
-    #[test]
-    fn breadcrumb_expanded_multi_ancestor_drops_innermost() {
-        let ancestors = vec![
-            scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
-            scope_node("function_item", "compute", 10, 20, "    fn compute(&self) -> i32 {"),
-        ];
-        let lines = render_hunk_separator(
-            "@@ -10,5 +10,5 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            true,
-        );
-        // Should show only outer ancestor (impl Foo), not the innermost (fn compute)
-        // top + 1 ancestor + bottom = 3
-        assert_eq!(lines.len(), 3, "expected 3 lines for one outer ancestor");
-        let mid = lines[1].to_string();
-        assert!(mid.contains("impl Foo"), "should show outer ancestor");
-        assert!(!mid.contains("fn compute"), "should not show innermost ancestor");
-    }
-
-    #[test]
-    fn breadcrumb_expanded_false_keeps_all_ancestors() {
-        let ancestors = vec![
-            scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
-            scope_node("function_item", "compute", 10, 20, "    fn compute(&self) -> i32 {"),
-        ];
-        let lines = render_hunk_separator(
-            "@@ -10,5 +10,5 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            false,
-        );
-        // Without scope expansion, should show both ancestors
-        // top + ancestor1 + dots + ancestor2 + bottom = 5
-        assert_eq!(lines.len(), 5, "expected 5 lines for two ancestors with gap");
-        let all_text: String = lines.iter().map(|l| l.to_string()).collect();
-        assert!(all_text.contains("impl Foo"), "should show outer");
-        assert!(all_text.contains("fn compute"), "should show inner");
-    }
 }

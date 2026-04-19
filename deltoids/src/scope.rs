@@ -184,7 +184,7 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 ///
 /// Takes a raw unified diff and the original (old) file content.
 /// Returns one `Hunk` per `@@` header, with lines parsed and ancestors populated.
-pub fn enrich_diff(diff: &str, old_content: &str, path: &str) -> Vec<Hunk> {
+fn enrich_diff(diff: &str, old_content: &str, path: &str) -> Vec<Hunk> {
     let parsed = crate::syntax::parse_file(path, old_content);
     let mut hunks = Vec::new();
     let lines: Vec<&str> = diff.lines().collect();

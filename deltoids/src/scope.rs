@@ -41,6 +41,75 @@ pub struct ScopeNode {
     pub text: String,
 }
 
+/// A unified diff enriched with tree-sitter scope information.
+///
+/// Use `Diff::compute()` to create a diff from original and updated content.
+/// The diff provides both raw unified diff text and structured hunks with
+/// ancestor scope chains.
+#[derive(Debug, Clone)]
+pub struct Diff {
+    hunks: Vec<Hunk>,
+    raw_text: String,
+}
+
+impl Diff {
+    /// Compute a diff between original and updated content.
+    ///
+    /// Parses the file using tree-sitter (if the language is supported) to
+    /// populate each hunk's ancestor scope chain.
+    pub fn compute(original: &str, updated: &str, path: &str) -> Self {
+        use similar::TextDiff;
+
+        let text_diff = TextDiff::from_lines(original, updated);
+        let mut diff = text_diff.unified_diff();
+        diff.context_radius(3).header("original", "modified");
+        let raw_text = diff.to_string();
+
+        let hunks = enrich_diff(&raw_text, original, path);
+
+        Diff { hunks, raw_text }
+    }
+
+    /// Returns the raw unified diff text.
+    pub fn to_unified(&self) -> &str {
+        &self.raw_text
+    }
+
+    /// Returns unified diff text with scope context injected into @@ headers.
+    ///
+    /// Each hunk header is appended with the innermost ancestor's source line
+    /// (trimmed), making it easier to see which function/struct a change belongs to.
+    pub fn to_unified_with_scope(&self) -> String {
+        let diff_lines: Vec<&str> = self.raw_text.lines().collect();
+        let mut result = Vec::with_capacity(diff_lines.len());
+        let mut hunk_idx = 0;
+
+        for line in diff_lines {
+            if line.starts_with("@@") {
+                if let Some(hunk) = self.hunks.get(hunk_idx) {
+                    if let Some(innermost) = hunk.ancestors.last() {
+                        result.push(format!("{} {}", line, innermost.text.trim()));
+                    } else {
+                        result.push(line.to_string());
+                    }
+                    hunk_idx += 1;
+                } else {
+                    result.push(line.to_string());
+                }
+            } else {
+                result.push(line.to_string());
+            }
+        }
+
+        result.join("\n")
+    }
+
+    /// Returns the enriched hunks.
+    pub fn hunks(&self) -> &[Hunk] {
+        &self.hunks
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core algorithm
 // ---------------------------------------------------------------------------
@@ -444,5 +513,91 @@ impl Foo {
         assert_eq!(parse_hunk_header("@@ -74,15 +75,14 @@"), Some((74, 75)));
         assert_eq!(parse_hunk_header("@@ -1 +1,3 @@"), Some((1, 1)));
         assert_eq!(parse_hunk_header("not a hunk"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Diff tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn diff_compute_produces_hunks_and_raw_text() {
+        let original = "line1\nline2\n";
+        let updated = "line1\nLINE2\n";
+        let diff = Diff::compute(original, updated, "test.txt");
+
+        assert_eq!(diff.hunks().len(), 1);
+        assert!(diff.to_unified().contains("-line2"));
+        assert!(diff.to_unified().contains("+LINE2"));
+    }
+
+    #[test]
+    fn diff_to_unified_returns_plain_diff() {
+        let original = "fn foo() {\n    1\n}\n";
+        let updated = "fn foo() {\n    2\n}\n";
+        let diff = Diff::compute(original, updated, "test.rs");
+
+        let unified = diff.to_unified();
+        // Plain diff @@ header should end with @@ (no scope appended)
+        let header = unified.lines().find(|l| l.starts_with("@@")).unwrap();
+        assert!(header.ends_with("@@"), "expected header to end with @@, got: {}", header);
+    }
+
+    #[test]
+    fn diff_to_unified_with_scope_injects_innermost_ancestor() {
+        let original = "fn compute() {\n    let x = 1;\n}\n";
+        let updated = "fn compute() {\n    let x = 2;\n}\n";
+        let diff = Diff::compute(original, updated, "test.rs");
+
+        let with_scope = diff.to_unified_with_scope();
+        // Should have scope context appended to @@ line
+        assert!(with_scope.contains("@@ -1,3 +1,3 @@ fn compute() {"));
+    }
+
+    #[test]
+    fn diff_to_unified_with_scope_nested_shows_innermost() {
+        let original = "\
+struct Foo;
+
+impl Foo {
+    fn compute(&self) -> i32 {
+        let x = 1;
+        x + 1
+    }
+}
+";
+        let updated = original.replace("x + 1", "x + 2");
+        let diff = Diff::compute(original, &updated, "test.rs");
+
+        let with_scope = diff.to_unified_with_scope();
+        // Should show innermost (function), not impl
+        assert!(with_scope.contains("fn compute(&self) -> i32 {"));
+    }
+
+    #[test]
+    fn diff_to_unified_with_scope_no_ancestors_unchanged() {
+        let original = "let x = 1;\nlet y = 2;\n";
+        let updated = "let x = 1;\nlet y = 3;\n";
+        let diff = Diff::compute(original, updated, "test.rs");
+
+        let plain = diff.to_unified();
+        let with_scope = diff.to_unified_with_scope();
+        // Top-level code has no ancestors, so @@ line should be unchanged
+        assert!(with_scope.contains("@@ -1,2 +1,2 @@"));
+        // Both should have the same @@ line (no scope appended)
+        let plain_header = plain.lines().find(|l| l.starts_with("@@")).unwrap();
+        let scope_header = with_scope.lines().find(|l| l.starts_with("@@")).unwrap();
+        assert_eq!(plain_header, scope_header);
+    }
+
+    #[test]
+    fn diff_hunks_returns_enriched_data() {
+        let original = "fn hello() {\n    println!(\"hi\");\n}\n";
+        let updated = "fn hello() {\n    println!(\"bye\");\n}\n";
+        let diff = Diff::compute(original, updated, "test.rs");
+
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].ancestors.len(), 1);
+        assert_eq!(hunks[0].ancestors[0].name, "hello");
     }
 }

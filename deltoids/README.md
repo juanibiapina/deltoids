@@ -1,6 +1,6 @@
 # deltoids
 
-A library for computing structural scope context from diffs using tree-sitter. Given a unified diff and source files, deltoids determines which functions, classes, modules, and other structural boundaries enclose each change.
+A library for computing structural scope context from diffs using tree-sitter. Given original and updated file content, deltoids generates a unified diff enriched with scope information (functions, classes, modules, etc.) for each hunk.
 
 The library produces data, not presentation. Consumers own their rendering.
 
@@ -10,7 +10,66 @@ Rust, Python, JavaScript, TypeScript, TSX, Go, Ruby, Java, C, C++, Bash, Lua, CS
 
 ## API
 
-#### `deltoids::scope::ScopeNode`
+### `Diff`
+
+The main entry point. Computes a diff and enriches it with tree-sitter scope information.
+
+```rust
+use deltoids::Diff;
+
+let original = "fn foo() {\n    1\n}\n";
+let updated = "fn foo() {\n    2\n}\n";
+
+let diff = Diff::compute(original, updated, "test.rs");
+
+// Get plain unified diff text
+let plain = diff.to_unified();
+
+// Get unified diff with scope context in @@ headers
+let with_scope = diff.to_unified_with_scope();
+// @@ -1,3 +1,3 @@ fn foo() {
+
+// Get structured hunks for serialization or custom rendering
+let hunks = diff.hunks();
+```
+
+### `Hunk`
+
+A parsed diff hunk with scope information.
+
+```rust
+pub struct Hunk {
+    pub old_start: usize,
+    pub new_start: usize,
+    pub lines: Vec<DiffLine>,
+    pub ancestors: Vec<ScopeNode>,
+}
+```
+
+- `old_start`, `new_start`: 1-indexed line numbers from the hunk header
+- `lines`: The diff lines (context, added, removed)
+- `ancestors`: Enclosing scopes from outermost to innermost
+
+### `DiffLine`
+
+A single line in a hunk.
+
+```rust
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub content: String,
+}
+
+pub enum LineKind {
+    Added,
+    Removed,
+    Context,
+}
+```
+
+### `ScopeNode`
+
+One structural ancestor in a scope chain.
 
 ```rust
 pub struct ScopeNode {
@@ -22,73 +81,48 @@ pub struct ScopeNode {
 }
 ```
 
-One structural ancestor in a scope chain. `kind` is the tree-sitter node type. `name` is the extracted identifier (e.g. `"Config"` for an impl block, `"process"` for a function). `start_line` and `end_line` are 1-indexed. `text` is the opening source line with original indentation preserved. Serializable with serde.
+- `kind`: Tree-sitter node type (e.g., `"function_item"`, `"impl_item"`)
+- `name`: Extracted identifier (e.g., `"Config"` for an impl block)
+- `start_line`, `end_line`: 1-indexed line range
+- `text`: The opening source line with original indentation preserved
 
-#### `deltoids::scope::HunkScopes`
+## Examples
+
+### Get scope-enriched diff for display
 
 ```rust
-pub struct HunkScopes {
-    pub hunk_old_start: usize,
-    pub hunk_new_start: usize,
-    pub ancestors: Vec<ScopeNode>,
+use deltoids::Diff;
+
+let original = std::fs::read_to_string("src/config.rs").unwrap();
+let updated = apply_my_changes(&original);
+
+let diff = Diff::compute(&original, &updated, "src/config.rs");
+println!("{}", diff.to_unified_with_scope());
+// @@ -14,7 +14,7 @@ fn process(&self) -> Result {
+//  ...
+```
+
+### Inspect scope chains
+
+```rust
+use deltoids::Diff;
+
+let original = "\
+struct Foo;
+
+impl Foo {
+    fn compute(&self) -> i32 {
+        let x = 1;
+        x + 1
+    }
 }
-```
+";
+let updated = original.replace("x + 1", "x + 2");
 
-Scope data for one diff hunk. `ancestors` is ordered outermost to innermost. Serializable with serde.
+let diff = Diff::compute(original, &updated, "test.rs");
 
-#### `deltoids::scope::compute_hunk_scopes`
-
-```rust
-pub fn compute_hunk_scopes(diff: &str, original: &str, path: &str) -> Vec<HunkScopes>
-```
-
-Given a unified diff and the original file content, compute the full ancestor scope chain for each hunk. Returns one entry per `@@` header. Returns an empty vec for unsupported languages.
-
-#### `deltoids::scope::inject_scope_context`
-
-```rust
-pub fn inject_scope_context(diff: &str, original: &str, path: &str) -> String
-```
-
-Append the innermost scope's source line after each `@@` marker in a unified diff. Unsupported languages pass through unchanged.
-
-#### `deltoids::scope::scope_expanded_diff`
-
-```rust
-pub fn scope_expanded_diff(original: &str, updated: &str, path: &str) -> String
-```
-
-Generate a unified diff where context is expanded to cover the full innermost enclosing scope (up to 50 lines). Falls back to standard 3-line context for scopes larger than 50 lines or unsupported languages.
-
-This function takes the original and updated file contents (not a pre-computed diff) because it needs to recompute hunk boundaries based on scope ranges.
-
-## Usage
-
-### Enrich hunk headers with scope labels
-
-```rust
-use deltoids::scope::inject_scope_context;
-
-let diff = std::str::from_utf8(git_diff_output).unwrap();
-let original = std::fs::read_to_string("src/config.rs").unwrap();
-
-let enriched = inject_scope_context(diff, &original, "src/config.rs");
-// Before: @@ -14,7 +14,7 @@
-// After:  @@ -14,7 +14,7 @@ fn process(&self) -> Result {
-```
-
-### Get the full scope chain per hunk
-
-```rust
-use deltoids::scope::compute_hunk_scopes;
-
-let diff = std::str::from_utf8(git_diff_output).unwrap();
-let original = std::fs::read_to_string("src/config.rs").unwrap();
-
-let scopes = compute_hunk_scopes(diff, &original, "src/config.rs");
-
-for hunk in &scopes {
-    println!("hunk at line {}", hunk.hunk_new_start);
+for hunk in diff.hunks() {
+    println!("hunk at line {}", hunk.new_start);
     for ancestor in &hunk.ancestors {
         println!(
             "  {} {} (lines {}-{})",
@@ -96,20 +130,19 @@ for hunk in &scopes {
         );
     }
 }
-// hunk at line 14
-//   impl_item Config (lines 10-25)
-//   function_item process (lines 13-20)
+// hunk at line 3
+//   impl_item Foo (lines 3-8)
+//   function_item compute (lines 4-7)
 ```
 
-### Generate a scope-expanded diff
+### Store hunks for later use
 
 ```rust
-use deltoids::scope::scope_expanded_diff;
+use deltoids::{Diff, Hunk};
 
-let original = std::fs::read_to_string("src/config.rs").unwrap();
-let updated = apply_my_changes(&original);
+let diff = Diff::compute(original, updated, path);
+let hunks: Vec<Hunk> = diff.hunks().to_vec();
 
-let diff = scope_expanded_diff(&original, &updated, "src/config.rs");
-// Context lines cover the full enclosing function instead of the default 3 lines,
-// so reviewers see the structural context of each change.
+// Serialize for storage
+let json = serde_json::to_string(&hunks).unwrap();
 ```

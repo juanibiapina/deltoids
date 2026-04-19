@@ -237,9 +237,9 @@ fn try_execute_edit(
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
-    let raw_diff = raw_unified_diff(&original, &updated);
-    let hunks = deltoids::enrich_diff(&raw_diff, &original, &request.path);
-    let diff = inject_scope_from_hunks(&raw_diff, &hunks);
+    let computed = deltoids::Diff::compute(&original, &updated, &request.path);
+    let hunks = computed.hunks().to_vec();
+    let diff = computed.to_unified_with_scope();
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -286,9 +286,9 @@ fn try_execute_write(
     } else {
         String::new()
     };
-    let raw_diff = raw_unified_diff(&original, &request.content);
-    let hunks = deltoids::enrich_diff(&raw_diff, &original, &request.path);
-    let diff = inject_scope_from_hunks(&raw_diff, &hunks);
+    let computed = deltoids::Diff::compute(&original, &request.content, &request.path);
+    let hunks = computed.hunks().to_vec();
+    let diff = computed.to_unified_with_scope();
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -656,48 +656,8 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
     Ok(())
 }
 
-/// Generate a plain unified diff.
-pub(crate) fn raw_unified_diff(original: &str, updated: &str) -> String {
-    use similar::TextDiff;
-    let text_diff = TextDiff::from_lines(original, updated);
-    let mut diff = text_diff.unified_diff();
-    diff.context_radius(3).header("original", "modified");
-    diff.to_string()
-}
-
-/// Inject scope context from hunks into @@ headers.
-///
-/// For each hunk header in the diff, appends the innermost ancestor's text
-/// (trimmed) if available.
-fn inject_scope_from_hunks(diff: &str, hunks: &[deltoids::Hunk]) -> String {
-    let diff_lines: Vec<&str> = diff.lines().collect();
-    let mut result = Vec::with_capacity(diff_lines.len());
-    let mut hunk_idx = 0;
-
-    for line in diff_lines {
-        if line.starts_with("@@") {
-            if let Some(hunk) = hunks.get(hunk_idx) {
-                if let Some(innermost) = hunk.ancestors.last() {
-                    result.push(format!("{} {}", line, innermost.text.trim()));
-                } else {
-                    result.push(line.to_string());
-                }
-                hunk_idx += 1;
-            } else {
-                result.push(line.to_string());
-            }
-        } else {
-            result.push(line.to_string());
-        }
-    }
-
-    result.join("\n")
-}
-
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
-    let raw = raw_unified_diff(original, updated);
-    let hunks = deltoids::enrich_diff(&raw, original, path);
-    inject_scope_from_hunks(&raw, &hunks)
+    deltoids::Diff::compute(original, updated, path).to_unified_with_scope()
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {

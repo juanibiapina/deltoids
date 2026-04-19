@@ -1,5 +1,5 @@
 mod highlight;
-pub mod intraline;
+
 pub mod tui;
 
 use std::env;

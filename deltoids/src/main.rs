@@ -4,35 +4,14 @@
 //! information, and renders with syntax highlighting and breadcrumb boxes.
 //!
 //! Usage:
-//!   git config core.pager deltoids
-//!   git diff | deltoids --paging=never  # for lazygit
+//!   git diff | deltoids | less -R
+//!   git config core.pager 'deltoids | less -R'
 
-use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
-use std::process::{Command, Stdio};
+use std::io::{self, Read, Write};
+use std::process::Command;
 
 use regex::Regex;
-
-#[derive(Clone, Copy, PartialEq)]
-enum PagingMode {
-    Auto,
-    Always,
-    Never,
-}
-
-fn parse_args() -> PagingMode {
-    for arg in env::args().skip(1) {
-        if arg == "--paging=never" {
-            return PagingMode::Never;
-        } else if arg == "--paging=always" {
-            return PagingMode::Always;
-        } else if arg == "--paging=auto" {
-            return PagingMode::Auto;
-        }
-    }
-    PagingMode::Auto
-}
 
 use deltoids::Diff;
 use deltoids::parse::ParsedDiff;
@@ -42,8 +21,6 @@ use deltoids::reverse::reconstruct_before;
 const DEFAULT_WIDTH: usize = 120;
 
 fn main() {
-    let paging_mode = parse_args();
-
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
@@ -59,40 +36,8 @@ fn main() {
     let width = terminal_width().unwrap_or(DEFAULT_WIDTH);
     let output = process_diff(&input, width);
 
-    let use_pager = match paging_mode {
-        PagingMode::Always => true,
-        PagingMode::Never => false,
-        PagingMode::Auto => !io::stdin().is_terminal() && io::stdout().is_terminal(),
-    };
-
-    if use_pager {
-        pipe_to_less(&output);
-    } else {
-        print!("{output}");
-        let _ = io::stdout().flush();
-    }
-}
-
-fn pipe_to_less(content: &str) {
-    let mut child = match Command::new("less")
-        .args(["-R", "-F", "-X", "-K"])
-        .stdin(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => {
-            // less not available, print directly
-            print!("{content}");
-            let _ = io::stdout().flush();
-            return;
-        }
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(content.as_bytes());
-    }
-
-    let _ = child.wait();
+    print!("{output}");
+    let _ = io::stdout().flush();
 }
 
 fn strip_ansi(s: &str) -> String {

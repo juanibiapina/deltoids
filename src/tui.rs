@@ -28,7 +28,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
-use crate::intraline::{self, EmphKind, EmphSection, LineEmphasis};
+use deltoids::{compute_subhunk_emphasis, EmphKind, EmphSection, LineEmphasis};
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
@@ -923,7 +923,7 @@ fn render_subhunk(
     }
 
     let (minus_emphasis, plus_emphasis) =
-        intraline::compute_subhunk_emphasis(&minus_contents, &plus_contents);
+        compute_subhunk_emphasis(&minus_contents, &plus_contents);
 
     // Render in standard order (minus lines first, then plus lines, within
     // the subhunk). The lines are already in standard order from the diff.
@@ -2375,7 +2375,7 @@ mod tests {
 
     #[test]
     fn render_emphasized_line_paired_uses_emph_and_non_emph_bg() {
-        use crate::intraline::{EmphKind, EmphSection};
+        use deltoids::{EmphKind, EmphSection};
         let sections = vec![
             EmphSection {
                 kind: EmphKind::NonEmph,

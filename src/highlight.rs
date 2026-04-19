@@ -203,7 +203,7 @@ pub(crate) fn highlighted_spans(
     }
 }
 
-use crate::intraline::EmphSection;
+use deltoids::EmphSection;
 
 /// Produce syntax-highlighted spans with per-section background colors.
 ///

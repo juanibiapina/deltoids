@@ -9,6 +9,7 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect_assets::assets::HighlightingAssets;
 use unicode_width::UnicodeWidthStr;
 
+use crate::intraline::{compute_subhunk_emphasis, EmphKind, LineEmphasis};
 use crate::{Hunk, LineKind, ScopeNode};
 
 const TAB_WIDTH: usize = 4;
@@ -21,7 +22,9 @@ const BOLD: &str = "\x1b[1m";
 // TokyoNight-inspired colors
 const BLUE: &str = "\x1b[38;2;122;162;247m"; // RGB(122, 162, 247)
 const GREEN_BG: &str = "\x1b[48;2;32;48;59m"; // RGB(0x20, 0x30, 0x3b)
+const GREEN_EMPH_BG: &str = "\x1b[48;2;44;90;102m"; // RGB(0x2c, 0x5a, 0x66)
 const RED_BG: &str = "\x1b[48;2;55;34;44m"; // RGB(0x37, 0x22, 0x2c)
+const RED_EMPH_BG: &str = "\x1b[48;2;113;49;55m"; // RGB(0x71, 0x31, 0x37)
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
@@ -151,23 +154,29 @@ pub fn render_breadcrumb_box(ancestors: &[ScopeNode], path: &str, width: usize) 
 }
 
 /// Render a diff line with syntax highlighting and appropriate background.
-pub fn render_diff_line(kind: &LineKind, content: &str, path: &str) -> String {
-    let (prefix, bg) = match kind {
-        LineKind::Added => ("+", GREEN_BG),
-        LineKind::Removed => ("-", RED_BG),
-        LineKind::Context => (" ", ""),
+pub fn render_diff_line(kind: &LineKind, content: &str, path: &str, width: usize) -> String {
+    let bg = match kind {
+        LineKind::Added => GREEN_BG,
+        LineKind::Removed => RED_BG,
+        LineKind::Context => "",
     };
 
     let highlighted = highlight_line(content, path);
+    let content_width = display_width(content);
+    let padding = width.saturating_sub(content_width);
 
     if bg.is_empty() {
-        format!("{prefix}{highlighted}")
+        format!("{highlighted}{}{RESET}", " ".repeat(padding))
     } else {
-        format!("{bg}{prefix}{highlighted}{RESET}")
+        format!("{bg}{highlighted}{}{RESET}", " ".repeat(padding))
     }
 }
 
 /// Syntax-highlight a line and return ANSI-escaped string.
+/// 
+/// Note: This only sets foreground colors, not background. The caller is
+/// responsible for setting/resetting background. This allows background
+/// colors to persist across all tokens.
 pub fn highlight_line(line: &str, path: &str) -> String {
     let syntax = syntax_for_path(path);
     let mut highlighter = HighlightLines::new(syntax, theme());
@@ -179,21 +188,19 @@ pub fn highlight_line(line: &str, path: &str) -> String {
                 // Convert tabs to spaces
                 let text = text.replace('\t', &" ".repeat(TAB_WIDTH));
 
-                // Build ANSI escape sequence
+                // Build ANSI escape sequence for foreground only
+                // We don't reset here so background colors persist
                 let fg = format!(
                     "\x1b[38;2;{};{};{}m",
                     style.foreground.r, style.foreground.g, style.foreground.b
                 );
 
-                let mut modifiers = String::new();
                 if style.font_style.contains(FontStyle::BOLD) {
-                    modifiers.push_str(BOLD);
+                    result.push_str(BOLD);
                 }
 
                 result.push_str(&fg);
-                result.push_str(&modifiers);
                 result.push_str(&text);
-                result.push_str(RESET);
             }
             result
         }
@@ -215,6 +222,104 @@ fn display_width(s: &str) -> usize {
         }
     }
     width
+}
+
+/// Render a diff line with emphasis sections for intraline highlighting.
+pub fn render_diff_line_with_emphasis(
+    kind: &LineKind,
+    content: &str,
+    emphasis: &LineEmphasis,
+    path: &str,
+    width: usize,
+) -> String {
+    let (plain_bg, emph_bg) = match kind {
+        LineKind::Added => (GREEN_BG, GREEN_EMPH_BG),
+        LineKind::Removed => (RED_BG, RED_EMPH_BG),
+        LineKind::Context => return render_diff_line(kind, content, path, width),
+    };
+
+    match emphasis {
+        LineEmphasis::Plain => render_diff_line(kind, content, path, width),
+        LineEmphasis::Paired(sections) => {
+            let mut result = String::new();
+            result.push_str(plain_bg);
+
+            for section in sections {
+                let bg = match section.kind {
+                    EmphKind::Emph => emph_bg,
+                    EmphKind::NonEmph => plain_bg,
+                };
+                let highlighted = highlight_line(&section.text, path);
+                result.push_str(bg);
+                result.push_str(&highlighted);
+            }
+
+            // Pad to full width
+            let content_width = display_width(content);
+            let padding = width.saturating_sub(content_width);
+            result.push_str(&" ".repeat(padding));
+
+            result.push_str(RESET);
+            result
+        }
+    }
+}
+
+/// Render a subhunk (consecutive +/- lines) with intraline emphasis.
+///
+/// Extracts minus and plus lines, computes emphasis, and renders with
+/// word-level highlighting for changed portions.
+pub fn render_subhunk(lines: &[(LineKind, &str)], path: &str, width: usize) -> Vec<String> {
+    // Separate minus and plus lines
+    let mut minus_lines: Vec<&str> = Vec::new();
+    let mut plus_lines: Vec<&str> = Vec::new();
+
+    for (kind, content) in lines {
+        match kind {
+            LineKind::Removed => minus_lines.push(content),
+            LineKind::Added => plus_lines.push(content),
+            LineKind::Context => {}
+        }
+    }
+
+    // Compute emphasis
+    let (minus_emphasis, plus_emphasis) =
+        compute_subhunk_emphasis(&minus_lines, &plus_lines);
+
+    // Render in original order
+    let mut output = Vec::new();
+    let mut minus_idx = 0;
+    let mut plus_idx = 0;
+
+    for (kind, content) in lines {
+        match kind {
+            LineKind::Removed => {
+                output.push(render_diff_line_with_emphasis(
+                    kind,
+                    content,
+                    &minus_emphasis[minus_idx],
+                    path,
+                    width,
+                ));
+                minus_idx += 1;
+            }
+            LineKind::Added => {
+                output.push(render_diff_line_with_emphasis(
+                    kind,
+                    content,
+                    &plus_emphasis[plus_idx],
+                    path,
+                    width,
+                ));
+                plus_idx += 1;
+            }
+            LineKind::Context => {
+                output.push(render_diff_line(kind, content, path, width));
+            }
+        }
+    }
+
+    output
 }
 
 /// Render a full hunk with breadcrumb box and diff lines.
@@ -242,9 +347,31 @@ pub fn render_hunk(hunk: &Hunk, path: &str, width: usize, hunk_start: usize) -> 
         output.extend(render_breadcrumb_box(ancestors_to_show, path, width));
     }
 
-    // Render diff lines
-    for line in &hunk.lines {
-        output.push(render_diff_line(&line.kind, &line.content, path));
+    // Render diff lines with intraline emphasis for consecutive +/- runs
+    let mut i = 0;
+    while i < hunk.lines.len() {
+        let line = &hunk.lines[i];
+
+        if matches!(line.kind, LineKind::Context) {
+            // Context lines render directly
+            output.push(render_diff_line(&line.kind, &line.content, path, width));
+            i += 1;
+        } else {
+            // Collect consecutive +/- lines as a subhunk
+            let start = i;
+            while i < hunk.lines.len()
+                && !matches!(hunk.lines[i].kind, LineKind::Context)
+            {
+                i += 1;
+            }
+
+            let subhunk: Vec<(LineKind, &str)> = hunk.lines[start..i]
+                .iter()
+                .map(|l| (l.kind.clone(), l.content.as_str()))
+                .collect();
+
+            output.extend(render_subhunk(&subhunk, path, width));
+        }
     }
 
     output
@@ -301,14 +428,13 @@ mod tests {
 
     #[test]
     fn diff_line_added_has_green_bg() {
-        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs");
-        assert!(line.contains('+')); // Prefix character
+        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80);
         assert!(line.contains("\x1b[48;2;32;48;59m")); // GREEN_BG
     }
 
     #[test]
     fn diff_line_removed_has_red_bg() {
-        let line = render_diff_line(&LineKind::Removed, "let y = 2;", "test.rs");
+        let line = render_diff_line(&LineKind::Removed, "let y = 2;", "test.rs", 80);
         assert!(line.contains("\x1b[48;2;55;34;44m")); // RED_BG
     }
 
@@ -347,5 +473,35 @@ mod tests {
 
         // Should not have breadcrumb box since single ancestor is visible
         assert!(!lines.iter().any(|l| l.contains("╮")));
+    }
+
+    #[test]
+    fn render_subhunk_similar_lines_have_emphasis_bg() {
+        // Similar lines should be paired and have emphasis backgrounds
+        let lines: Vec<(LineKind, &str)> = vec![
+            (LineKind::Removed, "const x = 1;"),
+            (LineKind::Added, "const x = 2;"),
+        ];
+        let output = render_subhunk(&lines, "test.rs", 80);
+
+        // Both lines should have emphasis background for the changed portion
+        // GREEN_EMPH_BG = \x1b[48;2;44;90;102m
+        // RED_EMPH_BG = \x1b[48;2;113;49;55m
+        assert!(output[0].contains("\x1b[48;2;113;49;55m"), "minus should have RED_EMPH_BG");
+        assert!(output[1].contains("\x1b[48;2;44;90;102m"), "plus should have GREEN_EMPH_BG");
+    }
+
+    #[test]
+    fn render_subhunk_dissimilar_lines_plain() {
+        // Dissimilar lines should NOT be paired, so no emphasis backgrounds
+        let lines: Vec<(LineKind, &str)> = vec![
+            (LineKind::Removed, "aaa bbb ccc ddd eee fff ggg hhh"),
+            (LineKind::Added, "xxx yyy zzz www uuu vvv ppp qqq"),
+        ];
+        let output = render_subhunk(&lines, "test.rs", 80);
+
+        // Should have plain backgrounds only, no emphasis
+        assert!(!output[0].contains("\x1b[48;2;113;49;55m"), "minus should NOT have RED_EMPH_BG");
+        assert!(!output[1].contains("\x1b[48;2;44;90;102m"), "plus should NOT have GREEN_EMPH_BG");
     }
 }

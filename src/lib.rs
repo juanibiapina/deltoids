@@ -1,7 +1,5 @@
 mod highlight;
 pub mod intraline;
-pub mod scope;
-pub mod syntax;
 pub mod tui;
 
 use std::env;
@@ -12,7 +10,6 @@ use std::path::{Path, PathBuf};
 use chrono::{SecondsFormat, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use similar::TextDiff;
 use ulid::Ulid;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,7 +94,7 @@ struct EditHistoryEntry {
     diff: String,
     #[serde(rename = "expandedDiff")]
     expanded_diff: String,
-    scopes: Vec<scope::HunkScopes>,
+    scopes: Vec<deltoids::scope::HunkScopes>,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,7 +127,7 @@ struct WriteHistoryEntry {
     diff: String,
     #[serde(rename = "expandedDiff")]
     expanded_diff: String,
-    scopes: Vec<scope::HunkScopes>,
+    scopes: Vec<deltoids::scope::HunkScopes>,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,7 +167,7 @@ pub struct HistoryEntry {
     #[serde(default, rename = "expandedDiff")]
     pub expanded_diff: Option<String>,
     #[serde(default)]
-    pub scopes: Vec<scope::HunkScopes>,
+    pub scopes: Vec<deltoids::scope::HunkScopes>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,11 +243,11 @@ fn try_execute_edit(
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
     let updated = apply_edits(&original, &request.edits, &request.path)?;
-    let raw_diff = raw_unified_diff(&original, &updated);
-    let expanded = scope::scope_expanded_diff(&original, &updated, &request.path);
-    let scopes = scope::compute_hunk_scopes(&expanded, &original, &request.path);
-    let diff = scope::inject_scope_context(&raw_diff, &original, &request.path);
-    let expanded_diff = scope::inject_scope_context(&expanded, &original, &request.path);
+    let raw_diff = deltoids::raw_unified_diff(&original, &updated);
+    let expanded = deltoids::scope::scope_expanded_diff(&original, &updated, &request.path);
+    let scopes = deltoids::scope::compute_hunk_scopes(&expanded, &original, &request.path);
+    let diff = deltoids::scope::inject_scope_context(&raw_diff, &original, &request.path);
+    let expanded_diff = deltoids::scope::inject_scope_context(&expanded, &original, &request.path);
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -298,11 +295,11 @@ fn try_execute_write(
     } else {
         String::new()
     };
-    let raw_diff = raw_unified_diff(&original, &request.content);
-    let expanded = scope::scope_expanded_diff(&original, &request.content, &request.path);
-    let scopes = scope::compute_hunk_scopes(&expanded, &original, &request.path);
-    let diff = scope::inject_scope_context(&raw_diff, &original, &request.path);
-    let expanded_diff = scope::inject_scope_context(&expanded, &original, &request.path);
+    let raw_diff = deltoids::raw_unified_diff(&original, &request.content);
+    let expanded = deltoids::scope::scope_expanded_diff(&original, &request.content, &request.path);
+    let scopes = deltoids::scope::compute_hunk_scopes(&expanded, &original, &request.path);
+    let diff = deltoids::scope::inject_scope_context(&raw_diff, &original, &request.path);
+    let expanded_diff = deltoids::scope::inject_scope_context(&expanded, &original, &request.path);
 
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -671,17 +668,9 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
     Ok(())
 }
 
-/// Generate a plain unified diff without scope injection.
-pub(crate) fn raw_unified_diff(original: &str, updated: &str) -> String {
-    let text_diff = TextDiff::from_lines(original, updated);
-    let mut diff = text_diff.unified_diff();
-    diff.context_radius(3).header("original", "modified");
-    diff.to_string()
-}
-
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
-    let raw = raw_unified_diff(original, updated);
-    scope::inject_scope_context(&raw, original, path)
+    let raw = deltoids::raw_unified_diff(original, updated);
+    deltoids::scope::inject_scope_context(&raw, original, path)
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {

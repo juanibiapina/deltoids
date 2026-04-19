@@ -29,7 +29,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
 use crate::intraline::{self, EmphKind, EmphSection, LineEmphasis};
-use crate::scope::HunkScopes;
+use deltoids::scope::HunkScopes;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
@@ -1261,7 +1261,7 @@ fn render_hunk_separator(
     line: &str,
     path: &str,
     width: usize,
-    ancestors: Option<&[crate::scope::ScopeNode]>,
+    ancestors: Option<&[deltoids::scope::ScopeNode]>,
     scope_expanded: bool,
 ) -> Vec<Line<'static>> {
     // If we have structural scope ancestors, render the multi-line breadcrumb box.
@@ -1286,7 +1286,7 @@ fn render_hunk_separator(
 }
 
 fn render_breadcrumb_box(
-    ancestors: &[crate::scope::ScopeNode],
+    ancestors: &[deltoids::scope::ScopeNode],
     path: &str,
     width: usize,
 ) -> Vec<Line<'static>> {
@@ -2470,8 +2470,8 @@ mod tests {
     // Breadcrumb box tests
     // -----------------------------------------------------------------------
 
-    fn scope_node(kind: &str, name: &str, start: usize, end: usize, text: &str) -> crate::scope::ScopeNode {
-        crate::scope::ScopeNode {
+    fn scope_node(kind: &str, name: &str, start: usize, end: usize, text: &str) -> deltoids::scope::ScopeNode {
+        deltoids::scope::ScopeNode {
             kind: kind.to_string(),
             name: name.to_string(),
             start_line: start,

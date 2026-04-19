@@ -915,8 +915,8 @@ fn render_subhunk(
     let (minus_emphasis, plus_emphasis) =
         intraline::compute_subhunk_emphasis(&minus_contents, &plus_contents);
 
-    // Render in unified order (minus lines first, then plus lines, within
-    // the subhunk). The lines are already in unified order from the diff.
+    // Render in standard order (minus lines first, then plus lines, within
+    // the subhunk). The lines are already in standard order from the diff.
     let mut mi = 0usize;
     let mut pi = 0usize;
 
@@ -1055,14 +1055,16 @@ fn render_diff_line(
     }
     if line.starts_with("@@") {
         // Look up structural scopes for this hunk from entry.hunks.
-        let ancestors = parse_hunk_new_start(line).and_then(|new_start| {
-            entry
-                .hunks
-                .iter()
-                .find(|h| h.new_start == new_start)
-                .map(|h| h.ancestors.as_slice())
-        });
-        return render_hunk_separator(line, &entry.path, width, ancestors);
+        let (ancestors, hunk_start) = parse_hunk_new_start(line)
+            .and_then(|new_start| {
+                entry
+                    .hunks
+                    .iter()
+                    .find(|h| h.new_start == new_start)
+                    .map(|h| (h.ancestors.as_slice(), h.old_start))
+            })
+            .unwrap_or((&[], 1));
+        return render_hunk_separator(line, &entry.path, width, Some(ancestors), hunk_start);
     }
 
     vec![Line::from(Span::raw(fit_line(line, width)))]
@@ -1240,7 +1242,7 @@ fn syntax_diff_line(content: &str, bg: Color, path: &str, width: usize) -> Line<
     Line::from(spans)
 }
 
-/// Parse the new-file start line from a unified diff hunk header.
+/// Parse the new-file start line from a diff hunk header.
 /// Input: `@@ -74,15 +75,14 @@` -> Some(75)
 fn parse_hunk_new_start(line: &str) -> Option<usize> {
     let after_plus = line.find('+').map(|i| &line[i + 1..])?;
@@ -1253,11 +1255,26 @@ fn render_hunk_separator(
     path: &str,
     width: usize,
     ancestors: Option<&[deltoids::ScopeNode]>,
+    hunk_start: usize,
 ) -> Vec<Line<'static>> {
     // If we have structural scope ancestors, render the multi-line breadcrumb box.
     if let Some(ancestors) = ancestors
         && !ancestors.is_empty()
     {
+        // Check if innermost scope is visible in diff context.
+        // When expanded diff starts at the scope start, that scope line
+        // is already visible as the first context line.
+        if let Some(innermost) = ancestors.last()
+            && innermost.start_line == hunk_start
+        {
+            // Innermost is visible in diff - drop it from breadcrumb
+            if ancestors.len() == 1 {
+                // Only ancestor is visible in diff - skip breadcrumb entirely
+                return render_hunk_separator_legacy(line, path, width);
+            }
+            // Drop innermost, show outer ancestors
+            return render_breadcrumb_box(&ancestors[..ancestors.len() - 1], path, width);
+        }
         return render_breadcrumb_box(ancestors, path, width);
     }
 
@@ -2239,7 +2256,7 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_boxed_label_with_line_number_and_context() {
-        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80, None);
+        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80, None, 1);
         assert_eq!(lines.len(), 3, "expected 3 lines for box");
 
         let top = lines[0].to_string();
@@ -2263,7 +2280,7 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_line_number_only_when_no_context() {
-        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None);
+        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None, 1);
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
         assert!(mid.contains("7"), "mid should contain line number");
@@ -2273,7 +2290,7 @@ mod tests {
     #[test]
     fn hunk_separator_renders_empty_for_no_info() {
         // Malformed line with no parseable info.
-        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None);
+        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None, 1);
         assert_eq!(lines.len(), 1, "should fall back to single empty line");
     }
 
@@ -2475,6 +2492,7 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
+            74, // doesn't match innermost start (75), so both shown
         );
         // top border + 2 ancestor lines + dots row + bottom border = 5
         assert_eq!(lines.len(), 5, "expected 5 lines for breadcrumb box with gap");
@@ -2513,6 +2531,7 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
+            5, // doesn't match innermost start (4), so both shown
         );
         // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
         assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
@@ -2532,6 +2551,7 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
+            8, // doesn't match start (6), so ancestor shown
         );
         // top + 1 ancestor + bottom = 3
         assert_eq!(lines.len(), 3);
@@ -2548,6 +2568,7 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&[]),
+            1,
         );
         // Legacy rendering: top + mid + bot = 3
         assert_eq!(lines.len(), 3);
@@ -2567,6 +2588,7 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
+            119, // doesn't match innermost start (120), so both shown
         );
         // Line numbers should be right-aligned: "  1:" and "120:"
         let mid1 = lines[1].to_string();
@@ -2593,9 +2615,78 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
+            121, // doesn't match innermost start (120), so all shown
         );
         // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
         assert_eq!(lines.len(), 7, "expected 7 lines for deep nesting with two gaps");
+    }
+
+    // -----------------------------------------------------------------------
+    // Breadcrumb redundancy detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn breadcrumb_drops_innermost_when_visible() {
+        // When hunk_start matches innermost.start_line, drop innermost
+        let ancestors = vec![
+            scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
+            scope_node("function_item", "compute", 10, 20, "    fn compute(&self) {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -10,3 +10,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            10, // matches innermost start (10)
+        );
+        // Should show only impl_item: top + impl + bottom = 3
+        assert_eq!(lines.len(), 3, "should drop innermost, show only impl");
+        let mid = lines[1].to_string();
+        assert!(mid.contains("impl Foo"), "should show outer ancestor");
+        assert!(!mid.contains("fn compute"), "should not show innermost (visible in diff)");
+    }
+
+    #[test]
+    fn breadcrumb_skipped_single_ancestor_visible() {
+        // Single ancestor + visible in diff = skip breadcrumb entirely
+        let ancestors = vec![
+            scope_node("function_item", "bar", 6, 10, "fn bar() {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -6,3 +6,3 @@ fn bar() {",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            6, // matches only ancestor's start (6)
+        );
+        // Should fall back to legacy (single ancestor visible in diff)
+        // Legacy renders: top + mid + bottom = 3
+        assert_eq!(lines.len(), 3);
+        let mid = lines[1].to_string();
+        // Legacy shows line number and context from @@ header
+        assert!(mid.contains("6:"), "legacy: line number");
+        assert!(mid.contains("fn bar"), "legacy: context from @@");
+    }
+
+    #[test]
+    fn breadcrumb_full_when_not_visible() {
+        // hunk_start != innermost.start_line = show all ancestors
+        let ancestors = vec![
+            scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
+            scope_node("function_item", "compute", 10, 20, "    fn compute(&self) {"),
+        ];
+        let lines = render_hunk_separator(
+            "@@ -15,3 +15,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            15, // doesn't match innermost start (10)
+        );
+        // Should show both: top + impl + dots + fn + bottom = 5
+        assert_eq!(lines.len(), 5, "should show all ancestors");
+        let combined: String = lines.iter().map(|l| l.to_string()).collect();
+        assert!(combined.contains("impl Foo"), "should show outer");
+        assert!(combined.contains("fn compute"), "should show innermost");
     }
 
 }

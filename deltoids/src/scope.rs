@@ -5,7 +5,26 @@
 //! used by the TUI to display which function a change belongs to.
 
 use serde::{Deserialize, Serialize};
+use similar::TextDiff;
 use tree_sitter::{Node, Point};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MAX_SCOPE_LINES: usize = 50;
+const DEFAULT_CONTEXT: usize = 3;
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
+/// Range of lines to include as context for a hunk (0-indexed, inclusive).
+#[derive(Debug, Clone, Copy)]
+struct ContextRange {
+    start: usize,
+    end: usize,
+}
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -41,46 +60,73 @@ pub struct ScopeNode {
     pub text: String,
 }
 
-/// A unified diff enriched with tree-sitter scope information.
+/// A diff enriched with tree-sitter scope information.
 ///
 /// Use `Diff::compute()` to create a diff from original and updated content.
-/// The diff provides both raw unified diff text and structured hunks with
+/// The diff provides both raw diff text and structured hunks with
 /// ancestor scope chains.
 #[derive(Debug, Clone)]
 pub struct Diff {
     hunks: Vec<Hunk>,
-    raw_text: String,
+    text: String,
 }
 
 impl Diff {
     /// Compute a diff between original and updated content.
     ///
     /// Parses the file using tree-sitter (if the language is supported) to
-    /// populate each hunk's ancestor scope chain.
+    /// populate each hunk's ancestor scope chain. Hunks use scope-expanded
+    /// context (up to 50-line scopes), while `text()` returns standard
+    /// 3-line context for agent consumption.
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
-        use similar::TextDiff;
-
         let text_diff = TextDiff::from_lines(original, updated);
-        let mut diff = text_diff.unified_diff();
-        diff.context_radius(3).header("original", "modified");
-        let raw_text = diff.to_string();
 
-        let hunks = enrich_diff(&raw_text, original, path);
+        // Standard 3-line context for agent-facing diff
+        let mut unified = text_diff.unified_diff();
+        unified.context_radius(3).header("original", "modified");
+        let text = unified.to_string();
 
-        Diff { hunks, raw_text }
+        // Parse for tree-sitter scope expansion
+        let parsed = crate::syntax::parse_file(path, original);
+        let old_lines: Vec<&str> = original.lines().collect();
+        let new_lines: Vec<&str> = updated.lines().collect();
+        let ops: Vec<_> = text_diff.ops().to_vec();
+
+        // Compute context ranges (scope-expanded where applicable)
+        let context_ranges = compute_context_ranges(
+            &ops,
+            parsed.as_ref(),
+            original.as_bytes(),
+            old_lines.len(),
+        );
+
+        // Merge overlapping/adjacent ranges
+        let merged = merge_ranges(context_ranges);
+
+        // Build hunks from merged ranges
+        let hunks = build_hunks_from_ranges(
+            &ops,
+            &merged,
+            parsed.as_ref(),
+            original.as_bytes(),
+            &old_lines,
+            &new_lines,
+        );
+
+        Diff { hunks, text }
     }
 
-    /// Returns the raw unified diff text.
-    pub fn to_unified(&self) -> &str {
-        &self.raw_text
+    /// Returns the diff text with standard 3-line context.
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
-    /// Returns unified diff text with scope context injected into @@ headers.
+    /// Returns diff text with scope context injected into @@ headers.
     ///
     /// Each hunk header is appended with the innermost ancestor's source line
     /// (trimmed), making it easier to see which function/struct a change belongs to.
-    pub fn to_unified_with_scope(&self) -> String {
-        let diff_lines: Vec<&str> = self.raw_text.lines().collect();
+    pub fn text_with_scope(&self) -> String {
+        let diff_lines: Vec<&str> = self.text.lines().collect();
         let mut result = Vec::with_capacity(diff_lines.len());
         let mut hunk_idx = 0;
 
@@ -108,6 +154,224 @@ impl Diff {
     pub fn hunks(&self) -> &[Hunk] {
         &self.hunks
     }
+}
+
+// ---------------------------------------------------------------------------
+// Scope-expanded context helpers
+// ---------------------------------------------------------------------------
+
+/// Compute default 3-line context range for a change.
+fn default_context_range(old_start: usize, old_end: usize, total_old: usize) -> ContextRange {
+    let start = old_start.saturating_sub(DEFAULT_CONTEXT);
+    let end = (old_end + DEFAULT_CONTEXT).min(total_old.saturating_sub(1));
+    ContextRange { start, end }
+}
+
+/// Compute context ranges for each change operation.
+///
+/// For each change, determines whether to use scope-expanded context
+/// (innermost scope ≤ MAX_SCOPE_LINES) or fall back to 3-line default.
+fn compute_context_ranges(
+    ops: &[similar::DiffOp],
+    parsed: Option<&crate::syntax::ParsedFile>,
+    source: &[u8],
+    total_old: usize,
+) -> Vec<ContextRange> {
+    let mut ranges = Vec::new();
+
+    for op in ops {
+        let (old_start, old_end) = match op {
+            similar::DiffOp::Equal { old_index, len, .. } => {
+                // Skip equal ranges - no change here
+                let _ = (old_index, len);
+                continue;
+            }
+            similar::DiffOp::Delete { old_index, old_len, .. } => {
+                (*old_index, old_index + old_len)
+            }
+            similar::DiffOp::Insert { old_index, .. } => {
+                // Insert at old_index - use surrounding context
+                (*old_index, *old_index)
+            }
+            similar::DiffOp::Replace { old_index, old_len, .. } => {
+                (*old_index, old_index + old_len)
+            }
+        };
+
+        // Try scope expansion if we have parsed tree
+        if let Some(p) = parsed {
+            let change_line = if old_start < total_old { old_start } else { total_old.saturating_sub(1) };
+            let scopes = enclosing_scopes(
+                p.tree.root_node(),
+                source,
+                change_line,
+                p.scope_kinds,
+            );
+
+            if let Some(innermost) = scopes.last() {
+                let scope_lines = innermost.end_line.saturating_sub(innermost.start_line) + 1;
+                if scope_lines <= MAX_SCOPE_LINES {
+                    // Use scope-expanded context (convert 1-indexed to 0-indexed)
+                    let start = innermost.start_line.saturating_sub(1);
+                    let end = innermost.end_line.saturating_sub(1);
+                    ranges.push(ContextRange { start, end });
+                    continue;
+                }
+            }
+        }
+
+        // Fall back to default 3-line context
+        ranges.push(default_context_range(old_start, old_end.saturating_sub(1), total_old));
+    }
+
+    ranges
+}
+
+/// Merge overlapping or adjacent context ranges.
+fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
+    if ranges.is_empty() {
+        return ranges;
+    }
+
+    ranges.sort_by_key(|r| r.start);
+
+    let mut merged = vec![ranges[0]];
+    for range in &ranges[1..] {
+        let last = merged.last_mut().unwrap();
+        // Merge if overlapping or adjacent (end + 1 >= start)
+        if last.end + 1 >= range.start {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(*range);
+        }
+    }
+
+    merged
+}
+
+/// Build hunks from merged context ranges.
+///
+/// Each merged range becomes one hunk. Lines are collected from ops
+/// that fall within the range, and ancestors are computed from the
+/// first change line in each hunk.
+fn build_hunks_from_ranges(
+    ops: &[similar::DiffOp],
+    ranges: &[ContextRange],
+    parsed: Option<&crate::syntax::ParsedFile>,
+    source: &[u8],
+    old_lines: &[&str],
+    new_lines: &[&str],
+) -> Vec<Hunk> {
+    let mut hunks = Vec::new();
+
+    for range in ranges {
+        let mut lines = Vec::new();
+        let mut first_change_old_line: Option<usize> = None;
+        let mut new_start: Option<usize> = None;
+
+        // Walk through ops and collect lines that fall within this range
+        for op in ops {
+            match op {
+                similar::DiffOp::Equal { old_index, new_index, len } => {
+                    for i in 0..*len {
+                        let old_line = old_index + i;
+                        if old_line >= range.start && old_line <= range.end {
+                            if new_start.is_none() {
+                                new_start = Some(new_index + i + 1);
+                            }
+                            lines.push(DiffLine {
+                                kind: LineKind::Context,
+                                content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
+                            });
+                        }
+                    }
+                }
+                similar::DiffOp::Delete { old_index, old_len, new_index } => {
+                    for i in 0..*old_len {
+                        let old_line = old_index + i;
+                        if old_line >= range.start && old_line <= range.end {
+                            if new_start.is_none() {
+                                new_start = Some(*new_index + 1);
+                            }
+                            if first_change_old_line.is_none() {
+                                first_change_old_line = Some(old_line);
+                            }
+                            lines.push(DiffLine {
+                                kind: LineKind::Removed,
+                                content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
+                            });
+                        }
+                    }
+                }
+                similar::DiffOp::Insert { old_index, new_index, new_len } => {
+                    // Insert happens "at" old_index - include if range contains old_index
+                    // or if range.start == old_index (insert at range boundary)
+                    if *old_index >= range.start && *old_index <= range.end + 1 {
+                        if new_start.is_none() {
+                            new_start = Some(*new_index + 1);
+                        }
+                        if first_change_old_line.is_none() {
+                            first_change_old_line = Some(*old_index);
+                        }
+                        for i in 0..*new_len {
+                            lines.push(DiffLine {
+                                kind: LineKind::Added,
+                                content: new_lines.get(new_index + i).copied().unwrap_or("").to_string(),
+                            });
+                        }
+                    }
+                }
+                similar::DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                    let mut added_in_range = false;
+                    for i in 0..*old_len {
+                        let old_line = old_index + i;
+                        if old_line >= range.start && old_line <= range.end {
+                            if new_start.is_none() {
+                                new_start = Some(*new_index + 1);
+                            }
+                            if first_change_old_line.is_none() {
+                                first_change_old_line = Some(old_line);
+                            }
+                            lines.push(DiffLine {
+                                kind: LineKind::Removed,
+                                content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
+                            });
+                            added_in_range = true;
+                        }
+                    }
+                    if added_in_range {
+                        for i in 0..*new_len {
+                            lines.push(DiffLine {
+                                kind: LineKind::Added,
+                                content: new_lines.get(new_index + i).copied().unwrap_or("").to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if lines.is_empty() {
+            continue;
+        }
+
+        // Compute ancestors from first change line
+        let ancestors = match (parsed, first_change_old_line) {
+            (Some(p), Some(line)) => {
+                enclosing_scopes(p.tree.root_node(), source, line, p.scope_kinds)
+            }
+            _ => Vec::new(),
+        };
+
+        hunks.push(Hunk {
+            old_start: range.start + 1, // Convert to 1-indexed
+            new_start: new_start.unwrap_or(1),
+            lines,
+            ancestors,
+        });
+    }
+
+    hunks
 }
 
 // ---------------------------------------------------------------------------
@@ -162,147 +426,27 @@ fn source_line_raw(source: &[u8], line: usize) -> Option<String> {
     text.lines().nth(line).map(|l| l.to_string())
 }
 
-/// Parse the old-file start line from a unified diff hunk header.
-/// Input: `@@ -74,15 +75,14 @@` -> Some(74)
-fn parse_hunk_old_start(line: &str) -> Option<usize> {
-    let after = line.strip_prefix("@@ -")?;
-    let end = after.find([',', ' '])?;
-    after[..end].parse().ok()
-}
-
-/// Parse both old-file and new-file start lines from a unified diff hunk header.
-/// Input: `@@ -74,15 +75,14 @@` -> Some((74, 75))
-fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
-    let old_start = parse_hunk_old_start(line)?;
-    let after_plus = line.find('+').map(|i| &line[i + 1..])?;
-    let end = after_plus.find([',', ' '])?;
-    let new_start = after_plus[..end].parse().ok()?;
-    Some((old_start, new_start))
-}
-
-/// Parse a unified diff and enrich each hunk with scope information.
-///
-/// Takes a raw unified diff and the original (old) file content.
-/// Returns one `Hunk` per `@@` header, with lines parsed and ancestors populated.
-fn enrich_diff(diff: &str, old_content: &str, path: &str) -> Vec<Hunk> {
-    let parsed = crate::syntax::parse_file(path, old_content);
-    let mut hunks = Vec::new();
-    let lines: Vec<&str> = diff.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-        if line.starts_with("@@") {
-            let (old_start, new_start) = parse_hunk_header(line).unwrap_or((1, 1));
-            let hunk_start_idx = i;
-            let mut diff_lines = Vec::new();
-
-            i += 1;
-            while i < lines.len() && !lines[i].starts_with("@@") {
-                let l = lines[i];
-                if l.starts_with('+') && !l.starts_with("+++") {
-                    diff_lines.push(DiffLine {
-                        kind: LineKind::Added,
-                        content: l[1..].to_string(),
-                    });
-                } else if l.starts_with('-') && !l.starts_with("---") {
-                    diff_lines.push(DiffLine {
-                        kind: LineKind::Removed,
-                        content: l[1..].to_string(),
-                    });
-                } else if let Some(stripped) = l.strip_prefix(' ') {
-                    diff_lines.push(DiffLine {
-                        kind: LineKind::Context,
-                        content: stripped.to_string(),
-                    });
-                }
-                i += 1;
-            }
-
-            // Compute ancestors from first changed line
-            let ancestors = match &parsed {
-                Some(p) => {
-                    let change_line = find_first_change_line(&lines, hunk_start_idx, old_start);
-                    match change_line {
-                        Some(cl) => {
-                            let ts_line = cl.saturating_sub(1);
-                            enclosing_scopes(
-                                p.tree.root_node(),
-                                old_content.as_bytes(),
-                                ts_line,
-                                p.scope_kinds,
-                            )
-                        }
-                        None => Vec::new(),
-                    }
-                }
-                None => Vec::new(),
-            };
-
-            hunks.push(Hunk {
-                old_start,
-                new_start,
-                lines: diff_lines,
-                ancestors,
-            });
-        } else {
-            i += 1;
-        }
-    }
-
-    hunks
-}
-
-/// Find the line number of the first changed line in a hunk.
-fn find_first_change_line(lines: &[&str], hunk_start: usize, old_start: usize) -> Option<usize> {
-    let mut offset = 0;
-    for l in &lines[(hunk_start + 1)..] {
-        if l.starts_with("@@") || l.starts_with("---") || l.starts_with("+++") {
-            break;
-        }
-        if l.starts_with('-') || l.starts_with('+') {
-            return Some(old_start + offset);
-        }
-        if l.starts_with(' ') {
-            offset += 1;
-        }
-    }
-    None
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use similar::TextDiff;
-
-    /// Generate a plain unified diff without scope injection.
-    fn raw_diff(original: &str, updated: &str) -> String {
-        let text_diff = TextDiff::from_lines(original, updated);
-        let mut diff = text_diff.unified_diff();
-        diff.context_radius(3).header("original", "modified");
-        diff.to_string()
-    }
 
     // -----------------------------------------------------------------------
-    // enrich_diff tests
+    // Diff::compute tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn enrich_diff_empty_returns_empty() {
-        let hunks = enrich_diff("", "", "test.rs");
-        assert!(hunks.is_empty());
+    fn compute_empty_returns_empty() {
+        let diff = Diff::compute("", "", "test.rs");
+        assert!(diff.hunks().is_empty());
     }
 
     #[test]
-    fn enrich_diff_single_added_line() {
-        let diff = "\
---- original
-+++ modified
-@@ -1 +1,2 @@
- line1
-+line2
-";
-        let hunks = enrich_diff(diff, "line1\n", "test.txt");
+    fn compute_single_added_line() {
+        let original = "line1\n";
+        let updated = "line1\nline2\n";
+        let diff = Diff::compute(original, updated, "test.txt");
+        let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_start, 1);
         assert_eq!(hunks[0].new_start, 1);
@@ -314,29 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn enrich_diff_multiple_hunks() {
-        let diff = "\
---- original
-+++ modified
-@@ -1,3 +1,3 @@
- line1
--line2
-+LINE2
- line3
-@@ -10,3 +10,3 @@
- line10
--line11
-+LINE11
- line12
-";
-        let hunks = enrich_diff(diff, "", "test.txt");
-        assert_eq!(hunks.len(), 2);
-        assert_eq!(hunks[0].old_start, 1);
-        assert_eq!(hunks[1].old_start, 10);
-    }
-
-    #[test]
-    fn enrich_diff_populates_ancestors_for_rust() {
+    fn compute_populates_ancestors_for_rust() {
         let original = "\
 fn compute() {
     let x = 1;
@@ -344,8 +466,8 @@ fn compute() {
 }
 ";
         let updated = original.replace("let x = 1", "let x = 10");
-        let diff = raw_diff(original, &updated);
-        let hunks = enrich_diff(&diff, original, "test.rs");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].ancestors.len(), 1);
         assert_eq!(hunks[0].ancestors[0].kind, "function_item");
@@ -353,7 +475,7 @@ fn compute() {
     }
 
     #[test]
-    fn enrich_diff_nested_scope_impl_and_function() {
+    fn compute_nested_scope_impl_and_function() {
         let original = "\
 struct Foo;
 
@@ -365,8 +487,8 @@ impl Foo {
 }
 ";
         let updated = original.replace("x + 1", "x + 2");
-        let diff = raw_diff(original, &updated);
-        let hunks = enrich_diff(&diff, original, "test.rs");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].ancestors.len(), 2);
         assert_eq!(hunks[0].ancestors[0].kind, "impl_item");
@@ -376,36 +498,221 @@ impl Foo {
     }
 
     #[test]
-    fn enrich_diff_unsupported_language_empty_ancestors() {
-        let diff = "\
---- original
-+++ modified
-@@ -1,3 +1,3 @@
- line1
--line2
-+LINE2
- line3
-";
-        let hunks = enrich_diff(diff, "line1\nline2\nline3\n", "data.xyz");
+    fn compute_unsupported_language_empty_ancestors() {
+        let original = "line1\nline2\nline3\n";
+        let updated = "line1\nLINE2\nline3\n";
+        let diff = Diff::compute(original, updated, "data.xyz");
+        let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].ancestors.is_empty());
     }
 
     #[test]
-    fn enrich_diff_top_level_code_empty_ancestors() {
+    fn compute_top_level_code_empty_ancestors() {
         let original = "let x = 1;\nlet y = 2;\n";
         let updated = "let x = 1;\nlet y = 3;\n";
-        let diff = raw_diff(original, updated);
-        let hunks = enrich_diff(&diff, original, "test.rs");
+        let diff = Diff::compute(original, updated, "test.rs");
+        let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].ancestors.is_empty());
     }
 
+    // -----------------------------------------------------------------------
+    // Scope-expanded context tests
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn parses_hunk_old_start() {
-        assert_eq!(parse_hunk_old_start("@@ -74,15 +75,14 @@"), Some(74));
-        assert_eq!(parse_hunk_old_start("@@ -1 +1,3 @@"), Some(1));
-        assert_eq!(parse_hunk_old_start("not a hunk"), None);
+    fn expanded_covers_full_small_function() {
+        // A 10-line function (< 50 lines) should have full scope context
+        let original = "\
+fn small() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+}
+";
+        let updated = original.replace("let d = 4", "let d = 40");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Hunk should start at line 1 (function start) and include all lines
+        assert_eq!(hunks[0].old_start, 1);
+        // Should have context lines from the whole function
+        let context_count = hunks[0].lines.iter()
+            .filter(|l| l.kind == LineKind::Context)
+            .count();
+        // 10 lines total, 1 changed = 9 context lines
+        assert_eq!(context_count, 9, "should have full function as context");
+    }
+
+    #[test]
+    fn expanded_large_scope_uses_default() {
+        // A function > 50 lines should fall back to 3-line context
+        let mut lines = vec!["fn big() {".to_string()];
+        for i in 1..=55 {
+            lines.push(format!("    let x{} = {};", i, i));
+        }
+        lines.push("}".to_string());
+        let original = lines.join("\n") + "\n";
+        let updated = original.replace("let x30 = 30", "let x30 = 3000");
+        let diff = Diff::compute(&original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Should NOT start at line 1 (function start), should be close to change
+        assert!(hunks[0].old_start > 1, "large scope should use default context");
+        // Should have <= 6 context lines (3 before + 3 after)
+        let context_count = hunks[0].lines.iter()
+            .filter(|l| l.kind == LineKind::Context)
+            .count();
+        assert!(context_count <= 6, "large scope should use ~3-line context, got {}", context_count);
+    }
+
+    #[test]
+    fn expanded_top_level_uses_default() {
+        // Top-level code with no scope should use 3-line default context
+        let original = "\
+let a = 1;
+let b = 2;
+let c = 3;
+let d = 4;
+let e = 5;
+let f = 6;
+let g = 7;
+let h = 8;
+let i = 9;
+let j = 10;
+";
+        let updated = original.replace("let e = 5", "let e = 50");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Should not include all 10 lines:
+        // 3 before + 1 removed + 1 added + 3 after = 8 lines max
+        let total_lines = hunks[0].lines.len();
+        assert!(total_lines <= 8, "top-level should use 3-line context, got {} lines", total_lines);
+        assert!(total_lines < 10, "should not include all lines");
+    }
+
+    #[test]
+    fn expanded_unsupported_lang_uses_default() {
+        // Unknown language should use 3-line default context
+        let mut lines: Vec<String> = (1..=20).map(|i| format!("line{}", i)).collect();
+        let original = lines.join("\n") + "\n";
+        lines[9] = "CHANGED".to_string();
+        let updated = lines.join("\n") + "\n";
+        let diff = Diff::compute(&original, &updated, "data.xyz");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // 3 before + 1 removed + 1 added + 3 after = 8 lines
+        let total_lines = hunks[0].lines.len();
+        assert!(total_lines <= 8, "unsupported lang should use 3-line context, got {} lines", total_lines);
+        assert!(total_lines < 20, "should not include all lines");
+    }
+
+    #[test]
+    fn expanded_two_functions_separate_hunks() {
+        // Two changes in separate functions should produce 2 hunks
+        let original = "\
+fn first() {
+    let a = 1;
+}
+
+fn second() {
+    let b = 2;
+}
+";
+        let updated = original
+            .replace("let a = 1", "let a = 10")
+            .replace("let b = 2", "let b = 20");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 2, "two functions should produce 2 hunks");
+        assert_eq!(hunks[0].ancestors.len(), 1);
+        assert_eq!(hunks[0].ancestors[0].name, "first");
+        assert_eq!(hunks[1].ancestors.len(), 1);
+        assert_eq!(hunks[1].ancestors[0].name, "second");
+    }
+
+    #[test]
+    fn expanded_same_function_merges() {
+        // Two changes in the same function should produce 1 merged hunk
+        let original = "\
+fn compute() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+}
+";
+        let updated = original
+            .replace("let a = 1", "let a = 10")
+            .replace("let d = 4", "let d = 40");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1, "same function changes should merge to 1 hunk");
+        // Should have 2 changed lines (a and d)
+        let removed = hunks[0].lines.iter()
+            .filter(|l| l.kind == LineKind::Removed)
+            .count();
+        let added = hunks[0].lines.iter()
+            .filter(|l| l.kind == LineKind::Added)
+            .count();
+        assert_eq!(removed, 2, "should have 2 removed lines");
+        assert_eq!(added, 2, "should have 2 added lines");
+    }
+
+    #[test]
+    fn text_returns_standard_context() {
+        // text() should return standard 3-line context diff
+        let original = "\
+fn small() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+}
+";
+        let updated = original.replace("let d = 4", "let d = 40");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let text = diff.text();
+        // The @@ header should show limited context (not from line 1)
+        assert!(text.contains("@@"));
+        // Standard diff should NOT include line 1 (fn small())
+        // because the change is on line 5 with 3-line context
+        let lines: Vec<&str> = text.lines().collect();
+        let has_fn_line = lines.iter().any(|l| l.contains("fn small()") && !l.starts_with("@@"));
+        assert!(!has_fn_line, "standard text() should use 3-line context, not full scope");
+    }
+
+    #[test]
+    fn hunks_have_expanded_context() {
+        // hunks() should have scope-expanded context
+        let original = "\
+fn small() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+}
+";
+        let updated = original.replace("let d = 4", "let d = 40");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Hunks should include full function (start at line 1)
+        assert_eq!(hunks[0].old_start, 1, "hunk should start at function start");
+        // First context line should be fn small() {
+        assert!(hunks[0].lines[0].content.contains("fn small()"), 
+            "first context line should be function signature");
     }
 
     // -----------------------------------------------------------------------
@@ -505,17 +812,6 @@ impl Foo {
     }
 
     // -----------------------------------------------------------------------
-    // parse_hunk_header tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn parse_hunk_header_extracts_both_starts() {
-        assert_eq!(parse_hunk_header("@@ -74,15 +75,14 @@"), Some((74, 75)));
-        assert_eq!(parse_hunk_header("@@ -1 +1,3 @@"), Some((1, 1)));
-        assert_eq!(parse_hunk_header("not a hunk"), None);
-    }
-
-    // -----------------------------------------------------------------------
     // Diff tests
     // -----------------------------------------------------------------------
 
@@ -526,35 +822,35 @@ impl Foo {
         let diff = Diff::compute(original, updated, "test.txt");
 
         assert_eq!(diff.hunks().len(), 1);
-        assert!(diff.to_unified().contains("-line2"));
-        assert!(diff.to_unified().contains("+LINE2"));
+        assert!(diff.text().contains("-line2"));
+        assert!(diff.text().contains("+LINE2"));
     }
 
     #[test]
-    fn diff_to_unified_returns_plain_diff() {
+    fn diff_text_returns_plain_diff() {
         let original = "fn foo() {\n    1\n}\n";
         let updated = "fn foo() {\n    2\n}\n";
         let diff = Diff::compute(original, updated, "test.rs");
 
-        let unified = diff.to_unified();
+        let text = diff.text();
         // Plain diff @@ header should end with @@ (no scope appended)
-        let header = unified.lines().find(|l| l.starts_with("@@")).unwrap();
+        let header = text.lines().find(|l| l.starts_with("@@")).unwrap();
         assert!(header.ends_with("@@"), "expected header to end with @@, got: {}", header);
     }
 
     #[test]
-    fn diff_to_unified_with_scope_injects_innermost_ancestor() {
+    fn diff_text_with_scope_injects_innermost_ancestor() {
         let original = "fn compute() {\n    let x = 1;\n}\n";
         let updated = "fn compute() {\n    let x = 2;\n}\n";
         let diff = Diff::compute(original, updated, "test.rs");
 
-        let with_scope = diff.to_unified_with_scope();
+        let with_scope = diff.text_with_scope();
         // Should have scope context appended to @@ line
         assert!(with_scope.contains("@@ -1,3 +1,3 @@ fn compute() {"));
     }
 
     #[test]
-    fn diff_to_unified_with_scope_nested_shows_innermost() {
+    fn diff_text_with_scope_nested_shows_innermost() {
         let original = "\
 struct Foo;
 
@@ -568,19 +864,19 @@ impl Foo {
         let updated = original.replace("x + 1", "x + 2");
         let diff = Diff::compute(original, &updated, "test.rs");
 
-        let with_scope = diff.to_unified_with_scope();
+        let with_scope = diff.text_with_scope();
         // Should show innermost (function), not impl
         assert!(with_scope.contains("fn compute(&self) -> i32 {"));
     }
 
     #[test]
-    fn diff_to_unified_with_scope_no_ancestors_unchanged() {
+    fn diff_text_with_scope_no_ancestors_unchanged() {
         let original = "let x = 1;\nlet y = 2;\n";
         let updated = "let x = 1;\nlet y = 3;\n";
         let diff = Diff::compute(original, updated, "test.rs");
 
-        let plain = diff.to_unified();
-        let with_scope = diff.to_unified_with_scope();
+        let plain = diff.text();
+        let with_scope = diff.text_with_scope();
         // Top-level code has no ancestors, so @@ line should be unchanged
         assert!(with_scope.contains("@@ -1,2 +1,2 @@"));
         // Both should have the same @@ line (no scope appended)

@@ -1,6 +1,6 @@
 # deltoids
 
-A library for computing structural scope context from diffs using tree-sitter. Given original and updated file content, deltoids generates a unified diff enriched with scope information (functions, classes, modules, etc.) for each hunk.
+A library for computing structural scope context from diffs using tree-sitter. Given original and updated file content, deltoids generates a diff enriched with scope information (functions, classes, modules, etc.) for each hunk.
 
 The library produces data, not presentation. Consumers own their rendering.
 
@@ -22,16 +22,27 @@ let updated = "fn foo() {\n    2\n}\n";
 
 let diff = Diff::compute(original, updated, "test.rs");
 
-// Get plain unified diff text
-let plain = diff.to_unified();
+// Get plain diff text with standard 3-line context (for agents)
+let plain = diff.text();
 
-// Get unified diff with scope context in @@ headers
-let with_scope = diff.to_unified_with_scope();
+// Get diff with scope context in @@ headers
+let with_scope = diff.text_with_scope();
 // @@ -1,3 +1,3 @@ fn foo() {
 
-// Get structured hunks for serialization or custom rendering
+// Get structured hunks with scope-expanded context (for TUI)
 let hunks = diff.hunks();
 ```
+
+#### Scope-expanded context
+
+Hunks returned by `hunks()` use scope-expanded context:
+
+- If the innermost enclosing scope is ≤50 lines, the hunk includes the full scope
+- Scopes >50 lines fall back to standard 3-line context
+- Changes in the same scope are merged into a single hunk
+- Changes in different scopes produce separate hunks
+
+The `text()` method always returns standard 3-line unified diff format.
 
 ### `Hunk`
 
@@ -97,7 +108,7 @@ let original = std::fs::read_to_string("src/config.rs").unwrap();
 let updated = apply_my_changes(&original);
 
 let diff = Diff::compute(&original, &updated, "src/config.rs");
-println!("{}", diff.to_unified_with_scope());
+println!("{}", diff.text_with_scope());
 // @@ -14,7 +14,7 @@ fn process(&self) -> Result {
 //  ...
 ```

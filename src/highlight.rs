@@ -108,8 +108,8 @@ fn flush_styled_text(
     *current_style = None;
 }
 
-fn truncate_highlighted_ranges<'a>(
-    ranges: Vec<(syntect::highlighting::Style, &'a str)>,
+fn truncate_highlighted_ranges(
+    ranges: Vec<(syntect::highlighting::Style, &str)>,
     base_style: Style,
     max_width: usize,
 ) -> (Vec<Span<'static>>, usize) {

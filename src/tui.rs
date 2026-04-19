@@ -1255,10 +1255,10 @@ fn render_hunk_separator(
     ancestors: Option<&[deltoids::ScopeNode]>,
 ) -> Vec<Line<'static>> {
     // If we have structural scope ancestors, render the multi-line breadcrumb box.
-    if let Some(ancestors) = ancestors {
-        if !ancestors.is_empty() {
-            return render_breadcrumb_box(ancestors, path, width);
-        }
+    if let Some(ancestors) = ancestors
+        && !ancestors.is_empty()
+    {
+        return render_breadcrumb_box(ancestors, path, width);
     }
 
     // Fall back to the legacy single-line rendering.

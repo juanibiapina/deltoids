@@ -210,10 +210,10 @@ pub fn enrich_diff(diff: &str, old_content: &str, path: &str) -> Vec<Hunk> {
                         kind: LineKind::Removed,
                         content: l[1..].to_string(),
                     });
-                } else if l.starts_with(' ') {
+                } else if let Some(stripped) = l.strip_prefix(' ') {
                     diff_lines.push(DiffLine {
                         kind: LineKind::Context,
-                        content: l[1..].to_string(),
+                        content: stripped.to_string(),
                     });
                 }
                 i += 1;

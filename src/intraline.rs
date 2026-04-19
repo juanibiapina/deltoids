@@ -371,11 +371,11 @@ pub fn annotate(minus_line: &str, plus_line: &str) -> AnnotationResult {
 fn rle_operations(ops: &[Operation]) -> Vec<(Operation, usize)> {
     let mut result = Vec::new();
     for &op in ops {
-        if let Some((last_op, count)) = result.last_mut() {
-            if *last_op == op {
-                *count += 1;
-                continue;
-            }
+        if let Some((last_op, count)) = result.last_mut()
+            && *last_op == op
+        {
+            *count += 1;
+            continue;
         }
         result.push((op, 1));
     }
@@ -486,6 +486,7 @@ pub enum LineEmphasis {
 ///
 /// Takes minus lines and plus lines (without the leading `-`/`+` prefix).
 /// Returns emphasis info for each minus line and each plus line, in order.
+#[allow(clippy::mut_range_bound)] // plus_cursor mutation is for next outer-loop iteration
 pub fn compute_subhunk_emphasis(
     minus_lines: &[&str],
     plus_lines: &[&str],

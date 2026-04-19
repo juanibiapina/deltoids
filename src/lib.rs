@@ -290,15 +290,15 @@ fn try_execute_write(
     let hunks = computed.hunks().to_vec();
     let diff = computed.to_unified_with_scope();
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "Failed to create parent directories for {}: {}",
-                    request.path, err
-                )
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create parent directories for {}: {}",
+                request.path, err
+            )
+        })?;
     }
 
     fs::write(path, &request.content)
@@ -463,6 +463,7 @@ fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), Str
     let lock_path = trace_dir.join(".lock");
     let lock_file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .read(true)
         .write(true)
         .open(&lock_path)

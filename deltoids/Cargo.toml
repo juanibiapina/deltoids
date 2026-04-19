@@ -3,9 +3,17 @@ name = "deltoids"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "deltoids"
+path = "src/main.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 similar = "3"
+syntect = "5"
+syntect-assets = { version = "0.23", default-features = false, features = ["regex-fancy"] }
+regex = "1"
+unicode-width = "0.2"
 tree-sitter = "0.26"
 tree-sitter-language = "0.1"
 tree-sitter-rust = "0.24"

@@ -1,6 +1,57 @@
 # deltoids
 
-A library for computing structural scope context from diffs using tree-sitter. Given original and updated file content, deltoids generates a diff enriched with scope information (functions, classes, modules, etc.) for each hunk.
+A library and binary for computing structural scope context from diffs using tree-sitter. Given original and updated file content, deltoids generates a diff enriched with scope information (functions, classes, modules, etc.) for each hunk.
+
+## Binary
+
+The `deltoids` binary reads unified diff from stdin and renders it with:
+
+- Multi-line breadcrumb boxes showing enclosing scopes
+- Syntax highlighting via syntect
+- Colored backgrounds for added/removed lines
+- Scope-expanded context for small functions
+
+### Usage
+
+```bash
+# Use as git pager (recommended)
+git config core.pager deltoids
+
+# For lazygit (disable built-in paging)
+# In ~/.config/lazygit/config.yml:
+#   git:
+#     pagers:
+#       - pager: deltoids --paging=never
+
+# Or pipe manually
+git diff | deltoids | less -R
+```
+
+### Options
+
+- `--paging=auto` (default): Use less when stdout is a TTY
+- `--paging=always`: Always use less
+- `--paging=never`: Never use less (for lazygit, etc.)
+
+### Output format
+
+```
+─── src/config.rs ──────────────────────────────────────────
+─────────────────╮
+ 5: impl Config { │
+─────────────────╯
+     fn process(&self) -> i32 {
+         if self.value > 0 {
+             println!("positive");
+-            println!("removed");
+         }
+         self.value
+     }
+```
+
+Breadcrumb boxes show ancestor scopes with right-aligned line numbers. The `...` gap marker appears when scopes are non-adjacent. The innermost scope is dropped from the box when it's already visible in the expanded context.
+
+## Library
 
 The library produces data, not presentation. Consumers own their rendering.
 

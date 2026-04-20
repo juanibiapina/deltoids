@@ -228,10 +228,16 @@ pub(crate) fn highlighted_spans_with_emphasis(
     let section_ranges = build_section_byte_ranges(sections);
 
     match highlighter.highlight_line(line, syntax_set()) {
-        Ok(ranges) => {
-            truncate_with_emphasis(ranges, sections, &section_ranges, &bg_for_section, max_width)
+        Ok(ranges) => truncate_with_emphasis(
+            ranges,
+            sections,
+            &section_ranges,
+            &bg_for_section,
+            max_width,
+        ),
+        Err(_) => {
+            plain_text_with_emphasis(line, sections, &section_ranges, &bg_for_section, max_width)
         }
-        Err(_) => plain_text_with_emphasis(line, sections, &section_ranges, &bg_for_section, max_width),
     }
 }
 
@@ -331,7 +337,11 @@ fn plain_text_with_emphasis(
 
     for ch in line.chars() {
         let ch_byte_len = ch.len_utf8();
-        let ch_width = if ch == '\t' { TAB_WIDTH } else { ch.width().unwrap_or(0) };
+        let ch_width = if ch == '\t' {
+            TAB_WIDTH
+        } else {
+            ch.width().unwrap_or(0)
+        };
         if ch_width == 0 {
             byte_offset += ch_byte_len;
             continue;
@@ -343,7 +353,11 @@ fn plain_text_with_emphasis(
             .map(|i| bg_for_section(&sections[i]))
             .unwrap_or(ratatui::style::Color::Reset);
         let style = Style::default().bg(bg);
-        let text = if ch == '\t' { "    ".to_string() } else { ch.to_string() };
+        let text = if ch == '\t' {
+            "    ".to_string()
+        } else {
+            ch.to_string()
+        };
         push_styled_text(&mut spans, &mut buffer, &mut current_style, style, &text);
         width += ch_width;
         byte_offset += ch_byte_len;

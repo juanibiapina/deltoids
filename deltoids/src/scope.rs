@@ -80,14 +80,13 @@ impl Diff {
     /// 3-line context.
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
         let text_diff = TextDiff::from_lines(original, updated);
-        let mut unified = text_diff.unified_diff();
-        unified.context_radius(3).header("original", "modified");
-        let text = unified.to_string();
 
         let hunks = match crate::syntax::parse_file(path, original) {
             Some(parsed) => build_hunks_with_scope(&text_diff, &parsed, original, updated),
-            None => build_hunks_from_unified(&unified),
+            None => build_hunks_from_unified(&text_diff),
         };
+
+        let text = unified_diff_text(&text_diff);
 
         Diff { hunks, text }
     }
@@ -107,6 +106,13 @@ impl Diff {
 // Scope-expanded context helpers
 // ---------------------------------------------------------------------------
 
+/// Create unified diff text with 3-line context.
+fn unified_diff_text(text_diff: &TextDiff<'_, '_, str>) -> String {
+    let mut unified = text_diff.unified_diff();
+    unified.context_radius(3).header("original", "modified");
+    unified.to_string()
+}
+
 /// Build hunks with tree-sitter scope expansion.
 ///
 /// Uses scope-expanded context (up to 50-line scopes) and populates ancestor chains.
@@ -120,12 +126,7 @@ fn build_hunks_with_scope(
     let new_lines: Vec<&str> = updated.lines().collect();
     let ops: Vec<_> = text_diff.ops().to_vec();
 
-    let context_ranges = compute_context_ranges(
-        &ops,
-        parsed,
-        original.as_bytes(),
-        old_lines.len(),
-    );
+    let context_ranges = compute_context_ranges(&ops, parsed, original.as_bytes(), old_lines.len());
 
     let merged = merge_ranges(context_ranges);
 
@@ -142,7 +143,9 @@ fn build_hunks_with_scope(
 /// Build hunks from similar's unified diff when tree-sitter parsing is unavailable.
 ///
 /// Uses similar's built-in 3-line context and produces hunks with empty ancestors.
-fn build_hunks_from_unified(unified: &similar::udiff::UnifiedDiff<'_, '_, '_, str>) -> Vec<Hunk> {
+fn build_hunks_from_unified(text_diff: &TextDiff<'_, '_, str>) -> Vec<Hunk> {
+    let mut unified = text_diff.unified_diff();
+    unified.context_radius(3);
     unified
         .iter_hunks()
         .map(|hunk| {
@@ -198,20 +201,24 @@ fn compute_context_ranges(
                 let _ = (old_index, len);
                 continue;
             }
-            similar::DiffOp::Delete { old_index, old_len, .. } => {
-                (*old_index, old_index + old_len)
-            }
+            similar::DiffOp::Delete {
+                old_index, old_len, ..
+            } => (*old_index, old_index + old_len),
             similar::DiffOp::Insert { old_index, .. } => {
                 // Insert at old_index - use surrounding context
                 (*old_index, *old_index)
             }
-            similar::DiffOp::Replace { old_index, old_len, .. } => {
-                (*old_index, old_index + old_len)
-            }
+            similar::DiffOp::Replace {
+                old_index, old_len, ..
+            } => (*old_index, old_index + old_len),
         };
 
         // Try scope expansion
-        let change_line = if old_start < total_old { old_start } else { total_old.saturating_sub(1) };
+        let change_line = if old_start < total_old {
+            old_start
+        } else {
+            total_old.saturating_sub(1)
+        };
         let scopes = enclosing_scopes(
             parsed.tree.root_node(),
             source,
@@ -231,7 +238,11 @@ fn compute_context_ranges(
         }
 
         // Fall back to default 3-line context
-        ranges.push(default_context_range(old_start, old_end.saturating_sub(1), total_old));
+        ranges.push(default_context_range(
+            old_start,
+            old_end.saturating_sub(1),
+            total_old,
+        ));
     }
 
     ranges
@@ -282,7 +293,11 @@ fn build_hunks_from_ranges(
         // Walk through ops and collect lines that fall within this range
         for op in ops {
             match op {
-                similar::DiffOp::Equal { old_index, new_index, len } => {
+                similar::DiffOp::Equal {
+                    old_index,
+                    new_index,
+                    len,
+                } => {
                     for i in 0..*len {
                         let old_line = old_index + i;
                         if old_line >= range.start && old_line <= range.end {
@@ -296,7 +311,11 @@ fn build_hunks_from_ranges(
                         }
                     }
                 }
-                similar::DiffOp::Delete { old_index, old_len, new_index } => {
+                similar::DiffOp::Delete {
+                    old_index,
+                    old_len,
+                    new_index,
+                } => {
                     for i in 0..*old_len {
                         let old_line = old_index + i;
                         if old_line >= range.start && old_line <= range.end {
@@ -313,7 +332,11 @@ fn build_hunks_from_ranges(
                         }
                     }
                 }
-                similar::DiffOp::Insert { old_index, new_index, new_len } => {
+                similar::DiffOp::Insert {
+                    old_index,
+                    new_index,
+                    new_len,
+                } => {
                     // Insert happens "at" old_index - include if range contains old_index
                     // or if range.start == old_index (insert at range boundary)
                     if *old_index >= range.start && *old_index <= range.end + 1 {
@@ -326,12 +349,21 @@ fn build_hunks_from_ranges(
                         for i in 0..*new_len {
                             lines.push(DiffLine {
                                 kind: LineKind::Added,
-                                content: new_lines.get(new_index + i).copied().unwrap_or("").to_string(),
+                                content: new_lines
+                                    .get(new_index + i)
+                                    .copied()
+                                    .unwrap_or("")
+                                    .to_string(),
                             });
                         }
                     }
                 }
-                similar::DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                similar::DiffOp::Replace {
+                    old_index,
+                    old_len,
+                    new_index,
+                    new_len,
+                } => {
                     let mut added_in_range = false;
                     for i in 0..*old_len {
                         let old_line = old_index + i;
@@ -353,7 +385,11 @@ fn build_hunks_from_ranges(
                         for i in 0..*new_len {
                             lines.push(DiffLine {
                                 kind: LineKind::Added,
-                                content: new_lines.get(new_index + i).copied().unwrap_or("").to_string(),
+                                content: new_lines
+                                    .get(new_index + i)
+                                    .copied()
+                                    .unwrap_or("")
+                                    .to_string(),
                             });
                         }
                     }
@@ -410,8 +446,7 @@ fn enclosing_scopes(
                 .and_then(|name_node| name_node.utf8_text(source).ok())
                 .unwrap_or("")
                 .to_string();
-            let text = source_line_raw(source, n.start_position().row)
-                .unwrap_or_default();
+            let text = source_line_raw(source, n.start_position().row).unwrap_or_default();
             ancestors.push(ScopeNode {
                 kind: n.kind().to_string(),
                 name,
@@ -432,7 +467,6 @@ fn source_line_raw(source: &[u8], line: usize) -> Option<String> {
     let text = std::str::from_utf8(source).ok()?;
     text.lines().nth(line).map(|l| l.to_string())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -550,7 +584,9 @@ fn small() {
         // Hunk should start at line 1 (function start) and include all lines
         assert_eq!(hunks[0].old_start, 1);
         // Should have context lines from the whole function
-        let context_count = hunks[0].lines.iter()
+        let context_count = hunks[0]
+            .lines
+            .iter()
             .filter(|l| l.kind == LineKind::Context)
             .count();
         // 10 lines total, 1 changed = 9 context lines
@@ -571,12 +607,21 @@ fn small() {
         let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         // Should NOT start at line 1 (function start), should be close to change
-        assert!(hunks[0].old_start > 1, "large scope should use default context");
+        assert!(
+            hunks[0].old_start > 1,
+            "large scope should use default context"
+        );
         // Should have <= 6 context lines (3 before + 3 after)
-        let context_count = hunks[0].lines.iter()
+        let context_count = hunks[0]
+            .lines
+            .iter()
             .filter(|l| l.kind == LineKind::Context)
             .count();
-        assert!(context_count <= 6, "large scope should use ~3-line context, got {}", context_count);
+        assert!(
+            context_count <= 6,
+            "large scope should use ~3-line context, got {}",
+            context_count
+        );
     }
 
     #[test]
@@ -601,7 +646,11 @@ let j = 10;
         // Should not include all 10 lines:
         // 3 before + 1 removed + 1 added + 3 after = 8 lines max
         let total_lines = hunks[0].lines.len();
-        assert!(total_lines <= 8, "top-level should use 3-line context, got {} lines", total_lines);
+        assert!(
+            total_lines <= 8,
+            "top-level should use 3-line context, got {} lines",
+            total_lines
+        );
         assert!(total_lines < 10, "should not include all lines");
     }
 
@@ -617,7 +666,11 @@ let j = 10;
         assert_eq!(hunks.len(), 1);
         // 3 before + 1 removed + 1 added + 3 after = 8 lines
         let total_lines = hunks[0].lines.len();
-        assert!(total_lines <= 8, "unsupported lang should use 3-line context, got {} lines", total_lines);
+        assert!(
+            total_lines <= 8,
+            "unsupported lang should use 3-line context, got {} lines",
+            total_lines
+        );
         assert!(total_lines < 20, "should not include all lines");
     }
 
@@ -661,12 +714,20 @@ fn compute() {
             .replace("let d = 4", "let d = 40");
         let diff = Diff::compute(original, &updated, "test.rs");
         let hunks = diff.hunks();
-        assert_eq!(hunks.len(), 1, "same function changes should merge to 1 hunk");
+        assert_eq!(
+            hunks.len(),
+            1,
+            "same function changes should merge to 1 hunk"
+        );
         // Should have 2 changed lines (a and d)
-        let removed = hunks[0].lines.iter()
+        let removed = hunks[0]
+            .lines
+            .iter()
             .filter(|l| l.kind == LineKind::Removed)
             .count();
-        let added = hunks[0].lines.iter()
+        let added = hunks[0]
+            .lines
+            .iter()
             .filter(|l| l.kind == LineKind::Added)
             .count();
         assert_eq!(removed, 2, "should have 2 removed lines");
@@ -692,7 +753,10 @@ fn small() {
         // Body should NOT include line 1 (fn small()) - only 3-line context
         let lines: Vec<&str> = text.lines().collect();
         let has_fn_line_in_body = lines.iter().any(|l| l.contains("fn small()"));
-        assert!(!has_fn_line_in_body, "body should use 3-line context, not full scope");
+        assert!(
+            !has_fn_line_in_body,
+            "body should use 3-line context, not full scope"
+        );
     }
 
     #[test]
@@ -715,8 +779,10 @@ fn small() {
         // Hunks should include full function (start at line 1)
         assert_eq!(hunks[0].old_start, 1, "hunk should start at function start");
         // First context line should be fn small() {
-        assert!(hunks[0].lines[0].content.contains("fn small()"), 
-            "first context line should be function signature");
+        assert!(
+            hunks[0].lines[0].content.contains("fn small()"),
+            "first context line should be function signature"
+        );
     }
 
     // -----------------------------------------------------------------------

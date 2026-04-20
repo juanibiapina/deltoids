@@ -293,10 +293,10 @@ pub fn annotate(minus_line: &str, plus_line: &str) -> AnnotationResult {
                 // Concatenate `count` tokens from both sides into one section.
                 let minus_text = concat_tokens(&minus_tokens, x_idx, count);
 
-                let section_text_for_minus =
-                    &minus_line[byte_offset(&minus_tokens, x_idx)..byte_end(&minus_tokens, x_idx + count, minus_line)];
-                let section_text_for_plus =
-                    &plus_line[byte_offset(&plus_tokens, y_idx)..byte_end(&plus_tokens, y_idx + count, plus_line)];
+                let section_text_for_minus = &minus_line[byte_offset(&minus_tokens, x_idx)
+                    ..byte_end(&minus_tokens, x_idx + count, minus_line)];
+                let section_text_for_plus = &plus_line[byte_offset(&plus_tokens, y_idx)
+                    ..byte_end(&plus_tokens, y_idx + count, plus_line)];
                 let width = UnicodeWidthStr::width(minus_text.trim());
                 d_denom += 2 * width;
                 minus_sections.push(AnnotatedSection {
@@ -324,8 +324,8 @@ pub fn annotate(minus_line: &str, plus_line: &str) -> AnnotationResult {
                 y_idx += count;
             }
             Operation::Deletion => {
-                let section_text =
-                    &minus_line[byte_offset(&minus_tokens, x_idx)..byte_end(&minus_tokens, x_idx + count, minus_line)];
+                let section_text = &minus_line[byte_offset(&minus_tokens, x_idx)
+                    ..byte_end(&minus_tokens, x_idx + count, minus_line)];
                 let width = UnicodeWidthStr::width(section_text.trim());
                 d_numer += width;
                 d_denom += width;
@@ -336,8 +336,8 @@ pub fn annotate(minus_line: &str, plus_line: &str) -> AnnotationResult {
                 x_idx += count;
             }
             Operation::Insertion => {
-                let section_text =
-                    &plus_line[byte_offset(&plus_tokens, y_idx)..byte_end(&plus_tokens, y_idx + count, plus_line)];
+                let section_text = &plus_line[byte_offset(&plus_tokens, y_idx)
+                    ..byte_end(&plus_tokens, y_idx + count, plus_line)];
                 let width = UnicodeWidthStr::width(section_text.trim());
                 d_numer += width;
                 d_denom += width;
@@ -434,8 +434,9 @@ fn coalesce_whitespace(sections: Vec<AnnotatedSection>) -> Vec<AnnotatedSection>
             && !section.text.is_empty();
 
         if is_whitespace_noop {
-            let prev_is_change =
-                result.last().is_some_and(|s: &AnnotatedSection| s.op != Operation::NoOp);
+            let prev_is_change = result
+                .last()
+                .is_some_and(|s: &AnnotatedSection| s.op != Operation::NoOp);
             let not_at_end = i + 1 < sections.len();
 
             if prev_is_change && not_at_end {
@@ -587,8 +588,17 @@ mod tests {
         assert_tokenize(
             "fn coalesce_edits<'a, EditOperation>(",
             &[
-                "fn", " ", "coalesce_edits", "<", "'", "a", ",", " ",
-                "EditOperation", ">", "(",
+                "fn",
+                " ",
+                "coalesce_edits",
+                "<",
+                "'",
+                "a",
+                ",",
+                " ",
+                "EditOperation",
+                ">",
+                "(",
             ],
         );
     }
@@ -599,8 +609,21 @@ mod tests {
         assert_tokenize(
             "fn coalesce_edits<'a, 'b, EditOperation>(",
             &[
-                "fn", " ", "coalesce_edits", "<", "'", "a", ",", " ",
-                "'", "b", ",", " ", "EditOperation", ">", "(",
+                "fn",
+                " ",
+                "coalesce_edits",
+                "<",
+                "'",
+                "a",
+                ",",
+                " ",
+                "'",
+                "b",
+                ",",
+                " ",
+                "EditOperation",
+                ">",
+                "(",
             ],
         );
     }
@@ -611,9 +634,22 @@ mod tests {
         assert_tokenize(
             "annotated_plus_lines.push(vec![(noop_insertion, plus_line)]);",
             &[
-                "annotated_plus_lines", ".", "push", "(", "vec", "!",
-                "[", "(", "noop_insertion", ",", " ", "plus_line",
-                ")", "]", ")", ";",
+                "annotated_plus_lines",
+                ".",
+                "push",
+                "(",
+                "vec",
+                "!",
+                "[",
+                "(",
+                "noop_insertion",
+                ",",
+                " ",
+                "plus_line",
+                ")",
+                "]",
+                ")",
+                ";",
             ],
         );
     }
@@ -624,10 +660,41 @@ mod tests {
         assert_tokenize(
             "         let col = Color::from_str(s).unwrap_or_else(|_| die());",
             &[
-                "", " ", " ", " ", " ", " ", " ", " ", " ", " ",
-                "let", " ", "col", " ", "=", " ", "Color", ":", ":",
-                "from_str", "(", "s", ")", ".", "unwrap_or_else", "(",
-                "|", "_", "|", " ", "die", "(", ")", ")", ";",
+                "",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                "let",
+                " ",
+                "col",
+                " ",
+                "=",
+                " ",
+                "Color",
+                ":",
+                ":",
+                "from_str",
+                "(",
+                "s",
+                ")",
+                ".",
+                "unwrap_or_else",
+                "(",
+                "|",
+                "_",
+                "|",
+                " ",
+                "die",
+                "(",
+                ")",
+                ")",
+                ";",
             ],
         );
     }
@@ -638,12 +705,50 @@ mod tests {
         assert_tokenize(
             "         (minus_file, plus_file) => format!(\"renamed: {} ⟶  {}\", minus_file, plus_file),",
             &[
-                "", " ", " ", " ", " ", " ", " ", " ", " ", " ",
-                "(", "minus_file", ",", " ", "plus_file", ")", " ",
-                "=", ">", " ", "format", "!", "(", "\"", "renamed",
-                ":", " ", "{", "}", " ", "⟶", " ", " ", "{", "}",
-                "\"", ",", " ", "minus_file", ",", " ", "plus_file",
-                ")", ",",
+                "",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                " ",
+                "(",
+                "minus_file",
+                ",",
+                " ",
+                "plus_file",
+                ")",
+                " ",
+                "=",
+                ">",
+                " ",
+                "format",
+                "!",
+                "(",
+                "\"",
+                "renamed",
+                ":",
+                " ",
+                "{",
+                "}",
+                " ",
+                "⟶",
+                " ",
+                " ",
+                "{",
+                "}",
+                "\"",
+                ",",
+                " ",
+                "minus_file",
+                ",",
+                " ",
+                "plus_file",
+                ")",
+                ",",
             ],
         );
     }
@@ -737,12 +842,12 @@ mod tests {
         assert_eq!(
             ops,
             vec![
-                (Operation::NoOp, 1),    // s
-                (Operation::Deletion, 2), // a, t
-                (Operation::NoOp, 1),    // u
-                (Operation::Deletion, 1), // r
+                (Operation::NoOp, 1),      // s
+                (Operation::Deletion, 2),  // a, t
+                (Operation::NoOp, 1),      // u
+                (Operation::Deletion, 1),  // r
                 (Operation::Insertion, 1), // n
-                (Operation::NoOp, 3),    // d, a, y
+                (Operation::NoOp, 3),      // d, a, y
             ]
         );
     }
@@ -758,8 +863,8 @@ mod tests {
         assert_eq!(
             ops,
             vec![
-                (Operation::Deletion, 2), // a, b deleted
-                (Operation::NoOp, 1),     // c matches c
+                (Operation::Deletion, 2),  // a, b deleted
+                (Operation::NoOp, 1),      // c matches c
                 (Operation::Insertion, 2), // b, a inserted
             ]
         );
@@ -826,14 +931,22 @@ mod tests {
             .minus_sections
             .iter()
             .any(|s| s.op == Operation::Deletion && s.text.contains('1'));
-        assert!(has_deletion, "expected deletion of '1': {:?}", result.minus_sections);
+        assert!(
+            has_deletion,
+            "expected deletion of '1': {:?}",
+            result.minus_sections
+        );
 
         // The plus side should have an Insertion for "2".
         let has_insertion = result
             .plus_sections
             .iter()
             .any(|s| s.op == Operation::Insertion && s.text.contains('2'));
-        assert!(has_insertion, "expected insertion of '2': {:?}", result.plus_sections);
+        assert!(
+            has_insertion,
+            "expected insertion of '2': {:?}",
+            result.plus_sections
+        );
     }
 
     #[test]
@@ -854,10 +967,16 @@ mod tests {
         let plus = "fn bar(x: i32) -> bool {";
         let result = annotate(minus, plus);
 
-        let minus_reconstructed: String =
-            result.minus_sections.iter().map(|s| s.text.as_str()).collect();
-        let plus_reconstructed: String =
-            result.plus_sections.iter().map(|s| s.text.as_str()).collect();
+        let minus_reconstructed: String = result
+            .minus_sections
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        let plus_reconstructed: String = result
+            .plus_sections
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
 
         assert_eq!(minus_reconstructed, minus);
         assert_eq!(plus_reconstructed, plus);
@@ -883,7 +1002,11 @@ mod tests {
         //   Del(1): text="b", width=1, d_numer += 1, d_denom += 1
         //   Ins(1): text="c", width=1, d_numer += 1, d_denom += 1
         // d_numer=2, d_denom=4, distance = 0.5
-        assert!((result.distance - 0.5).abs() < 0.01, "got {}", result.distance);
+        assert!(
+            (result.distance - 0.5).abs() < 0.01,
+            "got {}",
+            result.distance
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -913,7 +1036,11 @@ mod tests {
         // minus[0] pairs with plus[1], minus[1] should pair with plus[2].
         // plus[0] stays unpaired because greedy goes forward.
         let minus = vec!["let a = 1;", "let b = 2;"];
-        let plus = vec!["something completely different xxxxxx", "let a = 10;", "let b = 20;"];
+        let plus = vec![
+            "something completely different xxxxxx",
+            "let a = 10;",
+            "let b = 20;",
+        ];
         let (me, pe) = compute_subhunk_emphasis(&minus, &plus);
 
         // minus[0] should pair with plus[1] (similar)
@@ -1039,10 +1166,16 @@ mod tests {
         );
 
         // Verify reconstruction.
-        let minus_reconstructed: String =
-            result.minus_sections.iter().map(|s| s.text.as_str()).collect();
-        let plus_reconstructed: String =
-            result.plus_sections.iter().map(|s| s.text.as_str()).collect();
+        let minus_reconstructed: String = result
+            .minus_sections
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        let plus_reconstructed: String = result
+            .plus_sections
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
         assert_eq!(minus_reconstructed, minus_line);
         assert_eq!(plus_reconstructed, plus_line);
     }
@@ -1136,12 +1269,18 @@ mod tests {
             r#"                     (xxxxxxxxx, "build info"),"#,
             r#"                     (xxxxxxxxx, "build"),"#,
             &[
-                (Operation::NoOp, r#"                     (xxxxxxxxx, "build"#),
+                (
+                    Operation::NoOp,
+                    r#"                     (xxxxxxxxx, "build"#,
+                ),
                 (Operation::Deletion, " info"),
                 (Operation::NoOp, r#""),"#),
             ],
             &[
-                (Operation::NoOp, r#"                     (xxxxxxxxx, "build"#),
+                (
+                    Operation::NoOp,
+                    r#"                     (xxxxxxxxx, "build"#,
+                ),
                 (Operation::NoOp, r#""),"#),
             ],
         );

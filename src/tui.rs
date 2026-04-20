@@ -314,7 +314,9 @@ fn reload_traces(
     // or entry index was clamped). When the same entry is still selected the
     // user may be reviewing the diff, so preserve their scroll position.
     let selection_changed = prev_trace_id.as_deref()
-        != traces.get(state.trace_index).map(|t| t.trace.trace_id.as_str())
+        != traces
+            .get(state.trace_index)
+            .map(|t| t.trace.trace_id.as_str())
         || clamped != prev_entry_index;
     if selection_changed {
         state.diff_scroll = 0;
@@ -753,8 +755,16 @@ fn detail_diff_lines_from_hunks(entry: &HistoryEntry) -> Vec<String> {
         }
 
         // Add the @@ header line
-        let old_count = hunk.lines.iter().filter(|l| l.kind != LineKind::Added).count();
-        let new_count = hunk.lines.iter().filter(|l| l.kind != LineKind::Removed).count();
+        let old_count = hunk
+            .lines
+            .iter()
+            .filter(|l| l.kind != LineKind::Added)
+            .count();
+        let new_count = hunk
+            .lines
+            .iter()
+            .filter(|l| l.kind != LineKind::Removed)
+            .count();
         result.push(format!(
             "@@ -{},{} +{},{} @@",
             hunk.old_start, old_count, hunk.new_start, new_count
@@ -1034,11 +1044,7 @@ fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
     ])
 }
 
-fn render_diff_line(
-    entry: &HistoryEntry,
-    line: &str,
-    width: usize,
-) -> Vec<Line<'static>> {
+fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
         return vec![syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width)];
     }
@@ -1104,7 +1110,11 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
             let mut chunk = String::new();
             let mut chunk_width = 0usize;
             for ch in word.chars() {
-                let ch_width = if ch == '\t' { 4 } else { ch.width().unwrap_or(0) };
+                let ch_width = if ch == '\t' {
+                    4
+                } else {
+                    ch.width().unwrap_or(0)
+                };
                 if chunk_width + ch_width > max_width && !chunk.is_empty() {
                     lines.push(chunk);
                     chunk = String::new();
@@ -1171,10 +1181,7 @@ fn render_header_block(
     for wrapped in wrap_text(summary, width) {
         lines.push(Line::from(Span::styled(wrapped, summary_style)));
     }
-    lines.push(Line::from(Span::styled(
-        fit_line(path, width),
-        path_style,
-    )));
+    lines.push(Line::from(Span::styled(fit_line(path, width), path_style)));
     lines.push(Line::from(Span::styled(
         fit_line(metadata, width),
         metadata_style,
@@ -1276,11 +1283,7 @@ fn render_breadcrumb_box(
     let max_content_width = width.saturating_sub(2); // room for " │"
 
     // Compute the widest line number for right-alignment.
-    let max_line_num = ancestors
-        .iter()
-        .map(|a| a.start_line)
-        .max()
-        .unwrap_or(0);
+    let max_line_num = ancestors.iter().map(|a| a.start_line).max().unwrap_or(0);
     let num_col_width = max_line_num.to_string().len();
 
     // Build content rows: ancestor lines with optional "..." gaps between.
@@ -1325,14 +1328,14 @@ fn render_breadcrumb_box(
     for row in &rows {
         match &row.text {
             Some(text) => {
-                let num_str = format!("{:>width$}: ", row.line_num.unwrap_or(0), width = num_col_width);
-                let available_text_width = content_width.saturating_sub(prefix_width);
-                let (mut code_spans, code_width) = highlighted_spans(
-                    path,
-                    text,
-                    Style::default(),
-                    available_text_width.max(1),
+                let num_str = format!(
+                    "{:>width$}: ",
+                    row.line_num.unwrap_or(0),
+                    width = num_col_width
                 );
+                let available_text_width = content_width.saturating_sub(prefix_width);
+                let (mut code_spans, code_width) =
+                    highlighted_spans(path, text, Style::default(), available_text_width.max(1));
                 let padding = content_width.saturating_sub(prefix_width + code_width);
 
                 let mut spans = vec![Span::styled(num_str, border)];
@@ -1863,10 +1866,22 @@ mod tests {
         let lines = detail_lines(&entry);
 
         // Should have hunk separator + diff lines
-        assert!(lines.iter().any(|l: &String| l.starts_with("@@")), "should have hunk header");
-        assert!(lines.iter().any(|l: &String| l == " context line"), "should have context line");
-        assert!(lines.iter().any(|l: &String| l == "-old line"), "should have removed line");
-        assert!(lines.iter().any(|l: &String| l == "+new line"), "should have added line");
+        assert!(
+            lines.iter().any(|l: &String| l.starts_with("@@")),
+            "should have hunk header"
+        );
+        assert!(
+            lines.iter().any(|l: &String| l == " context line"),
+            "should have context line"
+        );
+        assert!(
+            lines.iter().any(|l: &String| l == "-old line"),
+            "should have removed line"
+        );
+        assert!(
+            lines.iter().any(|l: &String| l == "+new line"),
+            "should have added line"
+        );
     }
 
     #[test]
@@ -2046,7 +2061,9 @@ mod tests {
         state.diff_cache = None;
 
         let selection_changed = prev_trace_id.as_deref()
-            != traces.get(state.trace_index).map(|t| t.trace.trace_id.as_str())
+            != traces
+                .get(state.trace_index)
+                .map(|t| t.trace.trace_id.as_str())
             || clamped != prev_entry_index;
         if selection_changed {
             state.diff_scroll = 0;
@@ -2115,7 +2132,10 @@ mod tests {
         simulate_reload(&mut traces, &mut state, vec![shrunk]);
 
         assert_eq!(state.entry_index(), 0);
-        assert_eq!(state.diff_scroll, 0, "scroll should reset when entry clamped");
+        assert_eq!(
+            state.diff_scroll, 0,
+            "scroll should reset when entry clamped"
+        );
     }
 
     #[test]
@@ -2192,18 +2212,12 @@ mod tests {
 
     #[test]
     fn wrap_text_wraps_at_word_boundary() {
-        assert_eq!(
-            wrap_text("hello world foo", 11),
-            vec!["hello world", "foo"]
-        );
+        assert_eq!(wrap_text("hello world foo", 11), vec!["hello world", "foo"]);
     }
 
     #[test]
     fn wrap_text_splits_long_word_by_character() {
-        assert_eq!(
-            wrap_text("abcdefghij", 4),
-            vec!["abcd", "efgh", "ij"]
-        );
+        assert_eq!(wrap_text("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
     }
 
     #[test]
@@ -2386,7 +2400,10 @@ mod tests {
             80,
         );
         // Should have at least one span with emph bg and one with non-emph bg.
-        let has_emph_bg = line.spans.iter().any(|s| s.style.bg == Some(DIFF_DELETED_EMPH_BG));
+        let has_emph_bg = line
+            .spans
+            .iter()
+            .any(|s| s.style.bg == Some(DIFF_DELETED_EMPH_BG));
         let has_non_emph_bg = line
             .spans
             .iter()
@@ -2398,10 +2415,7 @@ mod tests {
     #[test]
     fn render_subhunk_pairs_similar_lines() {
         let entry = edit_entry();
-        let lines = vec![
-            "-const x = 1;".to_string(),
-            "+const x = 2;".to_string(),
-        ];
+        let lines = vec!["-const x = 1;".to_string(), "+const x = 2;".to_string()];
         let mut rendered = Vec::new();
         render_subhunk(&entry, &lines, 80, &mut rendered);
         assert_eq!(rendered.len(), 2);
@@ -2456,7 +2470,13 @@ mod tests {
     // Breadcrumb box tests
     // -----------------------------------------------------------------------
 
-    fn scope_node(kind: &str, name: &str, start: usize, end: usize, text: &str) -> deltoids::ScopeNode {
+    fn scope_node(
+        kind: &str,
+        name: &str,
+        start: usize,
+        end: usize,
+        text: &str,
+    ) -> deltoids::ScopeNode {
         deltoids::ScopeNode {
             kind: kind.to_string(),
             name: name.to_string(),
@@ -2470,16 +2490,21 @@ mod tests {
     fn breadcrumb_box_renders_multi_ancestor_with_line_numbers() {
         let ancestors = vec![
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
-            scope_node("function_item", "compute", 75, 80, "    fn compute(&self) -> i32 {"),
+            scope_node(
+                "function_item",
+                "compute",
+                75,
+                80,
+                "    fn compute(&self) -> i32 {",
+            ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -74,7 +75,7 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-        );
+        let lines = render_hunk_separator("@@ -74,7 +75,7 @@", "src/lib.rs", 80, Some(&ancestors));
         // top border + 2 ancestor lines + dots row + bottom border = 5
-        assert_eq!(lines.len(), 5, "expected 5 lines for breadcrumb box with gap");
+        assert_eq!(
+            lines.len(),
+            5,
+            "expected 5 lines for breadcrumb box with gap"
+        );
 
         let top = lines[0].to_string();
         assert!(top.starts_with('\u{2500}'), "top starts with ─");
@@ -2488,7 +2513,10 @@ mod tests {
         // First ancestor line should contain " 3: impl Foo {"
         let mid1 = lines[1].to_string();
         assert!(mid1.contains(" 3:"), "first ancestor should show line 3");
-        assert!(mid1.contains("impl Foo"), "first ancestor should show impl Foo");
+        assert!(
+            mid1.contains("impl Foo"),
+            "first ancestor should show impl Foo"
+        );
         assert!(mid1.ends_with('│'), "ancestor line ends with │");
 
         // Dots line
@@ -2498,7 +2526,10 @@ mod tests {
         // Second ancestor line should contain "75:"
         let mid2 = lines[3].to_string();
         assert!(mid2.contains("75:"), "second ancestor should show line 75");
-        assert!(mid2.contains("fn compute"), "second ancestor should show fn compute");
+        assert!(
+            mid2.contains("fn compute"),
+            "second ancestor should show fn compute"
+        );
 
         let bot = lines[4].to_string();
         assert!(bot.ends_with('\u{256f}'), "bot ends with ╯");
@@ -2510,31 +2541,28 @@ mod tests {
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
             scope_node("function_item", "new", 4, 10, "    fn new() -> Self {"),
         ];
-        let lines = render_hunk_separator(
-            "@@ -4,3 +4,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-        );
+        let lines = render_hunk_separator("@@ -4,3 +4,3 @@", "src/lib.rs", 80, Some(&ancestors));
         // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
         assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
         // No dots line
         for line in &lines {
-            assert!(!line.to_string().contains("..."), "no dots for adjacent scopes");
+            assert!(
+                !line.to_string().contains("..."),
+                "no dots for adjacent scopes"
+            );
         }
     }
 
     #[test]
     fn breadcrumb_box_single_ancestor() {
-        let ancestors = vec![
-            scope_node("function_item", "bar", 6, 10, "fn bar(a: i32, b: i32) -> i32 {"),
-        ];
-        let lines = render_hunk_separator(
-            "@@ -6,3 +6,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-        );
+        let ancestors = vec![scope_node(
+            "function_item",
+            "bar",
+            6,
+            10,
+            "fn bar(a: i32, b: i32) -> i32 {",
+        )];
+        let lines = render_hunk_separator("@@ -6,3 +6,3 @@", "src/lib.rs", 80, Some(&ancestors));
         // top + 1 ancestor + bottom = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
@@ -2545,12 +2573,8 @@ mod tests {
     #[test]
     fn breadcrumb_box_empty_ancestors_falls_back_to_legacy() {
         // Empty ancestors should fall back to legacy @@ parsing
-        let lines = render_hunk_separator(
-            "@@ -1,3 +7,3 @@ fn hello() {",
-            "src/lib.rs",
-            80,
-            Some(&[]),
-        );
+        let lines =
+            render_hunk_separator("@@ -1,3 +7,3 @@ fn hello() {", "src/lib.rs", 80, Some(&[]));
         // Legacy rendering: top + mid + bot = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
@@ -2562,14 +2586,16 @@ mod tests {
     fn breadcrumb_box_line_numbers_right_aligned() {
         let ancestors = vec![
             scope_node("impl_item", "Server", 1, 200, "impl Server {"),
-            scope_node("function_item", "handle", 120, 150, "    if let Some(val) = body {"),
+            scope_node(
+                "function_item",
+                "handle",
+                120,
+                150,
+                "    if let Some(val) = body {",
+            ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -120,3 +120,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-        );
+        let lines =
+            render_hunk_separator("@@ -120,3 +120,3 @@", "src/lib.rs", 80, Some(&ancestors));
         // Line numbers should be right-aligned: "  1:" and "120:"
         let mid1 = lines[1].to_string();
         let mid2 = lines[3].to_string(); // after dots row
@@ -2587,17 +2613,29 @@ mod tests {
     fn breadcrumb_box_deep_nesting() {
         let ancestors = vec![
             scope_node("impl_item", "Server", 1, 200, "impl Server {"),
-            scope_node("function_item", "handle", 45, 180, "    fn handle(&self, req: Request) {"),
-            scope_node("function_item", "body", 120, 140, "        if let Some(val) = body {"),
+            scope_node(
+                "function_item",
+                "handle",
+                45,
+                180,
+                "    fn handle(&self, req: Request) {",
+            ),
+            scope_node(
+                "function_item",
+                "body",
+                120,
+                140,
+                "        if let Some(val) = body {",
+            ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -120,3 +120,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-        );
+        let lines =
+            render_hunk_separator("@@ -120,3 +120,3 @@", "src/lib.rs", 80, Some(&ancestors));
         // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
-        assert_eq!(lines.len(), 7, "expected 7 lines for deep nesting with two gaps");
+        assert_eq!(
+            lines.len(),
+            7,
+            "expected 7 lines for deep nesting with two gaps"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2609,14 +2647,15 @@ mod tests {
         // All ancestors are shown regardless of visibility in diff
         let ancestors = vec![
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
-            scope_node("function_item", "compute", 10, 20, "    fn compute(&self) {"),
+            scope_node(
+                "function_item",
+                "compute",
+                10,
+                20,
+                "    fn compute(&self) {",
+            ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -10,3 +10,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-        );
+        let lines = render_hunk_separator("@@ -10,3 +10,3 @@", "src/lib.rs", 80, Some(&ancestors));
         // Should show both: top + impl + dots + fn + bottom = 5
         assert_eq!(lines.len(), 5, "should show all ancestors");
         let combined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -2627,9 +2666,7 @@ mod tests {
     #[test]
     fn breadcrumb_shows_single_ancestor() {
         // Single ancestor is always shown
-        let ancestors = vec![
-            scope_node("function_item", "bar", 6, 10, "fn bar() {"),
-        ];
+        let ancestors = vec![scope_node("function_item", "bar", 6, 10, "fn bar() {")];
         let lines = render_hunk_separator(
             "@@ -6,3 +6,3 @@ fn bar() {",
             "src/lib.rs",
@@ -2642,5 +2679,4 @@ mod tests {
         assert!(mid.contains("6:"), "shows line number");
         assert!(mid.contains("fn bar"), "shows ancestor");
     }
-
 }

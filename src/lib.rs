@@ -658,7 +658,9 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
 }
 
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
-    deltoids::Diff::compute(original, updated, path).text().to_string()
+    deltoids::Diff::compute(original, updated, path)
+        .text()
+        .to_string()
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {

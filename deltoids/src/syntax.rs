@@ -190,10 +190,7 @@ mod tests {
             ("test.tf", "resource {}"),
         ];
         for (path, source) in cases {
-            assert!(
-                parse_file(path, source).is_some(),
-                "failed to parse {path}"
-            );
+            assert!(parse_file(path, source).is_some(), "failed to parse {path}");
         }
     }
 }

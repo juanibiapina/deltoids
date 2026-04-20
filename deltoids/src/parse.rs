@@ -12,6 +12,8 @@ pub struct GitDiff {
 /// A diff for a single file.
 #[derive(Debug, Clone)]
 pub struct FileDiff {
+    /// Non-diff lines preceding this file (commit metadata, etc.).
+    pub preamble: Vec<String>,
     pub old_path: String,
     pub new_path: String,
     /// Original path if this file was renamed.
@@ -69,8 +71,14 @@ impl GitDiff {
         let mut rename_from: Option<String> = None;
         let mut pending_old_hash: Option<String> = None;
         let mut pending_new_hash: Option<String> = None;
+        let mut pending_preamble: Vec<String> = Vec::new();
 
         for line in diff.lines() {
+            // Skip "diff --git" header lines (we extract paths from --- and +++)
+            if line.starts_with("diff --git ") {
+                continue;
+            }
+
             // Parse index line for blob hashes
             if let Some(caps) = index_re().captures(line) {
                 pending_old_hash = Some(caps.get(1).unwrap().as_str().to_string());
@@ -97,6 +105,7 @@ impl GitDiff {
             } else if let Some(path) = line.strip_prefix("+++ ") {
                 let new_path = strip_prefix_ab(path);
                 current_file = Some(FileDiff {
+                    preamble: std::mem::take(&mut pending_preamble),
                     old_path: old_path.clone(),
                     new_path,
                     rename_from: rename_from.take(),
@@ -140,14 +149,27 @@ impl GitDiff {
                 } else if line.is_empty() {
                     // Empty context line (no leading space in some diffs)
                     (RawLineKind::Context, String::new())
+                } else if line.starts_with("\\ ") {
+                    // Skip "No newline at end of file" markers
+                    continue;
                 } else {
-                    // Skip non-diff lines (e.g., "\ No newline at end of file")
+                    // Non-hunk line (e.g., next commit's metadata)
+                    // Close the current hunk and collect as preamble
+                    if let Some(hunk) = current_hunk.take()
+                        && let Some(ref mut file) = current_file
+                    {
+                        file.hunks.push(hunk);
+                    }
+                    pending_preamble.push(line.to_string());
                     continue;
                 };
 
                 if let Some(ref mut hunk) = current_hunk {
                     hunk.lines.push(RawLine { kind, content });
                 }
+            } else {
+                // Non-diff line before any file starts (commit metadata, etc.)
+                pending_preamble.push(line.to_string());
             }
         }
 
@@ -302,5 +324,88 @@ index abc1234..def5678
         assert_eq!(parsed.files.len(), 1);
         assert_eq!(parsed.files[0].old_hash, None);
         assert_eq!(parsed.files[0].new_hash, None);
+    }
+
+    #[test]
+    fn parse_commit_metadata() {
+        // git show format with commit metadata
+        let diff = r#"commit abc1234567890
+Author: Test User <test@example.com>
+Date:   Mon Jan 1 12:00:00 2024 +0000
+
+    Add feature X
+
+diff --git a/src/main.rs b/src/main.rs
+index abc1234..def5678 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1 +1 @@
+-old
++new
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].preamble.len(), 6);
+        assert_eq!(parsed.files[0].preamble[0], "commit abc1234567890");
+        assert_eq!(
+            parsed.files[0].preamble[1],
+            "Author: Test User <test@example.com>"
+        );
+        assert!(parsed.files[0].preamble[4].contains("Add feature X"));
+    }
+
+    #[test]
+    fn parse_multi_commit() {
+        // git log -p format with multiple commits
+        let diff = r#"commit abc1234
+Author: User1 <user1@example.com>
+Date:   Mon Jan 1 12:00:00 2024 +0000
+
+    First commit
+
+diff --git a/file1.rs b/file1.rs
+--- a/file1.rs
++++ b/file1.rs
+@@ -1 +1 @@
+-old1
++new1
+
+commit def5678
+Author: User2 <user2@example.com>
+Date:   Tue Jan 2 12:00:00 2024 +0000
+
+    Second commit
+
+diff --git a/file2.rs b/file2.rs
+--- a/file2.rs
++++ b/file2.rs
+@@ -1 +1 @@
+-old2
++new2
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 2);
+        // First file has first commit's metadata
+        assert!(parsed.files[0].preamble[0].contains("abc1234"));
+        assert!(parsed.files[0].preamble[1].contains("User1"));
+        // Second file has second commit's metadata
+        assert!(parsed.files[1].preamble[0].contains("def5678"));
+        assert!(parsed.files[1].preamble[1].contains("User2"));
+    }
+
+    #[test]
+    fn parse_diff_no_preamble() {
+        // Plain git diff has no preamble
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+index abc1234..def5678 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1 +1 @@
+-old
++new
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert!(parsed.files[0].preamble.is_empty());
     }
 }

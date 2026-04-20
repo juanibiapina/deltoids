@@ -219,11 +219,17 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
     let mut first_file = true;
 
     for file in &parsed.files {
-        // Add blank line before file header (except first file)
-        if !first_file {
+        // Add blank line before file header (except first file with no preamble)
+        if !first_file && file.preamble.is_empty() {
             output.push('\n');
         }
         first_file = false;
+
+        // Print preamble lines (commit metadata, etc.) unchanged
+        for line in &file.preamble {
+            output.push_str(line);
+            output.push('\n');
+        }
 
         // Retrieve before/after content
         let content = content::retrieve(file, repo.as_ref());

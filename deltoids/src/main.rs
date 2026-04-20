@@ -13,7 +13,7 @@ use regex::Regex;
 
 use deltoids::Diff;
 use deltoids::parse::GitDiff;
-use deltoids::render::{render_file_header, render_hunk, render_rename_header};
+use deltoids::render::{render_file_header, render_hunk, render_rename_header, BgFill};
 
 mod git {
     use git2::{Oid, Repository};
@@ -140,7 +140,8 @@ fn main() {
     let input = strip_ansi(&input);
 
     let width = terminal_width().unwrap_or(DEFAULT_WIDTH);
-    let output = process_diff(&input, width);
+    let fill = bg_fill_mode();
+    let output = process_diff(&input, width, fill);
 
     print!("{output}");
     let _ = io::stdout().flush();
@@ -150,6 +151,17 @@ fn strip_ansi(s: &str) -> String {
     // Match ANSI escape sequences: ESC [ ... m (SGR codes)
     let re = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
     re.replace_all(s, "").to_string()
+}
+
+/// Determine fill mode based on whether stdout is a TTY.
+/// Use space padding when piped (e.g., through `less`), ANSI erase for direct terminal.
+fn bg_fill_mode() -> BgFill {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        BgFill::AnsiErase
+    } else {
+        BgFill::Spaces
+    }
 }
 
 fn terminal_width() -> Option<usize> {
@@ -165,7 +177,7 @@ fn terminal_width() -> Option<usize> {
     terminal_size::terminal_size().map(|(w, _)| w.0 as usize)
 }
 
-fn process_diff(input: &str, width: usize) -> String {
+fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
     let parsed = GitDiff::parse(input);
     let repo = git::Repo::discover();
     let mut output = String::new();
@@ -217,7 +229,7 @@ fn process_diff(input: &str, width: usize) -> String {
 
         // Render each hunk with breadcrumb box
         for hunk in diff.hunks() {
-            let hunk_lines = render_hunk(hunk, &file.new_path, width, hunk.new_start);
+            let hunk_lines = render_hunk(hunk, &file.new_path, width, hunk.new_start, fill);
             for line in hunk_lines {
                 output.push_str(&line);
                 output.push('\n');

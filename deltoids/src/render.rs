@@ -26,6 +26,16 @@ const GREEN_BG: &str = "\x1b[48;2;32;48;59m"; // RGB(0x20, 0x30, 0x3b)
 const GREEN_EMPH_BG: &str = "\x1b[48;2;44;90;102m"; // RGB(0x2c, 0x5a, 0x66)
 const RED_BG: &str = "\x1b[48;2;55;34;44m"; // RGB(0x37, 0x22, 0x2c)
 const RED_EMPH_BG: &str = "\x1b[48;2;113;49;55m"; // RGB(0x71, 0x31, 0x37)
+const DEFAULT_FG: &str = "\x1b[38;2;220;223;228m"; // Default text color for empty lines
+
+/// How to fill background color to end of line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BgFill {
+    /// Use ANSI CSI sequence (\x1b[0K) - efficient but not supported by `less -R`.
+    AnsiErase,
+    /// Pad with spaces to terminal width - works through pagers.
+    Spaces,
+}
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
@@ -160,7 +170,13 @@ pub fn render_breadcrumb_box(ancestors: &[ScopeNode], path: &str, width: usize) 
 }
 
 /// Render a diff line with syntax highlighting and appropriate background.
-pub fn render_diff_line(kind: &LineKind, content: &str, path: &str, _width: usize) -> String {
+pub fn render_diff_line(
+    kind: &LineKind,
+    content: &str,
+    path: &str,
+    width: usize,
+    fill: BgFill,
+) -> String {
     let bg = match kind {
         LineKind::Added => GREEN_BG,
         LineKind::Removed => RED_BG,
@@ -172,7 +188,25 @@ pub fn render_diff_line(kind: &LineKind, content: &str, path: &str, _width: usiz
     if bg.is_empty() {
         format!("{highlighted}{RESET}")
     } else {
-        format!("{bg}{highlighted}{ERASE_EOL}{RESET}")
+        let fill_str = bg_fill_string(content, width, fill);
+        // For empty lines, set a default foreground color to ensure background renders
+        if highlighted.is_empty() {
+            format!("{bg}{DEFAULT_FG}{fill_str}{RESET}")
+        } else {
+            format!("{bg}{highlighted}{fill_str}{RESET}")
+        }
+    }
+}
+
+/// Generate the string to fill background to end of line.
+fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
+    match fill {
+        BgFill::AnsiErase => ERASE_EOL.to_string(),
+        BgFill::Spaces => {
+            let content_width = display_width(content);
+            let padding = width.saturating_sub(content_width);
+            " ".repeat(padding)
+        }
     }
 }
 
@@ -235,15 +269,16 @@ pub fn render_diff_line_with_emphasis(
     emphasis: &LineEmphasis,
     path: &str,
     width: usize,
+    fill: BgFill,
 ) -> String {
     let (plain_bg, emph_bg) = match kind {
         LineKind::Added => (GREEN_BG, GREEN_EMPH_BG),
         LineKind::Removed => (RED_BG, RED_EMPH_BG),
-        LineKind::Context => return render_diff_line(kind, content, path, width),
+        LineKind::Context => return render_diff_line(kind, content, path, width, fill),
     };
 
     match emphasis {
-        LineEmphasis::Plain => render_diff_line(kind, content, path, width),
+        LineEmphasis::Plain => render_diff_line(kind, content, path, width, fill),
         LineEmphasis::Paired(sections) => {
             let mut result = String::new();
             result.push_str(plain_bg);
@@ -258,8 +293,13 @@ pub fn render_diff_line_with_emphasis(
                 result.push_str(&highlighted);
             }
 
-            // Clear to end of line
-            result.push_str(ERASE_EOL);
+            // Reset to plain background before filling to end of line
+            result.push_str(plain_bg);
+            // For empty lines, set a default foreground color to ensure background renders
+            if content.is_empty() {
+                result.push_str(DEFAULT_FG);
+            }
+            result.push_str(&bg_fill_string(content, width, fill));
 
             result.push_str(RESET);
             result
@@ -271,7 +311,12 @@ pub fn render_diff_line_with_emphasis(
 ///
 /// Extracts minus and plus lines, computes emphasis, and renders with
 /// word-level highlighting for changed portions.
-pub fn render_subhunk(lines: &[(LineKind, &str)], path: &str, width: usize) -> Vec<String> {
+pub fn render_subhunk(
+    lines: &[(LineKind, &str)],
+    path: &str,
+    width: usize,
+    fill: BgFill,
+) -> Vec<String> {
     // Separate minus and plus lines
     let mut minus_lines: Vec<&str> = Vec::new();
     let mut plus_lines: Vec<&str> = Vec::new();
@@ -302,6 +347,7 @@ pub fn render_subhunk(lines: &[(LineKind, &str)], path: &str, width: usize) -> V
                     &minus_emphasis[minus_idx],
                     path,
                     width,
+                    fill,
                 ));
                 minus_idx += 1;
             }
@@ -312,11 +358,12 @@ pub fn render_subhunk(lines: &[(LineKind, &str)], path: &str, width: usize) -> V
                     &plus_emphasis[plus_idx],
                     path,
                     width,
+                    fill,
                 ));
                 plus_idx += 1;
             }
             LineKind::Context => {
-                output.push(render_diff_line(kind, content, path, width));
+                output.push(render_diff_line(kind, content, path, width, fill));
             }
         }
     }
@@ -325,7 +372,13 @@ pub fn render_subhunk(lines: &[(LineKind, &str)], path: &str, width: usize) -> V
 }
 
 /// Render a full hunk with breadcrumb box and diff lines.
-pub fn render_hunk(hunk: &Hunk, path: &str, width: usize, hunk_start: usize) -> Vec<String> {
+pub fn render_hunk(
+    hunk: &Hunk,
+    path: &str,
+    width: usize,
+    hunk_start: usize,
+    fill: BgFill,
+) -> Vec<String> {
     let mut output = Vec::new();
 
     // Render breadcrumb box if we have ancestors
@@ -356,7 +409,7 @@ pub fn render_hunk(hunk: &Hunk, path: &str, width: usize, hunk_start: usize) -> 
 
         if matches!(line.kind, LineKind::Context) {
             // Context lines render directly
-            output.push(render_diff_line(&line.kind, &line.content, path, width));
+            output.push(render_diff_line(&line.kind, &line.content, path, width, fill));
             i += 1;
         } else {
             // Collect consecutive +/- lines as a subhunk
@@ -372,7 +425,7 @@ pub fn render_hunk(hunk: &Hunk, path: &str, width: usize, hunk_start: usize) -> 
                 .map(|l| (l.kind.clone(), l.content.as_str()))
                 .collect();
 
-            output.extend(render_subhunk(&subhunk, path, width));
+            output.extend(render_subhunk(&subhunk, path, width, fill));
         }
     }
 
@@ -431,13 +484,13 @@ mod tests {
 
     #[test]
     fn diff_line_added_has_green_bg() {
-        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80);
+        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80, BgFill::AnsiErase);
         assert!(line.contains("\x1b[48;2;32;48;59m")); // GREEN_BG
     }
 
     #[test]
     fn diff_line_removed_has_red_bg() {
-        let line = render_diff_line(&LineKind::Removed, "let y = 2;", "test.rs", 80);
+        let line = render_diff_line(&LineKind::Removed, "let y = 2;", "test.rs", 80, BgFill::AnsiErase);
         assert!(line.contains("\x1b[48;2;55;34;44m")); // RED_BG
     }
 
@@ -472,7 +525,7 @@ mod tests {
         };
 
         // hunk_start = 10 matches innermost.start_line = 10, so ancestor is visible
-        let lines = render_hunk(&hunk, "test.rs", 80, 10);
+        let lines = render_hunk(&hunk, "test.rs", 80, 10, BgFill::AnsiErase);
 
         // Should not have breadcrumb box since single ancestor is visible
         assert!(!lines.iter().any(|l| l.contains("┐")));
@@ -485,7 +538,7 @@ mod tests {
             (LineKind::Removed, "const x = 1;"),
             (LineKind::Added, "const x = 2;"),
         ];
-        let output = render_subhunk(&lines, "test.rs", 80);
+        let output = render_subhunk(&lines, "test.rs", 80, BgFill::AnsiErase);
 
         // Both lines should have emphasis background for the changed portion
         // GREEN_EMPH_BG = \x1b[48;2;44;90;102m
@@ -501,7 +554,7 @@ mod tests {
             (LineKind::Removed, "aaa bbb ccc ddd eee fff ggg hhh"),
             (LineKind::Added, "xxx yyy zzz www uuu vvv ppp qqq"),
         ];
-        let output = render_subhunk(&lines, "test.rs", 80);
+        let output = render_subhunk(&lines, "test.rs", 80, BgFill::AnsiErase);
 
         // Should have plain backgrounds only, no emphasis
         assert!(!output[0].contains("\x1b[48;2;113;49;55m"), "minus should NOT have RED_EMPH_BG");
@@ -518,8 +571,18 @@ mod tests {
     }
 
     #[test]
-    fn diff_line_uses_erase_eol() {
-        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80);
+    fn diff_line_uses_erase_eol_when_ansi_mode() {
+        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80, BgFill::AnsiErase);
         assert!(line.contains("\x1b[0K"), "should contain ERASE_EOL");
+    }
+
+    #[test]
+    fn diff_line_uses_spaces_when_space_mode() {
+        let line = render_diff_line(&LineKind::Added, "short", "test.rs", 20, BgFill::Spaces);
+        // "short" = 5 chars, width = 20, so 15 spaces padding
+        assert!(!line.contains("\x1b[0K"), "should NOT contain ERASE_EOL");
+        // Count trailing spaces before RESET
+        let before_reset = line.strip_suffix("\x1b[0m").unwrap();
+        assert!(before_reset.ends_with("               "), "should have 15 trailing spaces");
     }
 }

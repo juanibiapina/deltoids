@@ -143,8 +143,15 @@ fn main() {
     let fill = bg_fill_mode();
     let output = process_diff(&input, width, fill);
 
-    print!("{output}");
-    let _ = io::stdout().flush();
+    // Use write! instead of print! to handle broken pipe gracefully
+    // (happens when user quits `less` before we finish writing)
+    let mut stdout = io::stdout().lock();
+    if let Err(e) = write!(stdout, "{output}")
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        eprintln!("Error writing to stdout: {e}");
+    }
+    let _ = stdout.flush();
 }
 
 fn strip_ansi(s: &str) -> String {

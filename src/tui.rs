@@ -28,8 +28,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
-use deltoids::{compute_subhunk_emphasis, EmphKind, EmphSection, LineEmphasis};
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
+use deltoids::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
 const TOKYONIGHT_BLUE: Color = Color::Rgb(122, 162, 247);
@@ -922,8 +922,7 @@ fn render_subhunk(
         }
     }
 
-    let (minus_emphasis, plus_emphasis) =
-        compute_subhunk_emphasis(&minus_contents, &plus_contents);
+    let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_contents, &plus_contents);
 
     // Render in standard order (minus lines first, then plus lines, within
     // the subhunk). The lines are already in standard order from the diff.

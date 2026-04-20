@@ -51,9 +51,8 @@ static HUNK_HEADER_RE: OnceLock<Regex> = OnceLock::new();
 static INDEX_RE: OnceLock<Regex> = OnceLock::new();
 
 fn hunk_header_re() -> &'static Regex {
-    HUNK_HEADER_RE.get_or_init(|| {
-        Regex::new(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@").unwrap()
-    })
+    HUNK_HEADER_RE
+        .get_or_init(|| Regex::new(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@").unwrap())
 }
 
 fn index_re() -> &'static Regex {

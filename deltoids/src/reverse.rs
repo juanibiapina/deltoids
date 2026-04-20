@@ -132,6 +132,9 @@ mod tests {
         let after = "first new\nmiddle\nline3\nline4\ncontext\nlast new\n";
         let file_diff = parse_and_get_file(diff);
         let before = reconstruct_before(after, &file_diff);
-        assert_eq!(before, "first old\nmiddle\nline3\nline4\ncontext\nlast old\n");
+        assert_eq!(
+            before,
+            "first old\nmiddle\nline3\nline4\ncontext\nlast old\n"
+        );
     }
 }

@@ -9,7 +9,7 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect_assets::assets::HighlightingAssets;
 use unicode_width::UnicodeWidthStr;
 
-use crate::intraline::{compute_subhunk_emphasis, EmphKind, LineEmphasis};
+use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
 use crate::{Hunk, LineKind, ScopeNode};
 
 const TAB_WIDTH: usize = 4;
@@ -211,7 +211,7 @@ fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
 }
 
 /// Syntax-highlight a line and return ANSI-escaped string.
-/// 
+///
 /// Note: This only sets foreground colors, not background. The caller is
 /// responsible for setting/resetting background. This allows background
 /// colors to persist across all tokens.
@@ -330,8 +330,7 @@ pub fn render_subhunk(
     }
 
     // Compute emphasis
-    let (minus_emphasis, plus_emphasis) =
-        compute_subhunk_emphasis(&minus_lines, &plus_lines);
+    let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_lines, &plus_lines);
 
     // Render in original order
     let mut output = Vec::new();
@@ -387,14 +386,18 @@ pub fn render_hunk(hunk: &Hunk, path: &str, width: usize, fill: BgFill) -> Vec<S
 
         if matches!(line.kind, LineKind::Context) {
             // Context lines render directly
-            output.push(render_diff_line(&line.kind, &line.content, path, width, fill));
+            output.push(render_diff_line(
+                &line.kind,
+                &line.content,
+                path,
+                width,
+                fill,
+            ));
             i += 1;
         } else {
             // Collect consecutive +/- lines as a subhunk
             let start = i;
-            while i < hunk.lines.len()
-                && !matches!(hunk.lines[i].kind, LineKind::Context)
-            {
+            while i < hunk.lines.len() && !matches!(hunk.lines[i].kind, LineKind::Context) {
                 i += 1;
             }
 
@@ -462,13 +465,25 @@ mod tests {
 
     #[test]
     fn diff_line_added_has_green_bg() {
-        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80, BgFill::AnsiErase);
+        let line = render_diff_line(
+            &LineKind::Added,
+            "let x = 1;",
+            "test.rs",
+            80,
+            BgFill::AnsiErase,
+        );
         assert!(line.contains("\x1b[48;2;32;48;59m")); // GREEN_BG
     }
 
     #[test]
     fn diff_line_removed_has_red_bg() {
-        let line = render_diff_line(&LineKind::Removed, "let y = 2;", "test.rs", 80, BgFill::AnsiErase);
+        let line = render_diff_line(
+            &LineKind::Removed,
+            "let y = 2;",
+            "test.rs",
+            80,
+            BgFill::AnsiErase,
+        );
         assert!(line.contains("\x1b[48;2;55;34;44m")); // RED_BG
     }
 
@@ -520,8 +535,14 @@ mod tests {
         // Both lines should have emphasis background for the changed portion
         // GREEN_EMPH_BG = \x1b[48;2;44;90;102m
         // RED_EMPH_BG = \x1b[48;2;113;49;55m
-        assert!(output[0].contains("\x1b[48;2;113;49;55m"), "minus should have RED_EMPH_BG");
-        assert!(output[1].contains("\x1b[48;2;44;90;102m"), "plus should have GREEN_EMPH_BG");
+        assert!(
+            output[0].contains("\x1b[48;2;113;49;55m"),
+            "minus should have RED_EMPH_BG"
+        );
+        assert!(
+            output[1].contains("\x1b[48;2;44;90;102m"),
+            "plus should have GREEN_EMPH_BG"
+        );
     }
 
     #[test]
@@ -534,8 +555,14 @@ mod tests {
         let output = render_subhunk(&lines, "test.rs", 80, BgFill::AnsiErase);
 
         // Should have plain backgrounds only, no emphasis
-        assert!(!output[0].contains("\x1b[48;2;113;49;55m"), "minus should NOT have RED_EMPH_BG");
-        assert!(!output[1].contains("\x1b[48;2;44;90;102m"), "plus should NOT have GREEN_EMPH_BG");
+        assert!(
+            !output[0].contains("\x1b[48;2;113;49;55m"),
+            "minus should NOT have RED_EMPH_BG"
+        );
+        assert!(
+            !output[1].contains("\x1b[48;2;44;90;102m"),
+            "plus should NOT have GREEN_EMPH_BG"
+        );
     }
 
     #[test]
@@ -549,7 +576,13 @@ mod tests {
 
     #[test]
     fn diff_line_uses_erase_eol_when_ansi_mode() {
-        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80, BgFill::AnsiErase);
+        let line = render_diff_line(
+            &LineKind::Added,
+            "let x = 1;",
+            "test.rs",
+            80,
+            BgFill::AnsiErase,
+        );
         assert!(line.contains("\x1b[0K"), "should contain ERASE_EOL");
     }
 
@@ -560,6 +593,9 @@ mod tests {
         assert!(!line.contains("\x1b[0K"), "should NOT contain ERASE_EOL");
         // Count trailing spaces before RESET
         let before_reset = line.strip_suffix("\x1b[0m").unwrap();
-        assert!(before_reset.ends_with("               "), "should have 15 trailing spaces");
+        assert!(
+            before_reset.ends_with("               "),
+            "should have 15 trailing spaces"
+        );
     }
 }

@@ -13,7 +13,7 @@ use regex::Regex;
 
 use deltoids::Diff;
 use deltoids::parse::GitDiff;
-use deltoids::render::{render_file_header, render_hunk, render_rename_header, BgFill};
+use deltoids::render::{BgFill, render_file_header, render_hunk, render_rename_header};
 
 mod git {
     use git2::{Oid, Repository};
@@ -84,13 +84,16 @@ mod git {
 
             assert!(full_content.is_some(), "full hash should resolve");
             assert!(abbrev_content.is_some(), "abbreviated hash should resolve");
-            assert_eq!(full_content, abbrev_content, "both should return same content");
+            assert_eq!(
+                full_content, abbrev_content,
+                "both should return same content"
+            );
         }
     }
 }
 
 mod content {
-    use super::git::{is_null_hash, Repo};
+    use super::git::{Repo, is_null_hash};
     use deltoids::parse::FileDiff;
     use std::fs;
 

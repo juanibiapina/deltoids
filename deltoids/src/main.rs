@@ -33,11 +33,12 @@ mod git {
                 return None;
             }
 
-            // Try to parse as full OID first
-            let oid = Oid::from_str(hash)
-                .ok()
-                // If that fails, try to resolve abbreviated hash
-                .or_else(|| self.0.revparse_single(hash).ok().map(|obj| obj.id()))?;
+            // For full 40-char hashes, parse directly; for abbreviated, use revparse
+            let oid = if hash.len() == 40 {
+                Oid::from_str(hash).ok()
+            } else {
+                self.0.revparse_single(hash).ok().map(|obj| obj.id())
+            }?;
 
             let blob = self.0.find_blob(oid).ok()?;
             std::str::from_utf8(blob.content()).ok().map(String::from)
@@ -60,6 +61,30 @@ mod git {
             assert!(!is_null_hash("abc1234"));
             assert!(!is_null_hash("000000a"));
             assert!(!is_null_hash(""));
+        }
+
+        #[test]
+        fn blob_lookup_abbreviated_hash() {
+            // This test requires running in a git repo
+            let repo = match Repo::discover() {
+                Some(r) => r,
+                None => return, // Skip if not in a git repo
+            };
+
+            // Get HEAD commit's tree to find a known blob
+            let head = repo.0.head().unwrap().peel_to_commit().unwrap();
+            let tree = head.tree().unwrap();
+            let entry = tree.iter().next().unwrap();
+            let full_hash = entry.id().to_string();
+            let abbrev_hash = &full_hash[..7];
+
+            // Both should resolve to the same content
+            let full_content = repo.blob(&full_hash);
+            let abbrev_content = repo.blob(abbrev_hash);
+
+            assert!(full_content.is_some(), "full hash should resolve");
+            assert!(abbrev_content.is_some(), "abbreviated hash should resolve");
+            assert_eq!(full_content, abbrev_content, "both should return same content");
         }
     }
 }

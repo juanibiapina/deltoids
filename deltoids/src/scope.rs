@@ -12,7 +12,7 @@ use tree_sitter::{Node, Point};
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_SCOPE_LINES: usize = 50;
+const MAX_SCOPE_LINES: usize = 200;
 const DEFAULT_CONTEXT: usize = 3;
 
 // ---------------------------------------------------------------------------

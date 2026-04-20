@@ -231,6 +231,11 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             output.push('\n');
         }
 
+        // Blank line between preamble and file header
+        if !file.preamble.is_empty() {
+            output.push('\n');
+        }
+
         // Retrieve before/after content
         let content = content::retrieve(file, repo.as_ref());
 
@@ -265,11 +270,11 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             output.push('\n');
         }
 
-        // Blank line after header, before hunks
-        output.push('\n');
-
         // Render each hunk with breadcrumb box
         for hunk in diff.hunks() {
+            // Blank line before each hunk
+            output.push('\n');
+
             let hunk_lines = render_hunk(hunk, &file.new_path, width, fill);
             for line in hunk_lines {
                 output.push_str(&line);

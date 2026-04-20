@@ -47,14 +47,9 @@ See [docs/delta-within-line-diff-reference.md](docs/delta-within-line-diff-refer
 
 ## diff scope context
 
-Diff hunk headers include the enclosing source line, powered by tree-sitter.
-For example, a change inside `fn compute(&self) -> i32 {` produces:
+The TUI displays scope context (enclosing function, class, etc.) for each change, powered by tree-sitter. This helps navigate changes in context.
 
-```
-@@ -13,7 +13,7 @@ fn compute(&self) -> i32 {
-```
-
-Supported languages: Rust, Python, JavaScript, TypeScript (including TSX), Go, Ruby, Java, C, C++, Bash, Lua, CSS, and HCL/Terraform. Files with unrecognized extensions produce standard hunk headers without scope context.
+Supported languages: Rust, Python, JavaScript, TypeScript (including TSX), Go, Ruby, Java, C, C++, Bash, Lua, CSS, and HCL/Terraform.
 
 ## edit-tui
 

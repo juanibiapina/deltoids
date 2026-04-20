@@ -22,14 +22,10 @@ let updated = "fn foo() {\n    2\n}\n";
 
 let diff = Diff::compute(original, updated, "test.rs");
 
-// Get plain diff text with standard 3-line context (for agents)
-let plain = diff.text();
+// Get plain diff text with standard 3-line context
+let text = diff.text();
 
-// Get diff with scope context in @@ headers
-let with_scope = diff.text_with_scope();
-// @@ -1,3 +1,3 @@ fn foo() {
-
-// Get structured hunks with scope-expanded context (for TUI)
+// Get structured hunks with scope-expanded context and ancestors
 let hunks = diff.hunks();
 ```
 
@@ -42,7 +38,7 @@ Hunks returned by `hunks()` use scope-expanded context:
 - Changes in the same scope are merged into a single hunk
 - Changes in different scopes produce separate hunks
 
-The `text()` method always returns standard 3-line unified diff format.
+The `text()` method returns standard 3-line unified diff format. Scope information is available via `hunks().ancestors`.
 
 ### `Hunk`
 
@@ -99,7 +95,7 @@ pub struct ScopeNode {
 
 ## Examples
 
-### Get scope-enriched diff for display
+### Get diff text
 
 ```rust
 use deltoids::Diff;
@@ -108,9 +104,7 @@ let original = std::fs::read_to_string("src/config.rs").unwrap();
 let updated = apply_my_changes(&original);
 
 let diff = Diff::compute(&original, &updated, "src/config.rs");
-println!("{}", diff.text_with_scope());
-// @@ -14,7 +14,7 @@ fn process(&self) -> Result {
-//  ...
+println!("{}", diff.text());
 ```
 
 ### Inspect scope chains

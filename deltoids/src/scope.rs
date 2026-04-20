@@ -5,7 +5,7 @@
 //! used by the TUI to display which function a change belongs to.
 
 use serde::{Deserialize, Serialize};
-use similar::TextDiff;
+use similar::{ChangeTag, TextDiff};
 use tree_sitter::{Node, Point};
 
 // ---------------------------------------------------------------------------
@@ -88,33 +88,18 @@ impl Diff {
 
         // Parse for tree-sitter scope expansion
         let parsed = crate::syntax::parse_file(path, original);
-        let old_lines: Vec<&str> = original.lines().collect();
-        let new_lines: Vec<&str> = updated.lines().collect();
-        let ops: Vec<_> = text_diff.ops().to_vec();
 
-        // Compute context ranges (scope-expanded where applicable)
-        let context_ranges = compute_context_ranges(
-            &ops,
-            parsed.as_ref(),
-            original.as_bytes(),
-            old_lines.len(),
-        );
-
-        // Merge overlapping/adjacent ranges
-        let merged = merge_ranges(context_ranges);
-
-        // Build hunks from merged ranges
-        let hunks = build_hunks_from_ranges(
-            &ops,
-            &merged,
-            parsed.as_ref(),
-            original.as_bytes(),
-            &old_lines,
-            &new_lines,
-        );
-
-        // Inject scope context into @@ headers
-        let text = inject_scope_into_headers(&raw_text, &hunks);
+        let (hunks, text) = match parsed {
+            Some(parsed) => {
+                let hunks = build_hunks_with_scope(&text_diff, &parsed, original, updated);
+                let text = inject_scope_into_headers(&raw_text, &hunks);
+                (hunks, text)
+            }
+            None => {
+                let hunks = build_hunks_from_unified(&unified);
+                (hunks, raw_text)
+            }
+        };
 
         Diff { hunks, text }
     }
@@ -163,6 +148,71 @@ fn inject_scope_into_headers(raw_text: &str, hunks: &[Hunk]) -> String {
     result.join("\n")
 }
 
+/// Build hunks with tree-sitter scope expansion.
+///
+/// Uses scope-expanded context (up to 50-line scopes) and populates ancestor chains.
+fn build_hunks_with_scope(
+    text_diff: &TextDiff<'_, '_, str>,
+    parsed: &crate::syntax::ParsedFile,
+    original: &str,
+    updated: &str,
+) -> Vec<Hunk> {
+    let old_lines: Vec<&str> = original.lines().collect();
+    let new_lines: Vec<&str> = updated.lines().collect();
+    let ops: Vec<_> = text_diff.ops().to_vec();
+
+    let context_ranges = compute_context_ranges(
+        &ops,
+        parsed,
+        original.as_bytes(),
+        old_lines.len(),
+    );
+
+    let merged = merge_ranges(context_ranges);
+
+    build_hunks_from_ranges(
+        &ops,
+        &merged,
+        parsed,
+        original.as_bytes(),
+        &old_lines,
+        &new_lines,
+    )
+}
+
+/// Build hunks from similar's unified diff when tree-sitter parsing is unavailable.
+///
+/// Uses similar's built-in 3-line context and produces hunks with empty ancestors.
+fn build_hunks_from_unified(unified: &similar::udiff::UnifiedDiff<'_, '_, '_, str>) -> Vec<Hunk> {
+    unified
+        .iter_hunks()
+        .map(|hunk| {
+            let ops = hunk.ops();
+            let old_start = ops.first().map(|op| op.old_range().start + 1).unwrap_or(1);
+            let new_start = ops.first().map(|op| op.new_range().start + 1).unwrap_or(1);
+
+            let lines = hunk
+                .iter_changes()
+                .map(|change| DiffLine {
+                    kind: match change.tag() {
+                        ChangeTag::Equal => LineKind::Context,
+                        ChangeTag::Delete => LineKind::Removed,
+                        ChangeTag::Insert => LineKind::Added,
+                    },
+                    content: change.value().trim_end_matches('\n').to_string(),
+                })
+                .collect();
+
+            Hunk {
+                old_start,
+                new_start,
+                lines,
+                ancestors: Vec::new(),
+            }
+        })
+        .collect()
+}
+
 /// Compute default 3-line context range for a change.
 fn default_context_range(old_start: usize, old_end: usize, total_old: usize) -> ContextRange {
     let start = old_start.saturating_sub(DEFAULT_CONTEXT);
@@ -176,7 +226,7 @@ fn default_context_range(old_start: usize, old_end: usize, total_old: usize) -> 
 /// (innermost scope ≤ MAX_SCOPE_LINES) or fall back to 3-line default.
 fn compute_context_ranges(
     ops: &[similar::DiffOp],
-    parsed: Option<&crate::syntax::ParsedFile>,
+    parsed: &crate::syntax::ParsedFile,
     source: &[u8],
     total_old: usize,
 ) -> Vec<ContextRange> {
@@ -201,25 +251,23 @@ fn compute_context_ranges(
             }
         };
 
-        // Try scope expansion if we have parsed tree
-        if let Some(p) = parsed {
-            let change_line = if old_start < total_old { old_start } else { total_old.saturating_sub(1) };
-            let scopes = enclosing_scopes(
-                p.tree.root_node(),
-                source,
-                change_line,
-                p.scope_kinds,
-            );
+        // Try scope expansion
+        let change_line = if old_start < total_old { old_start } else { total_old.saturating_sub(1) };
+        let scopes = enclosing_scopes(
+            parsed.tree.root_node(),
+            source,
+            change_line,
+            parsed.scope_kinds,
+        );
 
-            if let Some(innermost) = scopes.last() {
-                let scope_lines = innermost.end_line.saturating_sub(innermost.start_line) + 1;
-                if scope_lines <= MAX_SCOPE_LINES {
-                    // Use scope-expanded context (convert 1-indexed to 0-indexed)
-                    let start = innermost.start_line.saturating_sub(1);
-                    let end = innermost.end_line.saturating_sub(1);
-                    ranges.push(ContextRange { start, end });
-                    continue;
-                }
+        if let Some(innermost) = scopes.last() {
+            let scope_lines = innermost.end_line.saturating_sub(innermost.start_line) + 1;
+            if scope_lines <= MAX_SCOPE_LINES {
+                // Use scope-expanded context (convert 1-indexed to 0-indexed)
+                let start = innermost.start_line.saturating_sub(1);
+                let end = innermost.end_line.saturating_sub(1);
+                ranges.push(ContextRange { start, end });
+                continue;
             }
         }
 
@@ -260,7 +308,7 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
 fn build_hunks_from_ranges(
     ops: &[similar::DiffOp],
     ranges: &[ContextRange],
-    parsed: Option<&crate::syntax::ParsedFile>,
+    parsed: &crate::syntax::ParsedFile,
     source: &[u8],
     old_lines: &[&str],
     new_lines: &[&str],
@@ -359,12 +407,9 @@ fn build_hunks_from_ranges(
         }
 
         // Compute ancestors from first change line
-        let ancestors = match (parsed, first_change_old_line) {
-            (Some(p), Some(line)) => {
-                enclosing_scopes(p.tree.root_node(), source, line, p.scope_kinds)
-            }
-            _ => Vec::new(),
-        };
+        let ancestors = first_change_old_line
+            .map(|line| enclosing_scopes(parsed.tree.root_node(), source, line, parsed.scope_kinds))
+            .unwrap_or_default();
 
         hunks.push(Hunk {
             old_start: range.start + 1, // Convert to 1-indexed

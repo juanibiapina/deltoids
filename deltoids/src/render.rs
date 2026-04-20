@@ -372,34 +372,12 @@ pub fn render_subhunk(
 }
 
 /// Render a full hunk with breadcrumb box and diff lines.
-pub fn render_hunk(
-    hunk: &Hunk,
-    path: &str,
-    width: usize,
-    hunk_start: usize,
-    fill: BgFill,
-) -> Vec<String> {
+pub fn render_hunk(hunk: &Hunk, path: &str, width: usize, fill: BgFill) -> Vec<String> {
     let mut output = Vec::new();
 
     // Render breadcrumb box if we have ancestors
     if !hunk.ancestors.is_empty() {
-        // Check if the innermost ancestor is already visible in the diff context
-        let scope_expanded = hunk.ancestors.last().is_some_and(|innermost| {
-            // If first context line would be >= innermost.start_line, ancestor is visible
-            hunk_start >= innermost.start_line
-        });
-
-        let ancestors_to_show = if scope_expanded && hunk.ancestors.len() > 1 {
-            // Drop innermost ancestor since it's visible in the diff
-            &hunk.ancestors[..hunk.ancestors.len() - 1]
-        } else if scope_expanded && hunk.ancestors.len() == 1 {
-            // Single ancestor already visible, skip breadcrumb entirely
-            &[]
-        } else {
-            &hunk.ancestors[..]
-        };
-
-        output.extend(render_breadcrumb_box(ancestors_to_show, path, width));
+        output.extend(render_breadcrumb_box(&hunk.ancestors, path, width));
     }
 
     // Render diff lines with intraline emphasis for consecutive +/- runs
@@ -501,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn render_hunk_drops_visible_ancestor() {
+    fn render_hunk_shows_all_ancestors() {
         let hunk = Hunk {
             old_start: 10,
             new_start: 10,
@@ -524,11 +502,10 @@ mod tests {
             }],
         };
 
-        // hunk_start = 10 matches innermost.start_line = 10, so ancestor is visible
-        let lines = render_hunk(&hunk, "test.rs", 80, 10, BgFill::AnsiErase);
+        let lines = render_hunk(&hunk, "test.rs", 80, BgFill::AnsiErase);
 
-        // Should not have breadcrumb box since single ancestor is visible
-        assert!(!lines.iter().any(|l| l.contains("┐")));
+        // Should have breadcrumb box with ancestor even if visible in diff
+        assert!(lines.iter().any(|l| l.contains("┐")));
     }
 
     #[test]

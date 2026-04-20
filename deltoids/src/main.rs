@@ -261,7 +261,7 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
 
         // Render each hunk with breadcrumb box
         for hunk in diff.hunks() {
-            let hunk_lines = render_hunk(hunk, &file.new_path, width, hunk.new_start, fill);
+            let hunk_lines = render_hunk(hunk, &file.new_path, width, fill);
             for line in hunk_lines {
                 output.push_str(&line);
                 output.push('\n');

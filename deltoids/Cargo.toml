@@ -32,3 +32,6 @@ tree-sitter-css = "0.25"
 tree-sitter-hcl = "1.1"
 git2 = "0.20"
 terminal_size = "0.4"
+
+[lints]
+workspace = true

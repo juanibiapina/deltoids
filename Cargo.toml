@@ -1,6 +1,11 @@
 [workspace]
 members = [".", "deltoids"]
 
+[workspace.lints.clippy]
+too_many_arguments = "warn"
+too_many_lines = "warn"
+excessive_nesting = "warn"
+
 [package]
 name = "edit"
 version = "0.1.0"
@@ -25,3 +30,6 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

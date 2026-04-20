@@ -103,3 +103,28 @@ printf '%s' '{
   "content": "{\n  \"version\": 2\n}\n"
 }' | write
 ```
+
+## quality checks
+
+Clippy is configured at the workspace root so both crates share the same lint policy.
+
+Run the current Clippy baseline from the repo root:
+
+```bash
+cargo clippy --workspace --all-targets
+```
+
+This is report-only for now. Do not add `-- -D warnings` until the current findings are cleaned up.
+
+To collect code metrics from the repo root, install `rust-code-analysis-cli` and run:
+
+```bash
+cargo install --locked rust-code-analysis-cli
+rust-code-analysis-cli --metrics \
+  -p src \
+  -p deltoids/src \
+  -p tests \
+  -p deltoids/tests \
+  --output-format json \
+  --pr
+```

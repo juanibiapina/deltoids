@@ -63,10 +63,10 @@ pub fn reconstruct_before(after_content: &str, file_diff: &FileDiff) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::ParsedDiff;
+    use crate::parse::GitDiff;
 
     fn parse_and_get_file(diff: &str) -> FileDiff {
-        let parsed = ParsedDiff::parse(diff);
+        let parsed = GitDiff::parse(diff);
         parsed.files.into_iter().next().unwrap()
     }
 

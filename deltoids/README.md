@@ -15,35 +15,31 @@ The `deltoids` binary reads unified diff from stdin and renders it with:
 
 ```bash
 # Use as git pager (recommended)
-git config core.pager deltoids
+git config core.pager 'deltoids | less -R'
 
-# For lazygit (disable built-in paging)
-# In ~/.config/lazygit/config.yml:
-#   git:
-#     pagers:
-#       - pager: deltoids --paging=never
+# Or configure in ~/.gitconfig
+# [core]
+#     pager = deltoids | less -R
 
-# Or pipe manually
+# Pipe manually
 git diff | deltoids | less -R
+git show HEAD | deltoids | less -R
+git log -p | deltoids | less -R
 ```
-
-### Options
-
-- `--paging=auto` (default): Use less when stdout is a TTY
-- `--paging=always`: Always use less
-- `--paging=never`: Never use less (for lazygit, etc.)
 
 ### Output format
 
 ```
-─── src/config.rs ──────────────────────────────────────────
-─────────────────╮
- 5: impl Config { │
-─────────────────╯
+src/config.rs
+────────────────────────────────────────────────────────────
+
+────────────────┐
+ 5: impl Config │
+────────────────┘
      fn process(&self) -> i32 {
          if self.value > 0 {
              println!("positive");
--            println!("removed");
+             println!("removed");
          }
          self.value
      }

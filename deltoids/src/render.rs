@@ -18,6 +18,7 @@ const THEME_NAME: &str = "OneHalfDark";
 // ANSI color codes
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+const ERASE_EOL: &str = "\x1b[0K"; // Erase to end of line
 
 // TokyoNight-inspired colors
 const BLUE: &str = "\x1b[38;2;122;162;247m"; // RGB(122, 162, 247)
@@ -61,12 +62,17 @@ fn syntax_for_path(path: &str) -> &'static SyntaxReference {
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
 }
 
-/// Render a file header line.
-pub fn render_file_header(path: &str, width: usize) -> String {
-    let line = format!("{}─── {path} ", BLUE);
-    let visible_len = 4 + path.len() + 1; // "─── " + path + " "
-    let remaining = width.saturating_sub(visible_len);
-    format!("{line}{}{RESET}", "─".repeat(remaining))
+/// Render a file header (2 lines: path, then separator).
+pub fn render_file_header(path: &str, width: usize) -> Vec<String> {
+    vec![
+        format!("{BOLD}{path}{RESET}"),
+        format!("{BLUE}{}{RESET}", "─".repeat(width)),
+    ]
+}
+
+/// Render a rename header showing old ⟶ new path.
+pub fn render_rename_header(old_path: &str, new_path: &str) -> String {
+    format!("{BLUE}renamed: {old_path} ⟶ {new_path}{RESET}")
 }
 
 /// Render a breadcrumb box showing ancestor scopes.
@@ -115,8 +121,8 @@ pub fn render_breadcrumb_box(ancestors: &[ScopeNode], path: &str, width: usize) 
     }
     let content_width = max_row_width.min(max_content_width);
 
-    let top = format!("{BLUE}{}╮{RESET}", "─".repeat(content_width + 1));
-    let bot = format!("{BLUE}{}╯{RESET}", "─".repeat(content_width + 1));
+    let top = format!("{BLUE}{}┐{RESET}", "─".repeat(content_width + 1));
+    let bot = format!("{BLUE}{}┘{RESET}", "─".repeat(content_width + 1));
 
     let mut lines = vec![top];
 
@@ -154,7 +160,7 @@ pub fn render_breadcrumb_box(ancestors: &[ScopeNode], path: &str, width: usize) 
 }
 
 /// Render a diff line with syntax highlighting and appropriate background.
-pub fn render_diff_line(kind: &LineKind, content: &str, path: &str, width: usize) -> String {
+pub fn render_diff_line(kind: &LineKind, content: &str, path: &str, _width: usize) -> String {
     let bg = match kind {
         LineKind::Added => GREEN_BG,
         LineKind::Removed => RED_BG,
@@ -162,13 +168,11 @@ pub fn render_diff_line(kind: &LineKind, content: &str, path: &str, width: usize
     };
 
     let highlighted = highlight_line(content, path);
-    let content_width = display_width(content);
-    let padding = width.saturating_sub(content_width);
 
     if bg.is_empty() {
-        format!("{highlighted}{}{RESET}", " ".repeat(padding))
+        format!("{highlighted}{RESET}")
     } else {
-        format!("{bg}{highlighted}{}{RESET}", " ".repeat(padding))
+        format!("{bg}{highlighted}{ERASE_EOL}{RESET}")
     }
 }
 
@@ -254,10 +258,8 @@ pub fn render_diff_line_with_emphasis(
                 result.push_str(&highlighted);
             }
 
-            // Pad to full width
-            let content_width = display_width(content);
-            let padding = width.saturating_sub(content_width);
-            result.push_str(&" ".repeat(padding));
+            // Clear to end of line
+            result.push_str(ERASE_EOL);
 
             result.push_str(RESET);
             result
@@ -385,8 +387,9 @@ mod tests {
     #[test]
     fn file_header_contains_path() {
         let header = render_file_header("src/main.rs", 80);
-        assert!(header.contains("src/main.rs"));
-        assert!(header.contains("───"));
+        assert_eq!(header.len(), 2);
+        assert!(header[0].contains("src/main.rs"));
+        assert!(header[1].contains("───"));
     }
 
     #[test]
@@ -399,8 +402,8 @@ mod tests {
             text: "fn main() {".to_string(),
         }];
         let lines = render_breadcrumb_box(&ancestors, "test.rs", 80);
-        assert!(lines[0].contains("╮"));
-        assert!(lines.last().unwrap().contains("╯"));
+        assert!(lines[0].contains("┐"));
+        assert!(lines.last().unwrap().contains("┘"));
     }
 
     #[test]
@@ -472,7 +475,7 @@ mod tests {
         let lines = render_hunk(&hunk, "test.rs", 80, 10);
 
         // Should not have breadcrumb box since single ancestor is visible
-        assert!(!lines.iter().any(|l| l.contains("╮")));
+        assert!(!lines.iter().any(|l| l.contains("┐")));
     }
 
     #[test]
@@ -503,5 +506,20 @@ mod tests {
         // Should have plain backgrounds only, no emphasis
         assert!(!output[0].contains("\x1b[48;2;113;49;55m"), "minus should NOT have RED_EMPH_BG");
         assert!(!output[1].contains("\x1b[48;2;44;90;102m"), "plus should NOT have GREEN_EMPH_BG");
+    }
+
+    #[test]
+    fn rename_header_shows_arrow() {
+        let header = render_rename_header("old/path.rs", "new/path.rs");
+        assert!(header.contains("old/path.rs"));
+        assert!(header.contains("new/path.rs"));
+        assert!(header.contains("⟶"));
+        assert!(header.contains("renamed:"));
+    }
+
+    #[test]
+    fn diff_line_uses_erase_eol() {
+        let line = render_diff_line(&LineKind::Added, "let x = 1;", "test.rs", 80);
+        assert!(line.contains("\x1b[0K"), "should contain ERASE_EOL");
     }
 }

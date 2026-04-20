@@ -76,15 +76,15 @@ impl Diff {
     ///
     /// Parses the file using tree-sitter (if the language is supported) to
     /// populate each hunk's ancestor scope chain. Hunks use scope-expanded
-    /// context (up to 50-line scopes), while `text()` returns standard
-    /// 3-line context for agent consumption.
+    /// context (up to 50-line scopes). The `text()` method returns standard
+    /// 3-line context with scope context injected into @@ headers.
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
         let text_diff = TextDiff::from_lines(original, updated);
 
         // Standard 3-line context for agent-facing diff
         let mut unified = text_diff.unified_diff();
         unified.context_radius(3).header("original", "modified");
-        let text = unified.to_string();
+        let raw_text = unified.to_string();
 
         // Parse for tree-sitter scope expansion
         let parsed = crate::syntax::parse_file(path, original);
@@ -113,41 +113,18 @@ impl Diff {
             &new_lines,
         );
 
+        // Inject scope context into @@ headers
+        let text = inject_scope_into_headers(&raw_text, &hunks);
+
         Diff { hunks, text }
     }
 
-    /// Returns the diff text with standard 3-line context.
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    /// Returns diff text with scope context injected into @@ headers.
+    /// Returns the diff text with standard 3-line context and scope in @@ headers.
     ///
     /// Each hunk header is appended with the innermost ancestor's source line
     /// (trimmed), making it easier to see which function/struct a change belongs to.
-    pub fn text_with_scope(&self) -> String {
-        let diff_lines: Vec<&str> = self.text.lines().collect();
-        let mut result = Vec::with_capacity(diff_lines.len());
-        let mut hunk_idx = 0;
-
-        for line in diff_lines {
-            if line.starts_with("@@") {
-                if let Some(hunk) = self.hunks.get(hunk_idx) {
-                    if let Some(innermost) = hunk.ancestors.last() {
-                        result.push(format!("{} {}", line, innermost.text.trim()));
-                    } else {
-                        result.push(line.to_string());
-                    }
-                    hunk_idx += 1;
-                } else {
-                    result.push(line.to_string());
-                }
-            } else {
-                result.push(line.to_string());
-            }
-        }
-
-        result.join("\n")
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     /// Returns the enriched hunks.
@@ -159,6 +136,32 @@ impl Diff {
 // ---------------------------------------------------------------------------
 // Scope-expanded context helpers
 // ---------------------------------------------------------------------------
+
+/// Inject scope context into @@ headers.
+fn inject_scope_into_headers(raw_text: &str, hunks: &[Hunk]) -> String {
+    let diff_lines: Vec<&str> = raw_text.lines().collect();
+    let mut result = Vec::with_capacity(diff_lines.len());
+    let mut hunk_idx = 0;
+
+    for line in diff_lines {
+        if line.starts_with("@@") {
+            if let Some(hunk) = hunks.get(hunk_idx) {
+                if let Some(innermost) = hunk.ancestors.last() {
+                    result.push(format!("{} {}", line, innermost.text.trim()));
+                } else {
+                    result.push(line.to_string());
+                }
+                hunk_idx += 1;
+            } else {
+                result.push(line.to_string());
+            }
+        } else {
+            result.push(line.to_string());
+        }
+    }
+
+    result.join("\n")
+}
 
 /// Compute default 3-line context range for a change.
 fn default_context_range(old_start: usize, old_end: usize, total_old: usize) -> ContextRange {
@@ -667,8 +670,8 @@ fn compute() {
     }
 
     #[test]
-    fn text_returns_standard_context() {
-        // text() should return standard 3-line context diff
+    fn text_returns_standard_context_with_scope_header() {
+        // text() should return standard 3-line context diff with scope in @@ header
         let original = "\
 fn small() {
     let a = 1;
@@ -682,13 +685,12 @@ fn small() {
         let updated = original.replace("let d = 4", "let d = 40");
         let diff = Diff::compute(original, &updated, "test.rs");
         let text = diff.text();
-        // The @@ header should show limited context (not from line 1)
-        assert!(text.contains("@@"));
-        // Standard diff should NOT include line 1 (fn small())
-        // because the change is on line 5 with 3-line context
+        // The @@ header should have scope context appended
+        assert!(text.contains("@@ -2,7 +2,7 @@ fn small() {"));
+        // Body should NOT include line 1 (fn small()) - only 3-line context
         let lines: Vec<&str> = text.lines().collect();
-        let has_fn_line = lines.iter().any(|l| l.contains("fn small()") && !l.starts_with("@@"));
-        assert!(!has_fn_line, "standard text() should use 3-line context, not full scope");
+        let has_fn_line_in_body = lines.iter().any(|l| l.contains("fn small()") && !l.starts_with("@@"));
+        assert!(!has_fn_line_in_body, "body should use 3-line context, not full scope");
     }
 
     #[test]
@@ -827,30 +829,18 @@ impl Foo {
     }
 
     #[test]
-    fn diff_text_returns_plain_diff() {
-        let original = "fn foo() {\n    1\n}\n";
-        let updated = "fn foo() {\n    2\n}\n";
-        let diff = Diff::compute(original, updated, "test.rs");
-
-        let text = diff.text();
-        // Plain diff @@ header should end with @@ (no scope appended)
-        let header = text.lines().find(|l| l.starts_with("@@")).unwrap();
-        assert!(header.ends_with("@@"), "expected header to end with @@, got: {}", header);
-    }
-
-    #[test]
-    fn diff_text_with_scope_injects_innermost_ancestor() {
+    fn diff_text_injects_innermost_ancestor() {
         let original = "fn compute() {\n    let x = 1;\n}\n";
         let updated = "fn compute() {\n    let x = 2;\n}\n";
         let diff = Diff::compute(original, updated, "test.rs");
 
-        let with_scope = diff.text_with_scope();
+        let text = diff.text();
         // Should have scope context appended to @@ line
-        assert!(with_scope.contains("@@ -1,3 +1,3 @@ fn compute() {"));
+        assert!(text.contains("@@ -1,3 +1,3 @@ fn compute() {"));
     }
 
     #[test]
-    fn diff_text_with_scope_nested_shows_innermost() {
+    fn diff_text_nested_shows_innermost() {
         let original = "\
 struct Foo;
 
@@ -864,25 +854,21 @@ impl Foo {
         let updated = original.replace("x + 1", "x + 2");
         let diff = Diff::compute(original, &updated, "test.rs");
 
-        let with_scope = diff.text_with_scope();
+        let text = diff.text();
         // Should show innermost (function), not impl
-        assert!(with_scope.contains("fn compute(&self) -> i32 {"));
+        assert!(text.contains("fn compute(&self) -> i32 {"));
     }
 
     #[test]
-    fn diff_text_with_scope_no_ancestors_unchanged() {
+    fn diff_text_top_level_no_scope() {
         let original = "let x = 1;\nlet y = 2;\n";
         let updated = "let x = 1;\nlet y = 3;\n";
         let diff = Diff::compute(original, updated, "test.rs");
 
-        let plain = diff.text();
-        let with_scope = diff.text_with_scope();
-        // Top-level code has no ancestors, so @@ line should be unchanged
-        assert!(with_scope.contains("@@ -1,2 +1,2 @@"));
-        // Both should have the same @@ line (no scope appended)
-        let plain_header = plain.lines().find(|l| l.starts_with("@@")).unwrap();
-        let scope_header = with_scope.lines().find(|l| l.starts_with("@@")).unwrap();
-        assert_eq!(plain_header, scope_header);
+        let text = diff.text();
+        // Top-level code has no ancestors, so @@ line has no scope appended
+        let header = text.lines().find(|l| l.starts_with("@@")).unwrap();
+        assert!(header.ends_with("@@"), "top-level should have no scope: {}", header);
     }
 
     #[test]

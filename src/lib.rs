@@ -239,7 +239,7 @@ fn try_execute_edit(
     let updated = apply_edits(&original, &request.edits, &request.path)?;
     let computed = deltoids::Diff::compute(&original, &updated, &request.path);
     let hunks = computed.hunks().to_vec();
-    let diff = computed.text_with_scope();
+    let diff = computed.text().to_string();
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -288,7 +288,7 @@ fn try_execute_write(
     };
     let computed = deltoids::Diff::compute(&original, &request.content, &request.path);
     let hunks = computed.hunks().to_vec();
-    let diff = computed.text_with_scope();
+    let diff = computed.text().to_string();
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -658,7 +658,7 @@ pub fn validate_write_target_path(path: &Path, display_path: &str) -> Result<(),
 }
 
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
-    deltoids::Diff::compute(original, updated, path).text_with_scope()
+    deltoids::Diff::compute(original, updated, path).text().to_string()
 }
 
 pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {

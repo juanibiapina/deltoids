@@ -42,6 +42,7 @@ pub fn parse_file(path: &str, source: &str) -> Option<ParsedFile> {
 // ---------------------------------------------------------------------------
 
 /// Detect language from file extension and return its configuration.
+#[allow(clippy::too_many_lines)]
 fn detect_language(path: &str) -> Option<LangEntry> {
     let ext = Path::new(path).extension()?.to_str()?;
     match ext {
@@ -137,6 +138,14 @@ fn detect_language(path: &str) -> Option<LangEntry> {
             language: tree_sitter_hcl::LANGUAGE,
             scope_kinds: &["block"],
         }),
+        "md" | "markdown" => Some(LangEntry {
+            language: tree_sitter_md::LANGUAGE,
+            scope_kinds: &["atx_heading", "setext_heading"],
+        }),
+        "toml" => Some(LangEntry {
+            language: tree_sitter_toml_ng::LANGUAGE,
+            scope_kinds: &["table", "table_array_element"],
+        }),
         _ => None,
     }
 }
@@ -159,6 +168,22 @@ mod tests {
         let parsed = parse_file("app.py", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "module");
         assert!(parsed.scope_kinds.contains(&"function_definition"));
+    }
+
+    #[test]
+    fn parses_markdown_file() {
+        let source = "# Heading\n\nSome text.\n";
+        let parsed = parse_file("README.md", source).unwrap();
+        assert_eq!(parsed.tree.root_node().kind(), "document");
+        assert!(parsed.scope_kinds.contains(&"atx_heading"));
+    }
+
+    #[test]
+    fn parses_toml_file() {
+        let source = "[package]\nname = \"test\"\n";
+        let parsed = parse_file("Cargo.toml", source).unwrap();
+        assert_eq!(parsed.tree.root_node().kind(), "document");
+        assert!(parsed.scope_kinds.contains(&"table"));
     }
 
     #[test]
@@ -188,6 +213,8 @@ mod tests {
             ("test.lua", "print('hi')"),
             ("test.css", "body {}"),
             ("test.tf", "resource {}"),
+            ("test.md", "# Heading"),
+            ("test.toml", "[section]"),
         ];
         for (path, source) in cases {
             assert!(parse_file(path, source).is_some(), "failed to parse {path}");

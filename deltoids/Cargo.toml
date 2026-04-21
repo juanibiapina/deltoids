@@ -30,6 +30,8 @@ tree-sitter-bash = "0.25"
 tree-sitter-lua = "0.5"
 tree-sitter-css = "0.25"
 tree-sitter-hcl = "1.1"
+tree-sitter-md = "0.5"
+tree-sitter-toml-ng = "0.7"
 git2 = "0.20"
 terminal_size = "0.4"
 

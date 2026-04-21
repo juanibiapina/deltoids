@@ -212,6 +212,16 @@ fn terminal_width() -> Option<usize> {
     terminal_size::terminal_size().map(|(w, _)| w.0 as usize)
 }
 
+/// Get the display path for a file diff.
+/// For deleted files (new_path is /dev/null), returns old_path.
+fn display_path(file: &deltoids::parse::FileDiff) -> &str {
+    if file.new_path == "/dev/null" {
+        &file.old_path
+    } else {
+        &file.new_path
+    }
+}
+
 fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
     let parsed = GitDiff::parse(input);
     let repo = git::Repo::discover();
@@ -246,7 +256,8 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             (Some(before), None) => (before, String::new()), // Deleted file
             (None, None) => {
                 // Can't get any content, render raw diff
-                for line in render_file_header(&file.new_path, width) {
+                let path = display_path(file);
+                for line in render_file_header(path, width) {
                     output.push_str(&line);
                     output.push('\n');
                 }
@@ -256,10 +267,11 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
         };
 
         // Compute enriched diff using deltoids library
-        let diff = Diff::compute(&before_content, &after_content, &file.new_path);
+        let path = display_path(file);
+        let diff = Diff::compute(&before_content, &after_content, path);
 
         // Render file header (2 lines)
-        for line in render_file_header(&file.new_path, width) {
+        for line in render_file_header(path, width) {
             output.push_str(&line);
             output.push('\n');
         }
@@ -275,7 +287,7 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             // Blank line before each hunk
             output.push('\n');
 
-            let hunk_lines = render_hunk(hunk, &file.new_path, width, fill);
+            let hunk_lines = render_hunk(hunk, path, width, fill);
             for line in hunk_lines {
                 output.push_str(&line);
                 output.push('\n');
@@ -312,4 +324,40 @@ fn format_raw_hunks(file: &deltoids::parse::FileDiff, _width: usize) -> String {
     }
 
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deltoids::parse::FileDiff;
+
+    fn make_file_diff(old_path: &str, new_path: &str) -> FileDiff {
+        FileDiff {
+            preamble: vec![],
+            old_path: old_path.to_string(),
+            new_path: new_path.to_string(),
+            rename_from: None,
+            old_hash: None,
+            new_hash: None,
+            hunks: vec![],
+        }
+    }
+
+    #[test]
+    fn display_path_returns_new_path_for_regular_file() {
+        let file = make_file_diff("src/lib.rs", "src/lib.rs");
+        assert_eq!(display_path(&file), "src/lib.rs");
+    }
+
+    #[test]
+    fn display_path_returns_old_path_for_deleted_file() {
+        let file = make_file_diff("deleted.rs", "/dev/null");
+        assert_eq!(display_path(&file), "deleted.rs");
+    }
+
+    #[test]
+    fn display_path_returns_new_path_for_new_file() {
+        let file = make_file_diff("/dev/null", "new_file.rs");
+        assert_eq!(display_path(&file), "new_file.rs");
+    }
 }

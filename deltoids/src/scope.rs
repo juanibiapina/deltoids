@@ -279,6 +279,27 @@ fn find_inserted_scope_line(
     None
 }
 
+/// Check if an insert operation forms a new scope that should have its own hunk.
+/// Used to avoid duplicating new scope content in sibling function hunks.
+fn insert_forms_new_scope(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    new_start: usize,
+    new_end: usize,
+) -> bool {
+    for line in new_start..new_end {
+        let Some(scope) = innermost_scope_at(parsed, source, line) else {
+            continue;
+        };
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
+        let is_new_scope = scope_start >= new_start && scope_end < new_end;
+        if scope_lines <= MAX_SCOPE_LINES && is_new_scope {
+            return true;
+        }
+    }
+    false
+}
+
 fn find_replace_scope_line(
     parsed: &crate::syntax::ParsedFile,
     source: &[u8],
@@ -615,11 +636,25 @@ fn collect_insert_lines(
     old_index: usize,
     new_index: usize,
     new_len: usize,
-    new_lines: &[&str],
+    ctx: &HunkBuildContext<'_>,
 ) {
     if old_index < range.start || old_index > range.end {
         return;
     }
+
+    // Skip inserts that form a new scope when building an old-scope hunk.
+    // The new scope has its own hunk; we don't want to duplicate it as context.
+    if range.ancestor_source == AncestorSource::Old
+        && insert_forms_new_scope(
+            ctx.new_parsed,
+            ctx.new_source,
+            new_index,
+            new_index + new_len,
+        )
+    {
+        return;
+    }
+
     if builder.new_start.is_none() {
         builder.new_start = Some(new_index + 1);
     }
@@ -630,7 +665,12 @@ fn collect_insert_lines(
             .push((AncestorSource::New, new_line));
         builder.lines.push(DiffLine {
             kind: LineKind::Added,
-            content: new_lines.get(new_line).copied().unwrap_or("").to_string(),
+            content: ctx
+                .new_lines
+                .get(new_line)
+                .copied()
+                .unwrap_or("")
+                .to_string(),
         });
     }
 }
@@ -872,14 +912,7 @@ fn build_hunk_from_range(
                 old_index,
                 new_index,
                 new_len,
-            } => collect_insert_lines(
-                &mut builder,
-                range,
-                *old_index,
-                *new_index,
-                *new_len,
-                ctx.new_lines,
-            ),
+            } => collect_insert_lines(&mut builder, range, *old_index, *new_index, *new_len, ctx),
             similar::DiffOp::Replace {
                 old_index,
                 old_len,

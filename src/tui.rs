@@ -107,6 +107,8 @@ struct AppState {
     entry_indices: Vec<usize>,
     diff_scroll: usize,
     diff_cache: Option<DiffCache>,
+    entries_list_state: ListState,
+    traces_list_state: ListState,
 }
 
 impl AppState {
@@ -117,6 +119,8 @@ impl AppState {
             entry_indices: vec![0; trace_count],
             diff_scroll: 0,
             diff_cache: None,
+            entries_list_state: ListState::default().with_selected(Some(0)),
+            traces_list_state: ListState::default().with_selected(Some(0)),
         }
     }
 
@@ -131,6 +135,7 @@ impl AppState {
         if let Some(slot) = self.entry_indices.get_mut(self.trace_index) {
             *slot = value;
         }
+        self.entries_list_state.select(Some(value));
     }
 }
 
@@ -227,6 +232,7 @@ fn move_down(state: &mut AppState, traces: &[LoadedTrace]) {
         Focus::Traces => {
             if state.trace_index + 1 < traces.len() {
                 state.trace_index += 1;
+                state.traces_list_state.select(Some(state.trace_index));
                 state.diff_scroll = 0;
             }
         }
@@ -250,6 +256,7 @@ fn move_up(state: &mut AppState, _traces: &[LoadedTrace]) {
         Focus::Traces => {
             if state.trace_index > 0 {
                 state.trace_index -= 1;
+                state.traces_list_state.select(Some(state.trace_index));
                 state.diff_scroll = 0;
             }
         }
@@ -317,6 +324,7 @@ fn reload_traces(
     if newest_is_new {
         // New trace arrived: switch to it.
         state.trace_index = 0;
+        state.traces_list_state.select(Some(0));
         state.set_entry_index(0);
         state.diff_scroll = 0;
         state.diff_cache = None;
@@ -328,6 +336,7 @@ fn reload_traces(
         .as_deref()
         .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
         .unwrap_or(0);
+    state.traces_list_state.select(Some(state.trace_index));
 
     // Restore entry index, clamped to the new entry count.
     let entry_count = traces
@@ -501,7 +510,7 @@ fn render_entries_pane(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     active_trace: &LoadedTrace,
-    state: &AppState,
+    state: &mut AppState,
 ) {
     let entry_items = active_trace
         .entries
@@ -514,7 +523,6 @@ fn render_entries_pane(
     } else {
         state.entry_index() + 1
     };
-    let mut entries_state = ListState::default().with_selected(Some(state.entry_index()));
     let entries_list = List::new(entry_items)
         .block(pane_block_with_footer(
             " [1] Entries ",
@@ -525,8 +533,9 @@ fn render_entries_pane(
             Style::default()
                 .bg(SELECTION_BG)
                 .add_modifier(Modifier::BOLD),
-        );
-    frame.render_stateful_widget(entries_list, area, &mut entries_state);
+        )
+        .scroll_padding(2);
+    frame.render_stateful_widget(entries_list, area, &mut state.entries_list_state);
     render_pane_scrollbar(
         frame,
         area,
@@ -540,7 +549,7 @@ fn render_traces_pane(
     frame: &mut ratatui::Frame<'_>,
     area: ratatui::layout::Rect,
     traces: &[LoadedTrace],
-    state: &AppState,
+    state: &mut AppState,
 ) {
     let trace_items = traces
         .iter()
@@ -552,7 +561,6 @@ fn render_traces_pane(
     } else {
         state.trace_index + 1
     };
-    let mut traces_state = ListState::default().with_selected(Some(state.trace_index));
     let traces_list = List::new(trace_items)
         .block(pane_block_with_footer(
             " [2] Traces ",
@@ -563,8 +571,9 @@ fn render_traces_pane(
             Style::default()
                 .bg(SELECTION_BG)
                 .add_modifier(Modifier::BOLD),
-        );
-    frame.render_stateful_widget(traces_list, area, &mut traces_state);
+        )
+        .scroll_padding(2);
+    frame.render_stateful_widget(traces_list, area, &mut state.traces_list_state);
     render_pane_scrollbar(
         frame,
         area,

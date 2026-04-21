@@ -7,6 +7,9 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone)]
 pub struct GitDiff {
     pub files: Vec<FileDiff>,
+    /// Non-diff lines after all file diffs (trailing commit metadata, etc.).
+    /// Also captures entire input when no diff content is present.
+    pub trailing_preamble: Option<Vec<String>>,
 }
 
 /// A diff for a single file.
@@ -195,7 +198,18 @@ impl ParseState {
     fn into_diff(mut self) -> GitDiff {
         self.finish_pending_rename();
         self.finish_file();
-        GitDiff { files: self.files }
+
+        // Capture any remaining preamble (non-diff content at end, or entire non-diff input)
+        let trailing_preamble = if self.pending_preamble.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.pending_preamble))
+        };
+
+        GitDiff {
+            files: self.files,
+            trailing_preamble,
+        }
     }
 }
 

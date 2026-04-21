@@ -227,6 +227,7 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
     let repo = git::Repo::discover();
     let mut output = String::new();
     let mut first_file = true;
+    let mut has_diff_content = false;
 
     for file in &parsed.files {
         // Add blank line before file header (except first file with no preamble)
@@ -234,6 +235,7 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             output.push('\n');
         }
         first_file = false;
+        has_diff_content = true;
 
         // Print preamble lines (commit metadata, etc.) unchanged
         for line in &file.preamble {
@@ -297,6 +299,18 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
                 output.push_str(&line);
                 output.push('\n');
             }
+        }
+    }
+
+    // Output trailing preamble (non-diff content at end, or entire non-diff input)
+    if let Some(ref trailing) = parsed.trailing_preamble {
+        // Add blank line separator if we had diff content
+        if has_diff_content {
+            output.push('\n');
+        }
+        for line in trailing {
+            output.push_str(line);
+            output.push('\n');
         }
     }
 

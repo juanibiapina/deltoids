@@ -225,6 +225,244 @@ fn default_context_range(
     }
 }
 
+struct ScopeRangeContext<'a> {
+    old_parsed: &'a crate::syntax::ParsedFile,
+    new_parsed: &'a crate::syntax::ParsedFile,
+    old_source: &'a [u8],
+    new_source: &'a [u8],
+    total_old: usize,
+    total_new: usize,
+}
+
+fn innermost_scope_at(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    line: usize,
+) -> Option<ScopeNode> {
+    enclosing_scopes(parsed.tree.root_node(), source, line, parsed.scope_kinds)
+        .last()
+        .cloned()
+}
+
+fn scope_bounds(scope: &ScopeNode) -> (usize, usize, usize) {
+    let start = scope.start_line.saturating_sub(1);
+    let end = scope.end_line.saturating_sub(1);
+    let lines = end - start + 1;
+    (start, end, lines)
+}
+
+fn query_old_line(old_index: usize, total_old: usize) -> usize {
+    if old_index < total_old {
+        old_index
+    } else {
+        total_old.saturating_sub(1)
+    }
+}
+
+fn find_inserted_scope_line(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    new_start: usize,
+    new_end: usize,
+    total_new: usize,
+) -> Option<usize> {
+    for line in new_start..new_end.min(total_new) {
+        let Some(scope) = innermost_scope_at(parsed, source, line) else {
+            continue;
+        };
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
+        let is_new_scope = scope_start >= new_start && scope_end < new_end;
+        if scope_lines <= MAX_SCOPE_LINES && is_new_scope {
+            return Some(scope_start + 1);
+        }
+    }
+    None
+}
+
+fn find_replace_scope_line(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    new_start: usize,
+    new_end: usize,
+    total_new: usize,
+) -> Option<usize> {
+    for line in new_start..new_end.min(total_new) {
+        let Some(scope) = innermost_scope_at(parsed, source, line) else {
+            continue;
+        };
+        let (scope_start, _, scope_lines) = scope_bounds(&scope);
+        if scope_lines <= MAX_SCOPE_LINES && scope_start >= new_start {
+            return Some(scope_start + 1);
+        }
+    }
+    None
+}
+
+fn context_ranges_for_insert(
+    old_index: usize,
+    new_index: usize,
+    new_len: usize,
+    ctx: &ScopeRangeContext<'_>,
+) -> Vec<ContextRange> {
+    let new_start = new_index;
+    let new_end = new_index + new_len;
+
+    if let Some(scope_line) = find_inserted_scope_line(
+        ctx.new_parsed,
+        ctx.new_source,
+        new_start,
+        new_end,
+        ctx.total_new,
+    ) {
+        return vec![ContextRange {
+            start: old_index,
+            end: old_index,
+            ancestor_source: AncestorSource::New,
+            scope_line,
+            prevent_merge: true,
+        }];
+    }
+
+    let scope_line = query_old_line(old_index, ctx.total_old);
+    if let Some(scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
+        if scope_lines <= MAX_SCOPE_LINES {
+            return vec![ContextRange {
+                start: scope_start,
+                end: scope_end,
+                ancestor_source: AncestorSource::Old,
+                scope_line,
+                prevent_merge: false,
+            }];
+        }
+    }
+
+    vec![default_context_range(
+        old_index,
+        old_index,
+        ctx.total_old,
+        AncestorSource::Old,
+        old_index,
+    )]
+}
+
+fn context_ranges_for_delete(
+    old_index: usize,
+    old_len: usize,
+    ctx: &ScopeRangeContext<'_>,
+) -> Vec<ContextRange> {
+    let old_start = old_index;
+    let old_end = old_index + old_len;
+
+    for line in old_start..old_end.min(ctx.total_old) {
+        let Some(scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, line) else {
+            continue;
+        };
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
+        if scope_lines > MAX_SCOPE_LINES {
+            continue;
+        }
+
+        let is_scope_deleted = scope_start >= old_start && scope_end < old_end;
+        if is_scope_deleted {
+            return vec![ContextRange {
+                start: old_start,
+                end: old_end.saturating_sub(1),
+                ancestor_source: AncestorSource::Old,
+                scope_line: scope_start,
+                prevent_merge: true,
+            }];
+        }
+
+        return vec![ContextRange {
+            start: scope_start,
+            end: scope_end,
+            ancestor_source: AncestorSource::Old,
+            scope_line: line,
+            prevent_merge: false,
+        }];
+    }
+
+    vec![default_context_range(
+        old_start,
+        old_end.saturating_sub(1),
+        ctx.total_old,
+        AncestorSource::Old,
+        old_start,
+    )]
+}
+
+fn old_replace_context_range(
+    old_index: usize,
+    old_len: usize,
+    ctx: &ScopeRangeContext<'_>,
+) -> ContextRange {
+    let old_start = old_index;
+    let old_end = old_index + old_len;
+    let scope_line = query_old_line(old_start, ctx.total_old);
+
+    if let Some(scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
+        if scope_lines <= MAX_SCOPE_LINES {
+            return ContextRange {
+                start: scope_start,
+                end: scope_end,
+                ancestor_source: AncestorSource::Old,
+                scope_line: old_start,
+                prevent_merge: false,
+            };
+        }
+    }
+
+    default_context_range(
+        old_start,
+        old_end.saturating_sub(1),
+        ctx.total_old,
+        AncestorSource::Old,
+        old_start,
+    )
+}
+
+fn new_replace_scope_range(
+    old_index: usize,
+    old_len: usize,
+    new_index: usize,
+    new_len: usize,
+    ctx: &ScopeRangeContext<'_>,
+) -> Option<ContextRange> {
+    let new_start = new_index;
+    let new_end = new_index + new_len;
+
+    find_replace_scope_line(
+        ctx.new_parsed,
+        ctx.new_source,
+        new_start,
+        new_end,
+        ctx.total_new,
+    )
+    .map(|scope_line| ContextRange {
+        start: old_index + old_len,
+        end: old_index + old_len,
+        ancestor_source: AncestorSource::New,
+        scope_line,
+        prevent_merge: true,
+    })
+}
+
+fn context_ranges_for_replace(
+    old_index: usize,
+    old_len: usize,
+    new_index: usize,
+    new_len: usize,
+    ctx: &ScopeRangeContext<'_>,
+) -> Vec<ContextRange> {
+    let mut ranges = vec![old_replace_context_range(old_index, old_len, ctx)];
+    if let Some(range) = new_replace_scope_range(old_index, old_len, new_index, new_len, ctx) {
+        ranges.push(range);
+    }
+    ranges
+}
+
 /// Compute context ranges for each change operation.
 ///
 /// For each change, determines:
@@ -240,277 +478,37 @@ fn compute_context_ranges(
     total_old: usize,
     total_new: usize,
 ) -> Vec<ContextRange> {
+    let ctx = ScopeRangeContext {
+        old_parsed,
+        new_parsed,
+        old_source,
+        new_source,
+        total_old,
+        total_new,
+    };
     let mut ranges = Vec::new();
 
     for op in ops {
         match op {
-            similar::DiffOp::Equal { .. } => continue,
-
+            similar::DiffOp::Equal { .. } => {}
             similar::DiffOp::Insert {
                 old_index,
                 new_index,
                 new_len,
-            } => {
-                // For inserts, scan the NEW tree to check for new scopes
-                let new_start = *new_index;
-                let new_end = new_index + new_len;
-
-                // Scan through inserted lines to find any new scopes
-                // (handles leading blank lines before new functions)
-                let mut found_new_scope = false;
-                let mut scope_line_for_ancestors = new_start;
-
-                for line in new_start..new_end.min(total_new) {
-                    let new_scopes = enclosing_scopes(
-                        new_parsed.tree.root_node(),
-                        new_source,
-                        line,
-                        new_parsed.scope_kinds,
-                    );
-
-                    if let Some(innermost) = new_scopes.last() {
-                        let scope_start_0 = innermost.start_line.saturating_sub(1);
-                        let scope_end_0 = innermost.end_line.saturating_sub(1);
-                        let scope_lines = scope_end_0 - scope_start_0 + 1;
-
-                        // Check if this scope is entirely new (contained within insert range)
-                        let is_new_scope = scope_start_0 >= new_start && scope_end_0 < new_end;
-
-                        if scope_lines <= MAX_SCOPE_LINES && is_new_scope {
-                            // Found a new scope - use minimal context
-                            // Use scope_start + 1 to query inside the scope body
-                            // (at scope_start row, column 0 may be in indentation whitespace)
-                            found_new_scope = true;
-                            scope_line_for_ancestors = scope_start_0 + 1;
-                            break;
-                        }
-                        // If scope exists but doesn't start within insert range,
-                        // continue scanning - there might be a new nested scope ahead
-                    }
-                }
-
-                if found_new_scope {
-                    // New function/scope - minimal context at insertion point
-                    ranges.push(ContextRange {
-                        start: *old_index,
-                        end: *old_index,
-                        ancestor_source: AncestorSource::New,
-                        scope_line: scope_line_for_ancestors,
-                        prevent_merge: true, // Keep new scopes separate
-                    });
-                    continue;
-                }
-
-                // Contained: insert inside existing scope - query OLD tree for expansion
-                let query_line_old = if *old_index < total_old {
-                    *old_index
-                } else {
-                    total_old.saturating_sub(1)
-                };
-
-                let old_scopes = enclosing_scopes(
-                    old_parsed.tree.root_node(),
-                    old_source,
-                    query_line_old,
-                    old_parsed.scope_kinds,
-                );
-
-                if let Some(innermost) = old_scopes.last() {
-                    let scope_start_0 = innermost.start_line.saturating_sub(1);
-                    let scope_end_0 = innermost.end_line.saturating_sub(1);
-                    let scope_lines = scope_end_0 - scope_start_0 + 1;
-
-                    if scope_lines <= MAX_SCOPE_LINES {
-                        ranges.push(ContextRange {
-                            start: scope_start_0,
-                            end: scope_end_0,
-                            ancestor_source: AncestorSource::Old,
-                            scope_line: query_line_old,
-                            prevent_merge: false,
-                        });
-                        continue;
-                    }
-                }
-
-                // Fall back to default context
-                ranges.push(default_context_range(
-                    *old_index,
-                    *old_index,
-                    total_old,
-                    AncestorSource::Old,
-                    *old_index,
-                ));
-            }
-
+            } => ranges.extend(context_ranges_for_insert(
+                *old_index, *new_index, *new_len, &ctx,
+            )),
             similar::DiffOp::Delete {
                 old_index, old_len, ..
-            } => {
-                // For deletes, scan the OLD tree to check if entire scope is deleted
-                let old_start = *old_index;
-                let old_end = old_index + old_len;
-
-                // Scan through deleted lines to find either:
-                // 1. An entire scope being deleted (Exact)
-                // 2. An existing scope containing the delete (Contained)
-                let mut exact_deleted_scope_line = None;
-                let mut handled = false;
-
-                for line in old_start..old_end.min(total_old) {
-                    let scopes = enclosing_scopes(
-                        old_parsed.tree.root_node(),
-                        old_source,
-                        line,
-                        old_parsed.scope_kinds,
-                    );
-
-                    if let Some(innermost) = scopes.last() {
-                        let scope_start_0 = innermost.start_line.saturating_sub(1);
-                        let scope_end_0 = innermost.end_line.saturating_sub(1);
-                        let scope_lines = scope_end_0 - scope_start_0 + 1;
-
-                        // Check if this entire scope is being deleted
-                        let is_scope_deleted = scope_start_0 >= old_start && scope_end_0 < old_end;
-
-                        if scope_lines <= MAX_SCOPE_LINES && is_scope_deleted {
-                            // Entire scope deleted - remember it and handle after scan
-                            exact_deleted_scope_line = Some(scope_start_0);
-                            handled = true;
-                            break;
-                        } else if scope_lines <= MAX_SCOPE_LINES {
-                            // Delete inside existing scope - expand to scope and stop
-                            ranges.push(ContextRange {
-                                start: scope_start_0,
-                                end: scope_end_0,
-                                ancestor_source: AncestorSource::Old,
-                                scope_line: line,
-                                prevent_merge: false,
-                            });
-                            handled = true;
-                            break;
-                        }
-                    }
-                }
-
-                if let Some(scope_line_for_ancestors) = exact_deleted_scope_line {
-                    ranges.push(ContextRange {
-                        start: old_start,
-                        end: old_end.saturating_sub(1),
-                        ancestor_source: AncestorSource::Old,
-                        scope_line: scope_line_for_ancestors,
-                        prevent_merge: true, // Keep deleted scopes separate
-                    });
-                    continue;
-                }
-
-                if handled {
-                    continue;
-                }
-
-                // Fall back to default context
-                ranges.push(default_context_range(
-                    old_start,
-                    old_end.saturating_sub(1),
-                    total_old,
-                    AncestorSource::Old,
-                    old_start,
-                ));
-            }
-
+            } => ranges.extend(context_ranges_for_delete(*old_index, *old_len, &ctx)),
             similar::DiffOp::Replace {
                 old_index,
                 old_len,
                 new_index,
                 new_len,
-            } => {
-                // For replaces, we need to:
-                // 1. Expand to old scope for the replaced content
-                // 2. Check if new content contains new scopes (e.g., new functions)
-                let old_start = *old_index;
-                let old_end = old_index + old_len;
-                let new_start = *new_index;
-                let new_end = new_index + new_len;
-
-                // First, handle the old content scope expansion
-                let query_line_old = if old_start < total_old {
-                    old_start
-                } else {
-                    total_old.saturating_sub(1)
-                };
-
-                let old_scopes = enclosing_scopes(
-                    old_parsed.tree.root_node(),
-                    old_source,
-                    query_line_old,
-                    old_parsed.scope_kinds,
-                );
-
-                if let Some(innermost) = old_scopes.last() {
-                    let scope_start_0 = innermost.start_line.saturating_sub(1);
-                    let scope_end_0 = innermost.end_line.saturating_sub(1);
-                    let scope_lines = scope_end_0 - scope_start_0 + 1;
-
-                    if scope_lines <= MAX_SCOPE_LINES {
-                        ranges.push(ContextRange {
-                            start: scope_start_0,
-                            end: scope_end_0,
-                            ancestor_source: AncestorSource::Old,
-                            scope_line: old_start,
-                            prevent_merge: false,
-                        });
-                    } else {
-                        ranges.push(default_context_range(
-                            old_start,
-                            old_end.saturating_sub(1),
-                            total_old,
-                            AncestorSource::Old,
-                            old_start,
-                        ));
-                    }
-                } else {
-                    ranges.push(default_context_range(
-                        old_start,
-                        old_end.saturating_sub(1),
-                        total_old,
-                        AncestorSource::Old,
-                        old_start,
-                    ));
-                }
-
-                // Now scan new content for any new scopes
-                // This handles cases where a Replace introduces a new function
-                for line in new_start..new_end.min(total_new) {
-                    let new_scopes = enclosing_scopes(
-                        new_parsed.tree.root_node(),
-                        new_source,
-                        line,
-                        new_parsed.scope_kinds,
-                    );
-
-                    if let Some(innermost) = new_scopes.last() {
-                        let scope_start_0 = innermost.start_line.saturating_sub(1);
-                        let scope_end_0 = innermost.end_line.saturating_sub(1);
-                        let scope_lines = scope_end_0 - scope_start_0 + 1;
-
-                        // Check if this scope is new (starts within the replaced range)
-                        // Note: scope may extend slightly beyond due to diff algorithm choices
-                        let is_new_scope = scope_start_0 >= new_start;
-
-                        if scope_lines <= MAX_SCOPE_LINES && is_new_scope {
-                            // Found a new scope - add a separate range for it
-                            // Use the position after the old content ends
-                            ranges.push(ContextRange {
-                                start: old_end,
-                                end: old_end,
-                                ancestor_source: AncestorSource::New,
-                                scope_line: scope_start_0 + 1,
-                                prevent_merge: true,
-                            });
-                            // Only add the first new scope found, then stop scanning
-                            break;
-                        }
-                    }
-                }
-            }
+            } => ranges.extend(context_ranges_for_replace(
+                *old_index, *old_len, *new_index, *new_len, &ctx,
+            )),
         }
     }
 
@@ -546,6 +544,398 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
     merged
 }
 
+struct HunkBuildContext<'a> {
+    old_parsed: &'a crate::syntax::ParsedFile,
+    new_parsed: &'a crate::syntax::ParsedFile,
+    old_source: &'a [u8],
+    new_source: &'a [u8],
+    old_lines: &'a [&'a str],
+    new_lines: &'a [&'a str],
+}
+
+#[derive(Default)]
+struct HunkBuilder {
+    lines: Vec<DiffLine>,
+    new_start: Option<usize>,
+    anchor_candidates: Vec<(AncestorSource, usize)>,
+}
+
+fn collect_equal_lines(
+    builder: &mut HunkBuilder,
+    range: &ContextRange,
+    old_index: usize,
+    new_index: usize,
+    len: usize,
+    old_lines: &[&str],
+) {
+    for i in 0..len {
+        let old_line = old_index + i;
+        if old_line < range.start || old_line > range.end {
+            continue;
+        }
+        if builder.new_start.is_none() {
+            builder.new_start = Some(new_index + i + 1);
+        }
+        builder.lines.push(DiffLine {
+            kind: LineKind::Context,
+            content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
+        });
+    }
+}
+
+fn collect_delete_lines(
+    builder: &mut HunkBuilder,
+    range: &ContextRange,
+    old_index: usize,
+    old_len: usize,
+    new_index: usize,
+    old_lines: &[&str],
+) {
+    for i in 0..old_len {
+        let old_line = old_index + i;
+        if old_line < range.start || old_line > range.end {
+            continue;
+        }
+        if builder.new_start.is_none() {
+            builder.new_start = Some(new_index + 1);
+        }
+        builder
+            .anchor_candidates
+            .push((AncestorSource::Old, old_line));
+        builder.lines.push(DiffLine {
+            kind: LineKind::Removed,
+            content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
+        });
+    }
+}
+
+fn collect_insert_lines(
+    builder: &mut HunkBuilder,
+    range: &ContextRange,
+    old_index: usize,
+    new_index: usize,
+    new_len: usize,
+    new_lines: &[&str],
+) {
+    if old_index < range.start || old_index > range.end {
+        return;
+    }
+    if builder.new_start.is_none() {
+        builder.new_start = Some(new_index + 1);
+    }
+    for i in 0..new_len {
+        let new_line = new_index + i;
+        builder
+            .anchor_candidates
+            .push((AncestorSource::New, new_line));
+        builder.lines.push(DiffLine {
+            kind: LineKind::Added,
+            content: new_lines.get(new_line).copied().unwrap_or("").to_string(),
+        });
+    }
+}
+
+fn collect_replace_removed_lines(
+    builder: &mut HunkBuilder,
+    range: &ContextRange,
+    old_index: usize,
+    old_len: usize,
+    new_index: usize,
+    old_lines: &[&str],
+) -> bool {
+    let mut added_in_range = false;
+    for i in 0..old_len {
+        let old_line = old_index + i;
+        if old_line < range.start || old_line > range.end {
+            continue;
+        }
+        if builder.new_start.is_none() {
+            builder.new_start = Some(new_index + 1);
+        }
+        builder
+            .anchor_candidates
+            .push((AncestorSource::Old, old_line));
+        builder.lines.push(DiffLine {
+            kind: LineKind::Removed,
+            content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
+        });
+        added_in_range = true;
+    }
+    added_in_range
+}
+
+fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+}
+
+fn collect_replace_added_lines(
+    builder: &mut HunkBuilder,
+    old_scope: Option<&ScopeNode>,
+    new_index: usize,
+    new_len: usize,
+    ctx: &HunkBuildContext<'_>,
+) {
+    let new_scope_cutoff = old_scope.and_then(|old_scope| {
+        first_different_new_scope_start(
+            old_scope,
+            new_index,
+            new_index + new_len,
+            ctx.new_parsed,
+            ctx.new_source,
+        )
+    });
+
+    let mut added_lines = Vec::new();
+    for i in 0..new_len {
+        let new_line = new_index + i;
+        if new_scope_cutoff.is_some_and(|cutoff| new_line >= cutoff) {
+            break;
+        }
+        builder
+            .anchor_candidates
+            .push((AncestorSource::New, new_line));
+        added_lines.push(
+            ctx.new_lines
+                .get(new_line)
+                .copied()
+                .unwrap_or("")
+                .to_string(),
+        );
+    }
+
+    trim_trailing_blank_lines(&mut added_lines);
+    for content in added_lines {
+        builder.lines.push(DiffLine {
+            kind: LineKind::Added,
+            content,
+        });
+    }
+}
+
+struct ReplaceOpData {
+    old_index: usize,
+    old_len: usize,
+    new_index: usize,
+    new_len: usize,
+}
+
+fn collect_replace_new_scope_lines(
+    builder: &mut HunkBuilder,
+    range: &ContextRange,
+    old_index: usize,
+    new_index: usize,
+    new_len: usize,
+    ctx: &HunkBuildContext<'_>,
+) {
+    if range.ancestor_source != AncestorSource::New || range.start != old_index {
+        return;
+    }
+
+    let new_scope = enclosing_scopes(
+        ctx.new_parsed.tree.root_node(),
+        ctx.new_source,
+        range.scope_line,
+        ctx.new_parsed.scope_kinds,
+    )
+    .last()
+    .cloned();
+    let old_scope = enclosing_scopes(
+        ctx.old_parsed.tree.root_node(),
+        ctx.old_source,
+        old_index,
+        ctx.old_parsed.scope_kinds,
+    )
+    .last()
+    .cloned();
+
+    let Some(new_scope) = new_scope else {
+        return;
+    };
+    let is_same_scope = old_scope.as_ref().is_some_and(|old_scope| {
+        old_scope.kind == new_scope.kind && old_scope.name == new_scope.name
+    });
+    if is_same_scope {
+        return;
+    }
+
+    let scope_start = new_scope.start_line.saturating_sub(1);
+    let scope_end = new_scope.end_line.saturating_sub(1);
+    for i in 0..new_len {
+        let new_line = new_index + i;
+        if new_line > scope_end {
+            break;
+        }
+
+        let content = ctx
+            .new_lines
+            .get(new_line)
+            .copied()
+            .unwrap_or("")
+            .to_string();
+        let include = new_line >= scope_start || content.trim().is_empty();
+        if !include {
+            continue;
+        }
+
+        builder
+            .anchor_candidates
+            .push((AncestorSource::New, new_line));
+        builder.lines.push(DiffLine {
+            kind: LineKind::Added,
+            content,
+        });
+    }
+}
+
+fn collect_replace_lines(
+    builder: &mut HunkBuilder,
+    range: &ContextRange,
+    replace: ReplaceOpData,
+    old_scope: Option<&ScopeNode>,
+    ctx: &HunkBuildContext<'_>,
+) {
+    let added_in_range = collect_replace_removed_lines(
+        builder,
+        range,
+        replace.old_index,
+        replace.old_len,
+        replace.new_index,
+        ctx.old_lines,
+    );
+    if added_in_range {
+        collect_replace_added_lines(builder, old_scope, replace.new_index, replace.new_len, ctx);
+        return;
+    }
+
+    collect_replace_new_scope_lines(
+        builder,
+        range,
+        replace.old_index + replace.old_len,
+        replace.new_index,
+        replace.new_len,
+        ctx,
+    );
+}
+
+fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Option<ScopeNode> {
+    if range.ancestor_source != AncestorSource::Old {
+        return None;
+    }
+
+    enclosing_scopes(
+        ctx.old_parsed.tree.root_node(),
+        ctx.old_source,
+        range.scope_line,
+        ctx.old_parsed.scope_kinds,
+    )
+    .last()
+    .cloned()
+}
+
+fn build_hunk_from_range(
+    ops: &[similar::DiffOp],
+    range: &ContextRange,
+    ctx: &HunkBuildContext<'_>,
+) -> Option<Hunk> {
+    let mut builder = HunkBuilder::default();
+    let old_scope = old_scope_for_range(range, ctx);
+
+    for op in ops {
+        match op {
+            similar::DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } => collect_equal_lines(
+                &mut builder,
+                range,
+                *old_index,
+                *new_index,
+                *len,
+                ctx.old_lines,
+            ),
+            similar::DiffOp::Delete {
+                old_index,
+                old_len,
+                new_index,
+            } => collect_delete_lines(
+                &mut builder,
+                range,
+                *old_index,
+                *old_len,
+                *new_index,
+                ctx.old_lines,
+            ),
+            similar::DiffOp::Insert {
+                old_index,
+                new_index,
+                new_len,
+            } => collect_insert_lines(
+                &mut builder,
+                range,
+                *old_index,
+                *new_index,
+                *new_len,
+                ctx.new_lines,
+            ),
+            similar::DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => collect_replace_lines(
+                &mut builder,
+                range,
+                ReplaceOpData {
+                    old_index: *old_index,
+                    old_len: *old_len,
+                    new_index: *new_index,
+                    new_len: *new_len,
+                },
+                old_scope.as_ref(),
+                ctx,
+            ),
+        }
+    }
+
+    if builder.lines.is_empty()
+        || builder
+            .lines
+            .iter()
+            .all(|line| line.kind == LineKind::Context)
+    {
+        return None;
+    }
+
+    let ancestors = select_hunk_ancestors(
+        &builder.anchor_candidates,
+        range.ancestor_source,
+        ctx.old_parsed,
+        ctx.new_parsed,
+        ctx.old_source,
+        ctx.new_source,
+    )
+    .unwrap_or_else(|| {
+        ancestors_at_line(
+            range.ancestor_source,
+            range.scope_line,
+            ctx.old_parsed,
+            ctx.new_parsed,
+            ctx.old_source,
+            ctx.new_source,
+        )
+    });
+
+    Some(Hunk {
+        old_start: range.start + 1,
+        new_start: builder.new_start.unwrap_or(1),
+        lines: builder.lines,
+        ancestors,
+    })
+}
+
 /// Build hunks from merged context ranges.
 ///
 /// Each merged range becomes one hunk. Lines are collected from ops
@@ -562,239 +952,19 @@ fn build_hunks_from_ranges(
     old_lines: &[&str],
     new_lines: &[&str],
 ) -> Vec<Hunk> {
-    let mut hunks = Vec::new();
+    let ctx = HunkBuildContext {
+        old_parsed,
+        new_parsed,
+        old_source,
+        new_source,
+        old_lines,
+        new_lines,
+    };
 
-    for range in ranges {
-        let mut lines = Vec::new();
-        let mut new_start: Option<usize> = None;
-        let mut anchor_candidates = Vec::new();
-        let old_innermost_scope = if range.ancestor_source == AncestorSource::Old {
-            enclosing_scopes(
-                old_parsed.tree.root_node(),
-                old_source,
-                range.scope_line,
-                old_parsed.scope_kinds,
-            )
-            .last()
-            .cloned()
-        } else {
-            None
-        };
-
-        // Walk through ops and collect lines that fall within this range
-        for op in ops {
-            match op {
-                similar::DiffOp::Equal {
-                    old_index,
-                    new_index,
-                    len,
-                } => {
-                    for i in 0..*len {
-                        let old_line = old_index + i;
-                        if old_line >= range.start && old_line <= range.end {
-                            if new_start.is_none() {
-                                new_start = Some(new_index + i + 1);
-                            }
-                            lines.push(DiffLine {
-                                kind: LineKind::Context,
-                                content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
-                            });
-                        }
-                    }
-                }
-                similar::DiffOp::Delete {
-                    old_index,
-                    old_len,
-                    new_index,
-                } => {
-                    for i in 0..*old_len {
-                        let old_line = old_index + i;
-                        if old_line >= range.start && old_line <= range.end {
-                            if new_start.is_none() {
-                                new_start = Some(*new_index + 1);
-                            }
-                            anchor_candidates.push((AncestorSource::Old, old_line));
-                            lines.push(DiffLine {
-                                kind: LineKind::Removed,
-                                content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
-                            });
-                        }
-                    }
-                }
-                similar::DiffOp::Insert {
-                    old_index,
-                    new_index,
-                    new_len,
-                } => {
-                    // Insert happens at old_index. Include it only when that anchor
-                    // line falls inside this range, so sibling inserts after a scope
-                    // stay out of the previous hunk.
-                    if *old_index >= range.start && *old_index <= range.end {
-                        if new_start.is_none() {
-                            new_start = Some(*new_index + 1);
-                        }
-                        for i in 0..*new_len {
-                            anchor_candidates.push((AncestorSource::New, new_index + i));
-                            lines.push(DiffLine {
-                                kind: LineKind::Added,
-                                content: new_lines
-                                    .get(new_index + i)
-                                    .copied()
-                                    .unwrap_or("")
-                                    .to_string(),
-                            });
-                        }
-                    }
-                }
-                similar::DiffOp::Replace {
-                    old_index,
-                    old_len,
-                    new_index,
-                    new_len,
-                } => {
-                    let mut added_in_range = false;
-                    for i in 0..*old_len {
-                        let old_line = old_index + i;
-                        if old_line >= range.start && old_line <= range.end {
-                            if new_start.is_none() {
-                                new_start = Some(*new_index + 1);
-                            }
-                            anchor_candidates.push((AncestorSource::Old, old_line));
-                            lines.push(DiffLine {
-                                kind: LineKind::Removed,
-                                content: old_lines.get(old_line).copied().unwrap_or("").to_string(),
-                            });
-                            added_in_range = true;
-                        }
-                    }
-                    if added_in_range {
-                        let new_scope_cutoff = old_innermost_scope.as_ref().and_then(|old_scope| {
-                            first_different_new_scope_start(
-                                old_scope,
-                                *new_index,
-                                new_index + new_len,
-                                new_parsed,
-                                new_source,
-                            )
-                        });
-
-                        let mut added_lines = Vec::new();
-                        for i in 0..*new_len {
-                            let new_line = new_index + i;
-                            if new_scope_cutoff.is_some_and(|cutoff| new_line >= cutoff) {
-                                break;
-                            }
-                            anchor_candidates.push((AncestorSource::New, new_line));
-                            added_lines
-                                .push(new_lines.get(new_line).copied().unwrap_or("").to_string());
-                        }
-
-                        while added_lines
-                            .last()
-                            .is_some_and(|line| line.trim().is_empty())
-                        {
-                            added_lines.pop();
-                        }
-
-                        for content in added_lines {
-                            lines.push(DiffLine {
-                                kind: LineKind::Added,
-                                content,
-                            });
-                        }
-                    } else if range.ancestor_source == AncestorSource::New
-                        && range.start == old_index + old_len
-                    {
-                        let new_scope = enclosing_scopes(
-                            new_parsed.tree.root_node(),
-                            new_source,
-                            range.scope_line,
-                            new_parsed.scope_kinds,
-                        )
-                        .last()
-                        .cloned();
-                        let old_scope = enclosing_scopes(
-                            old_parsed.tree.root_node(),
-                            old_source,
-                            *old_index,
-                            old_parsed.scope_kinds,
-                        )
-                        .last()
-                        .cloned();
-
-                        if let Some(new_scope) = new_scope {
-                            let is_same_scope = old_scope.as_ref().is_some_and(|old_scope| {
-                                old_scope.kind == new_scope.kind && old_scope.name == new_scope.name
-                            });
-                            if is_same_scope {
-                                continue;
-                            }
-
-                            let scope_start = new_scope.start_line.saturating_sub(1);
-                            let scope_end = new_scope.end_line.saturating_sub(1);
-
-                            for i in 0..*new_len {
-                                let new_line = new_index + i;
-                                if new_line > scope_end {
-                                    break;
-                                }
-
-                                let content =
-                                    new_lines.get(new_line).copied().unwrap_or("").to_string();
-                                let include = if new_line < scope_start {
-                                    content.trim().is_empty()
-                                } else {
-                                    true
-                                };
-
-                                if !include {
-                                    continue;
-                                }
-
-                                anchor_candidates.push((AncestorSource::New, new_line));
-                                lines.push(DiffLine {
-                                    kind: LineKind::Added,
-                                    content,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if lines.is_empty() || lines.iter().all(|line| line.kind == LineKind::Context) {
-            continue;
-        }
-
-        let ancestors = select_hunk_ancestors(
-            &anchor_candidates,
-            range.ancestor_source,
-            old_parsed,
-            new_parsed,
-            old_source,
-            new_source,
-        )
-        .unwrap_or_else(|| {
-            ancestors_at_line(
-                range.ancestor_source,
-                range.scope_line,
-                old_parsed,
-                new_parsed,
-                old_source,
-                new_source,
-            )
-        });
-
-        hunks.push(Hunk {
-            old_start: range.start + 1, // Convert to 1-indexed
-            new_start: new_start.unwrap_or(1),
-            lines,
-            ancestors,
-        });
-    }
-
-    hunks
+    ranges
+        .iter()
+        .filter_map(|range| build_hunk_from_range(ops, range, &ctx))
+        .collect()
 }
 
 fn select_hunk_ancestors(
@@ -1422,6 +1592,74 @@ impl Foo {
     // -----------------------------------------------------------------------
     // Line-diff guided scope detection tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn query_old_line_clamps_to_last_old_line() {
+        assert_eq!(query_old_line(5, 3), 2);
+        assert_eq!(query_old_line(1, 3), 1);
+        assert_eq!(query_old_line(0, 0), 0);
+    }
+
+    #[test]
+    fn collect_equal_lines_adds_context_and_sets_new_start() {
+        let mut builder = HunkBuilder::default();
+        let range = ContextRange {
+            start: 1,
+            end: 2,
+            ancestor_source: AncestorSource::Old,
+            scope_line: 1,
+            prevent_merge: false,
+        };
+        let old_lines = ["zero", "one", "two"];
+
+        collect_equal_lines(&mut builder, &range, 1, 10, 2, &old_lines);
+
+        assert_eq!(builder.new_start, Some(11));
+        assert_eq!(builder.lines.len(), 2);
+        assert!(
+            builder
+                .lines
+                .iter()
+                .all(|line| line.kind == LineKind::Context)
+        );
+    }
+
+    #[test]
+    fn insert_context_ranges_use_minimal_new_scope_context() {
+        let original = "\
+fn existing() {
+    let x = 1;
+}
+";
+        let updated = "\
+fn existing() {
+    let x = 1;
+}
+
+fn new_function() {
+    let y = 2;
+}
+";
+        let diff = TextDiff::from_lines(original, updated);
+        let ops = diff.ops().to_vec();
+        let old_parsed = crate::syntax::parse_file("test.rs", original).unwrap();
+        let new_parsed = crate::syntax::parse_file("test.rs", updated).unwrap();
+        let ranges = compute_context_ranges(
+            &ops,
+            &old_parsed,
+            &new_parsed,
+            original.as_bytes(),
+            updated.as_bytes(),
+            original.lines().count(),
+            updated.lines().count(),
+        );
+
+        assert!(ranges.iter().any(|range| {
+            range.ancestor_source == AncestorSource::New
+                && range.prevent_merge
+                && range.start == range.end
+        }));
+    }
 
     #[test]
     fn new_function_minimal_context() {

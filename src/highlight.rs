@@ -108,6 +108,33 @@ fn flush_styled_text(
     *current_style = None;
 }
 
+struct VisibleChar {
+    text: String,
+    width: usize,
+    byte_len: usize,
+}
+
+fn visible_char(ch: char) -> Option<VisibleChar> {
+    if ch == '\t' {
+        return Some(VisibleChar {
+            text: "    ".to_string(),
+            width: TAB_WIDTH,
+            byte_len: ch.len_utf8(),
+        });
+    }
+
+    let width = ch.width().unwrap_or(0);
+    if width == 0 {
+        return None;
+    }
+
+    Some(VisibleChar {
+        text: ch.to_string(),
+        width,
+        byte_len: ch.len_utf8(),
+    })
+}
+
 fn truncate_highlighted_ranges(
     ranges: Vec<(syntect::highlighting::Style, &str)>,
     base_style: Style,
@@ -121,29 +148,22 @@ fn truncate_highlighted_ranges(
     'outer: for (style, segment) in ranges {
         let style = to_ratatui_style(base_style, style);
         for ch in segment.chars() {
-            let (text, ch_width) = if ch == '\t' {
-                ("    ", TAB_WIDTH)
-            } else {
-                let ch_width = ch.width().unwrap_or(0);
-                if ch_width == 0 {
-                    continue;
-                }
-                let mut text = String::new();
-                text.push(ch);
-                push_styled_text(&mut spans, &mut buffer, &mut current_style, style, &text);
-                width += ch_width;
-                if width >= max_width {
-                    break 'outer;
-                }
+            let Some(visible) = visible_char(ch) else {
                 continue;
             };
 
-            if width + ch_width > max_width {
+            if width + visible.width > max_width {
                 break 'outer;
             }
 
-            push_styled_text(&mut spans, &mut buffer, &mut current_style, style, text);
-            width += ch_width;
+            push_styled_text(
+                &mut spans,
+                &mut buffer,
+                &mut current_style,
+                style,
+                &visible.text,
+            );
+            width += visible.width;
         }
     }
 
@@ -161,23 +181,14 @@ fn plain_text_spans(
     let mut width = 0;
 
     for ch in line.chars() {
-        let ch_width = if ch == '\t' {
-            TAB_WIDTH
-        } else {
-            ch.width().unwrap_or(0)
-        };
-        if ch_width == 0 {
+        let Some(visible) = visible_char(ch) else {
             continue;
-        }
-        if width + ch_width > max_width {
+        };
+        if width + visible.width > max_width {
             break;
         }
-        if ch == '\t' {
-            text.push_str("    ");
-        } else {
-            text.push(ch);
-        }
-        width += ch_width;
+        text.push_str(&visible.text);
+        width += visible.width;
     }
 
     spans.push(Span::styled(text, base_style));
@@ -279,32 +290,12 @@ fn truncate_with_emphasis(
 
     'outer: for (syn_style, segment) in ranges {
         for ch in segment.chars() {
-            let ch_byte_len = ch.len_utf8();
-            let (text, ch_width) = if ch == '\t' {
-                ("    ", TAB_WIDTH)
-            } else {
-                let w = ch.width().unwrap_or(0);
-                if w == 0 {
-                    byte_offset += ch_byte_len;
-                    continue;
-                }
-                let mut t = String::new();
-                t.push(ch);
-                // Determine background from emphasis section.
-                let bg = section_index_at(byte_offset, section_ranges)
-                    .map(|i| bg_for_section(&sections[i]))
-                    .unwrap_or(ratatui::style::Color::Reset);
-                let style = to_ratatui_style(Style::default().bg(bg), syn_style);
-                push_styled_text(&mut spans, &mut buffer, &mut current_style, style, &t);
-                width += w;
-                byte_offset += ch_byte_len;
-                if width >= max_width {
-                    break 'outer;
-                }
+            let Some(visible) = visible_char(ch) else {
+                byte_offset += ch.len_utf8();
                 continue;
             };
 
-            if width + ch_width > max_width {
+            if width + visible.width > max_width {
                 break 'outer;
             }
 
@@ -312,9 +303,15 @@ fn truncate_with_emphasis(
                 .map(|i| bg_for_section(&sections[i]))
                 .unwrap_or(ratatui::style::Color::Reset);
             let style = to_ratatui_style(Style::default().bg(bg), syn_style);
-            push_styled_text(&mut spans, &mut buffer, &mut current_style, style, text);
-            width += ch_width;
-            byte_offset += ch_byte_len;
+            push_styled_text(
+                &mut spans,
+                &mut buffer,
+                &mut current_style,
+                style,
+                &visible.text,
+            );
+            width += visible.width;
+            byte_offset += visible.byte_len;
         }
     }
 
@@ -336,31 +333,26 @@ fn plain_text_with_emphasis(
     let mut byte_offset = 0usize;
 
     for ch in line.chars() {
-        let ch_byte_len = ch.len_utf8();
-        let ch_width = if ch == '\t' {
-            TAB_WIDTH
-        } else {
-            ch.width().unwrap_or(0)
-        };
-        if ch_width == 0 {
-            byte_offset += ch_byte_len;
+        let Some(visible) = visible_char(ch) else {
+            byte_offset += ch.len_utf8();
             continue;
-        }
-        if width + ch_width > max_width {
+        };
+        if width + visible.width > max_width {
             break;
         }
         let bg = section_index_at(byte_offset, section_ranges)
             .map(|i| bg_for_section(&sections[i]))
             .unwrap_or(ratatui::style::Color::Reset);
         let style = Style::default().bg(bg);
-        let text = if ch == '\t' {
-            "    ".to_string()
-        } else {
-            ch.to_string()
-        };
-        push_styled_text(&mut spans, &mut buffer, &mut current_style, style, &text);
-        width += ch_width;
-        byte_offset += ch_byte_len;
+        push_styled_text(
+            &mut spans,
+            &mut buffer,
+            &mut current_style,
+            style,
+            &visible.text,
+        );
+        width += visible.width;
+        byte_offset += visible.byte_len;
     }
 
     flush_styled_text(&mut spans, &mut buffer, &mut current_style);
@@ -397,5 +389,13 @@ mod tests {
 
         assert!(!spans.is_empty());
         assert!(spans.iter().all(|span| span.style.bg == base_style.bg));
+    }
+
+    #[test]
+    fn visible_char_expands_tabs() {
+        let visible = visible_char('\t').expect("tab should be visible");
+        assert_eq!(visible.text, "    ");
+        assert_eq!(visible.width, 4);
+        assert_eq!(visible.byte_len, 1);
     }
 }

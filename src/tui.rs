@@ -267,6 +267,21 @@ fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -> usize {
     detail_row_count.saturating_sub(detail_height.max(1))
 }
 
+fn app_command_for_event(
+    state: &mut AppState,
+    traces: &[LoadedTrace],
+    event: Event,
+    detail_row_count: usize,
+    detail_height: usize,
+) -> AppCommand {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            handle_key(state, traces, key.code, detail_row_count, detail_height)
+        }
+        _ => AppCommand::Continue,
+    }
+}
+
 /// Reload traces from disk unconditionally. Preserves the current
 /// selection by trace id and entry index when the selected trace still
 /// exists; falls back to index 0 otherwise.
@@ -378,20 +393,12 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
             event::poll(timeout).map_err(|err| format!("Failed to poll input event: {err}"))?;
 
         if has_event {
-            match event::read().map_err(|err| format!("Failed to read input event: {err}"))? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if handle_key(
-                        &mut state,
-                        &traces,
-                        key.code,
-                        detail_row_count,
-                        detail_height,
-                    ) == AppCommand::Quit
-                    {
-                        break;
-                    }
-                }
-                _ => {}
+            let event =
+                event::read().map_err(|err| format!("Failed to read input event: {err}"))?;
+            if app_command_for_event(&mut state, &traces, event, detail_row_count, detail_height)
+                == AppCommand::Quit
+            {
+                break;
             }
         }
 
@@ -440,43 +447,43 @@ impl Drop for TerminalSession {
     }
 }
 
-fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppState) {
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(frame.area());
+fn diff_cache_matches_selection_and_width(
+    cache: &DiffCache,
+    trace_index: usize,
+    entry_index: usize,
+    width: usize,
+) -> bool {
+    cache.trace_index == trace_index && cache.entry_index == entry_index && cache.width == width
+}
 
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(root[0]);
+fn render_empty_draw_state(
+    frame: &mut ratatui::Frame<'_>,
+    root: &[ratatui::layout::Rect],
+    sidebar: &[ratatui::layout::Rect],
+    body: &[ratatui::layout::Rect],
+) {
+    let message = Paragraph::new("No traces found for this directory.")
+        .style(Style::default().fg(TOKYONIGHT_DIM))
+        .block(pane_block_with_footer(
+            " [1] Entries ",
+            TOKYONIGHT_BLUE,
+            Some(position_footer(0, 0)),
+        ));
+    frame.render_widget(message, sidebar[0]);
+    frame.render_widget(
+        pane_block_with_footer(" [2] Traces ", TOKYONIGHT_BLUE, Some(position_footer(0, 0))),
+        sidebar[1],
+    );
+    frame.render_widget(pane_block(" [3] Diff ", TOKYONIGHT_BLUE), body[1]);
+    frame.render_widget(help_bar(), root[1]);
+}
 
-    let sidebar = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(body[0]);
-
-    if traces.is_empty() {
-        let message = Paragraph::new("No traces found for this directory.")
-            .style(Style::default().fg(TOKYONIGHT_DIM))
-            .block(pane_block_with_footer(
-                " [1] Entries ",
-                TOKYONIGHT_BLUE,
-                Some(position_footer(0, 0)),
-            ));
-        frame.render_widget(message, sidebar[0]);
-        frame.render_widget(
-            pane_block_with_footer(" [2] Traces ", TOKYONIGHT_BLUE, Some(position_footer(0, 0))),
-            sidebar[1],
-        );
-        frame.render_widget(pane_block(" [3] Diff ", TOKYONIGHT_BLUE), body[1]);
-        frame.render_widget(help_bar(), root[1]);
-        return;
-    }
-
-    let active_trace = &traces[state.trace_index];
-
-    // Entries pane (top-left)
+fn render_entries_pane(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    active_trace: &LoadedTrace,
+    state: &AppState,
+) {
     let entry_items = active_trace
         .entries
         .iter()
@@ -500,16 +507,22 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
                 .bg(SELECTION_BG)
                 .add_modifier(Modifier::BOLD),
         );
-    frame.render_stateful_widget(entries_list, sidebar[0], &mut entries_state);
+    frame.render_stateful_widget(entries_list, area, &mut entries_state);
     render_pane_scrollbar(
         frame,
-        sidebar[0],
+        area,
         entries_count,
         state.entry_index(),
-        pane_inner_height(sidebar[0]),
+        pane_inner_height(area),
     );
+}
 
-    // Traces pane (bottom-left)
+fn render_traces_pane(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    traces: &[LoadedTrace],
+    state: &AppState,
+) {
     let trace_items = traces
         .iter()
         .map(|loaded| ListItem::new(trace_label(&loaded.trace)))
@@ -532,24 +545,20 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
                 .bg(SELECTION_BG)
                 .add_modifier(Modifier::BOLD),
         );
-    frame.render_stateful_widget(traces_list, sidebar[1], &mut traces_state);
+    frame.render_stateful_widget(traces_list, area, &mut traces_state);
     render_pane_scrollbar(
         frame,
-        sidebar[1],
+        area,
         traces_count,
         state.trace_index,
-        pane_inner_height(sidebar[1]),
+        pane_inner_height(area),
     );
+}
 
-    // Diff pane (right, full height). Render into the cache when the
-    // selection or available width changes; otherwise reuse the previous
-    // frame's lines so scroll keys stay snappy on large diffs.
-    let detail_width = body[1].width.saturating_sub(2) as usize;
+fn ensure_diff_cache(active_trace: &LoadedTrace, state: &mut AppState, detail_width: usize) {
     let entry_index = state.entry_index();
     let cache_valid = state.diff_cache.as_ref().is_some_and(|cache| {
-        cache.trace_index == state.trace_index
-            && cache.entry_index == entry_index
-            && cache.width == detail_width
+        diff_cache_matches_selection_and_width(cache, state.trace_index, entry_index, detail_width)
     });
     if !cache_valid {
         let lines = render_detail_for(active_trace, entry_index, detail_width);
@@ -560,7 +569,18 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
             lines,
         });
     }
-    let diff_viewport = body[1].height.saturating_sub(2) as usize;
+}
+
+fn render_diff_pane(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    active_trace: &LoadedTrace,
+    state: &mut AppState,
+) {
+    let detail_width = area.width.saturating_sub(2) as usize;
+    ensure_diff_cache(active_trace, state, detail_width);
+
+    let diff_viewport = area.height.saturating_sub(2) as usize;
     let detail_row_count = state
         .diff_cache
         .as_ref()
@@ -579,16 +599,43 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
         " [3] Diff ",
         pane_border_color(state.focus == Focus::Diff, TOKYONIGHT_ORANGE),
     ));
-    frame.render_widget(diff, body[1]);
+    frame.render_widget(diff, area);
 
     render_pane_scrollbar(
         frame,
-        body[1],
+        area,
         detail_row_count,
         state.diff_scroll,
         diff_viewport,
     );
+}
 
+fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppState) {
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(frame.area());
+
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(root[0]);
+
+    let sidebar = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(body[0]);
+
+    if traces.is_empty() {
+        render_empty_draw_state(frame, &root, &sidebar, &body);
+        return;
+    }
+
+    let active_trace = &traces[state.trace_index];
+
+    render_entries_pane(frame, sidebar[0], active_trace, state);
+    render_traces_pane(frame, sidebar[1], traces, state);
+    render_diff_pane(frame, body[1], active_trace, state);
     frame.render_widget(help_bar(), root[1]);
 }
 
@@ -1087,6 +1134,33 @@ fn display_width(text: &str) -> usize {
         .sum()
 }
 
+fn split_word_to_width(word: &str, max_width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut chunk = String::new();
+    let mut chunk_width = 0usize;
+
+    for ch in word.chars() {
+        let ch_width = if ch == '\t' {
+            4
+        } else {
+            ch.width().unwrap_or(0)
+        };
+        if chunk_width + ch_width > max_width && !chunk.is_empty() {
+            lines.push(chunk);
+            chunk = String::new();
+            chunk_width = 0;
+        }
+        chunk.push(ch);
+        chunk_width += ch_width;
+    }
+
+    if !chunk.is_empty() {
+        lines.push(chunk);
+    }
+
+    lines
+}
+
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![String::new()];
@@ -1106,25 +1180,11 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
                 current = String::new();
                 current_width = 0;
             }
-            let mut chunk = String::new();
-            let mut chunk_width = 0usize;
-            for ch in word.chars() {
-                let ch_width = if ch == '\t' {
-                    4
-                } else {
-                    ch.width().unwrap_or(0)
-                };
-                if chunk_width + ch_width > max_width && !chunk.is_empty() {
-                    lines.push(chunk);
-                    chunk = String::new();
-                    chunk_width = 0;
-                }
-                chunk.push(ch);
-                chunk_width += ch_width;
-            }
-            if !chunk.is_empty() {
-                current = chunk;
-                current_width = chunk_width;
+            let mut chunks = split_word_to_width(word, max_width).into_iter();
+            if let Some(last) = chunks.next_back() {
+                lines.extend(chunks);
+                current_width = display_width(&last);
+                current = last;
             }
             continue;
         }
@@ -1755,6 +1815,28 @@ mod tests {
     }
 
     #[test]
+    fn app_command_for_event_handles_key_press() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+
+        let command = app_command_for_event(
+            &mut state,
+            &traces,
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+            0,
+            0,
+        );
+
+        assert_eq!(command, AppCommand::Quit);
+    }
+
+    #[test]
     fn q_quits() {
         let traces = vec![LoadedTrace {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
@@ -1795,6 +1877,21 @@ mod tests {
         // Enter on Entries does nothing.
         handle_key(&mut state, &traces, KeyCode::Enter, 0, 0);
         assert_eq!(state.focus, Focus::Entries);
+    }
+
+    #[test]
+    fn diff_cache_matches_selection_and_width_checks_all_cache_fields() {
+        let cache = DiffCache {
+            trace_index: 1,
+            entry_index: 2,
+            width: 80,
+            lines: Vec::new(),
+        };
+
+        assert!(diff_cache_matches_selection_and_width(&cache, 1, 2, 80));
+        assert!(!diff_cache_matches_selection_and_width(&cache, 0, 2, 80));
+        assert!(!diff_cache_matches_selection_and_width(&cache, 1, 0, 80));
+        assert!(!diff_cache_matches_selection_and_width(&cache, 1, 2, 79));
     }
 
     #[test]
@@ -2232,6 +2329,14 @@ mod tests {
     #[test]
     fn wrap_text_single_word_longer_than_width() {
         assert_eq!(wrap_text("abcdef", 4), vec!["abcd", "ef"]);
+    }
+
+    #[test]
+    fn split_word_to_width_splits_by_display_width() {
+        assert_eq!(
+            split_word_to_width("abcdefghij", 4),
+            vec!["abcd", "efgh", "ij"]
+        );
     }
 
     #[test]

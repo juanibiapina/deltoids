@@ -93,6 +93,14 @@ pub fn tokenize<'a>(line: &'a str) -> Vec<&'a str> {
 // Alignment (Needleman-Wunsch with delta's cost model)
 // ---------------------------------------------------------------------------
 
+fn diagonal_match_cost(x: &[&str], y: &[&str], i: usize, j: usize, table: &[Vec<usize>]) -> usize {
+    if x[i - 1] == y[j - 1] {
+        table[i - 1][j - 1]
+    } else {
+        usize::MAX
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Alignment {
     x_tokens: Vec<String>,
@@ -137,11 +145,7 @@ impl Alignment {
                 // Deletion: move from (i-1, j) by consuming x[i-1].
                 let del_cost = deletion_cost(table[i - 1][j], ops[i - 1][j]);
                 // Match: diagonal from (i-1, j-1), only if tokens equal.
-                let match_cost = if x[i - 1] == y[j - 1] {
-                    table[i - 1][j - 1]
-                } else {
-                    usize::MAX
-                };
+                let match_cost = diagonal_match_cost(x, y, i, j, &table);
 
                 // Tie-breaking: insertion > deletion > match.
                 let candidates = [
@@ -414,6 +418,17 @@ fn split_trailing_whitespace(s: &str) -> Option<(&str, &str)> {
     }
 }
 
+fn should_absorb_whitespace(
+    previous: Option<&AnnotatedSection>,
+    current: &AnnotatedSection,
+    has_next: bool,
+) -> bool {
+    let is_whitespace_noop =
+        current.op == Operation::NoOp && current.text.trim().is_empty() && !current.text.is_empty();
+
+    is_whitespace_noop && has_next && previous.is_some_and(|section| section.op != Operation::NoOp)
+}
+
 /// Coalesce whitespace-only NoOp sections with the preceding change section.
 ///
 /// Delta absorbs a whitespace-only NoOp into the previous operation when:
@@ -429,22 +444,11 @@ fn coalesce_whitespace(sections: Vec<AnnotatedSection>) -> Vec<AnnotatedSection>
     let mut result: Vec<AnnotatedSection> = Vec::new();
 
     for (i, section) in sections.iter().enumerate() {
-        let is_whitespace_noop = section.op == Operation::NoOp
-            && section.text.trim().is_empty()
-            && !section.text.is_empty();
-
-        if is_whitespace_noop {
-            let prev_is_change = result
-                .last()
-                .is_some_and(|s: &AnnotatedSection| s.op != Operation::NoOp);
-            let not_at_end = i + 1 < sections.len();
-
-            if prev_is_change && not_at_end {
-                // Absorb into the previous change section.
-                if let Some(last) = result.last_mut() {
-                    last.text.push_str(&section.text);
-                    continue;
-                }
+        if should_absorb_whitespace(result.last(), section, i + 1 < sections.len()) {
+            // Absorb into the previous change section.
+            if let Some(last) = result.last_mut() {
+                last.text.push_str(&section.text);
+                continue;
             }
         }
 
@@ -1181,6 +1185,12 @@ mod tests {
     }
 
     #[test]
+    fn diagonal_match_cost_uses_parent_cost_for_equal_tokens() {
+        let table = vec![vec![0, 0], vec![0, 7]];
+        assert_eq!(diagonal_match_cost(&["a"], &["a"], 1, 1, &table), 0);
+    }
+
+    #[test]
     fn infer_edits_1_whole_word_change() {
         // test_infer_edits_1: "aaa" -> "aba"
         assert_annotation(
@@ -1303,5 +1313,19 @@ mod tests {
                 (Operation::NoOp, " s y y | git add -p &&"),
             ],
         );
+    }
+
+    #[test]
+    fn should_absorb_whitespace_after_change_when_more_sections_follow() {
+        let previous = AnnotatedSection {
+            op: Operation::Deletion,
+            text: "value".to_string(),
+        };
+        let whitespace = AnnotatedSection {
+            op: Operation::NoOp,
+            text: " ".to_string(),
+        };
+
+        assert!(should_absorb_whitespace(Some(&previous), &whitespace, true));
     }
 }

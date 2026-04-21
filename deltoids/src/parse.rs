@@ -49,6 +49,13 @@ pub enum RawLineKind {
     Removed,
 }
 
+#[derive(Debug, Clone)]
+enum HunkBodyEvent {
+    Raw(RawLine),
+    Skip,
+    Preamble(String),
+}
+
 static HUNK_HEADER_RE: OnceLock<Regex> = OnceLock::new();
 static INDEX_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -61,17 +68,116 @@ fn index_re() -> &'static Regex {
     INDEX_RE.get_or_init(|| Regex::new(r"^index ([0-9a-f]+)\.\.([0-9a-f]+)").unwrap())
 }
 
+fn parse_hunk_body_line(line: &str) -> HunkBodyEvent {
+    if let Some(rest) = line.strip_prefix('+') {
+        return HunkBodyEvent::Raw(RawLine {
+            kind: RawLineKind::Added,
+            content: rest.to_string(),
+        });
+    }
+    if let Some(rest) = line.strip_prefix('-') {
+        return HunkBodyEvent::Raw(RawLine {
+            kind: RawLineKind::Removed,
+            content: rest.to_string(),
+        });
+    }
+    if let Some(rest) = line.strip_prefix(' ') {
+        return HunkBodyEvent::Raw(RawLine {
+            kind: RawLineKind::Context,
+            content: rest.to_string(),
+        });
+    }
+    if line.is_empty() {
+        return HunkBodyEvent::Raw(RawLine {
+            kind: RawLineKind::Context,
+            content: String::new(),
+        });
+    }
+    if line.starts_with("\\ ") {
+        return HunkBodyEvent::Skip;
+    }
+    HunkBodyEvent::Preamble(line.to_string())
+}
+
+struct ParseState {
+    files: Vec<FileDiff>,
+    current_file: Option<FileDiff>,
+    current_hunk: Option<RawHunk>,
+    old_path: String,
+    rename_from: Option<String>,
+    pending_old_hash: Option<String>,
+    pending_new_hash: Option<String>,
+    pending_preamble: Vec<String>,
+}
+
+impl ParseState {
+    fn new() -> Self {
+        Self {
+            files: Vec::new(),
+            current_file: None,
+            current_hunk: None,
+            old_path: String::new(),
+            rename_from: None,
+            pending_old_hash: None,
+            pending_new_hash: None,
+            pending_preamble: Vec::new(),
+        }
+    }
+
+    fn finish_hunk(&mut self) {
+        if let Some(hunk) = self.current_hunk.take()
+            && let Some(ref mut file) = self.current_file
+        {
+            file.hunks.push(hunk);
+        }
+    }
+
+    fn finish_file(&mut self) {
+        self.finish_hunk();
+        if let Some(file) = self.current_file.take() {
+            self.files.push(file);
+        }
+    }
+
+    fn push_raw_line(&mut self, raw_line: RawLine) {
+        if let Some(ref mut hunk) = self.current_hunk {
+            hunk.lines.push(raw_line);
+        }
+    }
+
+    fn collect_preamble_after_hunk(&mut self, preamble: String) {
+        self.finish_hunk();
+        self.pending_preamble.push(preamble);
+    }
+
+    fn apply_hunk_body_event(&mut self, event: HunkBodyEvent) -> bool {
+        match event {
+            HunkBodyEvent::Raw(raw_line) => {
+                self.push_raw_line(raw_line);
+                false
+            }
+            HunkBodyEvent::Skip => true,
+            HunkBodyEvent::Preamble(preamble) => {
+                self.collect_preamble_after_hunk(preamble);
+                true
+            }
+        }
+    }
+
+    fn handle_in_hunk_line(&mut self, line: &str) -> bool {
+        self.apply_hunk_body_event(parse_hunk_body_line(line))
+    }
+
+    fn into_diff(mut self) -> GitDiff {
+        self.finish_file();
+        GitDiff { files: self.files }
+    }
+}
+
 impl GitDiff {
     /// Parse a unified diff string into structured data.
     pub fn parse(diff: &str) -> Self {
-        let mut files = Vec::new();
-        let mut current_file: Option<FileDiff> = None;
-        let mut current_hunk: Option<RawHunk> = None;
-        let mut old_path = String::new();
-        let mut rename_from: Option<String> = None;
-        let mut pending_old_hash: Option<String> = None;
-        let mut pending_new_hash: Option<String> = None;
-        let mut pending_preamble: Vec<String> = Vec::new();
+        let mut state = ParseState::new();
 
         for line in diff.lines() {
             // Skip "diff --git" header lines (we extract paths from --- and +++)
@@ -81,12 +187,12 @@ impl GitDiff {
 
             // Parse index line for blob hashes
             if let Some(caps) = index_re().captures(line) {
-                pending_old_hash = Some(caps.get(1).unwrap().as_str().to_string());
-                pending_new_hash = Some(caps.get(2).unwrap().as_str().to_string());
+                state.pending_old_hash = Some(caps.get(1).unwrap().as_str().to_string());
+                state.pending_new_hash = Some(caps.get(2).unwrap().as_str().to_string());
                 continue;
             }
             if let Some(path) = line.strip_prefix("rename from ") {
-                rename_from = Some(path.to_string());
+                state.rename_from = Some(path.to_string());
                 continue;
             }
             if line.starts_with("rename to ") {
@@ -94,32 +200,21 @@ impl GitDiff {
                 continue;
             }
             if let Some(path) = line.strip_prefix("--- ") {
-                // Finish previous file if any
-                if let Some(mut file) = current_file.take() {
-                    if let Some(hunk) = current_hunk.take() {
-                        file.hunks.push(hunk);
-                    }
-                    files.push(file);
-                }
-                old_path = strip_prefix_ab(path);
+                state.finish_file();
+                state.old_path = strip_prefix_ab(path);
             } else if let Some(path) = line.strip_prefix("+++ ") {
                 let new_path = strip_prefix_ab(path);
-                current_file = Some(FileDiff {
-                    preamble: std::mem::take(&mut pending_preamble),
-                    old_path: old_path.clone(),
+                state.current_file = Some(FileDiff {
+                    preamble: std::mem::take(&mut state.pending_preamble),
+                    old_path: state.old_path.clone(),
                     new_path,
-                    rename_from: rename_from.take(),
-                    old_hash: pending_old_hash.take(),
-                    new_hash: pending_new_hash.take(),
+                    rename_from: state.rename_from.take(),
+                    old_hash: state.pending_old_hash.take(),
+                    new_hash: state.pending_new_hash.take(),
                     hunks: Vec::new(),
                 });
             } else if let Some(caps) = hunk_header_re().captures(line) {
-                // Finish previous hunk if any
-                if let Some(hunk) = current_hunk.take()
-                    && let Some(ref mut file) = current_file
-                {
-                    file.hunks.push(hunk);
-                }
+                state.finish_hunk();
 
                 let old_start: usize = caps.get(1).unwrap().as_str().parse().unwrap_or(1);
                 let old_count: usize = caps
@@ -132,58 +227,22 @@ impl GitDiff {
                     .map(|m| m.as_str().parse().unwrap_or(1))
                     .unwrap_or(1);
 
-                current_hunk = Some(RawHunk {
+                state.current_hunk = Some(RawHunk {
                     old_start,
                     old_count,
                     new_start,
                     new_count,
                     lines: Vec::new(),
                 });
-            } else if current_hunk.is_some() {
-                let (kind, content) = if let Some(rest) = line.strip_prefix('+') {
-                    (RawLineKind::Added, rest.to_string())
-                } else if let Some(rest) = line.strip_prefix('-') {
-                    (RawLineKind::Removed, rest.to_string())
-                } else if let Some(rest) = line.strip_prefix(' ') {
-                    (RawLineKind::Context, rest.to_string())
-                } else if line.is_empty() {
-                    // Empty context line (no leading space in some diffs)
-                    (RawLineKind::Context, String::new())
-                } else if line.starts_with("\\ ") {
-                    // Skip "No newline at end of file" markers
-                    continue;
-                } else {
-                    // Non-hunk line (e.g., next commit's metadata)
-                    // Close the current hunk and collect as preamble
-                    if let Some(hunk) = current_hunk.take()
-                        && let Some(ref mut file) = current_file
-                    {
-                        file.hunks.push(hunk);
-                    }
-                    pending_preamble.push(line.to_string());
-                    continue;
-                };
-
-                if let Some(ref mut hunk) = current_hunk {
-                    hunk.lines.push(RawLine { kind, content });
-                }
+            } else if state.current_hunk.is_some() {
+                let _ = state.handle_in_hunk_line(line);
             } else {
                 // Non-diff line before any file starts (commit metadata, etc.)
-                pending_preamble.push(line.to_string());
+                state.pending_preamble.push(line.to_string());
             }
         }
 
-        // Finish last hunk and file
-        if let Some(hunk) = current_hunk
-            && let Some(ref mut file) = current_file
-        {
-            file.hunks.push(hunk);
-        }
-        if let Some(file) = current_file {
-            files.push(file);
-        }
-
-        GitDiff { files }
+        state.into_diff()
     }
 }
 
@@ -258,6 +317,107 @@ mod tests {
         assert_eq!(strip_prefix_ab("a/src/main.rs"), "src/main.rs");
         assert_eq!(strip_prefix_ab("b/src/main.rs"), "src/main.rs");
         assert_eq!(strip_prefix_ab("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn parse_hunk_body_line_skips_no_newline_marker() {
+        assert!(matches!(
+            parse_hunk_body_line("\\ No newline at end of file"),
+            HunkBodyEvent::Skip
+        ));
+    }
+
+    #[test]
+    fn finish_hunk_moves_the_current_hunk_into_the_current_file() {
+        let mut state = ParseState::new();
+        state.current_file = Some(FileDiff {
+            preamble: Vec::new(),
+            old_path: "old.rs".to_string(),
+            new_path: "new.rs".to_string(),
+            rename_from: None,
+            old_hash: None,
+            new_hash: None,
+            hunks: Vec::new(),
+        });
+        state.current_hunk = Some(RawHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: vec![RawLine {
+                kind: RawLineKind::Context,
+                content: "line".to_string(),
+            }],
+        });
+
+        state.finish_hunk();
+
+        assert!(state.current_hunk.is_none());
+        assert_eq!(state.current_file.unwrap().hunks.len(), 1);
+    }
+
+    #[test]
+    fn push_raw_line_adds_it_to_the_current_hunk() {
+        let mut state = ParseState::new();
+        state.current_hunk = Some(RawHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: Vec::new(),
+        });
+
+        state.push_raw_line(RawLine {
+            kind: RawLineKind::Added,
+            content: "new".to_string(),
+        });
+
+        assert_eq!(state.current_hunk.unwrap().lines.len(), 1);
+    }
+
+    #[test]
+    fn apply_hunk_body_event_collects_preamble_after_hunk() {
+        let mut state = ParseState::new();
+        state.current_file = Some(FileDiff {
+            preamble: Vec::new(),
+            old_path: "old.rs".to_string(),
+            new_path: "new.rs".to_string(),
+            rename_from: None,
+            old_hash: None,
+            new_hash: None,
+            hunks: Vec::new(),
+        });
+        state.current_hunk = Some(RawHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: Vec::new(),
+        });
+
+        let should_continue =
+            state.apply_hunk_body_event(HunkBodyEvent::Preamble("commit x".into()));
+
+        assert!(should_continue);
+        assert!(state.current_hunk.is_none());
+        assert_eq!(state.pending_preamble, vec!["commit x"]);
+    }
+
+    #[test]
+    fn handle_in_hunk_line_pushes_raw_lines() {
+        let mut state = ParseState::new();
+        state.current_hunk = Some(RawHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: Vec::new(),
+        });
+
+        let should_continue = state.handle_in_hunk_line("+new");
+
+        assert!(!should_continue);
+        assert_eq!(state.current_hunk.unwrap().lines.len(), 1);
     }
 
     #[test]

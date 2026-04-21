@@ -261,6 +261,11 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
                     output.push_str(&line);
                     output.push('\n');
                 }
+                // Render rename header if this file was renamed
+                if let Some(ref old_path) = file.rename_from {
+                    output.push_str(&render_rename_header(old_path, &file.new_path));
+                    output.push('\n');
+                }
                 output.push_str(&format_raw_hunks(file, width));
                 continue;
             }

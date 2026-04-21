@@ -105,6 +105,7 @@ struct ParseState {
     current_hunk: Option<RawHunk>,
     old_path: String,
     rename_from: Option<String>,
+    pending_rename_to: Option<String>,
     pending_old_hash: Option<String>,
     pending_new_hash: Option<String>,
     pending_preamble: Vec<String>,
@@ -118,6 +119,7 @@ impl ParseState {
             current_hunk: None,
             old_path: String::new(),
             rename_from: None,
+            pending_rename_to: None,
             pending_old_hash: None,
             pending_new_hash: None,
             pending_preamble: Vec::new(),
@@ -136,6 +138,28 @@ impl ParseState {
         self.finish_hunk();
         if let Some(file) = self.current_file.take() {
             self.files.push(file);
+        }
+    }
+
+    /// Create FileDiff for pure renames (100% similarity, no content changes).
+    /// These have no --- / +++ lines, so we must create the file from rename info.
+    fn finish_pending_rename(&mut self) {
+        if let (Some(old_path), Some(new_path)) =
+            (self.rename_from.take(), self.pending_rename_to.take())
+        {
+            // Only create if we don't already have a current_file
+            // (renames with content changes will have --- / +++ lines)
+            if self.current_file.is_none() {
+                self.files.push(FileDiff {
+                    preamble: std::mem::take(&mut self.pending_preamble),
+                    old_path: old_path.clone(),
+                    new_path,
+                    rename_from: Some(old_path),
+                    old_hash: self.pending_old_hash.take(),
+                    new_hash: self.pending_new_hash.take(),
+                    hunks: Vec::new(),
+                });
+            }
         }
     }
 
@@ -169,6 +193,7 @@ impl ParseState {
     }
 
     fn into_diff(mut self) -> GitDiff {
+        self.finish_pending_rename();
         self.finish_file();
         GitDiff { files: self.files }
     }
@@ -180,8 +205,11 @@ impl GitDiff {
         let mut state = ParseState::new();
 
         for line in diff.lines() {
-            // Skip "diff --git" header lines (we extract paths from --- and +++)
+            // "diff --git" starts a new file entry
             if line.starts_with("diff --git ") {
+                // Finish any pending pure rename before starting new file
+                state.finish_pending_rename();
+                state.finish_file();
                 continue;
             }
 
@@ -195,8 +223,8 @@ impl GitDiff {
                 state.rename_from = Some(path.to_string());
                 continue;
             }
-            if line.starts_with("rename to ") {
-                // rename_from already captured, will be used when file is created
+            if let Some(path) = line.strip_prefix("rename to ") {
+                state.pending_rename_to = Some(path.to_string());
                 continue;
             }
             if let Some(path) = line.strip_prefix("--- ") {
@@ -567,5 +595,21 @@ index abc1234..def5678 100644
         let parsed = GitDiff::parse(diff);
         assert_eq!(parsed.files.len(), 1);
         assert!(parsed.files[0].preamble.is_empty());
+    }
+
+    #[test]
+    fn parse_pure_rename_no_content_change() {
+        // 100% similarity rename has no --- / +++ lines and no hunks
+        let diff = r#"diff --git a/old.txt b/new.txt
+similarity index 100%
+rename from old.txt
+rename to new.txt
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].old_path, "old.txt");
+        assert_eq!(parsed.files[0].new_path, "new.txt");
+        assert_eq!(parsed.files[0].rename_from, Some("old.txt".to_string()));
+        assert!(parsed.files[0].hunks.is_empty());
     }
 }

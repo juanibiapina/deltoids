@@ -61,6 +61,7 @@ enum HunkBodyEvent {
 
 static HUNK_HEADER_RE: OnceLock<Regex> = OnceLock::new();
 static INDEX_RE: OnceLock<Regex> = OnceLock::new();
+static ANSI_RE: OnceLock<Regex> = OnceLock::new();
 
 fn hunk_header_re() -> &'static Regex {
     HUNK_HEADER_RE
@@ -69,6 +70,14 @@ fn hunk_header_re() -> &'static Regex {
 
 fn index_re() -> &'static Regex {
     INDEX_RE.get_or_init(|| Regex::new(r"^index ([0-9a-f]+)\.\.([0-9a-f]+)").unwrap())
+}
+
+fn ansi_re() -> &'static Regex {
+    ANSI_RE.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*m").unwrap())
+}
+
+fn strip_ansi(s: &str) -> String {
+    ansi_re().replace_all(s, "").to_string()
 }
 
 fn parse_hunk_body_line(line: &str) -> HunkBodyEvent {
@@ -219,8 +228,11 @@ impl GitDiff {
         let mut state = ParseState::new();
 
         for line in diff.lines() {
+            // Strip ANSI codes for pattern matching, but preserve raw line for preamble
+            let stripped = strip_ansi(line);
+
             // "diff --git" starts a new file entry
-            if line.starts_with("diff --git ") {
+            if stripped.starts_with("diff --git ") {
                 // Finish any pending pure rename before starting new file
                 state.finish_pending_rename();
                 state.finish_file();
@@ -228,23 +240,23 @@ impl GitDiff {
             }
 
             // Parse index line for blob hashes
-            if let Some(caps) = index_re().captures(line) {
+            if let Some(caps) = index_re().captures(&stripped) {
                 state.pending_old_hash = Some(caps.get(1).unwrap().as_str().to_string());
                 state.pending_new_hash = Some(caps.get(2).unwrap().as_str().to_string());
                 continue;
             }
-            if let Some(path) = line.strip_prefix("rename from ") {
+            if let Some(path) = stripped.strip_prefix("rename from ") {
                 state.rename_from = Some(path.to_string());
                 continue;
             }
-            if let Some(path) = line.strip_prefix("rename to ") {
+            if let Some(path) = stripped.strip_prefix("rename to ") {
                 state.pending_rename_to = Some(path.to_string());
                 continue;
             }
-            if let Some(path) = line.strip_prefix("--- ") {
+            if let Some(path) = stripped.strip_prefix("--- ") {
                 state.finish_file();
                 state.old_path = strip_prefix_ab(path);
-            } else if let Some(path) = line.strip_prefix("+++ ") {
+            } else if let Some(path) = stripped.strip_prefix("+++ ") {
                 let new_path = strip_prefix_ab(path);
                 state.current_file = Some(FileDiff {
                     preamble: std::mem::take(&mut state.pending_preamble),
@@ -255,7 +267,7 @@ impl GitDiff {
                     new_hash: state.pending_new_hash.take(),
                     hunks: Vec::new(),
                 });
-            } else if let Some(caps) = hunk_header_re().captures(line) {
+            } else if let Some(caps) = hunk_header_re().captures(&stripped) {
                 state.finish_hunk();
 
                 let old_start: usize = caps.get(1).unwrap().as_str().parse().unwrap_or(1);
@@ -277,9 +289,11 @@ impl GitDiff {
                     lines: Vec::new(),
                 });
             } else if state.current_hunk.is_some() {
-                let _ = state.handle_in_hunk_line(line);
+                // Hunk content uses stripped line (gets re-rendered with syntax highlighting)
+                let _ = state.handle_in_hunk_line(&stripped);
             } else {
                 // Non-diff line before any file starts (commit metadata, etc.)
+                // Preserve raw line with ANSI codes for colored output
                 state.pending_preamble.push(line.to_string());
             }
         }
@@ -625,5 +639,49 @@ rename to new.txt
         assert_eq!(parsed.files[0].new_path, "new.txt");
         assert_eq!(parsed.files[0].rename_from, Some("old.txt".to_string()));
         assert!(parsed.files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_codes() {
+        assert_eq!(strip_ansi("\x1b[33mcommit abc\x1b[0m"), "commit abc");
+        assert_eq!(strip_ansi("\x1b[1mdiff --git\x1b[m"), "diff --git");
+        assert_eq!(strip_ansi("no codes here"), "no codes here");
+        // Multiple codes in sequence
+        assert_eq!(
+            strip_ansi("\x1b[1;31mred bold\x1b[0m normal"),
+            "red bold normal"
+        );
+    }
+
+    #[test]
+    fn parse_preserves_ansi_in_preamble() {
+        let input = "\x1b[33mcommit abc123\x1b[0m\n\
+                     Author: Test\n\
+                     \n\
+                     diff --git a/f.rs b/f.rs\n\
+                     --- a/f.rs\n\
+                     +++ b/f.rs\n\
+                     @@ -1,1 +1,1 @@\n\
+                     -old\n\
+                     +new\n";
+        let parsed = GitDiff::parse(input);
+        assert_eq!(parsed.files.len(), 1);
+        // Preamble should preserve ANSI codes
+        assert_eq!(parsed.files[0].preamble[0], "\x1b[33mcommit abc123\x1b[0m");
+    }
+
+    #[test]
+    fn parse_handles_colored_diff_markers() {
+        let input = "\x1b[1mdiff --git a/f.rs b/f.rs\x1b[m\n\
+                     \x1b[1m--- a/f.rs\x1b[m\n\
+                     \x1b[1m+++ b/f.rs\x1b[m\n\
+                     \x1b[36m@@ -1,1 +1,1 @@\x1b[m\n\
+                     \x1b[31m-old\x1b[m\n\
+                     \x1b[32m+new\x1b[m\n";
+        let parsed = GitDiff::parse(input);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].new_path, "f.rs");
+        assert_eq!(parsed.files[0].hunks.len(), 1);
+        assert_eq!(parsed.files[0].hunks[0].lines.len(), 2);
     }
 }

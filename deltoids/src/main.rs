@@ -9,8 +9,6 @@
 
 use std::io::{self, Read, Write};
 
-use regex::Regex;
-
 use deltoids::Diff;
 use deltoids::parse::GitDiff;
 use deltoids::render::{BgFill, render_file_header, render_hunk, render_rename_header};
@@ -164,9 +162,6 @@ fn main() {
         return;
     }
 
-    // Strip ANSI escape codes (git sends colored output to pagers)
-    let input = strip_ansi(&input);
-
     let width = terminal_width().unwrap_or(DEFAULT_WIDTH);
     let fill = bg_fill_mode();
     let output = process_diff(&input, width, fill);
@@ -180,12 +175,6 @@ fn main() {
         eprintln!("Error writing to stdout: {e}");
     }
     let _ = stdout.flush();
-}
-
-fn strip_ansi(s: &str) -> String {
-    // Match ANSI escape sequences: ESC [ ... m (SGR codes)
-    let re = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
-    re.replace_all(s, "").to_string()
 }
 
 /// Determine fill mode based on whether stdout is a TTY.

@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::ErrorResponse;
+use edit_cli::ErrorResponse;
 use edit_cli::tui;
 
 const OVERVIEW: &str = r#"TUI for browsing edit/write traces for the current directory.

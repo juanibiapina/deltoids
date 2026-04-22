@@ -5,8 +5,7 @@
 This is a Rust workspace with CLI tools that trace file edits, plus a TUI to browse traces.
 
 **Crates:**
-- `edit` — core library for trace management and edit/write operations
-- `edit-cli` — `edit`, `write`, and `edit-tui` CLI commands
+- `edit-cli` — `edit`, `write`, and `edit-tui` CLI commands, plus core trace management library
 - `deltoids` — diff library with tree-sitter scope context
 - `deltoids-cli` — `deltoids` diff filter CLI
 - `tests` — cross-crate integration tests
@@ -30,11 +29,8 @@ cargo install --path crates/deltoids-cli  # deltoids
 
 ```
 crates/
-  edit/
-    src/lib.rs          # Core library: trace logic, request types, edit/write execution
-
   edit-cli/
-    src/lib.rs          # Shared modules for binaries
+    src/lib.rs          # Core library: trace logic, request types, edit/write execution
     src/tui.rs          # TUI rendering and event handling
     src/highlight.rs    # Syntax highlighting for diffs
     src/bin/edit.rs     # Edit CLI binary

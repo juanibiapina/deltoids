@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{EditRequest, ErrorResponse, TextEdit, execute_request_with_trace};
+use edit_cli::{EditRequest, ErrorResponse, TextEdit, execute_request_with_trace};
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
 

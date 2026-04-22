@@ -29,8 +29,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
+use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
-use edit::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 
 const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
 const TOKYONIGHT_BLUE: Color = Color::Rgb(122, 162, 247);
@@ -377,7 +377,7 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
 
     // Watch the trace root directory for changes.
     let (notify_tx, notify_rx) = mpsc::channel();
-    let trace_root = edit::trace_root_directory()?;
+    let trace_root = crate::trace_root_directory()?;
     std::fs::create_dir_all(&trace_root).map_err(|err| {
         format!(
             "Failed to create trace directory {}: {}",
@@ -1674,7 +1674,7 @@ fn pad_or_truncate(rows: &[String], target: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edit::TextEdit;
+    use crate::TextEdit;
 
     fn edit_entry() -> HistoryEntry {
         HistoryEntry {

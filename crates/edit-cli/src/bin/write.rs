@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{ErrorResponse, WriteRequest, execute_write_request_with_trace};
+use edit_cli::{ErrorResponse, WriteRequest, execute_write_request_with_trace};
 
 const OVERVIEW: &str = r#"CLI for agents to rewrite files.
 

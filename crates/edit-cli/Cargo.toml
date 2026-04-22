@@ -1,0 +1,23 @@
+[package]
+name = "edit-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "edit"
+path = "src/bin/edit.rs"
+
+[[bin]]
+name = "write"
+path = "src/bin/write.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+edit = { path = "../edit" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

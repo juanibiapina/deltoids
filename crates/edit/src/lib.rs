@@ -1,7 +1,3 @@
-mod highlight;
-
-pub mod tui;
-
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;

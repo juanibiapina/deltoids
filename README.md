@@ -1,100 +1,51 @@
 # edit
 
-CLI tools that trace `edit` and `write` file changes, with a TUI to browse traces.
+CLI tools for tracing file edits, with a TUI to browse traces.
 
-## edit input
+## Crates
 
-```json
-{
-  "summary": "Update x constant",
-  "path": "src/app.ts",
-  "edits": [
-    {
-      "summary": "Update x constant",
-      "oldText": "const x = 1;",
-      "newText": "const x = 2;"
-    }
-  ]
-}
+| Crate | Description |
+|-------|-------------|
+| `edit` | Core library for trace management |
+| `edit-cli` | `edit` and `write` binaries |
+| `edit-tui` | TUI for browsing traces |
+| `deltoids` | Diff library with tree-sitter scope context |
+| `deltoids-cli` | `deltoids` diff filter binary |
+
+## Install
+
+```bash
+cargo install --path crates/edit-cli      # edit, write
+cargo install --path crates/edit-tui      # edit-tui
+cargo install --path crates/deltoids-cli  # deltoids
 ```
 
-## write input
+## edit
 
-```json
-{
-  "summary": "Rewrite config",
-  "path": "config.json",
-  "content": "{\n  \"version\": 2\n}\n"
-}
-```
-
-## features
-
-- `edit` requires top-level `summary` and per-edit `summary`.
-- `write` rewrites full file contents and returns a diff.
-- Success and failure responses include `traceId` when the request was parsed.
-- Successful and failed attempts are appended to:
-  - `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`
-  - fallback: `~/.local/share/edit/traces/<trace-id>/entries.jsonl`
-- `edit` and `write` can share the same trace id.
-- If you pass a trace id, it must be an existing ULID trace id to reuse. Omit it to start a new trace.
-- `edit` shorthand:
-  - `edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"`
-- `write` shorthand:
-  - `write [trace-id] --path config.json --summary "Rewrite config" < config.json.new`
-
-See [docs/delta-within-line-diff-reference.md](docs/delta-within-line-diff-reference.md) for the reference algorithm used to match delta's within-line diff behavior.
-
-## diff scope context
-
-The TUI displays scope context (enclosing function, class, etc.) for each change, powered by tree-sitter. This helps navigate changes in context.
-
-Supported languages: Rust, Python, JavaScript, TypeScript (including TSX), Go, Ruby, Java, C, C++, Bash, Lua, CSS, and HCL/Terraform.
-
-## edit-tui
-
-Run `edit-tui` in a directory to browse the traces produced from that directory.
-
-Layout (lazygit-inspired):
-
-- Left sidebar, top: entries (edits/writes) of the selected trace.
-- Left sidebar, bottom: traces for the current working directory.
-- Right: detail for the selected entry, including a combined header block with summary, path, and metadata, followed by orange summary blocks, blue hunk headers, and diff.
-
-The view auto-refreshes when traces change on disk, so new edits from other processes appear without restarting.
-
-Keys:
-
-- `Tab`: cycle focus across entries, traces, and diff.
-- `1` / `2` / `3`: focus the entries, traces, or diff pane directly.
-- `j` / `k` / arrows: move within the focused pane (scrolls the diff when it is focused).
-- `Shift+J` / `Shift+K`: scroll the diff pane without leaving the entries or traces pane.
-- `PgUp` / `PgDn`: page-scroll the diff pane regardless of focus.
-- `q` / `Esc`: quit.
-
-Visual aids:
-
-- Each pane has an index prefix in its title (`[1] Entries`, `[2] Traces`, `[3] Diff`).
-- List panes show a `N of M` position in the bottom-right corner.
-- The diff pane starts with a combined header block that makes the summary, path, and entry metadata easy to scan.
-- The diff pane renders a vertical scrollbar on the right edge when the content overflows.
-- Orange summary blocks are separate from blue source-location hunk headers.
-
-## examples
+Applies targeted text replacements to a file.
 
 ```bash
 printf '%s' '{
-  "summary": "Update x constant",
+  "summary": "Update constant",
   "path": "src/app.ts",
   "edits": [
     {
-      "summary": "Update x constant",
+      "summary": "Change x to 2",
       "oldText": "const x = 1;",
       "newText": "const x = 2;"
     }
   ]
 }' | edit
 ```
+
+Shorthand:
+```bash
+edit --path src/app.ts --summary "Change x" --old "const x = 1;" --new "const x = 2;"
+```
+
+## write
+
+Rewrites a file with full content.
 
 ```bash
 printf '%s' '{
@@ -104,27 +55,59 @@ printf '%s' '{
 }' | write
 ```
 
-## quality checks
-
-Clippy is configured at the workspace root so both crates share the same lint policy.
-
-Run the current Clippy baseline from the repo root:
-
+Shorthand:
 ```bash
-cargo clippy --workspace --all-targets
+write --path config.json --summary "Rewrite config" < new_config.json
 ```
 
-This is report-only for now. Do not add `-- -D warnings` until the current findings are cleaned up.
+## Traces
 
-To collect code metrics from the repo root, install `rust-code-analysis-cli` and run:
+Both commands log to `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.
+
+- Omit trace id to start a new trace
+- Pass an existing trace id to append: `edit <trace-id> ...`
+- `edit` and `write` can share the same trace
+
+## edit-tui
+
+Browse traces for the current directory.
+
+```
+┌─[1] Entries 1 of 3─────┬─[3] Diff─────────────────────────┐
+│ ✓ Update constant      │ src/app.ts                       │
+│ ✓ Rewrite config       │ edit • ok • 1 edit • 1 hunk      │
+│ ✗ Failed edit          │──────────────────────────────────│
+│                        │ ┌─ 1: foo()                      │
+├─[2] Traces 1 of 2──────┤ │                                │
+│ > 01HX... app.ts       │ -const x = 1;                    │
+│   01HW... config.json  │ +const x = 2;                    │
+└────────────────────────┴──────────────────────────────────┘
+```
+
+Keys:
+- `Tab` / `1` `2` `3`: switch panes
+- `j` `k` / arrows: navigate
+- `Shift+J` `Shift+K`: scroll diff from any pane
+- `q`: quit
+
+Auto-refreshes when traces change on disk.
+
+## deltoids
+
+Diff filter with tree-sitter scope context. Shows enclosing function/class as breadcrumbs.
 
 ```bash
-cargo install --locked rust-code-analysis-cli
-rust-code-analysis-cli --metrics \
-  -p src \
-  -p deltoids/src \
-  -p tests \
-  -p deltoids/tests \
-  --output-format json \
-  --pr
+git diff | deltoids
+git show | deltoids
+```
+
+Supported: Rust, Python, JavaScript, TypeScript, Go, Ruby, Java, C, C++, Bash, Lua, CSS, HCL, Markdown, TOML, JSON, YAML.
+
+## Development
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo fmt --all -- --check
 ```

@@ -1,0 +1,16 @@
+[package]
+name = "deltoids-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "deltoids"
+path = "src/main.rs"
+
+[dependencies]
+deltoids = { path = "../deltoids" }
+git2 = "0.20"
+terminal_size = "0.4"
+
+[lints]
+workspace = true

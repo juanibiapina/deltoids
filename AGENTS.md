@@ -5,8 +5,12 @@
 This is a Rust workspace with CLI tools that trace file edits, plus a TUI to browse traces.
 
 **Crates:**
-- `edit` (root) — `edit` and `write` CLI commands, `edit-tui` browser
-- `deltoids` — diff filter with tree-sitter scope context, usable standalone or as a library
+- `edit` — core library for trace management and edit/write operations
+- `edit-cli` — `edit` and `write` CLI commands
+- `edit-tui` — TUI for browsing traces
+- `deltoids` — diff library with tree-sitter scope context
+- `deltoids-cli` — `deltoids` diff filter CLI
+- `tests` — cross-crate integration tests
 
 ## Build & Test
 
@@ -19,27 +23,41 @@ cargo fmt --all -- --check
 
 Install binaries locally:
 ```bash
-cargo install --path .
-cargo install --path deltoids
+cargo install --path crates/edit-cli
+cargo install --path crates/edit-tui
+cargo install --path crates/deltoids-cli
 ```
 
 ## Code Structure
 
 ```
-src/
-  main.rs        # CLI entry (edit, write, edit-tui subcommands)
-  tui.rs         # TUI rendering and event handling
-  highlight.rs   # Syntax highlighting for diffs
+crates/
+  edit/
+    src/lib.rs       # Core library: trace logic, request types, edit/write execution
 
-deltoids/
-  src/
-    main.rs      # Standalone diff filter CLI
-    lib.rs       # Library exports
-    parse.rs     # Git diff parsing
-    scope.rs     # Tree-sitter scope detection and hunk construction
-    render.rs    # Diff rendering
-    intraline.rs # Within-line diff algorithm
-    reverse.rs   # Diff reversal
+  edit-cli/
+    src/bin/edit.rs  # Edit CLI binary
+    src/bin/write.rs # Write CLI binary
+
+  edit-tui/
+    src/main.rs      # TUI entry point
+    src/tui.rs       # TUI rendering and event handling
+    src/highlight.rs # Syntax highlighting for diffs
+
+  deltoids/
+    src/lib.rs       # Library exports
+    src/parse.rs     # Git diff parsing
+    src/scope.rs     # Tree-sitter scope detection and hunk construction
+    src/render.rs    # Diff rendering
+    src/intraline.rs # Within-line diff algorithm
+    src/reverse.rs   # Diff reversal
+    src/syntax.rs    # Language detection and tree-sitter setup
+
+  deltoids-cli/
+    src/main.rs      # Standalone diff filter CLI
+
+  tests/
+    tests/tui_cli.rs # Integration tests for edit + write + edit-tui interaction
 ```
 
 ## Key Patterns

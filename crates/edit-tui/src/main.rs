@@ -1,7 +1,10 @@
+mod highlight;
+mod tui;
+
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit::{ErrorResponse, tui};
+use edit::ErrorResponse;
 
 const OVERVIEW: &str = r#"TUI for browsing edit/write traces for the current directory.
 

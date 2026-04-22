@@ -1,0 +1,18 @@
+[package]
+name = "tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# No library, just integration tests
+[lib]
+path = "src/lib.rs"
+
+# These tests depend on binaries from edit-cli and edit-tui crates
+# They must be built before running: cargo build --workspace
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

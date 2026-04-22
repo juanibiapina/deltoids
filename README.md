@@ -1,120 +1,74 @@
-# edit
+# deltoids
 
-CLI tools for tracing file edits, with a TUI to browse traces.
+Tools for reviewing code in the agentic era.
 
-## Crates
+## Installation
 
-| Crate | Description |
-|-------|-------------|
-| `edit-cli` | `edit`, `write`, and `edit-tui` binaries + core library |
-| `deltoids` | Diff library with tree-sitter scope context |
-| `deltoids-cli` | `deltoids` diff filter binary |
-
-## Install
+**From source:**
 
 ```bash
-cargo install --path crates/edit-cli      # edit, write, edit-tui
-cargo install --path crates/deltoids-cli  # deltoids
+git clone https://github.com/juanibiapina/deltoids.git
+cd deltoids
+
+# Install all binaries
+cargo install --path crates/deltoids-cli
+cargo install --path crates/edit-cli
 ```
 
-## edit
+This installs:
+- `deltoids`: diff viewer
+- `edit`: file edit tool (used by coding agents)
+- `write`: file write tool (used by coding agents)
+- `edit-tui`: trace browser to follow agents in real time
 
-Applies targeted text replacements to a file.
+## Usage
 
-```bash
-printf '%s' '{
-  "summary": "Update constant",
-  "path": "src/app.ts",
-  "edits": [
-    {
-      "summary": "Change x to 2",
-      "oldText": "const x = 1;",
-      "newText": "const x = 2;"
-    }
-  ]
-}' | edit
-```
+### Standalone
 
-Shorthand:
-```bash
-edit --path src/app.ts --summary "Change x" --old "const x = 1;" --new "const x = 2;"
-```
-
-## write
-
-Rewrites a file with full content.
-
-```bash
-printf '%s' '{
-  "summary": "Rewrite config",
-  "path": "config.json",
-  "content": "{\n  \"version\": 2\n}\n"
-}' | write
-```
-
-Shorthand:
-```bash
-write --path config.json --summary "Rewrite config" < new_config.json
-```
-
-## Traces
-
-Both commands log to `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.
-
-- Omit trace id to start a new trace
-- Pass an existing trace id to append: `edit <trace-id> ...`
-- `edit` and `write` can share the same trace
-
-## edit-tui
-
-Browse traces for the current directory.
-
-```
-┌─[1] Entries 1 of 3─────┬─[3] Diff─────────────────────────┐
-│ ✓ Update constant      │ src/app.ts                       │
-│ ✓ Rewrite config       │ edit • ok • 1 edit • 1 hunk      │
-│ ✗ Failed edit          │──────────────────────────────────│
-│                        │ ┌─ 1: foo()                      │
-├─[2] Traces 1 of 2──────┤ │                                │
-│ > 01HX... app.ts       │ -const x = 1;                    │
-│   01HW... config.json  │ +const x = 2;                    │
-└────────────────────────┴──────────────────────────────────┘
-```
-
-Keys:
-- `Tab` / `1` `2` `3`: switch panes
-- `j` `k` / arrows: navigate
-- `Shift+J` `Shift+K`: scroll diff from any pane
-- `q`: quit
-
-Auto-refreshes when traces change on disk.
-
-## deltoids
-
-Diff filter with tree-sitter scope context. Shows enclosing function/class as breadcrumbs.
+Pipe any unified diff through `deltoids`:
 
 ```bash
 git diff | deltoids
-git show | deltoids
+git show HEAD~1 | deltoids
+git log -p --color=always | deltoids
 ```
 
-Supported: Rust, Python, JavaScript, TypeScript, Go, Ruby, Java, C, C++, Bash, Lua, CSS, HCL, Markdown, TOML, JSON, YAML.
+### Git Integration
 
-## Development
+Set `deltoids` as your default pager:
 
 ```bash
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets
-cargo fmt --all -- --check
+git config --global core.pager 'deltoids | less -R'
 ```
 
-## Pi Integration
+Or for a specific command:
 
-Install as a pi package to override built-in `edit` and `write` tools:
+```bash
+git config --global pager.diff 'deltoids | less -R'
+git config --global pager.show 'deltoids | less -R'
+git config --global pager.log 'deltoids | less -R'
+```
+
+### Lazygit Integration
+
+Add to `~/.config/lazygit/config.yml`:
+
+```yaml
+git:
+  paging:
+    pager: deltoids
+```
+
+## Coding Agent Integrations
+
+### pi
+
+Install the pi package to override built-in `edit` and `write` tools with the traced versions:
 
 ```bash
 pi install https://github.com/juanibiapina/deltoids
 ```
 
 Requires `edit` and `write` binaries on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
+
+Then open `edit-tui` in the same directory as pi to see real time diffs with summaries.

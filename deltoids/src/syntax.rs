@@ -146,6 +146,14 @@ fn detect_language(path: &str) -> Option<LangEntry> {
             language: tree_sitter_toml_ng::LANGUAGE,
             scope_kinds: &["table", "table_array_element"],
         }),
+        "json" => Some(LangEntry {
+            language: tree_sitter_json::LANGUAGE,
+            scope_kinds: &["pair"],
+        }),
+        "yaml" | "yml" => Some(LangEntry {
+            language: tree_sitter_yaml::LANGUAGE,
+            scope_kinds: &["block_mapping_pair"],
+        }),
         _ => None,
     }
 }
@@ -187,6 +195,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_json_file() {
+        let source = "{\"name\": \"test\", \"version\": \"1.0\"}\n";
+        let parsed = parse_file("package.json", source).unwrap();
+        assert_eq!(parsed.tree.root_node().kind(), "document");
+        assert!(parsed.scope_kinds.contains(&"pair"));
+    }
+
+    #[test]
+    fn parses_yaml_file() {
+        let source = "name: test\nversion: 1.0\n";
+        let parsed = parse_file("config.yaml", source).unwrap();
+        assert_eq!(parsed.tree.root_node().kind(), "stream");
+        assert!(parsed.scope_kinds.contains(&"block_mapping_pair"));
+    }
+
+    #[test]
     fn returns_none_for_unknown_extension() {
         assert!(parse_file("data.xyz", "content").is_none());
     }
@@ -215,6 +239,9 @@ mod tests {
             ("test.tf", "resource {}"),
             ("test.md", "# Heading"),
             ("test.toml", "[section]"),
+            ("test.json", "{\"key\": \"value\"}"),
+            ("test.yaml", "key: value"),
+            ("test.yml", "key: value"),
         ];
         for (path, source) in cases {
             assert!(parse_file(path, source).is_some(), "failed to parse {path}");

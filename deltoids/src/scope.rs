@@ -1126,6 +1126,7 @@ fn enclosing_scopes(
             let name = n
                 .child_by_field_name("name")
                 .or_else(|| n.child_by_field_name("type"))
+                .or_else(|| n.child_by_field_name("key"))
                 .and_then(|name_node| name_node.utf8_text(source).ok())
                 .unwrap_or("")
                 .to_string();
@@ -1249,6 +1250,27 @@ impl Foo {
         let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].ancestors.is_empty());
+    }
+
+    #[test]
+    fn compute_populates_ancestors_for_json() {
+        let original = r#"{
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  }
+}
+"#;
+        let updated = original.replace("\"jest\"", "\"vitest\"");
+        let diff = Diff::compute(original, &updated, "package.json");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Should show "scripts" as ancestor since "test" is nested under it
+        assert!(!hunks[0].ancestors.is_empty());
+        // The innermost pair is "test", check its name was extracted via "key" field
+        let last = hunks[0].ancestors.last().unwrap();
+        assert_eq!(last.kind, "pair");
+        assert!(last.name.contains("test") || last.name.contains("scripts"));
     }
 
     // -----------------------------------------------------------------------

@@ -1,5 +1,7 @@
 # deltoids
 
+> **Beta**: This project is under active development. APIs and behavior may change.
+
 Tools for reviewing code in the agentic era.
 
 ## Installation

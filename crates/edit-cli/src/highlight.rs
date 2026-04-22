@@ -10,7 +10,7 @@ use syntect_assets::assets::HighlightingAssets;
 use unicode_width::UnicodeWidthChar;
 
 const TAB_WIDTH: usize = 4;
-const THEME_NAME: &str = "OneHalfDark";
+const THEME_NAME: &str = "ansi";
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<Theme> = OnceLock::new();
@@ -47,12 +47,30 @@ fn syntax_for_path(path: &str) -> &'static SyntaxReference {
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
 }
 
+/// Convert syntect foreground color to ratatui Color.
+///
+/// The "ansi" theme encodes ANSI color indices specially:
+/// - `r=N, g=0, b=0, a=0` means ANSI color N (0-15)
+/// - `r=0, g=0, b=0, a=1` means default foreground
+fn syntect_to_ratatui_color(color: syntect::highlighting::Color) -> ratatui::style::Color {
+    use ratatui::style::Color;
+
+    // ANSI theme encoding: g=0, b=0, a=0 means r is the ANSI color index
+    if color.g == 0 && color.b == 0 && color.a == 0 && color.r <= 15 {
+        return Color::Indexed(color.r);
+    }
+
+    // Default foreground (a=1 with black RGB)
+    if color.r == 0 && color.g == 0 && color.b == 0 && color.a == 1 {
+        return Color::Reset;
+    }
+
+    // Actual RGB color
+    Color::Rgb(color.r, color.g, color.b)
+}
+
 fn to_ratatui_style(base_style: Style, style: syntect::highlighting::Style) -> Style {
-    let mut result = base_style.fg(ratatui::style::Color::Rgb(
-        style.foreground.r,
-        style.foreground.g,
-        style.foreground.b,
-    ));
+    let mut result = base_style.fg(syntect_to_ratatui_color(style.foreground));
 
     if style.font_style.contains(FontStyle::BOLD) {
         result = result.add_modifier(Modifier::BOLD);

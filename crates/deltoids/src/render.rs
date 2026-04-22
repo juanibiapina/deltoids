@@ -13,7 +13,7 @@ use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
 use crate::{Hunk, LineKind, ScopeNode};
 
 const TAB_WIDTH: usize = 4;
-const THEME_NAME: &str = "OneHalfDark";
+const THEME_NAME: &str = "ansi";
 
 // ANSI color codes
 const RESET: &str = "\x1b[0m";
@@ -27,6 +27,27 @@ const GREEN_EMPH_BG: &str = "\x1b[48;2;44;90;102m"; // RGB(0x2c, 0x5a, 0x66)
 const RED_BG: &str = "\x1b[48;2;55;34;44m"; // RGB(0x37, 0x22, 0x2c)
 const RED_EMPH_BG: &str = "\x1b[48;2;113;49;55m"; // RGB(0x71, 0x31, 0x37)
 const DEFAULT_FG: &str = "\x1b[38;2;220;223;228m"; // Default text color for empty lines
+
+/// Convert a syntect color to an ANSI foreground escape sequence.
+///
+/// The "ansi" theme encodes ANSI color indices specially:
+/// - `r=N, g=0, b=0, a=0` means ANSI color N (0-15)
+/// - `r=0, g=0, b=0, a=1` means default foreground
+fn syntect_color_to_ansi_fg(color: syntect::highlighting::Color) -> String {
+    // ANSI theme encoding: g=0, b=0, a=0 means r is the ANSI color index
+    if color.g == 0 && color.b == 0 && color.a == 0 && color.r <= 15 {
+        // Use 256-color mode for indices 0-15 (maps to terminal's 16 colors)
+        return format!("\x1b[38;5;{}m", color.r);
+    }
+
+    // Default foreground (a=1 with black RGB) - reset to default
+    if color.r == 0 && color.g == 0 && color.b == 0 && color.a == 1 {
+        return "\x1b[39m".to_string(); // Default foreground
+    }
+
+    // Actual RGB color
+    format!("\x1b[38;2;{};{};{}m", color.r, color.g, color.b)
+}
 
 /// How to fill background color to end of line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,10 +249,11 @@ pub fn highlight_line(line: &str, path: &str) -> String {
 
                 // Build ANSI escape sequence for foreground only
                 // We don't reset here so background colors persist
-                let fg = format!(
-                    "\x1b[38;2;{};{};{}m",
-                    style.foreground.r, style.foreground.g, style.foreground.b
-                );
+                //
+                // The "ansi" theme encodes ANSI colors specially:
+                // - r=N, g=0, b=0, a=0 means ANSI color N (0-15)
+                // - r=0, g=0, b=0, a=1 means default foreground
+                let fg = syntect_color_to_ansi_fg(style.foreground);
 
                 if style.font_style.contains(FontStyle::BOLD) {
                     result.push_str(BOLD);

@@ -7,16 +7,14 @@ CLI tools for tracing file edits, with a TUI to browse traces.
 | Crate | Description |
 |-------|-------------|
 | `edit` | Core library for trace management |
-| `edit-cli` | `edit` and `write` binaries |
-| `edit-tui` | TUI for browsing traces |
+| `edit-cli` | `edit`, `write`, and `edit-tui` binaries |
 | `deltoids` | Diff library with tree-sitter scope context |
 | `deltoids-cli` | `deltoids` diff filter binary |
 
 ## Install
 
 ```bash
-cargo install --path crates/edit-cli      # edit, write
-cargo install --path crates/edit-tui      # edit-tui
+cargo install --path crates/edit-cli      # edit, write, edit-tui
 cargo install --path crates/deltoids-cli  # deltoids
 ```
 

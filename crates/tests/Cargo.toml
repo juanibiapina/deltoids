@@ -8,7 +8,7 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
-# These tests depend on binaries from edit-cli and edit-tui crates
+# These tests depend on binaries from edit-cli (edit, write, edit-tui)
 # They must be built before running: cargo build --workspace
 [dev-dependencies]
 serde_json = "1"

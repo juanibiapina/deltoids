@@ -1,0 +1,18 @@
+{
+  "name": "deltoids",
+  "version": "0.1.0",
+  "description": "Pi package for edit/write tracing with deltoids",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/juanibiapina/deltoids.git"
+  },
+  "keywords": ["pi-package"],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.60",
+    "@mariozechner/pi-tui": "^0.60"
+  },
+  "pi": {
+    "extensions": ["./plugins/pi/extensions"]
+  }
+}

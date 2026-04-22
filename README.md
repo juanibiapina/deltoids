@@ -108,3 +108,13 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all -- --check
 ```
+
+## Pi Integration
+
+Install as a pi package to override built-in `edit` and `write` tools:
+
+```bash
+pi install https://github.com/juanibiapina/deltoids
+```
+
+Requires `edit` and `write` binaries on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.

@@ -67,6 +67,7 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "function_declaration",
                 "class_declaration",
                 "method_definition",
+                "pair",
             ],
         }),
         "ts" | "mts" | "cts" => Some(LangEntry {
@@ -77,6 +78,7 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "method_definition",
                 "interface_declaration",
                 "type_alias_declaration",
+                "pair",
             ],
         }),
         "tsx" => Some(LangEntry {
@@ -87,6 +89,7 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "method_definition",
                 "interface_declaration",
                 "type_alias_declaration",
+                "pair",
             ],
         }),
         "go" => Some(LangEntry {

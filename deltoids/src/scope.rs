@@ -1273,6 +1273,62 @@ impl Foo {
         assert!(last.name.contains("test") || last.name.contains("scripts"));
     }
 
+    #[test]
+    fn compute_populates_ancestors_for_typescript_object_properties() {
+        // TypeScript config files use nested object literals
+        // Changes inside should show object property ancestors
+        let original = r#"export default defineConfig({
+  env: {
+    schema: {
+      PUBLIC_KEY: "value1",
+    },
+  },
+});
+"#;
+        let updated = original.replace("\"value1\"", "\"value2\"");
+        let diff = Diff::compute(original, &updated, "astro.config.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Should show nested object properties as ancestors
+        assert!(
+            !hunks[0].ancestors.is_empty(),
+            "TypeScript object properties should produce scope ancestors"
+        );
+        // Check that we have "pair" ancestors for the nested structure
+        let has_pair = hunks[0].ancestors.iter().any(|a| a.kind == "pair");
+        assert!(
+            has_pair,
+            "Should have 'pair' ancestors for object properties"
+        );
+    }
+
+    #[test]
+    fn compute_pair_inside_function_shows_function_ancestor() {
+        // When a change is inside an object literal within a function,
+        // the function should appear in ancestors (not just the pair)
+        let original = r#"function getConfig() {
+  return {
+    env: {
+      key: "value1",
+    },
+  };
+}
+"#;
+        let updated = original.replace("\"value1\"", "\"value2\"");
+        let diff = Diff::compute(original, &updated, "config.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Function should be in ancestors
+        let has_function = hunks[0]
+            .ancestors
+            .iter()
+            .any(|a| a.kind == "function_declaration");
+        assert!(
+            has_function,
+            "Function should appear in ancestors when change is inside object within function"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Scope-expanded context tests
     // -----------------------------------------------------------------------

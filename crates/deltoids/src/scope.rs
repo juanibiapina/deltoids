@@ -244,6 +244,66 @@ fn innermost_scope_at(
         .cloned()
 }
 
+/// Scope kinds that are "leaf containers" - they should not trigger separate hunks
+/// when nested inside a larger scope. Used for object properties, config entries, etc.
+const LEAF_CONTAINER_KINDS: &[&str] = &[
+    "pair",               // JSON, JS/TS/TSX object properties
+    "block_mapping_pair", // YAML mappings
+];
+
+/// Check if a scope is a "leaf container" that should not trigger its own hunk.
+fn is_leaf_container_scope(scope: &ScopeNode) -> bool {
+    LEAF_CONTAINER_KINDS.contains(&scope.kind.as_str())
+}
+
+/// Get the innermost scope that should trigger hunk splitting.
+/// Returns None if the innermost scope is a leaf container (like `pair`) that has a parent.
+/// This prevents nested leaf scopes from triggering separate hunks, while still
+/// allowing structural scopes (functions, classes) to get their own hunks.
+fn hunk_scope_at(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    line: usize,
+) -> Option<ScopeNode> {
+    let scopes = enclosing_scopes(parsed.tree.root_node(), source, line, parsed.scope_kinds);
+    let innermost = scopes.last()?;
+
+    // If the innermost scope is a leaf container and has a parent, skip it
+    if is_leaf_container_scope(innermost) && scopes.len() > 1 {
+        return None;
+    }
+
+    Some(innermost.clone())
+}
+
+/// Find the innermost scope that contains an entire range of lines.
+/// Used for scope expansion to ensure all changes in a range are included.
+/// Falls back to default context if no scope contains the full range.
+fn innermost_scope_containing_range(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    range_start: usize,
+    range_end: usize,
+) -> Option<ScopeNode> {
+    // Get scopes at the start of the range (outermost to innermost)
+    let scopes = enclosing_scopes(
+        parsed.tree.root_node(),
+        source,
+        range_start,
+        parsed.scope_kinds,
+    );
+
+    // Find the innermost scope that contains the entire range
+    // Iterate from innermost to outermost
+    for scope in scopes.iter().rev() {
+        let (scope_start, scope_end, _) = scope_bounds(scope);
+        if scope_start <= range_start && scope_end >= range_end.saturating_sub(1) {
+            return Some(scope.clone());
+        }
+    }
+    None
+}
+
 fn scope_bounds(scope: &ScopeNode) -> (usize, usize, usize) {
     let start = scope.start_line.saturating_sub(1);
     let end = scope.end_line.saturating_sub(1);
@@ -267,7 +327,9 @@ fn find_inserted_scope_line(
     total_new: usize,
 ) -> Option<usize> {
     for line in new_start..new_end.min(total_new) {
-        let Some(scope) = innermost_scope_at(parsed, source, line) else {
+        // Use hunk_scope_at to avoid leaf container scopes (like pairs inside functions)
+        // triggering separate hunks
+        let Some(scope) = hunk_scope_at(parsed, source, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -281,6 +343,8 @@ fn find_inserted_scope_line(
 
 /// Check if an insert operation forms a new scope that should have its own hunk.
 /// Used to avoid duplicating new scope content in sibling function hunks.
+/// Only considers hunk scopes to prevent leaf container scopes (like pairs) from
+/// triggering separate hunks when inside a larger scope.
 fn insert_forms_new_scope(
     parsed: &crate::syntax::ParsedFile,
     source: &[u8],
@@ -288,7 +352,8 @@ fn insert_forms_new_scope(
     new_end: usize,
 ) -> bool {
     for line in new_start..new_end {
-        let Some(scope) = innermost_scope_at(parsed, source, line) else {
+        // Use hunk_scope_at to avoid leaf container scopes triggering separate hunks
+        let Some(scope) = hunk_scope_at(parsed, source, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -308,7 +373,9 @@ fn find_replace_scope_line(
     total_new: usize,
 ) -> Option<usize> {
     for line in new_start..new_end.min(total_new) {
-        let Some(scope) = innermost_scope_at(parsed, source, line) else {
+        // Use hunk_scope_at to avoid leaf container scopes (like pairs inside functions)
+        // triggering separate hunks
+        let Some(scope) = hunk_scope_at(parsed, source, line) else {
             continue;
         };
         let (scope_start, _, scope_lines) = scope_bounds(&scope);
@@ -420,9 +487,11 @@ fn old_replace_context_range(
 ) -> ContextRange {
     let old_start = old_index;
     let old_end = old_index + old_len;
-    let scope_line = query_old_line(old_start, ctx.total_old);
 
-    if let Some(scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
+    // Find the innermost scope that contains the entire change range
+    if let Some(scope) =
+        innermost_scope_containing_range(ctx.old_parsed, ctx.old_source, old_start, old_end)
+    {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
             return ContextRange {

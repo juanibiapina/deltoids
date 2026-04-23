@@ -1,12 +1,18 @@
 //! Configuration loading for deltoids.
 //!
 //! Loads theme settings from `$XDG_CONFIG_HOME/deltoids/config.toml`.
+//! Also provides syntax highlighting asset loading.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
+use bat::assets::HighlightingAssets;
 use serde::Deserialize;
+use syntect::highlighting::Theme as SyntectTheme;
+use syntect::parsing::SyntaxSet;
+use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
 /// Theme colors used by deltoids rendering.
 ///
@@ -87,6 +93,94 @@ impl Theme {
             selection_bg: parse_hex_color(&theme.selection_bg).unwrap_or(defaults.selection_bg),
         }
     }
+}
+
+// Delta's defaults for syntax themes.
+const DEFAULT_DARK_THEME: &str = "Monokai Extended";
+const DEFAULT_LIGHT_THEME: &str = "GitHub";
+
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static SYNTAX_THEME: OnceLock<SyntectTheme> = OnceLock::new();
+
+/// Loaded syntax highlighting assets.
+pub struct SyntaxAssets {
+    pub syntax_set: &'static SyntaxSet,
+    pub syntax_theme: &'static SyntectTheme,
+}
+
+impl SyntaxAssets {
+    /// Load syntax assets from bat cache or binary fallback.
+    ///
+    /// Uses `BAT_THEME` if set, otherwise detects dark/light mode and uses
+    /// appropriate defaults (Monokai Extended for dark, GitHub for light).
+    pub fn load() -> Self {
+        let syntax_set = SYNTAX_SET.get_or_init(|| {
+            load_highlighting_assets()
+                .get_syntax_set()
+                .expect("syntax assets should load")
+                .clone()
+        });
+
+        let syntax_theme = SYNTAX_THEME.get_or_init(|| {
+            let assets = load_highlighting_assets();
+            let theme_name = resolve_syntax_theme_name(&assets);
+            assets.get_theme(&theme_name).clone()
+        });
+
+        Self {
+            syntax_set,
+            syntax_theme,
+        }
+    }
+}
+
+fn load_highlighting_assets() -> HighlightingAssets {
+    let cache_dir = bat_cache_dir().map(|d| d.join("bat"));
+    cache_dir
+        .and_then(|dir| HighlightingAssets::from_cache(&dir).ok())
+        .unwrap_or_else(HighlightingAssets::from_binary)
+}
+
+/// Get the cache directory following bat/delta conventions.
+/// On macOS, follows XDG spec (XDG_CACHE_HOME or ~/.cache) rather than native paths.
+/// On other platforms, uses the native cache directory.
+fn bat_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| dirs::home_dir().map(|d| d.join(".cache")))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::cache_dir()
+    }
+}
+
+fn detect_is_light_mode() -> bool {
+    theme_mode(QueryOptions::default())
+        .map(|m| matches!(m, ThemeMode::Light))
+        .unwrap_or(false)
+}
+
+fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
+    // 1. Check BAT_THEME
+    if let Ok(theme) = env::var("BAT_THEME") {
+        if assets.themes().any(|t| t == theme) {
+            return theme;
+        }
+    }
+
+    // 2. Use default based on light/dark
+    let is_light = detect_is_light_mode();
+    if is_light {
+        DEFAULT_LIGHT_THEME
+    } else {
+        DEFAULT_DARK_THEME
+    }
+    .to_string()
 }
 
 #[derive(Debug, Default, Deserialize)]

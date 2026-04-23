@@ -1,21 +1,17 @@
 //! Render diff output with ANSI colors and breadcrumb boxes.
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Theme as SyntectTheme};
-use syntect::parsing::{SyntaxReference, SyntaxSet};
-use syntect_assets::assets::HighlightingAssets;
+use syntect::highlighting::FontStyle;
+use syntect::parsing::SyntaxReference;
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::{SyntaxAssets, Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
 use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
 use crate::{Hunk, LineKind, ScopeNode};
 
-use crate::config::{Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
-
 const TAB_WIDTH: usize = 4;
-const THEME_NAME: &str = "ansi";
 
 // ANSI color codes
 const RESET: &str = "\x1b[0m";
@@ -53,28 +49,9 @@ pub enum BgFill {
     Spaces,
 }
 
-static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
-static SYNTECT_THEME: OnceLock<SyntectTheme> = OnceLock::new();
-
-fn syntax_set() -> &'static SyntaxSet {
-    SYNTAX_SET.get_or_init(|| {
-        HighlightingAssets::from_binary()
-            .get_syntax_set()
-            .expect("integrated syntect assets should load")
-            .clone()
-    })
-}
-
-fn syntect_theme() -> &'static SyntectTheme {
-    SYNTECT_THEME.get_or_init(|| {
-        HighlightingAssets::from_binary()
-            .get_theme(THEME_NAME)
-            .clone()
-    })
-}
-
 fn syntax_for_path(path: &str) -> &'static SyntaxReference {
-    let syntax_set = syntax_set();
+    let assets = SyntaxAssets::load();
+    let syntax_set = assets.syntax_set;
     let path = Path::new(path);
     let file_name = path
         .file_name()
@@ -254,10 +231,11 @@ fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
 /// responsible for setting/resetting background. This allows background
 /// colors to persist across all tokens.
 pub fn highlight_line(line: &str, path: &str) -> String {
+    let assets = SyntaxAssets::load();
     let syntax = syntax_for_path(path);
-    let mut highlighter = HighlightLines::new(syntax, syntect_theme());
+    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
 
-    match highlighter.highlight_line(line, syntax_set()) {
+    match highlighter.highlight_line(line, assets.syntax_set) {
         Ok(ranges) => {
             let mut result = String::new();
             for (style, text) in ranges {

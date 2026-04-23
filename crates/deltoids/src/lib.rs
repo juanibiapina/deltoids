@@ -6,6 +6,6 @@ pub mod reverse;
 mod scope;
 pub mod syntax;
 
-pub use config::Theme;
+pub use config::{SyntaxAssets, Theme};
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 pub use scope::{Diff, DiffLine, Hunk, LineKind, ScopeNode};

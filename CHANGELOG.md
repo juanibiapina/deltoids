@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `deltoids`: fix bug where diff did not show when adding a line at end of file
+
 ## [0.1.0] - 2025-04-23
 
 Initial beta release.

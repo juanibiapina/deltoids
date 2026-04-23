@@ -722,7 +722,10 @@ fn collect_insert_lines(
     new_len: usize,
     ctx: &HunkBuildContext<'_>,
 ) {
-    if old_index < range.start || old_index > range.end {
+    // Allow inserts at range.end + 1 to handle end-of-file insertions.
+    // When inserting at end of file, old_index = total_old, but range.end
+    // is clamped to total_old - 1. The insert should still be included.
+    if old_index < range.start || old_index > range.end + 1 {
         return;
     }
 
@@ -2281,6 +2284,27 @@ fn syntect_theme() -> &'static SyntectTheme {
             "ancestor should be either 'theme' or 'syntect_theme', got '{}'",
             ancestor_name
         );
+    }
+
+    #[test]
+    fn insert_at_end_of_file_without_scope() {
+        // Bug: inserting at end of a file with no enclosing scope produced
+        // empty diff. The Insert op has old_index past the last line, but
+        // range.end is clamped to total_old - 1, so the insert was skipped.
+        // Use .ts to trigger tree-sitter parsing (unlike .txt which bypasses it).
+        let original = "const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;\nconst f = 6;\nconst g = 7;\n";
+        let updated = "const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;\nconst f = 6;\nconst g = 7;\nconst h = 8;\n";
+        let diff = Diff::compute(original, updated, "test.ts");
+        let hunks = diff.hunks();
+
+        assert_eq!(hunks.len(), 1, "should produce 1 hunk");
+        let added: Vec<_> = hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Added)
+            .collect();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].content, "const h = 8;");
     }
 
     #[test]

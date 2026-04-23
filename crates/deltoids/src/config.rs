@@ -167,10 +167,10 @@ fn detect_is_light_mode() -> bool {
 
 fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
     // 1. Check BAT_THEME
-    if let Ok(theme) = env::var("BAT_THEME") {
-        if assets.themes().any(|t| t == theme) {
-            return theme;
-        }
+    if let Ok(theme) = env::var("BAT_THEME")
+        && assets.themes().any(|t| t == theme)
+    {
+        return theme;
     }
 
     // 2. Use default based on light/dark

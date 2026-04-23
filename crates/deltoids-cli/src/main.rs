@@ -70,10 +70,13 @@ mod git {
                 None => return, // Skip if not in a git repo
             };
 
-            // Get HEAD commit's tree to find a known blob
+            // Get HEAD commit's tree to find a known blob (file, not directory)
             let head = repo.0.head().unwrap().peel_to_commit().unwrap();
             let tree = head.tree().unwrap();
-            let entry = tree.iter().next().unwrap();
+            let entry = tree
+                .iter()
+                .find(|e| e.kind() == Some(git2::ObjectType::Blob))
+                .expect("should have at least one blob in tree");
             let full_hash = entry.id().to_string();
             let abbrev_hash = &full_hash[..7];
 

@@ -29,7 +29,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
-use crate::theme::ResolvedTheme;
+use crate::theme::{ResolvedTheme, to_color};
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 
@@ -484,18 +484,22 @@ fn render_empty_draw_state(
     theme: &ResolvedTheme,
 ) {
     let message = Paragraph::new("No traces found for this directory.")
-        .style(Style::default().fg(theme.ui.dim))
+        .style(Style::default().fg(to_color(theme.ui.muted)))
         .block(pane_block_with_footer(
             " [1] Entries ",
-            theme.ui.border,
+            to_color(theme.ui.border),
             Some(position_footer(0, 0)),
         ));
     frame.render_widget(message, sidebar[0]);
     frame.render_widget(
-        pane_block_with_footer(" [2] Traces ", theme.ui.border, Some(position_footer(0, 0))),
+        pane_block_with_footer(
+            " [2] Traces ",
+            to_color(theme.ui.border),
+            Some(position_footer(0, 0)),
+        ),
         sidebar[1],
     );
-    frame.render_widget(pane_block(" [3] Diff ", theme.ui.border), body[1]);
+    frame.render_widget(pane_block(" [3] Diff ", to_color(theme.ui.border)), body[1]);
     frame.render_widget(help_bar(theme), root[1]);
 }
 
@@ -525,7 +529,7 @@ fn render_entries_pane(
         ))
         .highlight_style(
             Style::default()
-                .bg(theme.ui.selection_bg)
+                .bg(to_color(theme.ui.selection_bg))
                 .add_modifier(Modifier::BOLD),
         )
         .scroll_padding(2);
@@ -565,7 +569,7 @@ fn render_traces_pane(
         ))
         .highlight_style(
             Style::default()
-                .bg(theme.ui.selection_bg)
+                .bg(to_color(theme.ui.selection_bg))
                 .add_modifier(Modifier::BOLD),
         )
         .scroll_padding(2);
@@ -690,8 +694,8 @@ fn render_pane_scrollbar(
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .symbols(scrollbar_symbols::VERTICAL)
         .thumb_symbol("\u{2590}")
-        .track_style(Style::default().fg(theme.ui.border))
-        .thumb_style(Style::default().fg(theme.ui.border))
+        .track_style(Style::default().fg(to_color(theme.ui.border)))
+        .thumb_style(Style::default().fg(to_color(theme.ui.border)))
         .begin_symbol(None)
         .end_symbol(None);
     // Ratatui puts the thumb at the track bottom only when position ==
@@ -743,15 +747,15 @@ fn position_footer(position: usize, total: usize) -> String {
 
 fn pane_border_color(active: bool, theme: &ResolvedTheme) -> Color {
     if active {
-        theme.ui.border_active
+        to_color(theme.ui.border_active)
     } else {
-        theme.ui.border
+        to_color(theme.ui.border)
     }
 }
 
 fn help_bar(theme: &ResolvedTheme) -> Paragraph<'static> {
     Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
-        .style(Style::default().fg(theme.ui.dim))
+        .style(Style::default().fg(to_color(theme.ui.muted)))
 }
 
 fn entry_icon(ok: bool) -> (&'static str, Color) {
@@ -1028,9 +1032,9 @@ fn render_subhunk(
                 rendered.push(render_emphasized_line(
                     content,
                     emphasis,
-                    theme.ui.diff_deleted_bg,
-                    theme.ui.diff_deleted_emph_bg,
-                    theme.ui.diff_deleted_bg,
+                    to_color(theme.ui.diff_deleted_bg),
+                    to_color(theme.ui.diff_deleted_emph_bg),
+                    to_color(theme.ui.diff_deleted_bg),
                     &entry.path,
                     width,
                     theme,
@@ -1043,9 +1047,9 @@ fn render_subhunk(
                 rendered.push(render_emphasized_line(
                     content,
                     emphasis,
-                    theme.ui.diff_added_bg,
-                    theme.ui.diff_added_emph_bg,
-                    theme.ui.diff_added_bg,
+                    to_color(theme.ui.diff_added_bg),
+                    to_color(theme.ui.diff_added_emph_bg),
+                    to_color(theme.ui.diff_added_bg),
                     &entry.path,
                     width,
                     theme,
@@ -1161,7 +1165,7 @@ fn render_diff_line(
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
         return vec![syntax_diff_line(
             content,
-            theme.ui.diff_added_bg,
+            to_color(theme.ui.diff_added_bg),
             &entry.path,
             width,
             theme,
@@ -1170,7 +1174,7 @@ fn render_diff_line(
     if let Some(content) = line.strip_prefix('-').filter(|_| !line.starts_with("---")) {
         return vec![syntax_diff_line(
             content,
-            theme.ui.diff_deleted_bg,
+            to_color(theme.ui.diff_deleted_bg),
             &entry.path,
             width,
             theme,
@@ -1302,7 +1306,7 @@ fn render_header_block(
     theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
     let summary_style = Style::default()
-        .fg(theme.ui.border_active)
+        .fg(to_color(theme.ui.border_active))
         .add_modifier(Modifier::BOLD);
 
     if width < 4 {
@@ -1312,9 +1316,9 @@ fn render_header_block(
         ))];
     }
 
-    let path_style = Style::default().fg(theme.ui.border);
-    let metadata_style = Style::default().fg(theme.ui.dim);
-    let border = Style::default().fg(theme.ui.border);
+    let path_style = Style::default().fg(to_color(theme.ui.border));
+    let metadata_style = Style::default().fg(to_color(theme.ui.muted));
+    let border = Style::default().fg(to_color(theme.ui.border));
     let bot = format!("─{}", "─".repeat(width.saturating_sub(1)));
 
     let mut lines = Vec::new();
@@ -1351,7 +1355,7 @@ fn edit_block_markers(lines: &[String], start: usize) -> Option<(Vec<String>, us
 }
 
 fn render_edit_block(lines: &[String], width: usize, theme: &ResolvedTheme) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme.ui.border_active);
+    let border = Style::default().fg(to_color(theme.ui.border_active));
     let content_width = lines
         .iter()
         .map(|line| display_width(line))
@@ -1427,7 +1431,7 @@ fn render_breadcrumb_box(
     width: usize,
     theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme.ui.border);
+    let border = Style::default().fg(to_color(theme.ui.border));
     let max_content_width = width.saturating_sub(2); // room for " │"
 
     // Compute the widest line number for right-alignment.
@@ -1533,7 +1537,7 @@ fn render_hunk_separator_legacy(
         .unwrap_or("");
 
     let line_number = parse_hunk_new_start(line);
-    let border = Style::default().fg(theme.ui.border);
+    let border = Style::default().fg(to_color(theme.ui.border));
 
     let prefix = match line_number {
         Some(n) => format!("{n}: "),
@@ -2435,9 +2439,12 @@ mod tests {
         let lines = render_detail_header(&edit_entry(), 80, &theme);
         assert_eq!(lines.len(), 4);
         assert!(lines[0].to_string().starts_with("Update x constant"));
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme.ui.border_active));
+        assert_eq!(
+            lines[0].spans[0].style.fg,
+            Some(to_color(theme.ui.border_active))
+        );
         assert!(lines[1].to_string().starts_with("/tmp/project/app.txt"));
-        assert_eq!(lines[1].spans[0].style.fg, Some(theme.ui.border));
+        assert_eq!(lines[1].spans[0].style.fg, Some(to_color(theme.ui.border)));
         // v1 entries have 0 hunks
         assert!(
             lines[2]
@@ -2470,7 +2477,7 @@ mod tests {
         for line in &lines[..rule_index - 2] {
             assert_eq!(
                 line.spans[0].style.fg,
-                Some(theme.ui.border_active),
+                Some(to_color(theme.ui.border_active)),
                 "wrapped summary line should be border_active color"
             );
         }
@@ -2544,7 +2551,10 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert!(lines[0].to_string().starts_with('─'));
         assert!(lines[1].to_string().starts_with("Rename renderer"));
-        assert_eq!(lines[1].spans[0].style.fg, Some(theme.ui.border_active));
+        assert_eq!(
+            lines[1].spans[0].style.fg,
+            Some(to_color(theme.ui.border_active))
+        );
         assert!(lines[2].to_string().ends_with('╯'));
     }
 
@@ -2661,9 +2671,9 @@ mod tests {
         let line = render_emphasized_line(
             "const x = 1;",
             &LineEmphasis::Plain,
-            theme.ui.diff_deleted_bg,
-            theme.ui.diff_deleted_emph_bg,
-            theme.ui.diff_deleted_bg,
+            to_color(theme.ui.diff_deleted_bg),
+            to_color(theme.ui.diff_deleted_emph_bg),
+            to_color(theme.ui.diff_deleted_bg),
             "test.rs",
             80,
             &theme,
@@ -2672,7 +2682,7 @@ mod tests {
         for span in &line.spans {
             assert_eq!(
                 span.style.bg,
-                Some(theme.ui.diff_deleted_bg),
+                Some(to_color(theme.ui.diff_deleted_bg)),
                 "plain line should use flat bg, got {:?}",
                 span.style.bg
             );
@@ -2700,9 +2710,9 @@ mod tests {
         let line = render_emphasized_line(
             "const x = 1;",
             &LineEmphasis::Paired(sections),
-            theme.ui.diff_deleted_bg,
-            theme.ui.diff_deleted_emph_bg,
-            theme.ui.diff_deleted_bg,
+            to_color(theme.ui.diff_deleted_bg),
+            to_color(theme.ui.diff_deleted_emph_bg),
+            to_color(theme.ui.diff_deleted_bg),
             "test.rs",
             80,
             &theme,
@@ -2711,11 +2721,11 @@ mod tests {
         let has_emph_bg = line
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(theme.ui.diff_deleted_emph_bg));
+            .any(|s| s.style.bg == Some(to_color(theme.ui.diff_deleted_emph_bg)));
         let has_non_emph_bg = line
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(theme.ui.diff_deleted_bg));
+            .any(|s| s.style.bg == Some(to_color(theme.ui.diff_deleted_bg)));
         assert!(has_emph_bg, "paired line should have emph bg spans");
         assert!(has_non_emph_bg, "paired line should have non-emph bg spans");
     }
@@ -2733,7 +2743,7 @@ mod tests {
         let minus_has_emph = rendered[0]
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(theme.ui.diff_deleted_emph_bg));
+            .any(|s| s.style.bg == Some(to_color(theme.ui.diff_deleted_emph_bg)));
         assert!(
             minus_has_emph,
             "paired minus line should have emph bg on changed token"
@@ -2743,7 +2753,7 @@ mod tests {
         let plus_has_emph = rendered[1]
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(theme.ui.diff_added_emph_bg));
+            .any(|s| s.style.bg == Some(to_color(theme.ui.diff_added_emph_bg)));
         assert!(
             plus_has_emph,
             "paired plus line should have emph bg on changed token"
@@ -2766,13 +2776,13 @@ mod tests {
         let minus_has_plain = rendered[0]
             .spans
             .iter()
-            .all(|s| s.style.bg == Some(theme.ui.diff_deleted_bg));
+            .all(|s| s.style.bg == Some(to_color(theme.ui.diff_deleted_bg)));
         assert!(minus_has_plain, "unpaired minus should use plain bg");
 
         let plus_has_plain = rendered[1]
             .spans
             .iter()
-            .all(|s| s.style.bg == Some(theme.ui.diff_added_bg));
+            .all(|s| s.style.bg == Some(to_color(theme.ui.diff_added_bg)));
         assert!(plus_has_plain, "unpaired plus should use plain bg");
     }
 

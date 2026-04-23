@@ -3,11 +3,12 @@
 //! Loads syntax themes via the `bat` crate (same as delta).
 
 use bat::assets::HighlightingAssets;
-use syntect::highlighting::Theme;
+use ratatui::style::Color;
+use syntect::highlighting::Theme as SyntectTheme;
 use syntect::parsing::SyntaxSet;
 use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
-use crate::config::UiTheme;
+pub use deltoids::Theme;
 
 // Delta's defaults
 const DEFAULT_DARK_THEME: &str = "Monokai Extended";
@@ -15,9 +16,9 @@ const DEFAULT_LIGHT_THEME: &str = "GitHub";
 
 /// Resolved theme with syntax highlighting and UI colors.
 pub struct ResolvedTheme {
-    pub syntax_theme: Theme,
+    pub syntax_theme: SyntectTheme,
     pub syntax_set: SyntaxSet,
-    pub ui: UiTheme,
+    pub ui: Theme,
 }
 
 impl ResolvedTheme {
@@ -39,9 +40,14 @@ impl ResolvedTheme {
         Self {
             syntax_theme,
             syntax_set,
-            ui: UiTheme::load(),
+            ui: Theme::load(),
         }
     }
+}
+
+/// Convert RGB tuple to ratatui Color.
+pub fn to_color(rgb: (u8, u8, u8)) -> Color {
+    Color::Rgb(rgb.0, rgb.1, rgb.2)
 }
 
 fn load_assets() -> HighlightingAssets {

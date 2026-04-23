@@ -10,6 +10,7 @@
 use std::io::{self, Read, Write};
 
 use deltoids::Diff;
+use deltoids::Theme;
 use deltoids::parse::GitDiff;
 use deltoids::render::{BgFill, render_file_header, render_hunk, render_rename_header};
 
@@ -164,7 +165,8 @@ fn main() {
 
     let width = terminal_width().unwrap_or(DEFAULT_WIDTH);
     let fill = bg_fill_mode();
-    let output = process_diff(&input, width, fill);
+    let theme = Theme::load();
+    let output = process_diff(&input, width, fill, &theme);
 
     // Use write! instead of print! to handle broken pipe gracefully
     // (happens when user quits `less` before we finish writing)
@@ -211,7 +213,7 @@ fn display_path(file: &deltoids::parse::FileDiff) -> &str {
     }
 }
 
-fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
+fn process_diff(input: &str, width: usize, fill: BgFill, theme: &Theme) -> String {
     let parsed = GitDiff::parse(input);
     let repo = git::Repo::discover();
     let mut output = String::new();
@@ -248,13 +250,13 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             (None, None) => {
                 // Can't get any content, render raw diff
                 let path = display_path(file);
-                for line in render_file_header(path, width) {
+                for line in render_file_header(path, width, theme) {
                     output.push_str(&line);
                     output.push('\n');
                 }
                 // Render rename header if this file was renamed
                 if let Some(ref old_path) = file.rename_from {
-                    output.push_str(&render_rename_header(old_path, &file.new_path));
+                    output.push_str(&render_rename_header(old_path, &file.new_path, theme));
                     output.push('\n');
                 }
                 output.push_str(&format_raw_hunks(file, width));
@@ -267,14 +269,14 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
         let diff = Diff::compute(&before_content, &after_content, path);
 
         // Render file header (2 lines)
-        for line in render_file_header(path, width) {
+        for line in render_file_header(path, width, theme) {
             output.push_str(&line);
             output.push('\n');
         }
 
         // Render rename header if this file was renamed
         if let Some(ref old_path) = file.rename_from {
-            output.push_str(&render_rename_header(old_path, &file.new_path));
+            output.push_str(&render_rename_header(old_path, &file.new_path, theme));
             output.push('\n');
         }
 
@@ -283,7 +285,7 @@ fn process_diff(input: &str, width: usize, fill: BgFill) -> String {
             // Blank line before each hunk
             output.push('\n');
 
-            let hunk_lines = render_hunk(hunk, path, width, fill);
+            let hunk_lines = render_hunk(hunk, path, width, fill, theme);
             for line in hunk_lines {
                 output.push_str(&line);
                 output.push('\n');

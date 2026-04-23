@@ -95,14 +95,20 @@ impl Diff {
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
         let text_diff = TextDiff::from_lines(original, updated);
 
-        let old_parsed = crate::syntax::parse_file(path, original);
-        let new_parsed = crate::syntax::parse_file(path, updated);
+        // For new files (empty original), skip scope expansion since the entire
+        // file is added and showing ancestor scope boxes would be misleading.
+        let hunks = if original.is_empty() {
+            build_hunks_from_unified(&text_diff)
+        } else {
+            let old_parsed = crate::syntax::parse_file(path, original);
+            let new_parsed = crate::syntax::parse_file(path, updated);
 
-        let hunks = match (&old_parsed, &new_parsed) {
-            (Some(old_p), Some(new_p)) => {
-                build_hunks_with_scope(&text_diff, old_p, new_p, original, updated)
+            match (&old_parsed, &new_parsed) {
+                (Some(old_p), Some(new_p)) => {
+                    build_hunks_with_scope(&text_diff, old_p, new_p, original, updated)
+                }
+                _ => build_hunks_from_unified(&text_diff),
             }
-            _ => build_hunks_from_unified(&text_diff),
         };
 
         let text = unified_diff_text(&text_diff);

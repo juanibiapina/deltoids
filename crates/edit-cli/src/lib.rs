@@ -1,4 +1,6 @@
+pub mod config;
 mod highlight;
+pub mod theme;
 pub mod tui;
 
 use std::env;

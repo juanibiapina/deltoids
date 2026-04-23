@@ -29,19 +29,10 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
+use crate::theme::ResolvedTheme;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 
-const TOKYONIGHT_ORANGE: Color = Color::Rgb(255, 150, 108);
-const TOKYONIGHT_BLUE: Color = Color::Rgb(122, 162, 247);
-const TOKYONIGHT_DIM: Color = Color::Rgb(86, 95, 137);
-const DIFF_ADDED_BG: Color = Color::Rgb(0x20, 0x30, 0x3b);
-const DIFF_DELETED_BG: Color = Color::Rgb(0x37, 0x22, 0x2c);
-const DIFF_ADDED_EMPH_BG: Color = Color::Rgb(0x2c, 0x5a, 0x66);
-const DIFF_ADDED_NON_EMPH_BG: Color = DIFF_ADDED_BG;
-const DIFF_DELETED_EMPH_BG: Color = Color::Rgb(0x71, 0x31, 0x37);
-const DIFF_DELETED_NON_EMPH_BG: Color = DIFF_DELETED_BG;
-const SELECTION_BG: Color = Color::Rgb(45, 63, 118);
 const DIFF_SCROLL_STEP: usize = 3;
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
 const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
@@ -51,11 +42,12 @@ const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
 pub fn run() -> Result<(), String> {
     let cwd = current_cwd_or_empty();
     let loaded = load_traces_for_cwd(&cwd)?;
+    let theme = ResolvedTheme::resolve();
 
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        run_tui(loaded, &cwd)
+        run_tui(loaded, &cwd, &theme)
     } else {
-        run_scripted(&loaded)
+        run_scripted(&loaded, &theme)
     }
 }
 
@@ -368,7 +360,7 @@ fn reload_traces(
     Ok(())
 }
 
-fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
+fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str, theme: &ResolvedTheme) -> Result<(), String> {
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
@@ -398,7 +390,7 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str) -> Result<(), String> {
 
     loop {
         let (detail_row_count, detail_height) = terminal
-            .draw(|frame| draw(frame, &traces, &mut state))
+            .draw(|frame| draw(frame, &traces, &mut state, theme))
             .map(|completed| {
                 let detail_row_count = state
                     .diff_cache
@@ -489,21 +481,22 @@ fn render_empty_draw_state(
     root: &[ratatui::layout::Rect],
     sidebar: &[ratatui::layout::Rect],
     body: &[ratatui::layout::Rect],
+    theme: &ResolvedTheme,
 ) {
     let message = Paragraph::new("No traces found for this directory.")
-        .style(Style::default().fg(TOKYONIGHT_DIM))
+        .style(Style::default().fg(theme.ui.dim))
         .block(pane_block_with_footer(
             " [1] Entries ",
-            TOKYONIGHT_BLUE,
+            theme.ui.border,
             Some(position_footer(0, 0)),
         ));
     frame.render_widget(message, sidebar[0]);
     frame.render_widget(
-        pane_block_with_footer(" [2] Traces ", TOKYONIGHT_BLUE, Some(position_footer(0, 0))),
+        pane_block_with_footer(" [2] Traces ", theme.ui.border, Some(position_footer(0, 0))),
         sidebar[1],
     );
-    frame.render_widget(pane_block(" [3] Diff ", TOKYONIGHT_BLUE), body[1]);
-    frame.render_widget(help_bar(), root[1]);
+    frame.render_widget(pane_block(" [3] Diff ", theme.ui.border), body[1]);
+    frame.render_widget(help_bar(theme), root[1]);
 }
 
 fn render_entries_pane(
@@ -511,6 +504,7 @@ fn render_entries_pane(
     area: ratatui::layout::Rect,
     active_trace: &LoadedTrace,
     state: &mut AppState,
+    theme: &ResolvedTheme,
 ) {
     let entry_items = active_trace
         .entries
@@ -526,12 +520,12 @@ fn render_entries_pane(
     let entries_list = List::new(entry_items)
         .block(pane_block_with_footer(
             " [1] Entries ",
-            pane_border_color(state.focus == Focus::Entries, TOKYONIGHT_ORANGE),
+            pane_border_color(state.focus == Focus::Entries, theme),
             Some(position_footer(entries_position, entries_count)),
         ))
         .highlight_style(
             Style::default()
-                .bg(SELECTION_BG)
+                .bg(theme.ui.selection_bg)
                 .add_modifier(Modifier::BOLD),
         )
         .scroll_padding(2);
@@ -542,6 +536,7 @@ fn render_entries_pane(
         entries_count,
         state.entry_index(),
         pane_inner_height(area),
+        theme,
     );
 }
 
@@ -550,6 +545,7 @@ fn render_traces_pane(
     area: ratatui::layout::Rect,
     traces: &[LoadedTrace],
     state: &mut AppState,
+    theme: &ResolvedTheme,
 ) {
     let trace_items = traces
         .iter()
@@ -564,12 +560,12 @@ fn render_traces_pane(
     let traces_list = List::new(trace_items)
         .block(pane_block_with_footer(
             " [2] Traces ",
-            pane_border_color(state.focus == Focus::Traces, TOKYONIGHT_ORANGE),
+            pane_border_color(state.focus == Focus::Traces, theme),
             Some(position_footer(traces_position, traces_count)),
         ))
         .highlight_style(
             Style::default()
-                .bg(SELECTION_BG)
+                .bg(theme.ui.selection_bg)
                 .add_modifier(Modifier::BOLD),
         )
         .scroll_padding(2);
@@ -580,16 +576,22 @@ fn render_traces_pane(
         traces_count,
         state.trace_index,
         pane_inner_height(area),
+        theme,
     );
 }
 
-fn ensure_diff_cache(active_trace: &LoadedTrace, state: &mut AppState, detail_width: usize) {
+fn ensure_diff_cache(
+    active_trace: &LoadedTrace,
+    state: &mut AppState,
+    detail_width: usize,
+    theme: &ResolvedTheme,
+) {
     let entry_index = state.entry_index();
     let cache_valid = state.diff_cache.as_ref().is_some_and(|cache| {
         diff_cache_matches_selection_and_width(cache, state.trace_index, entry_index, detail_width)
     });
     if !cache_valid {
-        let lines = render_detail_for(active_trace, entry_index, detail_width);
+        let lines = render_detail_for(active_trace, entry_index, detail_width, theme);
         state.diff_cache = Some(DiffCache {
             trace_index: state.trace_index,
             entry_index,
@@ -604,9 +606,10 @@ fn render_diff_pane(
     area: ratatui::layout::Rect,
     active_trace: &LoadedTrace,
     state: &mut AppState,
+    theme: &ResolvedTheme,
 ) {
     let detail_width = area.width.saturating_sub(2) as usize;
-    ensure_diff_cache(active_trace, state, detail_width);
+    ensure_diff_cache(active_trace, state, detail_width, theme);
 
     let diff_viewport = area.height.saturating_sub(2) as usize;
     let detail_row_count = state
@@ -625,7 +628,7 @@ fn render_diff_pane(
         .unwrap_or_default();
     let diff = Paragraph::new(visible_lines).block(pane_block(
         " [3] Diff ",
-        pane_border_color(state.focus == Focus::Diff, TOKYONIGHT_ORANGE),
+        pane_border_color(state.focus == Focus::Diff, theme),
     ));
     frame.render_widget(diff, area);
 
@@ -635,10 +638,16 @@ fn render_diff_pane(
         detail_row_count,
         state.diff_scroll,
         diff_viewport,
+        theme,
     );
 }
 
-fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppState) {
+fn draw(
+    frame: &mut ratatui::Frame<'_>,
+    traces: &[LoadedTrace],
+    state: &mut AppState,
+    theme: &ResolvedTheme,
+) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -655,16 +664,16 @@ fn draw(frame: &mut ratatui::Frame<'_>, traces: &[LoadedTrace], state: &mut AppS
         .split(body[0]);
 
     if traces.is_empty() {
-        render_empty_draw_state(frame, &root, &sidebar, &body);
+        render_empty_draw_state(frame, &root, &sidebar, &body, theme);
         return;
     }
 
     let active_trace = &traces[state.trace_index];
 
-    render_entries_pane(frame, sidebar[0], active_trace, state);
-    render_traces_pane(frame, sidebar[1], traces, state);
-    render_diff_pane(frame, body[1], active_trace, state);
-    frame.render_widget(help_bar(), root[1]);
+    render_entries_pane(frame, sidebar[0], active_trace, state, theme);
+    render_traces_pane(frame, sidebar[1], traces, state, theme);
+    render_diff_pane(frame, body[1], active_trace, state, theme);
+    frame.render_widget(help_bar(theme), root[1]);
 }
 
 fn render_pane_scrollbar(
@@ -673,6 +682,7 @@ fn render_pane_scrollbar(
     content_length: usize,
     position: usize,
     viewport: usize,
+    theme: &ResolvedTheme,
 ) {
     if content_length <= viewport.max(1) {
         return;
@@ -680,8 +690,8 @@ fn render_pane_scrollbar(
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .symbols(scrollbar_symbols::VERTICAL)
         .thumb_symbol("\u{2590}")
-        .track_style(Style::default().fg(TOKYONIGHT_BLUE))
-        .thumb_style(Style::default().fg(TOKYONIGHT_BLUE))
+        .track_style(Style::default().fg(theme.ui.border))
+        .thumb_style(Style::default().fg(theme.ui.border))
         .begin_symbol(None)
         .end_symbol(None);
     // Ratatui puts the thumb at the track bottom only when position ==
@@ -731,17 +741,17 @@ fn position_footer(position: usize, total: usize) -> String {
     format!(" {position} of {total} ")
 }
 
-fn pane_border_color(active: bool, active_color: Color) -> Color {
+fn pane_border_color(active: bool, theme: &ResolvedTheme) -> Color {
     if active {
-        active_color
+        theme.ui.border_active
     } else {
-        TOKYONIGHT_BLUE
+        theme.ui.border
     }
 }
 
-fn help_bar() -> Paragraph<'static> {
+fn help_bar(theme: &ResolvedTheme) -> Paragraph<'static> {
     Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(theme.ui.dim))
 }
 
 fn entry_icon(ok: bool) -> (&'static str, Color) {
@@ -890,13 +900,18 @@ fn collapse_home(path: &str) -> String {
     path.to_string()
 }
 
-fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> Vec<Line<'static>> {
+fn render_detail_for(
+    trace: &LoadedTrace,
+    entry_index: usize,
+    width: usize,
+    theme: &ResolvedTheme,
+) -> Vec<Line<'static>> {
     let Some(entry) = trace.entries.get(entry_index) else {
         return Vec::new();
     };
 
     let lines = detail_lines(entry);
-    let mut rendered = render_detail_header(entry, width);
+    let mut rendered = render_detail_header(entry, width, theme);
 
     if !rendered.is_empty() && !lines.is_empty() {
         rendered.push(Line::from(""));
@@ -909,13 +924,13 @@ fn render_detail_for(trace: &LoadedTrace, entry_index: usize, width: usize) -> V
     for group in &groups {
         match group {
             LineGroup::Subhunk { start, end } => {
-                render_subhunk(entry, &lines[*start..*end], width, &mut rendered);
+                render_subhunk(entry, &lines[*start..*end], width, &mut rendered, theme);
             }
             LineGroup::EditBlock(edit_lines) => {
-                rendered.extend(render_edit_block(edit_lines, width));
+                rendered.extend(render_edit_block(edit_lines, width, theme));
             }
             LineGroup::Other { index } => {
-                rendered.extend(render_detail_line(entry, &lines[*index], width));
+                rendered.extend(render_detail_line(entry, &lines[*index], width, theme));
             }
         }
     }
@@ -981,6 +996,7 @@ fn render_subhunk(
     lines: &[String],
     width: usize,
     rendered: &mut Vec<Line<'static>>,
+    theme: &ResolvedTheme,
 ) {
     // Separate minus and plus lines, preserving their order in the subhunk.
     let mut minus_contents: Vec<&str> = Vec::new();
@@ -1012,11 +1028,12 @@ fn render_subhunk(
                 rendered.push(render_emphasized_line(
                     content,
                     emphasis,
-                    DIFF_DELETED_BG,
-                    DIFF_DELETED_EMPH_BG,
-                    DIFF_DELETED_NON_EMPH_BG,
+                    theme.ui.diff_deleted_bg,
+                    theme.ui.diff_deleted_emph_bg,
+                    theme.ui.diff_deleted_bg,
                     &entry.path,
                     width,
+                    theme,
                 ));
                 mi += 1;
             }
@@ -1026,11 +1043,12 @@ fn render_subhunk(
                 rendered.push(render_emphasized_line(
                     content,
                     emphasis,
-                    DIFF_ADDED_BG,
-                    DIFF_ADDED_EMPH_BG,
-                    DIFF_ADDED_NON_EMPH_BG,
+                    theme.ui.diff_added_bg,
+                    theme.ui.diff_added_emph_bg,
+                    theme.ui.diff_added_bg,
                     &entry.path,
                     width,
+                    theme,
                 ));
                 pi += 1;
             }
@@ -1048,9 +1066,10 @@ fn render_emphasized_line(
     non_emph_bg: Color,
     path: &str,
     width: usize,
+    theme: &ResolvedTheme,
 ) -> Line<'static> {
     match emphasis {
-        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, path, width),
+        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, path, width, theme),
         LineEmphasis::Paired(sections) => {
             let bg_for_section = |section: &EmphSection| -> Color {
                 match section.kind {
@@ -1059,8 +1078,14 @@ fn render_emphasized_line(
                 }
             };
             let padding_bg = non_emph_bg;
-            let (mut spans, visual_width) =
-                highlighted_spans_with_emphasis(path, content, sections, bg_for_section, width);
+            let (mut spans, visual_width) = highlighted_spans_with_emphasis(
+                theme,
+                path,
+                content,
+                sections,
+                bg_for_section,
+                width,
+            );
             let padding = width.saturating_sub(visual_width);
             if padding > 0 {
                 spans.push(Span::styled(
@@ -1073,10 +1098,14 @@ fn render_emphasized_line(
     }
 }
 
-fn render_detail_header(entry: &HistoryEntry, width: usize) -> Vec<Line<'static>> {
+fn render_detail_header(
+    entry: &HistoryEntry,
+    width: usize,
+    theme: &ResolvedTheme,
+) -> Vec<Line<'static>> {
     let path = collapse_home(&entry.path);
     let metadata = header_metadata_line(entry);
-    render_header_block(&entry.summary, &path, &metadata, width)
+    render_header_block(&entry.summary, &path, &metadata, width, theme)
 }
 
 fn header_metadata_line(entry: &HistoryEntry) -> String {
@@ -1097,7 +1126,12 @@ fn header_metadata_line(entry: &HistoryEntry) -> String {
     parts.join(" • ")
 }
 
-fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
+fn render_detail_line(
+    entry: &HistoryEntry,
+    line: &str,
+    width: usize,
+    theme: &ResolvedTheme,
+) -> Vec<Line<'static>> {
     if line.starts_with("edit-summary: ") {
         return vec![Line::from(Span::raw(line.to_string()))];
     }
@@ -1105,7 +1139,7 @@ fn render_detail_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Lin
         return vec![labeled_line("error", rest, Color::Red)];
     }
 
-    render_diff_line(entry, line, width)
+    render_diff_line(entry, line, width, theme)
 }
 
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
@@ -1118,20 +1152,38 @@ fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
     ])
 }
 
-fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<'static>> {
+fn render_diff_line(
+    entry: &HistoryEntry,
+    line: &str,
+    width: usize,
+    theme: &ResolvedTheme,
+) -> Vec<Line<'static>> {
     if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
-        return vec![syntax_diff_line(content, DIFF_ADDED_BG, &entry.path, width)];
+        return vec![syntax_diff_line(
+            content,
+            theme.ui.diff_added_bg,
+            &entry.path,
+            width,
+            theme,
+        )];
     }
     if let Some(content) = line.strip_prefix('-').filter(|_| !line.starts_with("---")) {
         return vec![syntax_diff_line(
             content,
-            DIFF_DELETED_BG,
+            theme.ui.diff_deleted_bg,
             &entry.path,
             width,
+            theme,
         )];
     }
     if let Some(content) = line.strip_prefix(' ') {
-        return vec![syntax_diff_line(content, Color::Reset, &entry.path, width)];
+        return vec![syntax_diff_line(
+            content,
+            Color::Reset,
+            &entry.path,
+            width,
+            theme,
+        )];
     }
     if line.starts_with("@@") {
         // Look up structural scopes for this hunk from entry.hunks.
@@ -1144,7 +1196,7 @@ fn render_diff_line(entry: &HistoryEntry, line: &str, width: usize) -> Vec<Line<
                     .map(|h| h.ancestors.as_slice())
             })
             .unwrap_or(&[]);
-        return render_hunk_separator(line, &entry.path, width, Some(ancestors));
+        return render_hunk_separator(line, &entry.path, width, Some(ancestors), theme);
     }
 
     vec![Line::from(Span::raw(fit_line(line, width)))]
@@ -1247,9 +1299,10 @@ fn render_header_block(
     path: &str,
     metadata: &str,
     width: usize,
+    theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
     let summary_style = Style::default()
-        .fg(TOKYONIGHT_ORANGE)
+        .fg(theme.ui.border_active)
         .add_modifier(Modifier::BOLD);
 
     if width < 4 {
@@ -1259,9 +1312,9 @@ fn render_header_block(
         ))];
     }
 
-    let path_style = Style::default().fg(TOKYONIGHT_BLUE);
-    let metadata_style = Style::default().fg(TOKYONIGHT_DIM);
-    let border = Style::default().fg(TOKYONIGHT_BLUE);
+    let path_style = Style::default().fg(theme.ui.border);
+    let metadata_style = Style::default().fg(theme.ui.dim);
+    let border = Style::default().fg(theme.ui.border);
     let bot = format!("─{}", "─".repeat(width.saturating_sub(1)));
 
     let mut lines = Vec::new();
@@ -1297,8 +1350,8 @@ fn edit_block_markers(lines: &[String], start: usize) -> Option<(Vec<String>, us
     Some((items, index))
 }
 
-fn render_edit_block(lines: &[String], width: usize) -> Vec<Line<'static>> {
-    let border = Style::default().fg(TOKYONIGHT_ORANGE);
+fn render_edit_block(lines: &[String], width: usize, theme: &ResolvedTheme) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme.ui.border_active);
     let content_width = lines
         .iter()
         .map(|line| display_width(line))
@@ -1324,10 +1377,16 @@ fn render_edit_block(lines: &[String], width: usize) -> Vec<Line<'static>> {
     rendered
 }
 
-fn syntax_diff_line(content: &str, bg: Color, path: &str, width: usize) -> Line<'static> {
+fn syntax_diff_line(
+    content: &str,
+    bg: Color,
+    path: &str,
+    width: usize,
+    theme: &ResolvedTheme,
+) -> Line<'static> {
     let base_style = Style::default().bg(bg);
 
-    let (mut spans, visual_width) = highlighted_spans(path, content, base_style, width);
+    let (mut spans, visual_width) = highlighted_spans(theme, path, content, base_style, width);
     let padding = width.saturating_sub(visual_width);
     if padding > 0 {
         spans.push(Span::styled(" ".repeat(padding), base_style));
@@ -1349,24 +1408,26 @@ fn render_hunk_separator(
     path: &str,
     width: usize,
     ancestors: Option<&[deltoids::ScopeNode]>,
+    theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
     // If we have structural scope ancestors, render the multi-line breadcrumb box.
     if let Some(ancestors) = ancestors
         && !ancestors.is_empty()
     {
-        return render_breadcrumb_box(ancestors, path, width);
+        return render_breadcrumb_box(ancestors, path, width, theme);
     }
 
     // Fall back to the legacy single-line rendering.
-    render_hunk_separator_legacy(line, path, width)
+    render_hunk_separator_legacy(line, path, width, theme)
 }
 
 fn render_breadcrumb_box(
     ancestors: &[deltoids::ScopeNode],
     path: &str,
     width: usize,
+    theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(TOKYONIGHT_BLUE);
+    let border = Style::default().fg(theme.ui.border);
     let max_content_width = width.saturating_sub(2); // room for " │"
 
     // Compute the widest line number for right-alignment.
@@ -1421,8 +1482,13 @@ fn render_breadcrumb_box(
                     width = num_col_width
                 );
                 let available_text_width = content_width.saturating_sub(prefix_width);
-                let (mut code_spans, code_width) =
-                    highlighted_spans(path, text, Style::default(), available_text_width.max(1));
+                let (mut code_spans, code_width) = highlighted_spans(
+                    theme,
+                    path,
+                    text,
+                    Style::default(),
+                    available_text_width.max(1),
+                );
                 let padding = content_width.saturating_sub(prefix_width + code_width);
 
                 let mut spans = vec![Span::styled(num_str, border)];
@@ -1451,7 +1517,12 @@ fn render_breadcrumb_box(
     lines
 }
 
-fn render_hunk_separator_legacy(line: &str, path: &str, width: usize) -> Vec<Line<'static>> {
+fn render_hunk_separator_legacy(
+    line: &str,
+    path: &str,
+    width: usize,
+    theme: &ResolvedTheme,
+) -> Vec<Line<'static>> {
     // Parse optional function context from `@@ -N,M +N,M @@ context`.
     let context = line
         .find("@@ ")
@@ -1462,7 +1533,7 @@ fn render_hunk_separator_legacy(line: &str, path: &str, width: usize) -> Vec<Lin
         .unwrap_or("");
 
     let line_number = parse_hunk_new_start(line);
-    let border = Style::default().fg(TOKYONIGHT_BLUE);
+    let border = Style::default().fg(theme.ui.border);
 
     let prefix = match line_number {
         Some(n) => format!("{n}: "),
@@ -1489,6 +1560,7 @@ fn render_hunk_separator_legacy(line: &str, path: &str, width: usize) -> Vec<Lin
 
     let available_context_width = max_label_width.saturating_sub(prefix_width);
     let (mut code_spans, code_width) = highlighted_spans(
+        theme,
         path,
         context,
         Style::default(),
@@ -1524,7 +1596,7 @@ fn fit_line(line: &str, width: usize) -> String {
     result
 }
 
-fn run_scripted(traces: &[LoadedTrace]) -> Result<(), String> {
+fn run_scripted(traces: &[LoadedTrace], theme: &ResolvedTheme) -> Result<(), String> {
     let mut state = AppState::new(traces.len());
     let mut input = String::new();
     io::stdin()
@@ -1564,7 +1636,7 @@ fn run_scripted(traces: &[LoadedTrace]) -> Result<(), String> {
         }
     }
 
-    print!("{}", render_scripted(traces, &state, 120, 30));
+    print!("{}", render_scripted(traces, &state, 120, 30, theme));
     Ok(())
 }
 
@@ -1573,6 +1645,7 @@ fn render_scripted(
     state: &AppState,
     width: usize,
     height: usize,
+    theme: &ResolvedTheme,
 ) -> String {
     if traces.is_empty() {
         return "No traces found for this directory.\n".to_string();
@@ -1642,7 +1715,7 @@ fn render_scripted(
     let sidebar_rows = [entries_rows, traces_rows].concat();
 
     // Right: diff for selected entry, spans full body height
-    let detail = render_detail_for(active_trace, state.entry_index(), right_width)
+    let detail = render_detail_for(active_trace, state.entry_index(), right_width, theme)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>();
@@ -1675,6 +1748,10 @@ fn pad_or_truncate(rows: &[String], target: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::TextEdit;
+
+    fn test_theme() -> ResolvedTheme {
+        ResolvedTheme::resolve()
+    }
 
     fn edit_entry() -> HistoryEntry {
         HistoryEntry {
@@ -1936,7 +2013,8 @@ mod tests {
         ];
         let state = AppState::new(traces.len());
 
-        let output = render_scripted(&traces, &state, 140, 30);
+        let theme = test_theme();
+        let output = render_scripted(&traces, &state, 140, 30, &theme);
 
         assert!(output.contains("\u{2713} Update x constant"));
         assert!(output.contains("\u{2713} Rewrite config"));
@@ -1952,7 +2030,8 @@ mod tests {
     #[test]
     fn scripted_render_shows_empty_message() {
         let state = AppState::new(0);
-        let output = render_scripted(&[], &state, 140, 30);
+        let theme = test_theme();
+        let output = render_scripted(&[], &state, 140, 30, &theme);
         assert!(output.contains("No traces"));
     }
 
@@ -2027,7 +2106,8 @@ mod tests {
         state.focus = Focus::Entries;
         move_down(&mut state, &traces);
 
-        let output = render_scripted(&traces, &state, 140, 30);
+        let theme = test_theme();
+        let output = render_scripted(&traces, &state, 140, 30, &theme);
 
         assert!(output.contains("> \u{2713} Rewrite config"));
         assert!(output.contains("Rewrite config"));
@@ -2351,12 +2431,13 @@ mod tests {
 
     #[test]
     fn render_detail_header_uses_summary_path_metadata_and_rule() {
-        let lines = render_detail_header(&edit_entry(), 80);
+        let theme = test_theme();
+        let lines = render_detail_header(&edit_entry(), 80, &theme);
         assert_eq!(lines.len(), 4);
         assert!(lines[0].to_string().starts_with("Update x constant"));
-        assert_eq!(lines[0].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme.ui.border_active));
         assert!(lines[1].to_string().starts_with("/tmp/project/app.txt"));
-        assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_BLUE));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme.ui.border));
         // v1 entries have 0 hunks
         assert!(
             lines[2]
@@ -2371,16 +2452,17 @@ mod tests {
 
     #[test]
     fn render_detail_header_wraps_long_summary() {
+        let theme = test_theme();
         let mut entry = edit_entry();
         entry.summary = "This is a long summary that should wrap onto multiple lines".to_string();
-        let lines = render_detail_header(&entry, 30);
+        let lines = render_detail_header(&entry, 30, &theme);
         // Summary wraps into multiple lines, then path, metadata, rule.
         assert!(
             lines.len() > 4,
             "long summary should produce more than 4 lines, got {}",
             lines.len()
         );
-        // All summary lines are orange bold.
+        // All summary lines are border_active (orange) bold.
         let rule_index = lines
             .iter()
             .position(|l| l.to_string().starts_with('─'))
@@ -2388,8 +2470,8 @@ mod tests {
         for line in &lines[..rule_index - 2] {
             assert_eq!(
                 line.spans[0].style.fg,
-                Some(TOKYONIGHT_ORANGE),
-                "wrapped summary line should be orange"
+                Some(theme.ui.border_active),
+                "wrapped summary line should be border_active color"
             );
         }
         // No right border on any line.
@@ -2403,7 +2485,8 @@ mod tests {
 
     #[test]
     fn render_detail_header_falls_back_cleanly_when_narrow() {
-        let lines = render_detail_header(&edit_entry(), 3);
+        let theme = test_theme();
+        let lines = render_detail_header(&edit_entry(), 3, &theme);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].to_string(), "Upd");
     }
@@ -2455,18 +2538,26 @@ mod tests {
     }
 
     #[test]
-    fn render_edit_block_uses_orange_box() {
-        let lines = render_edit_block(&["Rename renderer".to_string()], 80);
+    fn render_edit_block_uses_border_active_box() {
+        let theme = test_theme();
+        let lines = render_edit_block(&["Rename renderer".to_string()], 80, &theme);
         assert_eq!(lines.len(), 3);
         assert!(lines[0].to_string().starts_with('─'));
         assert!(lines[1].to_string().starts_with("Rename renderer"));
-        assert_eq!(lines[1].spans[0].style.fg, Some(TOKYONIGHT_ORANGE));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme.ui.border_active));
         assert!(lines[2].to_string().ends_with('╯'));
     }
 
     #[test]
     fn hunk_separator_renders_boxed_label_with_line_number_and_context() {
-        let lines = render_hunk_separator("@@ -10,5 +42,6 @@ fn hello() {", "src/lib.rs", 80, None);
+        let theme = test_theme();
+        let lines = render_hunk_separator(
+            "@@ -10,5 +42,6 @@ fn hello() {",
+            "src/lib.rs",
+            80,
+            None,
+            &theme,
+        );
         assert_eq!(lines.len(), 3, "expected 3 lines for box");
 
         let top = lines[0].to_string();
@@ -2490,7 +2581,8 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_line_number_only_when_no_context() {
-        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None);
+        let theme = test_theme();
+        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None, &theme);
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
         assert!(mid.contains("7"), "mid should contain line number");
@@ -2499,8 +2591,9 @@ mod tests {
 
     #[test]
     fn hunk_separator_renders_empty_for_no_info() {
+        let theme = test_theme();
         // Malformed line with no parseable info.
-        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None);
+        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None, &theme);
         assert_eq!(lines.len(), 1, "should fall back to single empty line");
     }
 
@@ -2564,20 +2657,22 @@ mod tests {
 
     #[test]
     fn render_emphasized_line_plain_uses_flat_bg() {
+        let theme = test_theme();
         let line = render_emphasized_line(
             "const x = 1;",
             &LineEmphasis::Plain,
-            DIFF_DELETED_BG,
-            DIFF_DELETED_EMPH_BG,
-            DIFF_DELETED_NON_EMPH_BG,
+            theme.ui.diff_deleted_bg,
+            theme.ui.diff_deleted_emph_bg,
+            theme.ui.diff_deleted_bg,
             "test.rs",
             80,
+            &theme,
         );
         // All spans should have the plain deleted background.
         for span in &line.spans {
             assert_eq!(
                 span.style.bg,
-                Some(DIFF_DELETED_BG),
+                Some(theme.ui.diff_deleted_bg),
                 "plain line should use flat bg, got {:?}",
                 span.style.bg
             );
@@ -2587,6 +2682,7 @@ mod tests {
     #[test]
     fn render_emphasized_line_paired_uses_emph_and_non_emph_bg() {
         use deltoids::{EmphKind, EmphSection};
+        let theme = test_theme();
         let sections = vec![
             EmphSection {
                 kind: EmphKind::NonEmph,
@@ -2604,38 +2700,40 @@ mod tests {
         let line = render_emphasized_line(
             "const x = 1;",
             &LineEmphasis::Paired(sections),
-            DIFF_DELETED_BG,
-            DIFF_DELETED_EMPH_BG,
-            DIFF_DELETED_NON_EMPH_BG,
+            theme.ui.diff_deleted_bg,
+            theme.ui.diff_deleted_emph_bg,
+            theme.ui.diff_deleted_bg,
             "test.rs",
             80,
+            &theme,
         );
         // Should have at least one span with emph bg and one with non-emph bg.
         let has_emph_bg = line
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(DIFF_DELETED_EMPH_BG));
+            .any(|s| s.style.bg == Some(theme.ui.diff_deleted_emph_bg));
         let has_non_emph_bg = line
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(DIFF_DELETED_NON_EMPH_BG));
+            .any(|s| s.style.bg == Some(theme.ui.diff_deleted_bg));
         assert!(has_emph_bg, "paired line should have emph bg spans");
         assert!(has_non_emph_bg, "paired line should have non-emph bg spans");
     }
 
     #[test]
     fn render_subhunk_pairs_similar_lines() {
+        let theme = test_theme();
         let entry = edit_entry();
         let lines = vec!["-const x = 1;".to_string(), "+const x = 2;".to_string()];
         let mut rendered = Vec::new();
-        render_subhunk(&entry, &lines, 80, &mut rendered);
+        render_subhunk(&entry, &lines, 80, &mut rendered, &theme);
         assert_eq!(rendered.len(), 2);
 
         // Paired minus line should have emph bg on the changed token.
         let minus_has_emph = rendered[0]
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(DIFF_DELETED_EMPH_BG));
+            .any(|s| s.style.bg == Some(theme.ui.diff_deleted_emph_bg));
         assert!(
             minus_has_emph,
             "paired minus line should have emph bg on changed token"
@@ -2645,7 +2743,7 @@ mod tests {
         let plus_has_emph = rendered[1]
             .spans
             .iter()
-            .any(|s| s.style.bg == Some(DIFF_ADDED_EMPH_BG));
+            .any(|s| s.style.bg == Some(theme.ui.diff_added_emph_bg));
         assert!(
             plus_has_emph,
             "paired plus line should have emph bg on changed token"
@@ -2654,26 +2752,27 @@ mod tests {
 
     #[test]
     fn render_subhunk_leaves_dissimilar_lines_plain() {
+        let theme = test_theme();
         let entry = edit_entry();
         let lines = vec![
             "-aaa bbb ccc ddd eee".to_string(),
             "+xxx yyy zzz www qqq".to_string(),
         ];
         let mut rendered = Vec::new();
-        render_subhunk(&entry, &lines, 80, &mut rendered);
+        render_subhunk(&entry, &lines, 80, &mut rendered, &theme);
         assert_eq!(rendered.len(), 2);
 
         // Dissimilar lines should use the plain background.
         let minus_has_plain = rendered[0]
             .spans
             .iter()
-            .all(|s| s.style.bg == Some(DIFF_DELETED_BG));
+            .all(|s| s.style.bg == Some(theme.ui.diff_deleted_bg));
         assert!(minus_has_plain, "unpaired minus should use plain bg");
 
         let plus_has_plain = rendered[1]
             .spans
             .iter()
-            .all(|s| s.style.bg == Some(DIFF_ADDED_BG));
+            .all(|s| s.style.bg == Some(theme.ui.diff_added_bg));
         assert!(plus_has_plain, "unpaired plus should use plain bg");
     }
 
@@ -2699,6 +2798,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_box_renders_multi_ancestor_with_line_numbers() {
+        let theme = test_theme();
         let ancestors = vec![
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
             scope_node(
@@ -2709,7 +2809,13 @@ mod tests {
                 "    fn compute(&self) -> i32 {",
             ),
         ];
-        let lines = render_hunk_separator("@@ -74,7 +75,7 @@", "src/lib.rs", 80, Some(&ancestors));
+        let lines = render_hunk_separator(
+            "@@ -74,7 +75,7 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            &theme,
+        );
         // top border + 2 ancestor lines + dots row + bottom border = 5
         assert_eq!(
             lines.len(),
@@ -2748,11 +2854,18 @@ mod tests {
 
     #[test]
     fn breadcrumb_box_no_dots_for_adjacent_ancestors() {
+        let theme = test_theme();
         let ancestors = vec![
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
             scope_node("function_item", "new", 4, 10, "    fn new() -> Self {"),
         ];
-        let lines = render_hunk_separator("@@ -4,3 +4,3 @@", "src/lib.rs", 80, Some(&ancestors));
+        let lines = render_hunk_separator(
+            "@@ -4,3 +4,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            &theme,
+        );
         // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
         assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
         // No dots line
@@ -2766,6 +2879,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_box_single_ancestor() {
+        let theme = test_theme();
         let ancestors = vec![scope_node(
             "function_item",
             "bar",
@@ -2773,7 +2887,13 @@ mod tests {
             10,
             "fn bar(a: i32, b: i32) -> i32 {",
         )];
-        let lines = render_hunk_separator("@@ -6,3 +6,3 @@", "src/lib.rs", 80, Some(&ancestors));
+        let lines = render_hunk_separator(
+            "@@ -6,3 +6,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            &theme,
+        );
         // top + 1 ancestor + bottom = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
@@ -2783,9 +2903,15 @@ mod tests {
 
     #[test]
     fn breadcrumb_box_empty_ancestors_falls_back_to_legacy() {
+        let theme = test_theme();
         // Empty ancestors should fall back to legacy @@ parsing
-        let lines =
-            render_hunk_separator("@@ -1,3 +7,3 @@ fn hello() {", "src/lib.rs", 80, Some(&[]));
+        let lines = render_hunk_separator(
+            "@@ -1,3 +7,3 @@ fn hello() {",
+            "src/lib.rs",
+            80,
+            Some(&[]),
+            &theme,
+        );
         // Legacy rendering: top + mid + bot = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
@@ -2795,6 +2921,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_box_line_numbers_right_aligned() {
+        let theme = test_theme();
         let ancestors = vec![
             scope_node("impl_item", "Server", 1, 200, "impl Server {"),
             scope_node(
@@ -2805,8 +2932,13 @@ mod tests {
                 "    if let Some(val) = body {",
             ),
         ];
-        let lines =
-            render_hunk_separator("@@ -120,3 +120,3 @@", "src/lib.rs", 80, Some(&ancestors));
+        let lines = render_hunk_separator(
+            "@@ -120,3 +120,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            &theme,
+        );
         // Line numbers should be right-aligned: "  1:" and "120:"
         let mid1 = lines[1].to_string();
         let mid2 = lines[3].to_string(); // after dots row
@@ -2822,6 +2954,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_box_deep_nesting() {
+        let theme = test_theme();
         let ancestors = vec![
             scope_node("impl_item", "Server", 1, 200, "impl Server {"),
             scope_node(
@@ -2839,8 +2972,13 @@ mod tests {
                 "        if let Some(val) = body {",
             ),
         ];
-        let lines =
-            render_hunk_separator("@@ -120,3 +120,3 @@", "src/lib.rs", 80, Some(&ancestors));
+        let lines = render_hunk_separator(
+            "@@ -120,3 +120,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            &theme,
+        );
         // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
         assert_eq!(
             lines.len(),
@@ -2855,6 +2993,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_shows_all_ancestors() {
+        let theme = test_theme();
         // All ancestors are shown regardless of visibility in diff
         let ancestors = vec![
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
@@ -2866,7 +3005,13 @@ mod tests {
                 "    fn compute(&self) {",
             ),
         ];
-        let lines = render_hunk_separator("@@ -10,3 +10,3 @@", "src/lib.rs", 80, Some(&ancestors));
+        let lines = render_hunk_separator(
+            "@@ -10,3 +10,3 @@",
+            "src/lib.rs",
+            80,
+            Some(&ancestors),
+            &theme,
+        );
         // Should show both: top + impl + dots + fn + bottom = 5
         assert_eq!(lines.len(), 5, "should show all ancestors");
         let combined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -2876,6 +3021,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_shows_single_ancestor() {
+        let theme = test_theme();
         // Single ancestor is always shown
         let ancestors = vec![scope_node("function_item", "bar", 6, 10, "fn bar() {")];
         let lines = render_hunk_separator(
@@ -2883,6 +3029,7 @@ mod tests {
             "src/lib.rs",
             80,
             Some(&ancestors),
+            &theme,
         );
         // Should show ancestor: top + mid + bottom = 3
         assert_eq!(lines.len(), 3);

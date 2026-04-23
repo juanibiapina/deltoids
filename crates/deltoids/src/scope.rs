@@ -523,14 +523,29 @@ fn new_replace_scope_range(
     let new_start = new_index;
     let new_end = new_index + new_len;
 
-    find_replace_scope_line(
+    let scope_line = find_replace_scope_line(
         ctx.new_parsed,
         ctx.new_source,
         new_start,
         new_end,
         ctx.total_new,
-    )
-    .map(|scope_line| ContextRange {
+    )?;
+
+    // Check if this is a renamed scope rather than a new scope.
+    // If the old file has a scope at the same position (same line bounds),
+    // this is just a rename and should not create a separate hunk.
+    let new_scope = innermost_scope_at(ctx.new_parsed, ctx.new_source, scope_line)?;
+    let (new_scope_start, new_scope_end, _) = scope_bounds(&new_scope);
+
+    if let Some(old_scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, old_index) {
+        let (old_scope_start, old_scope_end, _) = scope_bounds(&old_scope);
+        // Same position means rename, not new scope
+        if old_scope_start == new_scope_start && old_scope_end == new_scope_end {
+            return None;
+        }
+    }
+
+    Some(ContextRange {
         start: old_index + old_len,
         end: old_index + old_len,
         ancestor_source: AncestorSource::New,
@@ -1158,6 +1173,13 @@ fn first_different_new_scope_start(
 
         let scope_start = innermost.start_line.saturating_sub(1);
         if scope_start < new_start || scope_start >= new_end {
+            continue;
+        }
+
+        // If name/kind differ but position is the same, it's a rename, not a new scope
+        let same_position = innermost.start_line == old_scope.start_line
+            && innermost.end_line == old_scope.end_line;
+        if same_position {
             continue;
         }
 
@@ -2202,6 +2224,63 @@ fn process_diff() {
         // Verify the hunk has the correct ancestor
         assert_eq!(hunks[0].ancestors.len(), 1);
         assert_eq!(hunks[0].ancestors[0].name, "process_diff");
+    }
+
+    #[test]
+    fn rename_function_produces_single_hunk() {
+        // Bug: When renaming a function (same location, different name),
+        // the code treats the new function as a "new scope" and creates
+        // two separate hunks instead of one merged hunk.
+        //
+        // This reproduces the bug seen in edit trace entry 5 (render.rs)
+        // where `fn theme()` was renamed to `fn syntect_theme()` and
+        // produced two separate hunks with different ancestors.
+        let original = "\
+fn theme() -> &'static Theme {
+    THEME.get_or_init(|| {
+        HighlightingAssets::from_binary()
+            .get_theme(THEME_NAME)
+            .clone()
+    })
+}
+";
+        let updated = "\
+fn syntect_theme() -> &'static SyntectTheme {
+    SYNTECT_THEME.get_or_init(|| {
+        HighlightingAssets::from_binary()
+            .get_theme(THEME_NAME)
+            .clone()
+    })
+}
+";
+        let diff = Diff::compute(original, updated, "test.rs");
+        let hunks = diff.hunks();
+
+        // Bug: Currently produces 2 hunks when it should produce 1.
+        // First hunk has ancestor "theme" (old), second has "syntect_theme" (new).
+        assert_eq!(
+            hunks.len(),
+            1,
+            "renaming a function should produce 1 hunk, not {}; \
+             hunks have ancestors: {:?}",
+            hunks.len(),
+            hunks.iter().map(|h| &h.ancestors).collect::<Vec<_>>()
+        );
+
+        // The single hunk should have changes (not be context-only)
+        let has_removed = hunks[0].lines.iter().any(|l| l.kind == LineKind::Removed);
+        let has_added = hunks[0].lines.iter().any(|l| l.kind == LineKind::Added);
+        assert!(has_removed, "hunk should have removed lines");
+        assert!(has_added, "hunk should have added lines");
+
+        // The ancestor should be from one of the functions (either old or new is fine)
+        assert!(!hunks[0].ancestors.is_empty(), "hunk should have ancestors");
+        let ancestor_name = &hunks[0].ancestors[0].name;
+        assert!(
+            ancestor_name == "theme" || ancestor_name == "syntect_theme",
+            "ancestor should be either 'theme' or 'syntect_theme', got '{}'",
+            ancestor_name
+        );
     }
 
     #[test]

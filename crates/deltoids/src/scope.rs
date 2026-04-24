@@ -240,74 +240,62 @@ struct ScopeRangeContext<'a> {
     total_new: usize,
 }
 
-fn innermost_scope_at(
-    parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
-    line: usize,
-) -> Option<ScopeNode> {
-    enclosing_scopes(parsed.tree.root_node(), source, line, parsed.scope_kinds)
-        .last()
-        .cloned()
+/// True when `scope.kind` belongs to the language's structure tier.
+fn is_structure(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
+    parsed.structure_kinds.contains(&scope.kind.as_str())
 }
 
-/// Scope kinds that are "leaf containers" - they should not trigger separate hunks
-/// when nested inside a larger scope. Used for object properties, config entries, etc.
-const LEAF_CONTAINER_KINDS: &[&str] = &[
-    "pair",               // JSON, JS/TS/TSX object properties
-    "block_mapping_pair", // YAML mappings
-];
-
-/// Check if a scope is a "leaf container" that should not trigger its own hunk.
-fn is_leaf_container_scope(scope: &ScopeNode) -> bool {
-    LEAF_CONTAINER_KINDS.contains(&scope.kind.as_str())
+/// True when `scope.kind` belongs to the language's data tier.
+fn is_data(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
+    parsed.data_kinds.contains(&scope.kind.as_str())
 }
 
-/// Get the innermost scope that should trigger hunk splitting.
-/// Returns None if the innermost scope is a leaf container (like `pair`) that has a parent.
-/// This prevents nested leaf scopes from triggering separate hunks, while still
-/// allowing structural scopes (functions, classes) to get their own hunks.
-fn hunk_scope_at(
-    parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
-    line: usize,
-) -> Option<ScopeNode> {
-    let scopes = enclosing_scopes(parsed.tree.root_node(), source, line, parsed.scope_kinds);
-    let innermost = scopes.last()?;
-
-    // If the innermost scope is a leaf container and has a parent, skip it
-    if is_leaf_container_scope(innermost) && scopes.len() > 1 {
-        return None;
-    }
-
-    Some(innermost.clone())
-}
-
-/// Find the innermost scope that contains an entire range of lines.
-/// Used for scope expansion to ensure all changes in a range are included.
-/// Falls back to default context if no scope contains the full range.
-fn innermost_scope_containing_range(
+/// Pick the hunk-anchor scope for a range of lines.
+///
+/// Strategy:
+/// 1. Prefer the innermost *structure* scope (function, class, etc.) that
+///    wraps the range and fits under `MAX_SCOPE_LINES`.
+/// 2. Otherwise fall back to the outermost *data* scope (JSON/YAML/TS object
+///    or array) that wraps the range and fits under `MAX_SCOPE_LINES`.
+/// 3. Otherwise return `None` and let the caller use default 3-line context.
+fn scope_for_range(
     parsed: &crate::syntax::ParsedFile,
     source: &[u8],
     range_start: usize,
     range_end: usize,
 ) -> Option<ScopeNode> {
-    // Get scopes at the start of the range (outermost to innermost)
-    let scopes = enclosing_scopes(
-        parsed.tree.root_node(),
-        source,
-        range_start,
-        parsed.scope_kinds,
-    );
-
-    // Find the innermost scope that contains the entire range
-    // Iterate from innermost to outermost
-    for scope in scopes.iter().rev() {
+    let scopes = enclosing_scopes(parsed.tree.root_node(), source, range_start, parsed);
+    let contains_range = |scope: &ScopeNode| {
         let (scope_start, scope_end, _) = scope_bounds(scope);
-        if scope_start <= range_start && scope_end >= range_end.saturating_sub(1) {
-            return Some(scope.clone());
-        }
+        scope_start <= range_start && scope_end >= range_end.saturating_sub(1)
+    };
+    let fits = |scope: &ScopeNode| scope_bounds(scope).2 <= MAX_SCOPE_LINES;
+
+    // 1. Innermost structure that contains the range and fits.
+    if let Some(s) = scopes
+        .iter()
+        .rev()
+        .find(|s| is_structure(s, parsed) && contains_range(s) && fits(s))
+    {
+        return Some(s.clone());
     }
+
+    // 2. Outermost data container that contains the range and fits.
+    if let Some(s) = scopes
+        .iter()
+        .find(|s| is_data(s, parsed) && contains_range(s) && fits(s))
+    {
+        return Some(s.clone());
+    }
+
     None
+}
+
+/// Pick the hunk-anchor scope at a single line.
+///
+/// Uses the same structure-first, data-fallback strategy as `scope_for_range`.
+fn scope_at(parsed: &crate::syntax::ParsedFile, source: &[u8], line: usize) -> Option<ScopeNode> {
+    scope_for_range(parsed, source, line, line + 1)
 }
 
 fn scope_bounds(scope: &ScopeNode) -> (usize, usize, usize) {
@@ -333,9 +321,7 @@ fn find_inserted_scope_line(
     total_new: usize,
 ) -> Option<usize> {
     for line in new_start..new_end.min(total_new) {
-        // Use hunk_scope_at to avoid leaf container scopes (like pairs inside functions)
-        // triggering separate hunks
-        let Some(scope) = hunk_scope_at(parsed, source, line) else {
+        let Some(scope) = scope_at(parsed, source, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -349,8 +335,6 @@ fn find_inserted_scope_line(
 
 /// Check if an insert operation forms a new scope that should have its own hunk.
 /// Used to avoid duplicating new scope content in sibling function hunks.
-/// Only considers hunk scopes to prevent leaf container scopes (like pairs) from
-/// triggering separate hunks when inside a larger scope.
 fn insert_forms_new_scope(
     parsed: &crate::syntax::ParsedFile,
     source: &[u8],
@@ -358,8 +342,7 @@ fn insert_forms_new_scope(
     new_end: usize,
 ) -> bool {
     for line in new_start..new_end {
-        // Use hunk_scope_at to avoid leaf container scopes triggering separate hunks
-        let Some(scope) = hunk_scope_at(parsed, source, line) else {
+        let Some(scope) = scope_at(parsed, source, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -379,9 +362,7 @@ fn find_replace_scope_line(
     total_new: usize,
 ) -> Option<usize> {
     for line in new_start..new_end.min(total_new) {
-        // Use hunk_scope_at to avoid leaf container scopes (like pairs inside functions)
-        // triggering separate hunks
-        let Some(scope) = hunk_scope_at(parsed, source, line) else {
+        let Some(scope) = scope_at(parsed, source, line) else {
             continue;
         };
         let (scope_start, _, scope_lines) = scope_bounds(&scope);
@@ -418,7 +399,7 @@ fn context_ranges_for_insert(
     }
 
     let scope_line = query_old_line(old_index, ctx.total_old);
-    if let Some(scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
+    if let Some(scope) = scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
             return vec![ContextRange {
@@ -449,7 +430,7 @@ fn context_ranges_for_delete(
     let old_end = old_index + old_len;
 
     for line in old_start..old_end.min(ctx.total_old) {
-        let Some(scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, line) else {
+        let Some(scope) = scope_at(ctx.old_parsed, ctx.old_source, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -494,10 +475,8 @@ fn old_replace_context_range(
     let old_start = old_index;
     let old_end = old_index + old_len;
 
-    // Find the innermost scope that contains the entire change range
-    if let Some(scope) =
-        innermost_scope_containing_range(ctx.old_parsed, ctx.old_source, old_start, old_end)
-    {
+    // Find the hunk-anchor scope for the entire change range.
+    if let Some(scope) = scope_for_range(ctx.old_parsed, ctx.old_source, old_start, old_end) {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
             return ContextRange {
@@ -540,10 +519,10 @@ fn new_replace_scope_range(
     // Check if this is a renamed scope rather than a new scope.
     // If the old file has a scope at the same position (same line bounds),
     // this is just a rename and should not create a separate hunk.
-    let new_scope = innermost_scope_at(ctx.new_parsed, ctx.new_source, scope_line)?;
+    let new_scope = scope_at(ctx.new_parsed, ctx.new_source, scope_line)?;
     let (new_scope_start, new_scope_end, _) = scope_bounds(&new_scope);
 
-    if let Some(old_scope) = innermost_scope_at(ctx.old_parsed, ctx.old_source, old_index) {
+    if let Some(old_scope) = scope_at(ctx.old_parsed, ctx.old_source, old_index) {
         let (old_scope_start, old_scope_end, _) = scope_bounds(&old_scope);
         // Same position means rename, not new scope
         if old_scope_start == new_scope_start && old_scope_end == new_scope_end {
@@ -870,7 +849,7 @@ fn collect_replace_new_scope_lines(
         ctx.new_parsed.tree.root_node(),
         ctx.new_source,
         range.scope_line,
-        ctx.new_parsed.scope_kinds,
+        ctx.new_parsed,
     )
     .last()
     .cloned();
@@ -878,7 +857,7 @@ fn collect_replace_new_scope_lines(
         ctx.old_parsed.tree.root_node(),
         ctx.old_source,
         old_index,
-        ctx.old_parsed.scope_kinds,
+        ctx.old_parsed,
     )
     .last()
     .cloned();
@@ -961,7 +940,7 @@ fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Opti
         ctx.old_parsed.tree.root_node(),
         ctx.old_source,
         range.scope_line,
-        ctx.old_parsed.scope_kinds,
+        ctx.old_parsed,
     )
     .last()
     .cloned()
@@ -1146,20 +1125,23 @@ fn ancestors_at_line(
     old_source: &[u8],
     new_source: &[u8],
 ) -> Vec<ScopeNode> {
-    match ancestor_source {
-        AncestorSource::Old => enclosing_scopes(
-            old_parsed.tree.root_node(),
-            old_source,
-            line,
-            old_parsed.scope_kinds,
+    let (parsed, scopes) = match ancestor_source {
+        AncestorSource::Old => (
+            old_parsed,
+            enclosing_scopes(old_parsed.tree.root_node(), old_source, line, old_parsed),
         ),
-        AncestorSource::New => enclosing_scopes(
-            new_parsed.tree.root_node(),
-            new_source,
-            line,
-            new_parsed.scope_kinds,
+        AncestorSource::New => (
+            new_parsed,
+            enclosing_scopes(new_parsed.tree.root_node(), new_source, line, new_parsed),
         ),
-    }
+    };
+    // Hunk breadcrumbs show named code structures only. Data containers
+    // (JSON/TS objects and arrays, YAML mappings) have no name and would
+    // just add noise.
+    scopes
+        .into_iter()
+        .filter(|s| is_structure(s, parsed))
+        .collect()
 }
 
 fn first_different_new_scope_start(
@@ -1170,20 +1152,15 @@ fn first_different_new_scope_start(
     new_source: &[u8],
 ) -> Option<usize> {
     for line in new_start..new_end {
-        let new_scopes = enclosing_scopes(
-            new_parsed.tree.root_node(),
-            new_source,
-            line,
-            new_parsed.scope_kinds,
-        );
+        let new_scopes =
+            enclosing_scopes(new_parsed.tree.root_node(), new_source, line, new_parsed);
         let Some(innermost) = new_scopes.last() else {
             continue;
         };
 
-        // Leaf-container scopes (like `pair`) don't get their own hunk when
-        // nested, so they should not cut off the enclosing hunk. Mirrors
-        // `hunk_scope_at`.
-        if is_leaf_container_scope(innermost) && new_scopes.len() > 1 {
+        // Data-tier scopes (objects, arrays, JSON pairs) never get their own
+        // hunk, so they must not cut off the enclosing hunk either.
+        if is_data(innermost, new_parsed) {
             continue;
         }
 
@@ -1212,12 +1189,14 @@ fn first_different_new_scope_start(
 // ---------------------------------------------------------------------------
 
 /// Find all enclosing scope nodes from outermost to innermost.
-/// Returns a vec of `ScopeNode` with outermost first.
+/// Returns a vec of `ScopeNode` with outermost first. A node is included when
+/// its kind matches either `structure_kinds` or `data_kinds` on the parsed
+/// file.
 fn enclosing_scopes(
     root: Node,
     source: &[u8],
     line: usize,
-    scope_kinds: &[&str],
+    parsed: &crate::syntax::ParsedFile,
 ) -> Vec<ScopeNode> {
     let point = point_at_first_non_whitespace(source, line);
     let Some(node) = root.descendant_for_point_range(point, point) else {
@@ -1227,7 +1206,7 @@ fn enclosing_scopes(
     let mut ancestors = Vec::new();
     let mut current = Some(node);
     while let Some(n) = current {
-        if scope_kinds.contains(&n.kind()) {
+        if parsed.structure_kinds.contains(&n.kind()) || parsed.data_kinds.contains(&n.kind()) {
             let start_line = n.start_position().row + 1;
             let end_line = n.end_position().row + 1;
             let name = n
@@ -1360,7 +1339,9 @@ impl Foo {
     }
 
     #[test]
-    fn compute_populates_ancestors_for_json() {
+    fn compute_json_hunk_has_no_ancestors() {
+        // JSON has no named code structures, only data containers. The
+        // breadcrumb chain should therefore be empty.
         let original = r#"{
   "scripts": {
     "build": "tsc",
@@ -1372,18 +1353,18 @@ impl Foo {
         let diff = Diff::compute(original, &updated, "package.json");
         let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
-        // Should show "scripts" as ancestor since "test" is nested under it
-        assert!(!hunks[0].ancestors.is_empty());
-        // The innermost pair is "test", check its name was extracted via "key" field
-        let last = hunks[0].ancestors.last().unwrap();
-        assert_eq!(last.kind, "pair");
-        assert!(last.name.contains("test") || last.name.contains("scripts"));
+        assert!(
+            hunks[0].ancestors.is_empty(),
+            "JSON hunk should have no ancestors, got {:?}",
+            hunks[0].ancestors
+        );
     }
 
     #[test]
-    fn compute_populates_ancestors_for_typescript_object_properties() {
-        // TypeScript config files use nested object literals
-        // Changes inside should show object property ancestors
+    fn compute_typescript_config_hunk_has_no_ancestors() {
+        // TypeScript config files use nested object literals with no
+        // enclosing function or class. Data containers (object/array) do not
+        // appear in the ancestor chain, so the breadcrumb is empty.
         let original = r#"export default defineConfig({
   env: {
     schema: {
@@ -1396,16 +1377,10 @@ impl Foo {
         let diff = Diff::compute(original, &updated, "astro.config.ts");
         let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
-        // Should show nested object properties as ancestors
         assert!(
-            !hunks[0].ancestors.is_empty(),
-            "TypeScript object properties should produce scope ancestors"
-        );
-        // Check that we have "pair" ancestors for the nested structure
-        let has_pair = hunks[0].ancestors.iter().any(|a| a.kind == "pair");
-        assert!(
-            has_pair,
-            "Should have 'pair' ancestors for object properties"
+            hunks[0].ancestors.is_empty(),
+            "TS config hunk should have no structure ancestors, got {:?}",
+            hunks[0].ancestors
         );
     }
 
@@ -1480,6 +1455,222 @@ impl Foo {
             added.iter().any(|l| l.contains("b: 3")),
             "new sibling mapping pair line should appear as added, got: {:?}",
             added
+        );
+    }
+
+    #[test]
+    fn compute_json_top_level_replace_keeps_all_added_lines() {
+        // Regression: top-level JSON pairs are leaf containers with no parent
+        // scope. A Replace spanning two pairs previously lost added lines
+        // because the new-scope cutoff treated each pair as a fresh scope.
+        let original = "\
+{
+  \"version\": \"1.0\",
+  \"theme\": \"light\",
+  \"model\": \"a\",
+  \"thinking\": \"low\"
+}
+";
+        let updated = "\
+{
+  \"version\": \"2.0\",
+  \"theme\": \"light\",
+  \"model\": \"b\",
+  \"thinking\": \"high\"
+}
+";
+
+        let diff = Diff::compute(original, updated, "settings.json");
+        let added: Vec<&str> = diff
+            .hunks()
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == LineKind::Added)
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert!(
+            added.iter().any(|l| l.contains("\"2.0\"")),
+            "updated version should appear as added, got: {:?}",
+            added
+        );
+        assert!(
+            added.iter().any(|l| l.contains("\"b\"")),
+            "updated model should appear as added, got: {:?}",
+            added
+        );
+        assert!(
+            added.iter().any(|l| l.contains("\"high\"")),
+            "updated thinking level should appear as added, got: {:?}",
+            added
+        );
+    }
+
+    #[test]
+    fn compute_small_json_with_distant_changes_merges_into_one_hunk() {
+        // Small file with changes split across the top and the bottom should
+        // merge into a single hunk. The root object (< MAX_SCOPE_LINES) is
+        // the outermost-fit data container for both changes, so they share
+        // the same anchored range.
+        let original = "\
+{
+  \"a\": 1,
+  \"b\": 2,
+  \"c\": 3,
+  \"d\": 4,
+  \"e\": 5,
+  \"f\": 6,
+  \"g\": 7,
+  \"h\": 8
+}
+";
+        let updated = original
+            .replace("\"a\": 1", "\"a\": 10")
+            .replace("\"h\": 8", "\"h\": 80");
+
+        let diff = Diff::compute(original, &updated, "small.json");
+        assert_eq!(
+            diff.hunks().len(),
+            1,
+            "small JSON with two edits should render as one hunk"
+        );
+    }
+
+    #[test]
+    fn compute_large_json_falls_back_to_default_context() {
+        // Root object spans over MAX_SCOPE_LINES (200); outermost-fit must
+        // skip it (doesn't fit under the cap) and fall back to default
+        // 3-line context rather than emitting a massive hunk.
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("{".to_string());
+        for i in 1..=210 {
+            lines.push(format!("  \"k{i}\": {i},"));
+        }
+        lines.push("  \"last\": 0".to_string());
+        lines.push("}".to_string());
+        let original = lines.join("\n") + "\n";
+        let updated = original.replace("\"k100\": 100", "\"k100\": 1000");
+
+        let diff = Diff::compute(&original, &updated, "big.json");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // 3 before + 1 removed + 1 added + 3 after = at most 8 lines.
+        assert!(
+            hunks[0].lines.len() <= 8,
+            "large JSON should use default context, got {} lines",
+            hunks[0].lines.len()
+        );
+    }
+
+    #[test]
+    fn compute_ts_change_in_object_inside_function_anchors_on_function() {
+        // When a change is inside an object nested in a function, the hunk
+        // anchors on the function (innermost structure wins over outermost
+        // data). The function's name also appears in the ancestor chain.
+        let original = "\
+function getConfig() {
+  const inner = {
+    aaa: 1,
+    bbb: 2,
+  };
+  return inner;
+}
+";
+        let updated = original.replace("aaa: 1", "aaa: 10");
+
+        let diff = Diff::compute(original, &updated, "config.ts");
+        let hunks = diff.hunks();
+
+        assert_eq!(hunks.len(), 1);
+        let has_function = hunks[0]
+            .ancestors
+            .iter()
+            .any(|a| a.kind == "function_declaration" && a.name == "getConfig");
+        assert!(
+            has_function,
+            "expected function_declaration ancestor, got {:?}",
+            hunks[0].ancestors
+        );
+        // Must not contain any object/array/pair in the breadcrumb.
+        let has_data_kind = hunks[0]
+            .ancestors
+            .iter()
+            .any(|a| matches!(a.kind.as_str(), "object" | "array" | "pair"));
+        assert!(
+            !has_data_kind,
+            "data-tier ancestors should be filtered out, got {:?}",
+            hunks[0].ancestors
+        );
+    }
+
+    #[test]
+    fn compute_ts_top_level_const_object_anchors_on_object() {
+        // A change inside a top-level `const x = { ... }` should anchor the
+        // hunk on the object (data-tier outermost-fit), not produce only 3
+        // lines of default context.
+        let original = "\
+const config = {
+  aaa: 1,
+  bbb: 2,
+  ccc: 3,
+  ddd: 4,
+  eee: 5,
+  fff: 6,
+  ggg: 7,
+  hhh: 8,
+};
+";
+        let updated = original.replace("aaa: 1", "aaa: 10");
+
+        let diff = Diff::compute(original, &updated, "config.ts");
+        let hunks = diff.hunks();
+
+        assert_eq!(hunks.len(), 1);
+        assert!(
+            hunks[0].lines.len() >= 11,
+            "hunk should cover the whole object, got {} lines",
+            hunks[0].lines.len()
+        );
+        assert!(
+            hunks[0].ancestors.is_empty(),
+            "no structure wraps a top-level const, expected empty ancestors"
+        );
+    }
+
+    #[test]
+    fn compute_json_lone_deep_change_anchors_on_root_object() {
+        // A change only inside a nested array of a small JSON should produce
+        // a single hunk that covers the whole root object (outermost-fit).
+        let original = "\
+{
+  \"aaa\": 1,
+  \"bbb\": 2,
+  \"ccc\": 3,
+  \"ddd\": 4,
+  \"items\": [
+    1,
+    2,
+    3
+  ],
+  \"eee\": 5,
+  \"fff\": 6,
+  \"ggg\": 7,
+  \"hhh\": 8
+}
+";
+        let updated = original.replace("    1,\n", "    10,\n");
+
+        let diff = Diff::compute(original, &updated, "config.json");
+        let hunks = diff.hunks();
+
+        assert_eq!(hunks.len(), 1, "expected exactly one hunk");
+        // Whole root object is 16 lines. With outermost-fit strategy the
+        // hunk must cover the whole object, not just the default 3-line
+        // context (which would produce ~7 lines).
+        assert!(
+            hunks[0].lines.len() >= 14,
+            "hunk should cover the whole root object, got {} lines",
+            hunks[0].lines.len()
         );
     }
 
@@ -1716,12 +1907,7 @@ fn small() {
 
     fn parse_and_scopes(source: &str, path: &str, line: usize) -> Vec<ScopeNode> {
         let parsed = crate::syntax::parse_file(path, source).unwrap();
-        enclosing_scopes(
-            parsed.tree.root_node(),
-            source.as_bytes(),
-            line,
-            parsed.scope_kinds,
-        )
+        enclosing_scopes(parsed.tree.root_node(), source.as_bytes(), line, &parsed)
     }
 
     #[test]

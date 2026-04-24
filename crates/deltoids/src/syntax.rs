@@ -13,14 +13,25 @@ use tree_sitter_language::LanguageFn;
 /// Per-language tree-sitter configuration.
 struct LangEntry {
     language: LanguageFn,
-    scope_kinds: &'static [&'static str],
+    /// Named code structures (functions, classes, modules, tables, headings).
+    /// Resolution prefers the innermost structure that contains a change.
+    structure_kinds: &'static [&'static str],
+    /// Anonymous data containers (JSON/TS objects and arrays, YAML mappings
+    /// and sequences). Used as a fallback when no structure wraps a change;
+    /// resolution picks the outermost data container that still fits under
+    /// `MAX_SCOPE_LINES`.
+    data_kinds: &'static [&'static str],
 }
 
 /// A parsed source file with its syntax tree and language metadata.
 pub struct ParsedFile {
     pub tree: Tree,
-    /// Node kinds that represent scope boundaries (functions, classes, etc.).
-    pub scope_kinds: &'static [&'static str],
+    /// Node kinds used for the ancestor chain (display breadcrumb). Anchored
+    /// with innermost strategy for hunk boundaries.
+    pub structure_kinds: &'static [&'static str],
+    /// Node kinds used as hunk anchors when no structure contains the change.
+    /// Anchored with outermost-fit strategy.
+    pub data_kinds: &'static [&'static str],
 }
 
 /// Detect the language from a file path and parse the source text.
@@ -33,7 +44,8 @@ pub fn parse_file(path: &str, source: &str) -> Option<ParsedFile> {
     let tree = parser.parse(source, None)?;
     Some(ParsedFile {
         tree,
-        scope_kinds: entry.scope_kinds,
+        structure_kinds: entry.structure_kinds,
+        data_kinds: entry.data_kinds,
     })
 }
 
@@ -48,7 +60,7 @@ fn detect_language(path: &str) -> Option<LangEntry> {
     match ext {
         "rs" => Some(LangEntry {
             language: tree_sitter_rust::LANGUAGE,
-            scope_kinds: &[
+            structure_kinds: &[
                 "function_item",
                 "impl_item",
                 "struct_item",
@@ -56,106 +68,121 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "trait_item",
                 "mod_item",
             ],
+            data_kinds: &[],
         }),
         "py" | "pyi" => Some(LangEntry {
             language: tree_sitter_python::LANGUAGE,
-            scope_kinds: &["function_definition", "class_definition"],
+            structure_kinds: &["function_definition", "class_definition"],
+            data_kinds: &[],
         }),
         "js" | "mjs" | "cjs" | "jsx" => Some(LangEntry {
             language: tree_sitter_javascript::LANGUAGE,
-            scope_kinds: &[
+            structure_kinds: &[
                 "function_declaration",
                 "class_declaration",
                 "method_definition",
-                "pair",
             ],
+            data_kinds: &["object", "array"],
         }),
         "ts" | "mts" | "cts" => Some(LangEntry {
             language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-            scope_kinds: &[
+            structure_kinds: &[
                 "function_declaration",
                 "class_declaration",
                 "method_definition",
                 "interface_declaration",
                 "type_alias_declaration",
-                "pair",
             ],
+            data_kinds: &["object", "array"],
         }),
         "tsx" => Some(LangEntry {
             language: tree_sitter_typescript::LANGUAGE_TSX,
-            scope_kinds: &[
+            structure_kinds: &[
                 "function_declaration",
                 "class_declaration",
                 "method_definition",
                 "interface_declaration",
                 "type_alias_declaration",
-                "pair",
             ],
+            data_kinds: &["object", "array"],
         }),
         "go" => Some(LangEntry {
             language: tree_sitter_go::LANGUAGE,
-            scope_kinds: &[
+            structure_kinds: &[
                 "function_declaration",
                 "method_declaration",
                 "type_declaration",
             ],
+            data_kinds: &[],
         }),
         "rb" | "rake" | "gemspec" => Some(LangEntry {
             language: tree_sitter_ruby::LANGUAGE,
-            scope_kinds: &["method", "singleton_method", "class", "module"],
+            structure_kinds: &["method", "singleton_method", "class", "module"],
+            data_kinds: &[],
         }),
         "java" => Some(LangEntry {
             language: tree_sitter_java::LANGUAGE,
-            scope_kinds: &[
+            structure_kinds: &[
                 "class_declaration",
                 "interface_declaration",
                 "method_declaration",
                 "constructor_declaration",
             ],
+            data_kinds: &[],
         }),
         "c" | "h" => Some(LangEntry {
             language: tree_sitter_c::LANGUAGE,
-            scope_kinds: &["function_definition", "struct_specifier"],
+            structure_kinds: &["function_definition", "struct_specifier"],
+            data_kinds: &[],
         }),
         "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => Some(LangEntry {
             language: tree_sitter_cpp::LANGUAGE,
-            scope_kinds: &[
+            structure_kinds: &[
                 "function_definition",
                 "class_specifier",
                 "namespace_definition",
             ],
+            data_kinds: &[],
         }),
         "sh" | "bash" | "zsh" => Some(LangEntry {
             language: tree_sitter_bash::LANGUAGE,
-            scope_kinds: &["function_definition"],
+            structure_kinds: &["function_definition"],
+            data_kinds: &[],
         }),
         "lua" => Some(LangEntry {
             language: tree_sitter_lua::LANGUAGE,
-            scope_kinds: &["function_declaration"],
+            structure_kinds: &["function_declaration"],
+            data_kinds: &[],
         }),
         "css" | "scss" => Some(LangEntry {
             language: tree_sitter_css::LANGUAGE,
-            scope_kinds: &["rule_set", "media_statement"],
+            structure_kinds: &["rule_set", "media_statement"],
+            data_kinds: &[],
         }),
         "tf" | "hcl" => Some(LangEntry {
             language: tree_sitter_hcl::LANGUAGE,
-            scope_kinds: &["block"],
+            structure_kinds: &["block"],
+            data_kinds: &[],
         }),
         "md" | "markdown" => Some(LangEntry {
             language: tree_sitter_md::LANGUAGE,
-            scope_kinds: &["atx_heading", "setext_heading"],
+            structure_kinds: &["atx_heading", "setext_heading"],
+            data_kinds: &[],
         }),
         "toml" => Some(LangEntry {
             language: tree_sitter_toml_ng::LANGUAGE,
-            scope_kinds: &["table", "table_array_element"],
+            structure_kinds: &["table", "table_array_element"],
+            data_kinds: &[],
         }),
         "json" => Some(LangEntry {
             language: tree_sitter_json::LANGUAGE,
-            scope_kinds: &["pair"],
+            structure_kinds: &[],
+            data_kinds: &["object", "array"],
         }),
         "yaml" | "yml" => Some(LangEntry {
             language: tree_sitter_yaml::LANGUAGE,
-            scope_kinds: &["block_mapping_pair"],
+            structure_kinds: &[],
+            data_kinds: &["block_mapping", "block_sequence"],
         }),
         _ => None,
     }
@@ -170,7 +197,8 @@ mod tests {
         let source = "fn main() { let x = 1; }\n";
         let parsed = parse_file("src/main.rs", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "source_file");
-        assert!(parsed.scope_kinds.contains(&"function_item"));
+        assert!(parsed.structure_kinds.contains(&"function_item"));
+        assert!(parsed.data_kinds.is_empty());
     }
 
     #[test]
@@ -178,7 +206,7 @@ mod tests {
         let source = "def hello():\n    pass\n";
         let parsed = parse_file("app.py", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "module");
-        assert!(parsed.scope_kinds.contains(&"function_definition"));
+        assert!(parsed.structure_kinds.contains(&"function_definition"));
     }
 
     #[test]
@@ -186,7 +214,7 @@ mod tests {
         let source = "# Heading\n\nSome text.\n";
         let parsed = parse_file("README.md", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "document");
-        assert!(parsed.scope_kinds.contains(&"atx_heading"));
+        assert!(parsed.structure_kinds.contains(&"atx_heading"));
     }
 
     #[test]
@@ -194,7 +222,7 @@ mod tests {
         let source = "[package]\nname = \"test\"\n";
         let parsed = parse_file("Cargo.toml", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "document");
-        assert!(parsed.scope_kinds.contains(&"table"));
+        assert!(parsed.structure_kinds.contains(&"table"));
     }
 
     #[test]
@@ -202,7 +230,8 @@ mod tests {
         let source = "{\"name\": \"test\", \"version\": \"1.0\"}\n";
         let parsed = parse_file("package.json", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "document");
-        assert!(parsed.scope_kinds.contains(&"pair"));
+        assert!(parsed.structure_kinds.is_empty());
+        assert!(parsed.data_kinds.contains(&"object"));
     }
 
     #[test]
@@ -210,7 +239,8 @@ mod tests {
         let source = "name: test\nversion: 1.0\n";
         let parsed = parse_file("config.yaml", source).unwrap();
         assert_eq!(parsed.tree.root_node().kind(), "stream");
-        assert!(parsed.scope_kinds.contains(&"block_mapping_pair"));
+        assert!(parsed.structure_kinds.is_empty());
+        assert!(parsed.data_kinds.contains(&"block_mapping"));
     }
 
     #[test]

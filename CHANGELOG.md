@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `deltoids`: fix bug where diff did not show when adding a line at end of file
 - `deltoids`: fix bug where newly added files showed nested ancestor scope boxes
+- `deltoids`: fix bug where a new sibling pair inserted next to a modified pair (JSON/YAML/JS/TS) was dropped from the rendered diff
 
 ## [0.1.0] - 2025-04-23
 

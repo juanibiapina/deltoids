@@ -1180,6 +1180,13 @@ fn first_different_new_scope_start(
             continue;
         };
 
+        // Leaf-container scopes (like `pair`) don't get their own hunk when
+        // nested, so they should not cut off the enclosing hunk. Mirrors
+        // `hunk_scope_at`.
+        if is_leaf_container_scope(innermost) && new_scopes.len() > 1 {
+            continue;
+        }
+
         let scope_start = innermost.start_line.saturating_sub(1);
         if scope_start < new_start || scope_start >= new_end {
             continue;
@@ -1426,6 +1433,53 @@ impl Foo {
         assert!(
             has_function,
             "Function should appear in ancestors when change is inside object within function"
+        );
+    }
+
+    #[test]
+    fn compute_json_add_sibling_pair_keeps_both_added_lines() {
+        // Regression: adding a trailing comma to a pair and a new sibling
+        // pair on the next line dropped the new line from the hunk.
+        let original = "{\n  \"deps\": {\n    \"a\": 1\n  }\n}\n";
+        let updated = "{\n  \"deps\": {\n    \"a\": 1,\n    \"b\": 2\n  }\n}\n";
+
+        let diff = Diff::compute(original, updated, "test.json");
+        let added: Vec<&str> = diff
+            .hunks()
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == LineKind::Added)
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert!(
+            added.iter().any(|l| l.contains("\"b\": 2")),
+            "new sibling pair line should appear as added, got: {:?}",
+            added
+        );
+    }
+
+    #[test]
+    fn compute_yaml_add_sibling_pair_keeps_both_added_lines() {
+        // Same bug as the JSON case, exercised through tree-sitter-yaml's
+        // `block_mapping_pair` leaf container. Modifying a value alongside
+        // the insertion forces the Replace code path (not a pure Insert).
+        let original = "deps:\n  a: 1\n";
+        let updated = "deps:\n  a: 2\n  b: 3\n";
+
+        let diff = Diff::compute(original, updated, "test.yaml");
+        let added: Vec<&str> = diff
+            .hunks()
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == LineKind::Added)
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert!(
+            added.iter().any(|l| l.contains("b: 3")),
+            "new sibling mapping pair line should appear as added, got: {:?}",
+            added
         );
     }
 

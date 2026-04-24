@@ -15,3 +15,8 @@ homepage = "https://github.com/juanibiapina/deltoids"
 too_many_arguments = "warn"
 too_many_lines = "warn"
 excessive_nesting = "warn"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

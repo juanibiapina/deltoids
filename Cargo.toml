@@ -5,9 +5,11 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+description = "Tools for reviewing code in the agentic era"
 authors = ["Juan Ibiapina <juanibiapina@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/juanibiapina/deltoids"
+homepage = "https://github.com/juanibiapina/deltoids"
 
 [workspace.lints.clippy]
 too_many_arguments = "warn"

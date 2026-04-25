@@ -1,77 +1,95 @@
 ---
-title: deltoids — better diffs for terminal and agent
-description: deltoids adds tree-sitter scope to every diff — drop it into git as a pager, or watch every edit your coding agent makes.
+title: 'deltoids: diffs with context'
+description: deltoids expands every hunk in a unified diff to include the entire enclosing function, class, or block. Use it as a diff pager for git, gh, or lazygit, or as a viewer for coding-agent edit traces.
 template: splash
 hero:
-  tagline: Better diffs. For your terminal and your agent.
+  tagline: A diff filter that expands every hunk to include the enclosing function or block.
   actions:
-    - text: Use as a diff pager
-      link: '#pager'
-      icon: right-arrow
-    - text: Follow your agent
-      link: '#agent'
-      icon: right-arrow
-      variant: secondary
     - text: View on GitHub
       link: https://github.com/juanibiapina/deltoids
       icon: external
-      variant: minimal
 ---
 
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
 
-deltoids adds tree-sitter scope to every diff — drop it into git as a pager,
-or watch every edit your coding agent makes.
+<section class="landing-section">
+  <div class="landing-container">
+    <h2 class="landing-section-title">Context-aware diffs</h2>
+    <p class="landing-section-lead">
+      deltoids expands every hunk in a unified diff to include the enclosing
+      function, class, or block. Scope is resolved with tree-sitter.
+    </p>
+    <div class="comparison">
+      <figure>
+        <figcaption>Default diff</figcaption>
+        <img src="/screenshots/delta.png" alt="Default git diff: a hunk header and three lines of context above and below the change." />
+      </figure>
+      <figure>
+        <figcaption>The whole enclosing function</figcaption>
+        <img src="/screenshots/deltoids.png" alt="Same diff with the entire enclosing function expanded as context, from signature to closing brace." />
+      </figure>
+    </div>
+  </div>
+</section>
 
-<h2 id="pager">Use as a diff pager</h2>
+<section class="landing-section landing-section--alt" id="agent">
+  <div class="landing-container">
+    <h2 class="landing-section-title">Coding agents</h2>
+    <p class="landing-section-lead">
+      Review your coding agent's edits change by change, with the agent's explanation for each. Magic scope included.
+    </p>
+    <Code
+      code={`pi install https://github.com/juanibiapina/deltoids
+edit-tui`}
+      lang="bash"
+    />
+    <figure class="landing-figure">
+      <img src="/screenshots/edit-tui.png" alt="edit-tui browsing an agent trace: the left pane lists each edit with a one-line reason; the right pane shows the diff with deltoids' function breadcrumbs." />
+    </figure>
+    <p class="landing-aside">
+      Traces are plain JSONL on disk under <code>$XDG_DATA_HOME/edit/traces/</code>. Other agent integrations: coming.
+    </p>
+  </div>
+</section>
 
-Drop-in for `git diff`, `git show`, lazygit, or any unified diff. Hunks expand
-to show the enclosing function, class, or config block, so you don't have to
-scroll to reconstruct context.
-
-<Tabs>
-  <TabItem label="Pipe">
-    <Code code="git diff | deltoids" lang="bash" />
-  </TabItem>
-  <TabItem label="Git pager">
-    <Code code="git config --global core.pager 'deltoids | less -R'" lang="bash" />
-  </TabItem>
-  <TabItem label="Lazygit">
-    <Code code={`# ~/.config/lazygit/config.yml
+<section class="landing-section" id="pager">
+  <div class="landing-container">
+    <h2 class="landing-section-title">Use it anywhere</h2>
+    <p class="landing-section-lead">
+      deltoids reads a unified diff on stdin and writes it back with each
+      hunk expanded. Pipe <code>git diff</code>, <code>gh pr diff</code>, or
+      set it as the pager for git or{' '}
+      <a href="https://github.com/jesseduffield/lazygit">lazygit</a>.
+    </p>
+    <Tabs>
+      <TabItem label="Pipe">
+        <Code code="git diff | deltoids | less -R" lang="bash" />
+      </TabItem>
+      <TabItem label="GitHub PR">
+        <Code code="gh pr diff <number> | deltoids | less -R" lang="bash" />
+      </TabItem>
+      <TabItem label="Git pager">
+        <Code code="git config --global core.pager 'deltoids | less -R'" lang="bash" />
+      </TabItem>
+      <TabItem label="Lazygit">
+        <Code code={`# ~/.config/lazygit/config.yml
 git:
   paging:
     pager: deltoids`} lang="yaml" />
-  </TabItem>
-</Tabs>
-
-<h2 id="agent">Follow your coding agent</h2>
-
-Install the pi extension. Every file edit your agent makes flows through
-deltoids — open `edit-tui` to watch the trace live, with full diffs and scope
-context for each step.
-
-<Code
-  code={`pi install https://github.com/juanibiapina/deltoids
-edit-tui`}
-  lang="bash"
-/>
-
-*Under the hood, the extension swaps your agent's `edit` and `write` tools
-for traced versions. Every call lands in a JSONL trace that `edit-tui`
-browses.*
-
-*Other agent integrations: coming.*
-
-## Install
-
-<Code
-  code={`git clone https://github.com/juanibiapina/deltoids.git
-cd deltoids
-
-cargo install --path crates/deltoids-cli  # provides: deltoids
-cargo install --path crates/edit-cli      # provides: edit, write, edit-tui`}
-  lang="bash"
-/>
-
-The second line installs `edit` and `write` alongside `edit-tui`. They are
-called by the pi integration — you don't invoke them directly.
+      </TabItem>
+    </Tabs>
+    <figure class="landing-figure">
+      <img src="/screenshots/lazygit.png" alt="Lazygit with deltoids configured as the pager, showing a diff in the right pane." />
+      <figcaption><a href="https://github.com/jesseduffield/lazygit">Lazygit</a> with <code>deltoids</code> as its pager.</figcaption>
+    </figure>
+    <details class="landing-faq">
+      <summary>How is this different from <code>git diff -W</code>?</summary>
+      <p>
+        <code>git diff -W</code> finds scope with regex (the
+        <code>xfuncname</code> patterns from gitattributes). deltoids parses
+        the file with tree-sitter, so the scope reflects the actual syntax
+        tree.
+      </p>
+    </details>
+  </div>
+</section>

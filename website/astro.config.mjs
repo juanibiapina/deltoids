@@ -11,6 +11,7 @@ export default defineConfig({
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/juanibiapina/deltoids' }],
 			sidebar: [],
 			pagefind: false,
+			customCss: ['./src/styles/landing.css'],
 		}),
 	],
 });

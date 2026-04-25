@@ -62,9 +62,12 @@ website/
   astro.config.mjs        # Astro + Starlight configuration
   src/content/docs/       # Markdown/MDX pages (Starlight content collection)
   public/                 # Static assets served as-is
+  SCREENSHOTS.md          # Recipes for reproducing landing-page screenshots
 ```
 
 Local dev (from `website/`): `npm install`, `npm run dev` (`:4321`), `npm run build`, `npm run preview`.
+
+Landing-page screenshots: see `website/SCREENSHOTS.md` for capture recipes.
 
 ## Key Patterns
 

@@ -53,6 +53,19 @@ crates/
     tests/tui_cli.rs    # Integration tests for edit + write + edit-tui interaction
 ```
 
+## Website
+
+Marketing/landing site for `deltoids.dev`, built with Astro + Starlight.
+
+```
+website/
+  astro.config.mjs        # Astro + Starlight configuration
+  src/content/docs/       # Markdown/MDX pages (Starlight content collection)
+  public/                 # Static assets served as-is
+```
+
+Local dev (from `website/`): `npm install`, `npm run dev` (`:4321`), `npm run build`, `npm run preview`.
+
 ## Key Patterns
 
 - **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`).

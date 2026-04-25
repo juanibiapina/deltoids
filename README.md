@@ -4,6 +4,8 @@
 
 Tools for reviewing code in the agentic era.
 
+Website: <https://deltoids.dev>
+
 ## Installation
 
 **From source:**

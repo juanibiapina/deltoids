@@ -1,40 +1,77 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
-template: splash # Remove or comment out this line to display the site sidebar on this page.
+title: deltoids — better diffs for terminal and agent
+description: deltoids adds tree-sitter scope to every diff — drop it into git as a pager, or watch every edit your coding agent makes.
+template: splash
 hero:
-  tagline: Congrats on setting up a new Starlight project!
-  image:
-    file: ../../assets/houston.webp
+  tagline: Better diffs. For your terminal and your agent.
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: Use as a diff pager
+      link: '#pager'
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
+    - text: Follow your agent
+      link: '#agent'
+      icon: right-arrow
+      variant: secondary
+    - text: View on GitHub
+      link: https://github.com/juanibiapina/deltoids
       icon: external
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Next steps
+deltoids adds tree-sitter scope to every diff — drop it into git as a pager,
+or watch every edit your coding agent makes.
 
-<CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
-	</Card>
-	<Card title="Change page layout" icon="document">
-		Delete `template: splash` in `src/content/docs/index.mdx` to display a
-		sidebar on this page.
-	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
-	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
-	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
-	</Card>
-</CardGrid>
+<h2 id="pager">Use as a diff pager</h2>
+
+Drop-in for `git diff`, `git show`, lazygit, or any unified diff. Hunks expand
+to show the enclosing function, class, or config block, so you don't have to
+scroll to reconstruct context.
+
+<Tabs>
+  <TabItem label="Pipe">
+    <Code code="git diff | deltoids" lang="bash" />
+  </TabItem>
+  <TabItem label="Git pager">
+    <Code code="git config --global core.pager 'deltoids | less -R'" lang="bash" />
+  </TabItem>
+  <TabItem label="Lazygit">
+    <Code code={`# ~/.config/lazygit/config.yml
+git:
+  paging:
+    pager: deltoids`} lang="yaml" />
+  </TabItem>
+</Tabs>
+
+<h2 id="agent">Follow your coding agent</h2>
+
+Install the pi extension. Every file edit your agent makes flows through
+deltoids — open `edit-tui` to watch the trace live, with full diffs and scope
+context for each step.
+
+<Code
+  code={`pi install https://github.com/juanibiapina/deltoids
+edit-tui`}
+  lang="bash"
+/>
+
+*Under the hood, the extension swaps your agent's `edit` and `write` tools
+for traced versions. Every call lands in a JSONL trace that `edit-tui`
+browses.*
+
+*Other agent integrations: coming.*
+
+## Install
+
+<Code
+  code={`git clone https://github.com/juanibiapina/deltoids.git
+cd deltoids
+
+cargo install --path crates/deltoids-cli  # provides: deltoids
+cargo install --path crates/edit-cli      # provides: edit, write, edit-tui`}
+  lang="bash"
+/>
+
+The second line installs `edit` and `write` alongside `edit-tui`. They are
+called by the pi integration — you don't invoke them directly.

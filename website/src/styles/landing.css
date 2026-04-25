@@ -7,6 +7,42 @@
  * at 90rem, and alternates background for separation.
  */
 
+/* ---- Theme palette (overrides Starlight defaults). ---- */
+/* Tokyo Night (dark). */
+:root {
+	--sl-color-accent-low: #1e2030;
+	--sl-color-accent: #7aa2f7;
+	--sl-color-accent-high: #b4d0ff;
+	--sl-color-white: #ffffff;
+	--sl-color-gray-1: #c0caf5;
+	--sl-color-gray-2: #a9b1d6;
+	--sl-color-gray-3: #9aa5ce;
+	--sl-color-gray-4: #565f89;
+	--sl-color-gray-5: #414868;
+	--sl-color-gray-6: #24283b;
+	--sl-color-black: #1a1b26;
+}
+/* Tokyo Night Day (light). */
+/* Body and heading grays are neutral dark slate (no blue tint); only the
+ * accent token stays blue (tokyonight-day blue7 #0f4b6e), so the GitHub
+ * link, eyebrow, and comparison caption read as the single accent surface.
+ * All pairs clear WCAG AA against both the page bg (#e1e2e7) and the
+ * alt-section bg (#c4cbd9). */
+:root[data-theme='light'] {
+	--sl-color-accent-low: #b6c8e8;
+	--sl-color-accent: #0f4b6e;
+	--sl-color-accent-high: #0f4b6e;
+	--sl-color-white: #1a1b26;
+	--sl-color-gray-1: #1f2335;
+	--sl-color-gray-2: #2a2f3d;
+	--sl-color-gray-3: #4c505e;
+	--sl-color-gray-4: #6b7180;
+	--sl-color-gray-5: #a8aecb;
+	--sl-color-gray-6: #c4cbd9;
+	--sl-color-gray-7: #d5d6db;
+	--sl-color-black: #e1e2e7;
+}
+
 /* Starlight auto-renders an <h1 id="_top"> inside its own .content-panel when
  * no `hero:` frontmatter is set. The hero section provides its own h1, so
  * hide that wrapper entirely and remove the hairline + padding it adds above

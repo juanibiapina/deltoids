@@ -152,6 +152,10 @@
 	margin: 2.5rem 0 0;
 }
 
+.landing-figure picture {
+	display: block;
+}
+
 .landing-figure img {
 	width: 100%;
 	height: auto;
@@ -178,6 +182,10 @@
 
 .comparison figure {
 	margin: 0;
+}
+
+.comparison picture {
+	display: block;
 }
 
 .comparison img {

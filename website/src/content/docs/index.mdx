@@ -4,7 +4,12 @@ description: deltoids expands every hunk in a unified diff to include the entire
 template: splash
 ---
 
+import { Picture } from 'astro:assets';
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
+import deltaImg from '../../assets/screenshots/delta.png';
+import deltoidsImg from '../../assets/screenshots/deltoids.png';
+import editTuiImg from '../../assets/screenshots/edit-tui.png';
+import lazygitImg from '../../assets/screenshots/lazygit.png';
 
 <section class="landing-section landing-hero">
   <div class="landing-container">
@@ -17,11 +22,23 @@ import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
     <div class="comparison">
       <figure>
         <figcaption>Default diff</figcaption>
-        <img src="/screenshots/delta.png" alt="Default git diff: a hunk header and three lines of context above and below the change." />
+        <Picture
+          src={deltaImg}
+          formats={['avif', 'webp']}
+          widths={[640, 1280]}
+          sizes="(max-width: 60rem) calc(100vw - 2rem), 44rem"
+          alt="Default git diff: a hunk header and three lines of context above and below the change."
+        />
       </figure>
       <figure>
         <figcaption><code>deltoids</code>: the whole enclosing function</figcaption>
-        <img src="/screenshots/deltoids.png" alt="Same diff with the entire enclosing function expanded as context, from signature to closing brace." />
+        <Picture
+          src={deltoidsImg}
+          formats={['avif', 'webp']}
+          widths={[640, 1280]}
+          sizes="(max-width: 60rem) calc(100vw - 2rem), 44rem"
+          alt="Same diff with the entire enclosing function expanded as context, from signature to closing brace."
+        />
       </figure>
     </div>
     <p class="landing-hero-cta">
@@ -42,7 +59,13 @@ edit-tui`}
       lang="bash"
     />
     <figure class="landing-figure">
-      <img src="/screenshots/edit-tui.png" alt="edit-tui browsing an agent trace: the left pane lists each edit with a one-line reason; the right pane shows the diff with deltoids' function breadcrumbs." />
+      <Picture
+        src={editTuiImg}
+        formats={['avif', 'webp']}
+        widths={[800, 1600, 2400]}
+        sizes="(max-width: 90rem) calc(100vw - 2rem), 88rem"
+        alt="edit-tui browsing an agent trace: the left pane lists each edit with a one-line reason; the right pane shows the diff with deltoids' function breadcrumbs."
+      />
     </figure>
     <p class="landing-aside">
       Traces are plain JSONL on disk under <code>$XDG_DATA_HOME/edit/traces/</code>. Other agent integrations: coming.
@@ -77,7 +100,13 @@ git:
       </TabItem>
     </Tabs>
     <figure class="landing-figure">
-      <img src="/screenshots/lazygit.png" alt="Lazygit with deltoids configured as the pager, showing a diff in the right pane." />
+      <Picture
+        src={lazygitImg}
+        formats={['avif', 'webp']}
+        widths={[800, 1600, 2400]}
+        sizes="(max-width: 90rem) calc(100vw - 2rem), 88rem"
+        alt="Lazygit with deltoids configured as the pager, showing a diff in the right pane."
+      />
       <figcaption><a href="https://github.com/jesseduffield/lazygit">Lazygit</a> with <code>deltoids</code> as its pager.</figcaption>
     </figure>
     <details class="landing-faq">

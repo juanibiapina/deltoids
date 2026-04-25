@@ -12,6 +12,12 @@ export default defineConfig({
 			sidebar: [],
 			pagefind: false,
 			customCss: ['./src/styles/landing.css'],
+			expressiveCode: {
+				// `night-owl` (default dark) renders shell args in #3B61B0 which
+				// fails WCAG AA on the light-mode codeblock background.
+				// `github-light` is high-contrast and pairs visually with night-owl.
+				themes: ['night-owl', 'github-light'],
+			},
 		}),
 	],
 });

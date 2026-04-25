@@ -1,23 +1,18 @@
 ---
-title: 'deltoids: diffs with context'
+title: 'deltoids'
 description: deltoids expands every hunk in a unified diff to include the entire enclosing function, class, or block. Use it as a diff pager for git, gh, or lazygit, or as a viewer for coding-agent edit traces.
 template: splash
-hero:
-  tagline: A diff filter that expands every hunk to include the enclosing function or block.
-  actions:
-    - text: View on GitHub
-      link: https://github.com/juanibiapina/deltoids
-      icon: external
 ---
 
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
 
-<section class="landing-section">
+<section class="landing-section landing-hero">
   <div class="landing-container">
-    <h2 class="landing-section-title">Context-aware diffs</h2>
+    <h1 class="landing-section-title">Diffs with context.</h1>
     <p class="landing-section-lead">
-      deltoids expands every hunk in a unified diff to include the enclosing
-      function, class, or block. Scope is resolved with tree-sitter.
+      <code>deltoids</code> expands every hunk in a unified diff to include
+      the enclosing function, class, or block. Scope is resolved with
+      tree-sitter.
     </p>
     <div class="comparison">
       <figure>
@@ -25,10 +20,13 @@ import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
         <img src="/screenshots/delta.png" alt="Default git diff: a hunk header and three lines of context above and below the change." />
       </figure>
       <figure>
-        <figcaption>The whole enclosing function</figcaption>
+        <figcaption><code>deltoids</code>: the whole enclosing function</figcaption>
         <img src="/screenshots/deltoids.png" alt="Same diff with the entire enclosing function expanded as context, from signature to closing brace." />
       </figure>
     </div>
+    <p class="landing-hero-cta">
+      <a href="https://github.com/juanibiapina/deltoids">View on GitHub →</a>
+    </p>
   </div>
 </section>
 
@@ -36,7 +34,7 @@ import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
   <div class="landing-container">
     <h2 class="landing-section-title">Coding agents</h2>
     <p class="landing-section-lead">
-      Review your coding agent's edits change by change, with the agent's explanation for each. Magic scope included.
+      Review your coding agent's edits change by change, with the agent's explanation for each. Context included.
     </p>
     <Code
       code={`pi install https://github.com/juanibiapina/deltoids
@@ -56,9 +54,9 @@ edit-tui`}
   <div class="landing-container">
     <h2 class="landing-section-title">Use it anywhere</h2>
     <p class="landing-section-lead">
-      deltoids reads a unified diff on stdin and writes it back with each
-      hunk expanded. Pipe <code>git diff</code>, <code>gh pr diff</code>, or
-      set it as the pager for git or{' '}
+      <code>deltoids</code> reads a unified diff on stdin and writes it back
+      with each hunk expanded. Pipe <code>git diff</code>,{' '}
+      <code>gh pr diff</code>, or set it as the pager for git or{' '}
       <a href="https://github.com/jesseduffield/lazygit">lazygit</a>.
     </p>
     <Tabs>
@@ -86,9 +84,8 @@ git:
       <summary>How is this different from <code>git diff -W</code>?</summary>
       <p>
         <code>git diff -W</code> finds scope with regex (the
-        <code>xfuncname</code> patterns from gitattributes). deltoids parses
-        the file with tree-sitter, so the scope reflects the actual syntax
-        tree.
+        <code>xfuncname</code> patterns from gitattributes).{' '}
+        <code>deltoids</code> parses the file with tree-sitter.
       </p>
     </details>
   </div>

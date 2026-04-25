@@ -1,15 +1,22 @@
 /*
  * Landing page styles.
  *
- * Layout: a Starlight splash hero followed by full-viewport sections.
- * Each section breaks out of Starlight's content column to span the viewport,
- * caps inner content at 90rem, and alternates background for separation.
+ * Layout: a stack of full-viewport sections. The first section (.landing-hero)
+ * acts as the hero — title, lead, comparison, GitHub link. Each section breaks
+ * out of Starlight's content column to span the viewport, caps inner content
+ * at 90rem, and alternates background for separation.
  */
 
-/* ---- Splash hero (Starlight built-in): fill the viewport. ---- */
-.hero {
-	min-height: calc(100vh - var(--sl-nav-height, 4rem));
-	align-items: center;
+/* Starlight auto-renders an <h1 id="_top"> inside its own .content-panel when
+ * no `hero:` frontmatter is set. The hero section provides its own h1, so
+ * hide that wrapper entirely and remove the hairline + padding it adds above
+ * the next panel. */
+.content-panel:has(#_top) {
+	display: none;
+}
+.content-panel:has(#_top) + .content-panel {
+	border-top: none;
+	padding-top: 0;
 }
 
 /* ---- Custom landing sections. ---- */
@@ -98,6 +105,12 @@
 	line-height: 1.6;
 }
 
+/* ---- Hero CTA link. ---- */
+.landing-hero-cta {
+	margin-top: 2.5rem;
+	font-size: 1rem;
+}
+
 /* ---- Single-figure block (edit-tui, lazygit screenshots). ---- */
 .landing-figure {
 	margin: 2.5rem 0 0;
@@ -149,9 +162,6 @@
 
 /* ---- Narrow viewports: relax full-viewport heights, stack the pair. ---- */
 @media (max-width: 60rem) {
-	.hero {
-		min-height: auto;
-	}
 	.landing-section {
 		min-height: auto;
 		padding-block: 4rem;

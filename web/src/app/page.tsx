@@ -1,23 +1,21 @@
 import { Nav } from "@/components/sections/Nav";
 import { Hero } from "@/components/sections/Hero";
-import { Tooling } from "@/components/sections/Tooling";
-import { Features } from "@/components/sections/Features";
-import { Wall } from "@/components/sections/Wall";
+import { Pager } from "@/components/sections/Pager";
+import { Agents } from "@/components/sections/Agents";
 import { Faq } from "@/components/sections/Faq";
-import { Cta } from "@/components/sections/Cta";
 import { Footer } from "@/components/sections/Footer";
+import { getDeltoidsStars } from "@/lib/github";
 
-export default function Home() {
+export default async function Home() {
+  const stars = await getDeltoidsStars();
   return (
     <>
-      <Nav />
+      <Nav stars={stars} />
       <main>
         <Hero />
-        <Tooling />
-        <Features />
-        <Wall />
+        <Pager />
+        <Agents />
         <Faq />
-        <Cta />
       </main>
       <Footer />
     </>

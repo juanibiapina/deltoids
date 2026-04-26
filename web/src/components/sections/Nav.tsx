@@ -2,17 +2,18 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { Star } from "lucide-react";
 import { GitHubIcon } from "@/components/icons/GitHubIcon";
 import { Button } from "@/components/ui/button";
+import { formatStars } from "@/lib/github";
 import { cn } from "@/lib/utils";
 
 const NAV_LINKS = [
   { href: "#features", label: "Features" },
-  { href: "#whats-inside", label: "What's inside" },
   { href: "#faq", label: "FAQ" },
 ];
 
-export function Nav() {
+export function Nav({ stars }: { stars: number | null }) {
   const [scrolled, setScrolled] = React.useState(false);
 
   React.useEffect(() => {
@@ -56,13 +57,22 @@ export function Nav() {
               href="https://github.com/juanibiapina/deltoids"
               target="_blank"
               rel="noreferrer"
+              aria-label={
+                stars !== null
+                  ? `Star deltoids on GitHub (${stars} stars)`
+                  : "View deltoids on GitHub"
+              }
             >
               <GitHubIcon />
-              GitHub
+              {stars !== null ? (
+                <>
+                  <Star className="size-3.5 fill-current" />
+                  <span className="tabular-nums">{formatStars(stars)}</span>
+                </>
+              ) : (
+                "GitHub"
+              )}
             </a>
-          </Button>
-          <Button asChild size="sm">
-            <a href="#install">Install</a>
           </Button>
         </div>
       </div>

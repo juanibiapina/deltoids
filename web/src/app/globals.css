@@ -17,17 +17,6 @@
   --color-accent: #7aa2f7;
   --color-accent-strong: #b4d0ff;
 
-  /* Hand-tokenized syntax colors. Match tokyonight-night roughly. */
-  --color-tok-keyword: #bb9af7;
-  --color-tok-fn: #7aa2f7;
-  --color-tok-type: #2ac3de;
-  --color-tok-string: #9ece6a;
-  --color-tok-number: #ff9e64;
-  --color-tok-comment: #565f89;
-  --color-tok-punct: #a9b1d6;
-  --color-tok-prop: #73daca;
-  --color-tok-ident: #c0caf5;
-
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

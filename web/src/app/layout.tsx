@@ -18,11 +18,11 @@ const SITE_URL = "https://deltoids.dev";
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "deltoids — diffs with context",
-    template: "%s — deltoids",
+    default: "deltoids: diffs for the agentic era",
+    template: "%s · deltoids",
   },
   description:
-    "deltoids expands every hunk in a unified diff to include the entire enclosing function, class, or block. Tree-sitter resolved. Pipe git diff, gh pr diff, or set as your pager.",
+    "deltoids expands every hunk in a unified diff to include the entire enclosing context. Tree-sitter resolved. Pipe git diff, gh pr diff, or set as your pager.",
   applicationName: "deltoids",
   authors: [{ name: "Juan Ibiapina", url: "https://github.com/juanibiapina" }],
   keywords: [
@@ -39,15 +39,15 @@ export const metadata: Metadata = {
     type: "website",
     url: SITE_URL,
     siteName: "deltoids",
-    title: "deltoids — diffs with context",
+    title: "deltoids: diffs for the agentic era",
     description:
-      "Tree-sitter-aware diff pager. See the whole enclosing function, not just three lines of context.",
+      "Tree-sitter-aware diff pager. See the whole enclosing context, not just three lines.",
   },
   twitter: {
     card: "summary_large_image",
-    title: "deltoids — diffs with context",
+    title: "deltoids: diffs for the agentic era",
     description:
-      "Tree-sitter-aware diff pager. See the whole enclosing function, not just three lines of context.",
+      "Tree-sitter-aware diff pager. See the whole enclosing context, not just three lines.",
   },
 };
 

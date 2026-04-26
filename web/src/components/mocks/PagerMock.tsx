@@ -10,7 +10,7 @@ export function PagerMock() {
   return (
     <Screenshot
       src="/screenshots/lazygit.png"
-      alt="Lazygit with deltoids configured as the pager. The right pane shows a unified diff rendered by deltoids, complete with the cyan boxed scope context that names the enclosing function."
+      alt="Lazygit with deltoids configured as the pager. The right pane shows a unified diff rendered by deltoids, complete with the cyan boxed scope context that names the enclosing block."
       width={4000}
       height={2678}
     />

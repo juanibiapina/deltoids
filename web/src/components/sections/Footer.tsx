@@ -7,7 +7,7 @@ export function Footer() {
         <div className="flex items-center gap-3 font-mono text-sm">
           <span className="text-fg">deltoids</span>
           <span className="text-fg-dim">·</span>
-          <span className="text-fg-muted">diffs with context</span>
+          <span className="text-fg-muted">diffs for the agentic era</span>
         </div>
         <a
           href="https://github.com/juanibiapina/deltoids/blob/main/LICENSE"

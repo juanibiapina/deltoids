@@ -17,17 +17,18 @@ export function Hero() {
         <div className="mx-auto max-w-3xl text-center">
           <Reveal>
             <h1 className="text-balance text-[clamp(2.25rem,5vw,3.75rem)] font-semibold leading-[1.05] tracking-tight">
-              Diffs with{" "}
+              Diffs for the{" "}
               <span className="bg-gradient-to-r from-accent-strong to-accent bg-clip-text text-transparent">
-                context.
+                agentic era.
               </span>
             </h1>
           </Reveal>
           <Reveal delay={0.05}>
             <p className="mx-auto mt-5 max-w-2xl text-pretty text-lg leading-relaxed text-fg-muted">
-              <span className="font-mono text-fg">deltoids</span> expands
-              every hunk in a unified diff to include the enclosing function,
-              class, or block. Scope is resolved with tree-sitter.
+              <span className="font-mono text-fg">deltoids</span>
+              {" "}expands every hunk to include the enclosing context.
+              Hold the code in your head even when you&apos;re not the one
+              typing it.
             </p>
           </Reveal>
           <Reveal delay={0.1}>

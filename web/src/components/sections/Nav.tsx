@@ -81,7 +81,7 @@ export function Nav({ stars }: { stars: number | null }) {
 }
 
 function DeltoidsMark() {
-  // Two stacked deltas (Δ) that mirror the "diff with context" idea.
+  // Two stacked deltas (Δ): diffs as the primitive of the agentic era.
   return (
     <svg
       viewBox="0 0 24 24"

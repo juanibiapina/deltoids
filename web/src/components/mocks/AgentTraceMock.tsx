@@ -3,9 +3,9 @@ import { Screenshot } from "./Screenshot";
 
 /**
  * Same `edit-tui` screenshot as the hero, used here to anchor the agent
- * traces feature. Reusing the image keeps the page coherent — there's
- * one TUI, two stories about it (hero: "look at it", agents: "this is
- * how you review your agent's edits").
+ * traces feature. Reusing the image keeps the page coherent: one TUI,
+ * two stories about it (hero: "look at it", agents: "this is how you
+ * review your agent's edits").
  */
 export function AgentTraceMock() {
   return (

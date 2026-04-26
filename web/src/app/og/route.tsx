@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const title = (searchParams.get("title") ?? "deltoids").slice(0, 80);
   const subtitle = (
-    searchParams.get("subtitle") ?? "Diffs with context."
+    searchParams.get("subtitle") ?? "Diffs for the agentic era."
   ).slice(0, 160);
 
   return new ImageResponse(

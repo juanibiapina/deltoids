@@ -42,11 +42,11 @@ git:
 
 export function Pager() {
   return (
-    <section id="pager" className="border-b border-line/60">
+    <section id="pager" className="border-b border-line/60 bg-bg-elev/40">
       <div className="mx-auto w-full max-w-6xl px-4 py-20 sm:px-6 md:py-28">
         <Reveal className="mx-auto max-w-3xl text-center">
           <h2 className="text-balance text-[clamp(1.75rem,3.4vw,2.5rem)] font-semibold leading-tight tracking-tight">
-            Diff pager.
+            Use as a diff pager.
           </h2>
         </Reveal>
         <Reveal delay={0.05} className="mx-auto mt-8 max-w-2xl">

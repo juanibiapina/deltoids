@@ -35,14 +35,15 @@ const AGENTS: {
 
 export function Agents() {
   return (
-    <section id="agents" className="border-b border-line/60 bg-bg-elev/40">
+    <section id="agents" className="border-b border-line/60">
       <div className="mx-auto w-full max-w-6xl px-4 py-20 sm:px-6 md:py-28">
         <Reveal className="mx-auto max-w-3xl text-center">
           <h2 className="text-balance text-[clamp(1.75rem,3.4vw,2.5rem)] font-semibold leading-tight tracking-tight">
-            Coding agents.
+            Review each edit by coding agents.
           </h2>
           <p className="mx-auto mt-5 max-w-2xl text-pretty text-base leading-relaxed text-fg-muted">
-            Every agent edit, with the agent&apos;s reason and deltoids
+            <span className="font-mono text-fg">edit-tui</span>
+            {" "}browses every agent edit, with its reason and semantic
             context.
           </p>
         </Reveal>
@@ -72,13 +73,6 @@ export function Agents() {
         </Reveal>
         <Reveal delay={0.1} y={20} className="mt-12 md:mt-16">
           <AgentTraceMock />
-        </Reveal>
-        <Reveal delay={0.12} className="mx-auto mt-6 max-w-2xl text-center text-sm text-fg-dim">
-          Traces are plain JSONL on disk under{" "}
-          <code className="font-mono text-fg">
-            $XDG_DATA_HOME/edit/traces/
-          </code>
-          .
         </Reveal>
       </div>
     </section>

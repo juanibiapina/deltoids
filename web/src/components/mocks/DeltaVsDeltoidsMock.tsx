@@ -4,10 +4,10 @@ import { Screenshot } from "./Screenshot";
 /**
  * Side-by-side comparison: a default `git diff | delta` (three lines of
  * context) next to the same diff piped through `deltoids` (entire
- * enclosing function expanded as context). Real screenshots taken from
+ * enclosing context expanded). Real screenshots taken from
  * the Astro landing page.
  *
- * The deltoids screenshot is intentionally taller — that height
+ * The deltoids screenshot is intentionally taller. That height
  * difference *is* the pitch.
  */
 export function DeltaVsDeltoidsMock() {
@@ -30,7 +30,7 @@ export function DeltaVsDeltoidsMock() {
         </figcaption>
         <Screenshot
           src="/screenshots/deltoids.png"
-          alt="Same diff piped through deltoids: the entire enclosing function is included as context, from signature to closing brace, with a cyan boxed scope breadcrumb above the hunk."
+          alt="Same diff piped through deltoids: the entire enclosing context is included, from signature to closing brace, with a cyan boxed scope breadcrumb above the hunk."
           width={4353}
           height={4678}
         />

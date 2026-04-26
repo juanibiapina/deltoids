@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "deltoids — diffs with context";
+export const alt = "deltoids: diffs for the agentic era";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -76,7 +76,7 @@ export default async function OG() {
               maxWidth: "880px",
             }}
           >
-            <span style={{ marginRight: "0.35em" }}>Diffs with</span>
+            <span style={{ marginRight: "0.35em" }}>Diffs for the</span>
             <span
               style={{
                 background:
@@ -85,7 +85,7 @@ export default async function OG() {
                 color: "transparent",
               }}
             >
-              context.
+              agentic era.
             </span>
           </div>
           <div
@@ -97,8 +97,8 @@ export default async function OG() {
               lineHeight: 1.4,
             }}
           >
-            Tree-sitter-aware diff pager. See the whole enclosing function,
-            not three lines of context.
+            Tree-sitter-aware diff pager. See the whole enclosing context,
+            not three lines.
           </div>
         </div>
 

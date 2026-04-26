@@ -39,7 +39,7 @@ html {
   color: var(--color-accent-strong);
 }
 
-/* Radix Accordion open/close — drives smooth height transitions. */
+/* Radix Accordion open/close: drives smooth height transitions. */
 @keyframes accordion-down {
   from {
     height: 0;

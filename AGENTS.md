@@ -69,6 +69,19 @@ Local dev (from `website/`): `npm install`, `npm run dev` (`:4321`), `npm run bu
 
 Landing-page screenshots: see `website/SCREENSHOTS.md` for capture recipes.
 
+## Web (Next.js, parallel)
+
+A second landing site lives under `web/` (Next.js 15 App Router, Tailwind
+v4, shadcn primitives, Motion, `@vercel/og`). It deploys to Vercel and uses
+**hand-coded React product mocks** instead of screenshots. Astro under
+`website/` keeps deploying to GitHub Pages; the two coexist until a
+decision is made.
+
+Local dev (from `web/`): `npm install`, `npm run dev` (`:3000`),
+`npm run build`, `npm run lint`, `npx tsc --noEmit`.
+
+See `web/AGENTS.md` for component conventions.
+
 ## Key Patterns
 
 - **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`).

@@ -13,7 +13,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-pub use trace_store::trace_root_directory;
+pub use trace_store::{HistoryEntry, TraceSummary, trace_root_directory};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,39 +142,6 @@ struct WriteFailureHistoryEntry {
     ok: bool,
     content: String,
     error: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct HistoryEntry {
-    pub v: u8,
-    pub tool: String,
-    #[serde(rename = "traceId")]
-    pub trace_id: String,
-    pub timestamp: String,
-    pub cwd: String,
-    pub path: String,
-    pub summary: String,
-    pub ok: bool,
-    #[serde(default)]
-    pub edits: Vec<TextEdit>,
-    #[serde(default)]
-    pub content: String,
-    #[serde(default)]
-    pub diff: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub hunks: Vec<deltoids::Hunk>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceSummary {
-    pub trace_id: String,
-    pub entry_count: usize,
-    pub last_timestamp: String,
-    pub last_tool: String,
-    pub last_path: String,
-    pub last_summary: String,
 }
 
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {

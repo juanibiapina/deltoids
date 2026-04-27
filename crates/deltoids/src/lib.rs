@@ -8,4 +8,4 @@ pub mod syntax;
 
 pub use config::{SyntaxAssets, Theme};
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
-pub use scope::{Diff, DiffLine, Hunk, LineKind, ScopeNode};
+pub use scope::{Diff, DiffLine, Hunk, HunkRun, LineKind, ScopeNode};

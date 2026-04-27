@@ -66,6 +66,57 @@ pub struct Hunk {
     pub ancestors: Vec<ScopeNode>,
 }
 
+/// One run of consecutive lines inside a `Hunk`.
+///
+/// `Context` is a single unchanged line. `Change` is a maximal run of
+/// consecutive `Added`/`Removed` lines, ready to feed into intraline
+/// emphasis pairing. Splitting on context boundaries matches what
+/// renderers need: context lines render directly, change runs render as
+/// a paired subhunk.
+#[derive(Debug, Clone, Copy)]
+pub enum HunkRun<'a> {
+    Context(&'a DiffLine),
+    Change(&'a [DiffLine]),
+}
+
+impl Hunk {
+    /// Walk the hunk as a sequence of context singletons and maximal
+    /// change runs.
+    pub fn runs(&self) -> impl Iterator<Item = HunkRun<'_>> {
+        HunkRunsIter {
+            lines: &self.lines,
+            index: 0,
+        }
+    }
+}
+
+struct HunkRunsIter<'a> {
+    lines: &'a [DiffLine],
+    index: usize,
+}
+
+impl<'a> Iterator for HunkRunsIter<'a> {
+    type Item = HunkRun<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.lines.len() {
+            return None;
+        }
+        let line = &self.lines[self.index];
+        if matches!(line.kind, LineKind::Context) {
+            self.index += 1;
+            return Some(HunkRun::Context(line));
+        }
+        let start = self.index;
+        while self.index < self.lines.len()
+            && !matches!(self.lines[self.index].kind, LineKind::Context)
+        {
+            self.index += 1;
+        }
+        Some(HunkRun::Change(&self.lines[start..self.index]))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopeNode {
     pub kind: String,
@@ -218,6 +269,73 @@ mod tests {
     fn compute_empty_returns_empty() {
         let diff = Diff::compute("", "", "test.rs");
         assert!(diff.hunks().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Hunk::runs tests
+    // -----------------------------------------------------------------------
+
+    fn dl(kind: LineKind, content: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn runs_groups_consecutive_change_lines_and_emits_context_singletons() {
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            ancestors: Vec::new(),
+            lines: vec![
+                dl(LineKind::Context, "alpha"),
+                dl(LineKind::Removed, "old1"),
+                dl(LineKind::Removed, "old2"),
+                dl(LineKind::Added, "new1"),
+                dl(LineKind::Context, "beta"),
+                dl(LineKind::Added, "new2"),
+            ],
+        };
+
+        let runs: Vec<HunkRun<'_>> = hunk.runs().collect();
+
+        assert_eq!(runs.len(), 4);
+        match &runs[0] {
+            HunkRun::Context(line) => assert_eq!(line.content, "alpha"),
+            other => panic!("expected Context, got {other:?}"),
+        }
+        match &runs[1] {
+            HunkRun::Change(slice) => {
+                assert_eq!(slice.len(), 3);
+                assert_eq!(slice[0].content, "old1");
+                assert_eq!(slice[1].content, "old2");
+                assert_eq!(slice[2].content, "new1");
+            }
+            other => panic!("expected Change, got {other:?}"),
+        }
+        match &runs[2] {
+            HunkRun::Context(line) => assert_eq!(line.content, "beta"),
+            other => panic!("expected Context, got {other:?}"),
+        }
+        match &runs[3] {
+            HunkRun::Change(slice) => {
+                assert_eq!(slice.len(), 1);
+                assert_eq!(slice[0].content, "new2");
+            }
+            other => panic!("expected Change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runs_empty_hunk_yields_no_runs() {
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            ancestors: Vec::new(),
+            lines: Vec::new(),
+        };
+        assert_eq!(hunk.runs().count(), 0);
     }
 
     #[test]

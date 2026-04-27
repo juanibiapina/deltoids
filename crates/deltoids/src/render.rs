@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::{SyntaxAssets, Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
 use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
-use crate::{Hunk, LineKind, ScopeNode};
+use crate::{Hunk, HunkRun, LineKind, ScopeNode};
 
 const TAB_WIDTH: usize = 4;
 
@@ -428,35 +428,27 @@ pub fn render_hunk(
         output.extend(render_breadcrumb_box(&hunk.ancestors, path, width, theme));
     }
 
-    // Render diff lines with intraline emphasis for consecutive +/- runs
-    let mut i = 0;
-    while i < hunk.lines.len() {
-        let line = &hunk.lines[i];
-
-        if matches!(line.kind, LineKind::Context) {
-            // Context lines render directly
-            output.push(render_diff_line(
-                &line.kind,
-                &line.content,
-                path,
-                width,
-                fill,
-                theme,
-            ));
-            i += 1;
-        } else {
-            // Collect consecutive +/- lines as a subhunk
-            let start = i;
-            while i < hunk.lines.len() && !matches!(hunk.lines[i].kind, LineKind::Context) {
-                i += 1;
+    // Render diff lines with intraline emphasis for consecutive +/- runs.
+    // `Hunk::runs` already groups change lines for us; we just dispatch.
+    for run in hunk.runs() {
+        match run {
+            HunkRun::Context(line) => {
+                output.push(render_diff_line(
+                    &line.kind,
+                    &line.content,
+                    path,
+                    width,
+                    fill,
+                    theme,
+                ));
             }
-
-            let subhunk: Vec<(LineKind, &str)> = hunk.lines[start..i]
-                .iter()
-                .map(|l| (l.kind.clone(), l.content.as_str()))
-                .collect();
-
-            output.extend(render_subhunk(&subhunk, path, width, fill, theme));
+            HunkRun::Change(slice) => {
+                let subhunk: Vec<(LineKind, &str)> = slice
+                    .iter()
+                    .map(|l| (l.kind.clone(), l.content.as_str()))
+                    .collect();
+                output.extend(render_subhunk(&subhunk, path, width, fill, theme));
+            }
         }
     }
 

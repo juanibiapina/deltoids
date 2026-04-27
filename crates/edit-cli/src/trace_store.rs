@@ -13,6 +13,72 @@ use ulid::Ulid;
 
 use crate::TextEdit;
 
+/// Handle on a trace root. Tests use `with_root(tempdir)` to bypass
+/// `XDG_DATA_HOME`; production uses `from_env()`.
+#[derive(Debug, Clone)]
+pub struct TraceStore {
+    root: PathBuf,
+}
+
+/// Result of resolving an optional caller-supplied trace id against the
+/// store. `reused` is true when the caller supplied an id that already
+/// existed; false when a fresh ULID was minted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedTrace {
+    pub(crate) trace_id: String,
+    pub(crate) reused: bool,
+}
+
+impl TraceStore {
+    /// Open a store rooted at `root`. The directory does not need to
+    /// exist; entries directories are created lazily on append.
+    pub fn with_root(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    /// Open a store at the env-resolved trace root
+    /// (`$XDG_DATA_HOME/edit/traces`, falling back to
+    /// `$HOME/.local/share/edit/traces`).
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self::with_root(trace_root_directory()?))
+    }
+
+    /// Path to a single trace's directory under this store.
+    pub(crate) fn trace_directory(&self, trace_id: &str) -> PathBuf {
+        self.root.join(trace_id)
+    }
+
+    /// True when this store already has an entries file for `trace_id`.
+    pub fn exists(&self, trace_id: &str) -> bool {
+        self.trace_directory(trace_id)
+            .join("entries.jsonl")
+            .exists()
+    }
+
+    /// Resolve a caller-supplied optional trace id.
+    ///
+    /// `Some(id)`: validate as ULID, confirm it exists in this store.
+    /// `None`: mint a fresh ULID for a new trace.
+    pub(crate) fn resolve(&self, trace_id: Option<&str>) -> Result<ResolvedTrace, String> {
+        match trace_id {
+            Some(trace_id) => {
+                validate_trace_id(trace_id)?;
+                if !self.exists(trace_id) {
+                    return Err(format!("Trace does not exist: {trace_id}"));
+                }
+                Ok(ResolvedTrace {
+                    trace_id: trace_id.to_string(),
+                    reused: true,
+                })
+            }
+            None => Ok(ResolvedTrace {
+                trace_id: Ulid::new().to_string(),
+                reused: false,
+            }),
+        }
+    }
+}
+
 /// Path to a single trace's directory under the trace root.
 pub(crate) fn trace_directory(trace_id: &str) -> Result<PathBuf, String> {
     Ok(trace_root_directory()?.join(trace_id))
@@ -80,4 +146,42 @@ pub struct TraceSummary {
     pub last_tool: String,
     pub last_path: String,
     pub last_summary: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_root_mints_fresh_ulid_when_no_id_provided() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+
+        let resolved = store.resolve(None).unwrap();
+
+        assert!(!resolved.reused);
+        assert!(Ulid::from_string(&resolved.trace_id).is_ok());
+    }
+
+    #[test]
+    fn with_root_rejects_unknown_trace_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        let unknown = Ulid::new().to_string();
+
+        let err = store.resolve(Some(&unknown)).unwrap_err();
+
+        assert!(err.contains("Trace does not exist"));
+        assert!(err.contains(&unknown));
+    }
+
+    #[test]
+    fn resolve_rejects_non_ulid_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+
+        let err = store.resolve(Some("not-a-ulid")).unwrap_err();
+
+        assert!(err.contains("Invalid trace id"));
+    }
 }

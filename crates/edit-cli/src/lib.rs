@@ -11,8 +11,8 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
 
+use trace_store::TraceStore;
 pub use trace_store::{HistoryEntry, TraceSummary, trace_root_directory};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,12 +66,6 @@ pub struct ToolError {
     pub error: String,
     pub trace_id: String,
     pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedTrace {
-    trace_id: String,
-    reused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +146,12 @@ pub fn execute_request_with_trace(
     request: EditRequest,
     trace_id: Option<&str>,
 ) -> Result<SuccessResponse, ToolError> {
-    let resolved_trace = resolve_trace_id(trace_id).map_err(|error| ToolError {
+    let store = TraceStore::from_env().map_err(|error| ToolError {
+        error,
+        trace_id: String::new(),
+        message: String::new(),
+    })?;
+    let resolved_trace = store.resolve(trace_id).map_err(|error| ToolError {
         error,
         trace_id: String::new(),
         message: String::new(),
@@ -177,7 +176,12 @@ pub fn execute_write_request_with_trace(
     request: WriteRequest,
     trace_id: Option<&str>,
 ) -> Result<SuccessResponse, ToolError> {
-    let resolved_trace = resolve_trace_id(trace_id).map_err(|error| ToolError {
+    let store = TraceStore::from_env().map_err(|error| ToolError {
+        error,
+        trace_id: String::new(),
+        message: String::new(),
+    })?;
+    let resolved_trace = store.resolve(trace_id).map_err(|error| ToolError {
         error,
         trace_id: String::new(),
         message: String::new(),
@@ -378,32 +382,6 @@ fn tool_error(
         trace_id: trace_id.clone(),
         message: success_message(&trace_id, reused_trace),
     }
-}
-
-fn resolve_trace_id(trace_id: Option<&str>) -> Result<ResolvedTrace, String> {
-    match trace_id {
-        Some(trace_id) => {
-            trace_store::validate_trace_id(trace_id)?;
-            if !trace_exists(trace_id)? {
-                return Err(format!("Trace does not exist: {trace_id}"));
-            }
-
-            Ok(ResolvedTrace {
-                trace_id: trace_id.to_string(),
-                reused: true,
-            })
-        }
-        None => Ok(ResolvedTrace {
-            trace_id: Ulid::new().to_string(),
-            reused: false,
-        }),
-    }
-}
-
-fn trace_exists(trace_id: &str) -> Result<bool, String> {
-    Ok(trace_store::trace_directory(trace_id)?
-        .join("entries.jsonl")
-        .exists())
 }
 
 fn current_timestamp() -> String {

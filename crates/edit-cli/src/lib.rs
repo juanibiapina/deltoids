@@ -1,16 +1,19 @@
 mod highlight;
 pub mod theme;
+pub mod trace_store;
 pub mod tui;
 
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{SecondsFormat, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
+
+pub use trace_store::trace_root_directory;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -413,7 +416,7 @@ fn tool_error(
 fn resolve_trace_id(trace_id: Option<&str>) -> Result<ResolvedTrace, String> {
     match trace_id {
         Some(trace_id) => {
-            validate_trace_id(trace_id)?;
+            trace_store::validate_trace_id(trace_id)?;
             if !trace_exists(trace_id)? {
                 return Err(format!("Trace does not exist: {trace_id}"));
             }
@@ -430,14 +433,10 @@ fn resolve_trace_id(trace_id: Option<&str>) -> Result<ResolvedTrace, String> {
     }
 }
 
-fn validate_trace_id(trace_id: &str) -> Result<(), String> {
-    Ulid::from_string(trace_id)
-        .map(|_| ())
-        .map_err(|_| format!("Invalid trace id: {trace_id}"))
-}
-
 fn trace_exists(trace_id: &str) -> Result<bool, String> {
-    Ok(trace_directory(trace_id)?.join("entries.jsonl").exists())
+    Ok(trace_store::trace_directory(trace_id)?
+        .join("entries.jsonl")
+        .exists())
 }
 
 fn current_timestamp() -> String {
@@ -451,7 +450,7 @@ fn current_working_directory() -> Result<String, String> {
 }
 
 fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), String> {
-    let trace_dir = trace_directory(trace_id)?;
+    let trace_dir = trace_store::trace_directory(trace_id)?;
     fs::create_dir_all(&trace_dir).map_err(|err| {
         format!(
             "Failed to create trace directory {}: {}",
@@ -503,9 +502,9 @@ fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), Str
 }
 
 pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String> {
-    validate_trace_id(trace_id)?;
+    trace_store::validate_trace_id(trace_id)?;
 
-    let entries_path = trace_directory(trace_id)?.join("entries.jsonl");
+    let entries_path = trace_store::trace_directory(trace_id)?.join("entries.jsonl");
     if !entries_path.exists() {
         return Err(format!("Trace not found: {trace_id}"));
     }
@@ -515,7 +514,7 @@ pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String>
 
 pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> {
     let cwd = current_working_directory()?;
-    let trace_root = trace_root_directory()?;
+    let trace_root = trace_store::trace_root_directory()?;
     if !trace_root.exists() {
         return Ok(Vec::new());
     }
@@ -532,7 +531,7 @@ pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> 
         }
 
         let trace_id = directory.file_name().to_string_lossy().into_owned();
-        if validate_trace_id(&trace_id).is_err() {
+        if trace_store::validate_trace_id(&trace_id).is_err() {
             continue;
         }
 
@@ -585,26 +584,6 @@ fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntr
     }
 
     Ok(entries)
-}
-
-fn trace_directory(trace_id: &str) -> Result<PathBuf, String> {
-    Ok(trace_root_directory()?.join(trace_id))
-}
-
-pub fn trace_root_directory() -> Result<PathBuf, String> {
-    Ok(data_home_directory()?.join("edit").join("traces"))
-}
-
-fn data_home_directory() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(path));
-    }
-
-    if let Some(home) = env::var_os("HOME") {
-        return Ok(PathBuf::from(home).join(".local").join("share"));
-    }
-
-    Err("Could not determine data home directory".to_string())
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), String> {

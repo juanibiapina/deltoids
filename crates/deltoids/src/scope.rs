@@ -38,6 +38,12 @@ struct ContextRange {
     /// If true, this range should not be merged with adjacent ranges
     /// (used for new scopes that should stay separate from siblings)
     prevent_merge: bool,
+    /// Identity of the anchoring scope as `(start, end)` line bounds in the
+    /// `ancestor_source` tree. `None` for default-context ranges. Used by
+    /// `merge_ranges` so adjacent ranges that anchor on different structures
+    /// stay separate hunks instead of producing one hunk with a misleading
+    /// breadcrumb.
+    scope_id: Option<(usize, usize)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +234,7 @@ fn default_context_range(
         ancestor_source,
         scope_line,
         prevent_merge: false,
+        scope_id: None,
     }
 }
 
@@ -241,8 +248,14 @@ struct ScopeRangeContext<'a> {
 }
 
 /// True when `scope.kind` belongs to the language's structure tier.
+///
+/// Promoted kinds (e.g. `public_field_definition` with an arrow-function
+/// value) are also considered structures. `enclosing_scopes` only
+/// constructs `ScopeNode`s of a promoted kind when the value field is
+/// function-like, so the kind alone is enough to identify them here.
 fn is_structure(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
     parsed.structure_kinds.contains(&scope.kind.as_str())
+        || parsed.promoted_kinds.contains(&scope.kind.as_str())
 }
 
 /// True when `scope.kind` belongs to the language's data tier.
@@ -253,10 +266,19 @@ fn is_data(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
 /// Pick the hunk-anchor scope for a range of lines.
 ///
 /// Strategy:
-/// 1. Prefer the innermost *structure* scope (function, class, etc.) that
-///    wraps the range and fits under `MAX_SCOPE_LINES`.
-/// 2. Otherwise fall back to the outermost *data* scope (JSON/YAML/TS object
-///    or array) that wraps the range and fits under `MAX_SCOPE_LINES`.
+/// 1. Prefer the innermost *structure* scope (function, class, method,
+///    promoted arrow-field) at the change first line that fits under
+///    `MAX_SCOPE_LINES`. The structure does not need to contain the whole
+///    change range; if the change extends past it (rare, multi-method
+///    edit), the hunk anchors on the structure containing the start.
+///    Critically we never climb past this innermost structure to an outer
+///    scope (e.g. the enclosing class) just because the inner one does
+///    not contain the whole range. Climbing produces hunks that include
+///    unrelated sibling methods, which is misleading.
+/// 2. If step 1 selected no structure (no enclosing structure exists, or
+///    the innermost one exceeds `MAX_SCOPE_LINES`), fall back to the
+///    outermost *data* scope (JSON/YAML/TS object or array) that wraps
+///    the range and fits under `MAX_SCOPE_LINES`.
 /// 3. Otherwise return `None` and let the caller use default 3-line context.
 fn scope_for_range(
     parsed: &crate::syntax::ParsedFile,
@@ -271,11 +293,13 @@ fn scope_for_range(
     };
     let fits = |scope: &ScopeNode| scope_bounds(scope).2 <= MAX_SCOPE_LINES;
 
-    // 1. Innermost structure that contains the range and fits.
-    if let Some(s) = scopes
-        .iter()
-        .rev()
-        .find(|s| is_structure(s, parsed) && contains_range(s) && fits(s))
+    // 1. Innermost structure that fits. We do NOT require it to contain
+    //    the whole range and we do NOT climb to outer structures when the
+    //    innermost one does not fit. If the innermost structure exists
+    //    but does not fit, fall through to the data tier (rare for code)
+    //    or to default context.
+    if let Some(s) = scopes.iter().rev().find(|s| is_structure(s, parsed))
+        && fits(s)
     {
         return Some(s.clone());
     }
@@ -296,6 +320,19 @@ fn scope_for_range(
 /// Uses the same structure-first, data-fallback strategy as `scope_for_range`.
 fn scope_at(parsed: &crate::syntax::ParsedFile, source: &[u8], line: usize) -> Option<ScopeNode> {
     scope_for_range(parsed, source, line, line + 1)
+}
+
+/// Innermost named structure (function, class, method, promoted arrow-field)
+/// that encloses `line`, regardless of size. Used as the breadcrumb anchor
+/// and `scope_id` even when the structure is too large to expand the hunk
+/// to its full extent.
+fn innermost_structure_at(
+    parsed: &crate::syntax::ParsedFile,
+    source: &[u8],
+    line: usize,
+) -> Option<ScopeNode> {
+    let scopes = enclosing_scopes(parsed.tree.root_node(), source, line, parsed);
+    scopes.into_iter().rev().find(|s| is_structure(s, parsed))
 }
 
 fn scope_bounds(scope: &ScopeNode) -> (usize, usize, usize) {
@@ -389,16 +426,27 @@ fn context_ranges_for_insert(
         new_end,
         ctx.total_new,
     ) {
+        let scope_id =
+            scope_at(ctx.new_parsed, ctx.new_source, scope_line.saturating_sub(1)).map(|s| {
+                let (s0, s1, _) = scope_bounds(&s);
+                (s0, s1)
+            });
         return vec![ContextRange {
             start: old_index,
             end: old_index,
             ancestor_source: AncestorSource::New,
             scope_line,
             prevent_merge: true,
+            scope_id,
         }];
     }
 
     let scope_line = query_old_line(old_index, ctx.total_old);
+    let inner = innermost_structure_at(ctx.old_parsed, ctx.old_source, scope_line);
+    let inner_id = inner.as_ref().map(|s| {
+        let (st, en, _) = scope_bounds(s);
+        (st, en)
+    });
     if let Some(scope) = scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
@@ -408,17 +456,20 @@ fn context_ranges_for_insert(
                 ancestor_source: AncestorSource::Old,
                 scope_line,
                 prevent_merge: false,
+                scope_id: Some((scope_start, scope_end)),
             }];
         }
     }
 
-    vec![default_context_range(
+    let mut range = default_context_range(
         old_index,
         old_index,
         ctx.total_old,
         AncestorSource::Old,
         old_index,
-    )]
+    );
+    range.scope_id = inner_id;
+    vec![range]
 }
 
 fn context_ranges_for_delete(
@@ -428,6 +479,12 @@ fn context_ranges_for_delete(
 ) -> Vec<ContextRange> {
     let old_start = old_index;
     let old_end = old_index + old_len;
+
+    let inner = innermost_structure_at(ctx.old_parsed, ctx.old_source, old_start);
+    let inner_id = inner.as_ref().map(|s| {
+        let (st, en, _) = scope_bounds(s);
+        (st, en)
+    });
 
     for line in old_start..old_end.min(ctx.total_old) {
         let Some(scope) = scope_at(ctx.old_parsed, ctx.old_source, line) else {
@@ -446,6 +503,7 @@ fn context_ranges_for_delete(
                 ancestor_source: AncestorSource::Old,
                 scope_line: scope_start,
                 prevent_merge: true,
+                scope_id: Some((scope_start, scope_end)),
             }];
         }
 
@@ -455,16 +513,19 @@ fn context_ranges_for_delete(
             ancestor_source: AncestorSource::Old,
             scope_line: line,
             prevent_merge: false,
+            scope_id: Some((scope_start, scope_end)),
         }];
     }
 
-    vec![default_context_range(
+    let mut range = default_context_range(
         old_start,
         old_end.saturating_sub(1),
         ctx.total_old,
         AncestorSource::Old,
         old_start,
-    )]
+    );
+    range.scope_id = inner_id;
+    vec![range]
 }
 
 fn old_replace_context_range(
@@ -475,27 +536,105 @@ fn old_replace_context_range(
     let old_start = old_index;
     let old_end = old_index + old_len;
 
-    // Find the hunk-anchor scope for the entire change range.
+    // The breadcrumb / merge identity is always the innermost named
+    // structure at the change line, even when we fall back to default
+    // context. This keeps adjacent edits inside the same big method in
+    // their own merged hunk and prevents accidental merges with
+    // neighbouring methods.
+    let inner = innermost_structure_at(ctx.old_parsed, ctx.old_source, old_start);
+    let inner_id = inner.as_ref().map(|s| {
+        let (st, en, _) = scope_bounds(s);
+        (st, en)
+    });
+
     if let Some(scope) = scope_for_range(ctx.old_parsed, ctx.old_source, old_start, old_end) {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
+            // Extend the range to cover the change itself when it sits
+            // outside the tree-sitter scope bounds. A method-level
+            // decorator is a sibling of `method_definition`, so a change
+            // on the decorator line is BEFORE `scope.start`. Without this
+            // extension the hunk would have no removed/added lines and
+            // get dropped entirely.
             return ContextRange {
-                start: scope_start,
-                end: scope_end,
+                start: scope_start.min(old_start),
+                end: scope_end.max(old_end.saturating_sub(1)),
                 ancestor_source: AncestorSource::Old,
                 scope_line: old_start,
                 prevent_merge: false,
+                scope_id: Some((scope_start, scope_end)),
             };
         }
     }
 
-    default_context_range(
+    let mut range = default_context_range(
         old_start,
         old_end.saturating_sub(1),
         ctx.total_old,
         AncestorSource::Old,
         old_start,
-    )
+    );
+    range.scope_id = inner_id;
+    range
+}
+
+/// Map an OLD-file 0-indexed line to its NEW-file equivalent through the
+/// diff ops. Returns `None` for lines that fall in a `Delete` op (no
+/// counterpart in NEW). For lines in a `Replace` op, returns the closest
+/// line in the new range, clamped to the last line of the new range. The
+/// clamp matters for `scope.end` of multi-line replaces so `}` maps to
+/// `}` rather than to the start of the new range.
+fn map_old_to_new(line: usize, ops: &[similar::DiffOp]) -> Option<usize> {
+    for op in ops {
+        match op {
+            similar::DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } => {
+                if line >= *old_index && line < old_index + len {
+                    return Some(new_index + (line - old_index));
+                }
+            }
+            similar::DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => {
+                if line >= *old_index && line < old_index + old_len {
+                    let local = line - old_index;
+                    let clamped = local.min(new_len.saturating_sub(1));
+                    return Some(new_index + clamped);
+                }
+            }
+            similar::DiffOp::Delete {
+                old_index, old_len, ..
+            } => {
+                if line >= *old_index && line < old_index + old_len {
+                    return None;
+                }
+            }
+            similar::DiffOp::Insert { .. } => {}
+        }
+    }
+    None
+}
+
+/// True when an OLD scope and a NEW scope occupy the same logical slot in
+/// the diff, i.e. the OLD scope's start and end lines map through the diff
+/// to the NEW scope's start and end lines. Robust against earlier edits
+/// that shifted line numbers, unlike absolute position equality.
+fn same_slot(old_scope: &ScopeNode, new_scope: &ScopeNode, ops: &[similar::DiffOp]) -> bool {
+    let (old_start, old_end, _) = scope_bounds(old_scope);
+    let (new_start, new_end, _) = scope_bounds(new_scope);
+    let Some(mapped_start) = map_old_to_new(old_start, ops) else {
+        return false;
+    };
+    let Some(mapped_end) = map_old_to_new(old_end, ops) else {
+        return false;
+    };
+    mapped_start == new_start && mapped_end == new_end
 }
 
 fn new_replace_scope_range(
@@ -504,6 +643,7 @@ fn new_replace_scope_range(
     new_index: usize,
     new_len: usize,
     ctx: &ScopeRangeContext<'_>,
+    ops: &[similar::DiffOp],
 ) -> Option<ContextRange> {
     let new_start = new_index;
     let new_end = new_index + new_len;
@@ -516,18 +656,17 @@ fn new_replace_scope_range(
         ctx.total_new,
     )?;
 
-    // Check if this is a renamed scope rather than a new scope.
-    // If the old file has a scope at the same position (same line bounds),
-    // this is just a rename and should not create a separate hunk.
     let new_scope = scope_at(ctx.new_parsed, ctx.new_source, scope_line)?;
     let (new_scope_start, new_scope_end, _) = scope_bounds(&new_scope);
 
-    if let Some(old_scope) = scope_at(ctx.old_parsed, ctx.old_source, old_index) {
-        let (old_scope_start, old_scope_end, _) = scope_bounds(&old_scope);
-        // Same position means rename, not new scope
-        if old_scope_start == new_scope_start && old_scope_end == new_scope_end {
-            return None;
-        }
+    // Same slot: the OLD scope at `old_index` aligns with the NEW scope
+    // through the diff. This catches both pure renames and structural
+    // conversions (arrow-property -> method) of the same logical member,
+    // even when earlier edits in the file shifted line numbers.
+    if let Some(old_scope) = scope_at(ctx.old_parsed, ctx.old_source, old_index)
+        && same_slot(&old_scope, &new_scope, ops)
+    {
+        return None;
     }
 
     Some(ContextRange {
@@ -536,6 +675,7 @@ fn new_replace_scope_range(
         ancestor_source: AncestorSource::New,
         scope_line,
         prevent_merge: true,
+        scope_id: Some((new_scope_start, new_scope_end)),
     })
 }
 
@@ -545,9 +685,10 @@ fn context_ranges_for_replace(
     new_index: usize,
     new_len: usize,
     ctx: &ScopeRangeContext<'_>,
+    ops: &[similar::DiffOp],
 ) -> Vec<ContextRange> {
     let mut ranges = vec![old_replace_context_range(old_index, old_len, ctx)];
-    if let Some(range) = new_replace_scope_range(old_index, old_len, new_index, new_len, ctx) {
+    if let Some(range) = new_replace_scope_range(old_index, old_len, new_index, new_len, ctx, ops) {
         ranges.push(range);
     }
     ranges
@@ -597,7 +738,7 @@ fn compute_context_ranges(
                 new_index,
                 new_len,
             } => ranges.extend(context_ranges_for_replace(
-                *old_index, *old_len, *new_index, *new_len, &ctx,
+                *old_index, *old_len, *new_index, *new_len, &ctx, ops,
             )),
         }
     }
@@ -620,11 +761,22 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
     let mut merged = vec![ranges[0]];
     for range in &ranges[1..] {
         let last = merged.last_mut().unwrap();
-        // Don't merge if either range has prevent_merge set
-        let can_merge = !last.prevent_merge && !range.prevent_merge;
+        let can_merge_flags = !last.prevent_merge && !range.prevent_merge;
+        // Don't merge across different scopes; otherwise the merged hunk's
+        // breadcrumb would describe only one of the two enclosing scopes.
+        // Default-context ranges (scope_id = None) absorb into a neighbour
+        // when otherwise mergeable.
+        let scope_compatible = match (last.scope_id, range.scope_id) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        };
         // Merge if overlapping or adjacent (end + 1 >= start)
-        if can_merge && last.end + 1 >= range.start {
+        if can_merge_flags && scope_compatible && last.end + 1 >= range.start {
             last.end = last.end.max(range.end);
+            // If the absorbing range had no scope_id, take the new one.
+            if last.scope_id.is_none() {
+                last.scope_id = range.scope_id;
+            }
             // Keep ancestor_source from first range (preserves Old over New)
         } else {
             merged.push(*range);
@@ -788,6 +940,7 @@ fn collect_replace_added_lines(
     new_index: usize,
     new_len: usize,
     ctx: &HunkBuildContext<'_>,
+    ops: &[similar::DiffOp],
 ) {
     let new_scope_cutoff = old_scope.and_then(|old_scope| {
         first_different_new_scope_start(
@@ -796,6 +949,7 @@ fn collect_replace_added_lines(
             new_index + new_len,
             ctx.new_parsed,
             ctx.new_source,
+            ops,
         )
     });
 
@@ -907,6 +1061,7 @@ fn collect_replace_lines(
     replace: ReplaceOpData,
     old_scope: Option<&ScopeNode>,
     ctx: &HunkBuildContext<'_>,
+    ops: &[similar::DiffOp],
 ) {
     let added_in_range = collect_replace_removed_lines(
         builder,
@@ -917,7 +1072,14 @@ fn collect_replace_lines(
         ctx.old_lines,
     );
     if added_in_range {
-        collect_replace_added_lines(builder, old_scope, replace.new_index, replace.new_len, ctx);
+        collect_replace_added_lines(
+            builder,
+            old_scope,
+            replace.new_index,
+            replace.new_len,
+            ctx,
+            ops,
+        );
         return;
     }
 
@@ -1001,6 +1163,7 @@ fn build_hunk_from_range(
                 },
                 old_scope.as_ref(),
                 ctx,
+                ops,
             ),
         }
     }
@@ -1150,6 +1313,7 @@ fn first_different_new_scope_start(
     new_end: usize,
     new_parsed: &crate::syntax::ParsedFile,
     new_source: &[u8],
+    ops: &[similar::DiffOp],
 ) -> Option<usize> {
     for line in new_start..new_end {
         let new_scopes =
@@ -1169,10 +1333,9 @@ fn first_different_new_scope_start(
             continue;
         }
 
-        // If name/kind differ but position is the same, it's a rename, not a new scope
-        let same_position = innermost.start_line == old_scope.start_line
-            && innermost.end_line == old_scope.end_line;
-        if same_position {
+        // Same logical slot in the diff alignment? Then it's a rename or a
+        // structural conversion of the same member, not a brand-new scope.
+        if same_slot(old_scope, innermost, ops) {
             continue;
         }
 
@@ -1187,6 +1350,34 @@ fn first_different_new_scope_start(
 // ---------------------------------------------------------------------------
 // Core algorithm
 // ---------------------------------------------------------------------------
+
+/// If `node` (or any of its ancestors) is a `decorator`, jump forward to
+/// the structure that decorator decorates. For chained decorators we walk
+/// through every named sibling that is itself a decorator, so we land on
+/// the decorated structure regardless of how many decorators precede it.
+///
+/// Returns `node` unchanged if no enclosing decorator is found.
+fn skip_decorators(node: Node) -> Node {
+    let mut decorator: Option<Node> = None;
+    let mut cur = Some(node);
+    while let Some(c) = cur {
+        if c.kind() == "decorator" {
+            decorator = Some(c);
+            break;
+        }
+        cur = c.parent();
+    }
+    let Some(mut d) = decorator else {
+        return node;
+    };
+    while d.kind() == "decorator" {
+        let Some(sib) = d.next_named_sibling() else {
+            return d;
+        };
+        d = sib;
+    }
+    d
+}
 
 /// Find all enclosing scope nodes from outermost to innermost.
 /// Returns a vec of `ScopeNode` with outermost first. A node is included when
@@ -1203,14 +1394,35 @@ fn enclosing_scopes(
         return Vec::new();
     };
 
+    // Method- and class-level decorators (e.g. `@Cron(...)` above a class
+    // method or `@Injectable()` above a class) appear in the tree as
+    // siblings of the decorated node, not as children. A query at a
+    // decorator line would otherwise walk up through `class_body` straight
+    // to the class, skipping the method the decorator belongs to.
+    let node = skip_decorators(node);
+
     let mut ancestors = Vec::new();
     let mut current = Some(node);
     while let Some(n) = current {
-        if parsed.structure_kinds.contains(&n.kind()) || parsed.data_kinds.contains(&n.kind()) {
+        let kind_is_structure = parsed.structure_kinds.contains(&n.kind());
+        let kind_is_data = parsed.data_kinds.contains(&n.kind());
+        let kind_is_promoted = parsed.promoted_kinds.contains(&n.kind());
+        let include = kind_is_structure
+            || kind_is_data
+            || (kind_is_promoted && has_function_value(&n, parsed));
+        // Demote structures and promoted scopes that live inside another
+        // function body. They're local helpers, not anchors. Data scopes
+        // (objects/arrays) are unaffected; their existing
+        // outermost-fit logic already handles nesting sensibly.
+        let include = include
+            && !((kind_is_structure || kind_is_promoted) && is_nested_in_function(n, parsed));
+        if include {
             let start_line = n.start_position().row + 1;
             let end_line = n.end_position().row + 1;
+            // `property` covers JS `field_definition`'s name field name.
             let name = n
                 .child_by_field_name("name")
+                .or_else(|| n.child_by_field_name("property"))
                 .or_else(|| n.child_by_field_name("type"))
                 .or_else(|| n.child_by_field_name("key"))
                 .and_then(|name_node| name_node.utf8_text(source).ok())
@@ -1230,6 +1442,35 @@ fn enclosing_scopes(
 
     ancestors.reverse();
     ancestors
+}
+
+/// True when `node`'s `value` field holds a function body (arrow
+/// function, function expression, named function, or any other kind
+/// listed in the language's `function_body_kinds`). Used to gate
+/// promotion of wrapper kinds (class fields, variable declarators) to
+/// structures.
+fn has_function_value(node: &Node, parsed: &crate::syntax::ParsedFile) -> bool {
+    let Some(value) = node.child_by_field_name("value") else {
+        return false;
+    };
+    parsed.function_body_kinds.contains(&value.kind())
+}
+
+/// True when any ancestor of `node` introduces a function body, per the
+/// language's `function_body_kinds`. Used to demote local helpers (`fn
+/// inner` inside `fn outer`, `const inner = () => {}` inside a method
+/// body) so they do not steal the hunk anchor from the enclosing named
+/// container. Class members like `method_definition` directly under
+/// `class_body` are not nested in a function body and remain anchors.
+fn is_nested_in_function(node: Node, parsed: &crate::syntax::ParsedFile) -> bool {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        if parsed.function_body_kinds.contains(&p.kind()) {
+            return true;
+        }
+        cur = p.parent();
+    }
+    false
 }
 
 fn point_at_first_non_whitespace(source: &[u8], line: usize) -> Point {
@@ -2060,6 +2301,7 @@ impl Foo {
             ancestor_source: AncestorSource::Old,
             scope_line: 1,
             prevent_merge: false,
+            scope_id: None,
         };
         let old_lines = ["zero", "one", "two"];
 
@@ -2592,5 +2834,952 @@ fn default_context_range(
         assert!(hunks[0].lines.iter().any(|l| l.kind != LineKind::Context));
         assert_eq!(hunks[0].ancestors.len(), 1);
         assert_eq!(hunks[0].ancestors[0].name, "default_context_range");
+    }
+
+    // -----------------------------------------------------------------------
+    // Reviewer-grouping fixes (Fix A: diff-aware same-slot, Fix B: promoted
+    // structures for class fields and lexical declarations whose value is a
+    // function-like expression).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rename_after_prior_insert_produces_single_hunk() {
+        // Cause 1: a rename happens after an earlier edit that shifted the
+        // function down. The rename must not be classified as a "new scope"
+        // just because absolute line positions differ between OLD and NEW.
+        let original = "\
+fn first() -> i32 { 1 }
+
+fn target() -> i32 {
+    42
+}
+";
+        let updated = "\
+fn first() -> i32 { 1 }
+fn inserted() -> i32 { 0 }
+
+fn renamed_target() -> i32 {
+    42
+}
+";
+        let diff = Diff::compute(original, updated, "test.rs");
+        let hunks = diff.hunks();
+        let renamed = hunks
+            .iter()
+            .filter(|h| {
+                h.ancestors
+                    .iter()
+                    .any(|a| a.name == "target" || a.name == "renamed_target")
+            })
+            .count();
+        assert_eq!(
+            renamed,
+            1,
+            "rename must not produce duplicate hunks; got {} hunks total: {:?}",
+            hunks.len(),
+            hunks
+                .iter()
+                .map(|h| h.ancestors.iter().map(|a| &a.name).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_three_consecutive_renames_after_import_deletion_stay_deduplicated() {
+        // Mirrors the real-world case: an import is deleted at the top
+        // of the file (shifting everything below) and three sibling
+        // methods are each renamed. Each rename must produce exactly one
+        // hunk; none should duplicate as a NEW-anchored extra.
+        let original = "\
+import { A } from './a';
+import { B } from './b';
+
+export class S {
+  oldOne(): number {
+    return 1;
+  }
+
+  oldTwo(): number {
+    return 2;
+  }
+
+  oldThree(): number {
+    return 3;
+  }
+}
+";
+        let updated = "\
+import { A } from './a';
+
+export class S {
+  newOne(): number {
+    return 1;
+  }
+
+  newTwo(): number {
+    return 2;
+  }
+
+  newThree(): number {
+    return 3;
+  }
+}
+";
+        let diff = Diff::compute(original, updated, "s.ts");
+        let hunks = diff.hunks();
+        for (old_name, new_name) in [
+            ("oldOne", "newOne"),
+            ("oldTwo", "newTwo"),
+            ("oldThree", "newThree"),
+        ] {
+            let count = hunks
+                .iter()
+                .filter(|h| {
+                    h.ancestors
+                        .iter()
+                        .any(|a| a.name == old_name || a.name == new_name)
+                })
+                .count();
+            assert_eq!(
+                count,
+                1,
+                "{} -> {} must produce exactly one hunk, got {}; ancestors: {:?}",
+                old_name,
+                new_name,
+                count,
+                hunks
+                    .iter()
+                    .map(|h| h.ancestors.iter().map(|a| &a.name).collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn ts_rename_after_import_deletion_no_duplicate() {
+        // Cause 1, TypeScript variant. Removing an import shifts every
+        // method's line numbers; a method rename below the imports must
+        // still be a single hunk.
+        let original = "\
+import { A } from './a';
+import { B } from './b';
+
+export class S {
+  oldName(): number {
+    return 1;
+  }
+}
+";
+        let updated = "\
+import { A } from './a';
+
+export class S {
+  newName(): number {
+    return 1;
+  }
+}
+";
+        let diff = Diff::compute(original, updated, "s.ts");
+        let hunks = diff.hunks();
+        let rename_hunks = hunks
+            .iter()
+            .filter(|h| {
+                h.ancestors
+                    .iter()
+                    .any(|a| a.name == "oldName" || a.name == "newName")
+            })
+            .count();
+        assert_eq!(
+            rename_hunks,
+            1,
+            "rename should produce exactly one hunk; ancestors: {:?}",
+            hunks
+                .iter()
+                .map(|h| h.ancestors.iter().map(|a| &a.name).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ts_class_arrow_field_appears_in_breadcrumb() {
+        // Cause 2: a class field whose value is an arrow function should be
+        // recognised as a structure so changes inside it anchor on the field.
+        let original = "\
+export class S {
+  doWork = async (): Promise<number> => {
+    const x = 1;
+    return x;
+  };
+}
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doWork"),
+            "breadcrumb should include 'doWork', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_top_level_const_arrow_appears_in_breadcrumb() {
+        // Cause 2 at module scope: `const f = () => {}` should anchor on
+        // the variable name.
+        let original = "\
+export const compute = (): number => {
+  const x = 1;
+  return x;
+};
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "compute.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"compute"),
+            "breadcrumb should include 'compute', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_arrow_field_to_method_conversion_is_single_hunk() {
+        // Combination of Cause 1 + Cause 2: the field has a different shape
+        // in OLD (arrow property) vs NEW (method). With both fixes it's
+        // recognised as the same logical slot and produces one hunk.
+        let original = "\
+export class S {
+  doWork = async (): Promise<void> => {
+    return;
+  };
+}
+";
+        let updated = "\
+export class S {
+  async doWork(): Promise<void> {
+    return;
+  }
+}
+";
+        let diff = Diff::compute(original, updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(
+            hunks.len(),
+            1,
+            "arrow->method conversion of the same member should be one hunk; got {}",
+            hunks.len()
+        );
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doWork"),
+            "breadcrumb should include 'doWork', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn anonymous_arrow_callback_not_promoted_to_structure() {
+        // Negative test for Fix B: anonymous arrows passed as callbacks
+        // must NOT become structures. The breadcrumb should remain on the
+        // enclosing named function.
+        let original = "\
+function outer(items: number[]): number[] {
+    return items.map((item) => {
+        return item + 1;
+    });
+}
+";
+        let updated = original.replace("item + 1", "item + 2");
+        let diff = Diff::compute(original, &updated, "x.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["outer"],
+            "anonymous arrow must not appear in breadcrumb"
+        );
+    }
+
+    #[test]
+    fn ts_short_non_function_field_not_promoted_to_structure() {
+        // Negative test for Fix B: a class field with a non-function value
+        // (e.g. `count = 0`) must NOT be treated as a structure.
+        let original = "\
+export class S {
+  count = 0;
+  doWork(): number {
+    return this.count + 1;
+  }
+}
+";
+        let updated = original.replace("this.count + 1", "this.count + 2");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doWork") && !names.contains(&"count"),
+            "expected anchor on doWork without 'count', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn brand_new_method_keeps_separate_hunk() {
+        // Regression for Fix A: a brand-new method appended to a class
+        // must still receive its own hunk.
+        let original = "\
+export class S {
+  existing(): number { return 1; }
+}
+";
+        let updated = "\
+export class S {
+  existing(): number { return 1; }
+  added(): number { return 2; }
+}
+";
+        let diff = Diff::compute(original, updated, "s.ts");
+        let hunks = diff.hunks();
+        assert!(
+            hunks
+                .iter()
+                .any(|h| h.ancestors.iter().any(|a| a.name == "added")),
+            "inserted method must have a hunk anchored on it; got {:?}",
+            hunks
+                .iter()
+                .map(|h| h.ancestors.iter().map(|a| &a.name).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn adjacent_methods_no_blank_line_stay_separate() {
+        // Two physically adjacent methods (no blank line between them) with
+        // independent edits must produce two hunks, not a merged one with a
+        // misleading breadcrumb.
+        let original = "\
+export class S {
+  alpha(): number {
+    return 1;
+  }
+  beta(): number {
+    return 2;
+  }
+}
+";
+        let updated = original
+            .replace("return 1", "return 10")
+            .replace("return 2", "return 20");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(
+            hunks.len(),
+            2,
+            "edits in two adjacent methods must produce 2 hunks; got {}",
+            hunks.len()
+        );
+        let names: Vec<Vec<&str>> = hunks
+            .iter()
+            .map(|h| h.ancestors.iter().map(|a| a.name.as_str()).collect())
+            .collect();
+        assert!(names.iter().any(|n| n.contains(&"alpha")));
+        assert!(names.iter().any(|n| n.contains(&"beta")));
+    }
+
+    #[test]
+    fn nested_function_anchors_on_outer_function() {
+        // A change inside a function nested in another function body must
+        // anchor on the OUTER function. The reviewer's mental anchor is the
+        // top-level named container (function, method, class member), not
+        // local helper functions defined inline in the body.
+        let original = "\
+fn outer() {
+    let x = 1;
+    fn inner() {
+        let y = 2;
+    }
+    let z = 3;
+}
+";
+        let updated = original.replace("let y = 2", "let y = 20");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"outer") && !names.contains(&"inner"),
+            "expected anchor on 'outer' without 'inner', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_nested_arrow_in_method_anchors_on_method() {
+        // `const inner = () => { ... }` declared inside a class method body
+        // is a local helper. Changes inside it must anchor on the method,
+        // not on `inner`. Promotion of `variable_declarator` only applies
+        // at the top level (module, class body), never inside a function
+        // body.
+        let original = "\
+export class S {
+  doWork(): number {
+    const inner = (): number => {
+      const x = 1;
+      return x;
+    };
+    return inner();
+  }
+}
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doWork") && !names.contains(&"inner"),
+            "expected anchor on 'doWork' without 'inner', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn change_in_method_inside_class_anchors_on_method_not_class() {
+        // The hunk for a change inside a method must cover the method only.
+        // It must NOT climb to the enclosing class and pull in unrelated
+        // sibling methods (constructors, other methods) before the change.
+        let original = "\
+export class S {
+  constructor() {}
+
+  alpha() {
+    return 1;
+  }
+
+  beta() {
+    return 2;
+  }
+
+  target() {
+    const x = 1;
+    return x;
+  }
+}
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // The hunk must NOT include sibling methods.
+        let body: String = hunks[0]
+            .lines
+            .iter()
+            .map(|l| l.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("alpha()") && !body.contains("beta()"),
+            "hunk leaked sibling methods (alpha/beta), full body:\n{}",
+            body
+        );
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"target"),
+            "breadcrumb should anchor on 'target', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn one_line_change_in_method_shows_full_method() {
+        // A one-line change inside a method should expand to cover the
+        // whole method body. The reviewer wants to read the function in
+        // context, not just three lines around the change.
+        let original = "\
+fn target() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    a + b + c + d + e + f + g + h
+}
+";
+        let updated = original.replace("let d = 4", "let d = 40");
+        let diff = Diff::compute(original, &updated, "test.rs");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // The function is 11 lines. The hunk must include all of them.
+        let total = hunks[0].lines.len();
+        assert!(
+            total >= 11,
+            "hunk should include the full method body, got {} lines",
+            total
+        );
+    }
+
+    #[test]
+    fn change_at_method_level_decorator_anchors_on_method_not_class() {
+        // Method-level decorators (e.g. @EventPattern, @Cron) live in the
+        // tree as siblings of the decorated method, not as children. A
+        // query at the decorator line previously walked up directly to
+        // the class. The hunk for a change on a decorator line must
+        // anchor on the method it decorates, not the enclosing class.
+        let original = "\
+export class S {
+  constructor() {}
+
+  alpha() {
+    return 1;
+  }
+
+  beta() {
+    return 2;
+  }
+
+  @EventPattern(EVENT.created.pattern)
+  async target(event: OldType): Promise<void> {
+    return;
+  }
+}
+";
+        let updated = original.replace(
+            "@EventPattern(EVENT.created.pattern)",
+            "@HandleEvent(EVENT.created)",
+        );
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1, "a single decorator change must be one hunk");
+        let body: String = hunks[0]
+            .lines
+            .iter()
+            .map(|l| l.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("alpha()") && !body.contains("beta()"),
+            "hunk leaked sibling methods, full body:\n{}",
+            body
+        );
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"target"),
+            "breadcrumb should anchor on 'target', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn change_at_class_level_decorator_anchors_on_class() {
+        // Class-level decorators (e.g. @Injectable, @Module) are siblings
+        // of `class_declaration` under `export_statement` (or the program
+        // root). A change on the decorator line must anchor on the
+        // decorated class, not climb past it.
+        let original = "\
+@Injectable()
+export class S {
+  doWork(): number {
+    return 1;
+  }
+}
+";
+        let updated = original.replace("@Injectable()", "@Service()");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1, "a class decorator change must be one hunk");
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"S"),
+            "breadcrumb should anchor on the class 'S', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn change_in_huge_method_falls_back_to_default_context() {
+        // When the innermost method exceeds MAX_SCOPE_LINES, the algorithm
+        // must NOT climb to the enclosing class. It uses default context
+        // with the method as the breadcrumb anchor instead.
+        let mut src = String::from("export class S {\n  huge() {\n");
+        for i in 1..=210 {
+            src.push_str(&format!("    const a{} = {};\n", i, i));
+        }
+        src.push_str("  }\n  sibling() { return 0; }\n}\n");
+        let original = src.clone();
+        let updated = original.replace("const a100 = 100", "const a100 = 1000");
+        let diff = Diff::compute(&original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        // Hunk must NOT include the sibling method or the class header.
+        let body: String = hunks[0]
+            .lines
+            .iter()
+            .map(|l| l.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("sibling()") && !body.contains("export class S"),
+            "hunk leaked sibling/class header for huge method:\n{}",
+            body
+        );
+        // Default context: about 8 lines around the change.
+        assert!(
+            hunks[0].lines.len() <= 8,
+            "too-big method should use default context, got {} lines",
+            hunks[0].lines.len()
+        );
+    }
+
+    #[test]
+    fn ts_decorated_static_arrow_field_appears_in_breadcrumb() {
+        // Decorators and `static` modifiers should not prevent promotion.
+        let original = "\
+export class S {
+  @decorate
+  static doStatic = async (): Promise<number> => {
+    const x = 1;
+    return x;
+  };
+}
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doStatic"),
+            "breadcrumb should include 'doStatic', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_let_arrow_is_promoted() {
+        // `let f = () => {...}` produces the same
+        // `lexical_declaration > variable_declarator > arrow_function`
+        // chain as `const`. Promotion should fire identically.
+        let original = "\
+export let compute = (): number => {
+  const x = 1;
+  return x;
+};
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "compute.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"compute"),
+            "breadcrumb should include 'compute', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_top_level_const_function_expression_is_promoted() {
+        // The wrapper's value can be `function_expression` instead of
+        // `arrow_function`. Both belong to `function_body_kinds`, so
+        // both should trigger promotion of the surrounding
+        // variable_declarator.
+        let original = "\
+export const compute = function (): number {
+  const x = 1;
+  return x;
+};
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "compute.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"compute"),
+            "breadcrumb should include 'compute', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_typed_top_level_arrow_appears_in_breadcrumb() {
+        // A top-level const arrow with explicit type annotation should
+        // promote like an untyped one.
+        let original = "\
+export const compute: () => number = () => {
+  const x = 1;
+  return x;
+};
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "compute.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"compute"),
+            "breadcrumb should include 'compute', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_getter_rename_anchors_on_method() {
+        // A getter is just a method_definition; renaming it should produce
+        // one hunk anchored on the method.
+        let original = "\
+export class S {
+  get oldName(): number {
+    return 1;
+  }
+}
+";
+        let updated = original.replace("oldName", "newName");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| *n == "oldName" || *n == "newName"),
+            "breadcrumb should include the getter name, got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_constructor_body_edit_anchors_on_constructor() {
+        // Constructors have name 'constructor' as a method_definition.
+        let original = "\
+export class S {
+  constructor(private readonly dep: Dep) {
+    const x = 1;
+    this.dep = dep;
+  }
+}
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"constructor"),
+            "breadcrumb should include 'constructor', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn ts_typed_class_field_with_non_function_value_not_promoted() {
+        // `static readonly fancy: number = 42;` must not become a structure;
+        // edits inside neighbouring code anchor on the surrounding scope.
+        let original = "\
+export class S {
+  static readonly fancy: number = 42;
+  doWork(): number {
+    return this.fancy + 1;
+  }
+}
+";
+        let updated = original.replace("this.fancy + 1", "this.fancy + 2");
+        let diff = Diff::compute(original, &updated, "s.ts");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doWork") && !names.contains(&"fancy"),
+            "expected anchor on doWork without 'fancy', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn js_top_level_const_arrow_appears_in_breadcrumb() {
+        // JS variant of the TS top-level const arrow test. The
+        // `lexical_declaration > variable_declarator > arrow_function`
+        // shape is the same as in TS, but exercises the JS language
+        // configuration.
+        let original = "\
+const compute = () => {
+  const x = 1;
+  return x;
+};
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "compute.js");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"compute"),
+            "JS breadcrumb should include 'compute', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn js_class_arrow_field_appears_in_breadcrumb() {
+        // JS uses `field_definition` (no public_ prefix) and the name field
+        // is named `property` instead of `name`.
+        let original = "\
+class S {
+  doWork = async () => {
+    const x = 1;
+    return x;
+  };
+}
+";
+        let updated = original.replace("const x = 1", "const x = 10");
+        let diff = Diff::compute(original, &updated, "s.js");
+        let hunks = diff.hunks();
+        assert_eq!(hunks.len(), 1);
+        let names: Vec<&str> = hunks[0].ancestors.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"doWork"),
+            "JS breadcrumb should include 'doWork', got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn rename_with_signature_growing_to_multiple_lines() {
+        // Rename where the new signature spans more lines than the old.
+        // The diff alignment must still classify this as the same slot.
+        let original = "\
+fn other() -> i32 { 0 }
+
+fn target(a: i32) -> i32 {
+    a + 1
+}
+";
+        let updated = "\
+fn other() -> i32 { 0 }
+
+fn target_renamed(
+    a: i32,
+    b: i32,
+) -> i32 {
+    a + b
+}
+";
+        let diff = Diff::compute(original, updated, "test.rs");
+        let hunks = diff.hunks();
+        let rename_hunks = hunks
+            .iter()
+            .filter(|h| {
+                h.ancestors
+                    .iter()
+                    .any(|a| a.name == "target" || a.name == "target_renamed")
+            })
+            .count();
+        assert_eq!(
+            rename_hunks,
+            1,
+            "multi-line signature change of one function must be one hunk; got hunks {:?}",
+            hunks
+                .iter()
+                .map(|h| h.ancestors.iter().map(|a| &a.name).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // map_old_to_new direct unit tests
+    //
+    // The function is exercised end-to-end by the `same_slot` tests, but
+    // these unit tests pin its contract per `similar::DiffOp` variant so
+    // future refactors that move it (e.g. to a separate `align` module)
+    // do not change behaviour silently.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn map_old_to_new_equal_op_returns_aligned_line() {
+        // Equal { old=5..10, new=8..13 }: line 5 -> 8, line 7 -> 10, line 9 -> 12.
+        let ops = vec![similar::DiffOp::Equal {
+            old_index: 5,
+            new_index: 8,
+            len: 5,
+        }];
+        assert_eq!(map_old_to_new(5, &ops), Some(8));
+        assert_eq!(map_old_to_new(7, &ops), Some(10));
+        assert_eq!(map_old_to_new(9, &ops), Some(12));
+        // Line outside the equal range has no mapping.
+        assert_eq!(map_old_to_new(10, &ops), None);
+    }
+
+    #[test]
+    fn map_old_to_new_replace_op_clamps_to_last_new_line() {
+        // Replace { old=10..15 (5 lines), new=20..23 (3 lines) }.
+        // Inside the replace, lines map to ni + min(local_offset, new_len-1).
+        // This keeps the LAST old line mapped to the LAST new line, which
+        // is what `same_slot` needs for `scope.end` of asymmetric replaces
+        // (e.g. `};` -> `}` where the closing brace IS the replace).
+        let ops = vec![similar::DiffOp::Replace {
+            old_index: 10,
+            old_len: 5,
+            new_index: 20,
+            new_len: 3,
+        }];
+        assert_eq!(map_old_to_new(10, &ops), Some(20)); // first -> first
+        assert_eq!(map_old_to_new(11, &ops), Some(21));
+        assert_eq!(map_old_to_new(12, &ops), Some(22)); // clamped
+        assert_eq!(map_old_to_new(13, &ops), Some(22)); // clamped
+        assert_eq!(map_old_to_new(14, &ops), Some(22)); // last old -> last new
+    }
+
+    #[test]
+    fn map_old_to_new_delete_op_returns_none() {
+        // Delete { old=4..7 }: lines 4..7 have no NEW counterpart.
+        let ops = vec![similar::DiffOp::Delete {
+            old_index: 4,
+            old_len: 3,
+            new_index: 4,
+        }];
+        assert_eq!(map_old_to_new(4, &ops), None);
+        assert_eq!(map_old_to_new(5, &ops), None);
+        assert_eq!(map_old_to_new(6, &ops), None);
+    }
+
+    #[test]
+    fn map_old_to_new_chain_with_insert_keeps_alignment() {
+        // Realistic chain: Equal -> Insert (no OLD lines) -> Equal.
+        // The insert shifts NEW indices but does not consume OLD indices,
+        // so OLD lines after the insert map cleanly via the second Equal
+        // op (whose new_index already accounts for the shift).
+        let ops = vec![
+            similar::DiffOp::Equal {
+                old_index: 0,
+                new_index: 0,
+                len: 3,
+            },
+            similar::DiffOp::Insert {
+                old_index: 3,
+                new_index: 3,
+                new_len: 2,
+            },
+            similar::DiffOp::Equal {
+                old_index: 3,
+                new_index: 5,
+                len: 4,
+            },
+        ];
+        // Lines 0..3 map identity (first Equal).
+        assert_eq!(map_old_to_new(0, &ops), Some(0));
+        assert_eq!(map_old_to_new(2, &ops), Some(2));
+        // Lines 3..7 map +2 (after the 2-line Insert).
+        assert_eq!(map_old_to_new(3, &ops), Some(5));
+        assert_eq!(map_old_to_new(4, &ops), Some(6));
+        assert_eq!(map_old_to_new(6, &ops), Some(8));
+        // Beyond the last op: no mapping.
+        assert_eq!(map_old_to_new(7, &ops), None);
     }
 }

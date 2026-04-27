@@ -84,7 +84,7 @@ See `web/AGENTS.md` for component conventions.
 
 ## Key Patterns
 
-- **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`).
+- **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`). Per-language node kinds live in `deltoids/src/syntax.rs`: `structure_kinds` (functions, classes, methods), `data_kinds` (JSON/YAML containers), `promoted_kinds` (wrapper kinds like `public_field_definition` or `variable_declarator` that count as a structure when their `value` field is a function body — used for JS/TS class arrow-fields and top-level `const f = () => {}`), and `function_body_kinds` (nodes that introduce a function body; used both to gate promotion and to demote nested helpers like `fn inner` inside `fn outer` so they don't steal the outer anchor).
 - **Diff computation**: `deltoids::Diff::compute()` parses both old and new files, uses diff-op-aware scope lookup.
 - **TUI layout**: Three-pane lazygit-inspired layout (entries, traces, diff).
 - **Traces**: Stored in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.

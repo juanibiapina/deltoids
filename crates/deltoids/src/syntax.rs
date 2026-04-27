@@ -21,6 +21,20 @@ struct LangEntry {
     /// resolution picks the outermost data container that still fits under
     /// `MAX_SCOPE_LINES`.
     data_kinds: &'static [&'static str],
+    /// Wrapper kinds that should be promoted to a structure when their
+    /// `value` field holds a function body. Used to give class fields and
+    /// lexical declarations bound to arrow functions a proper hunk anchor
+    /// and breadcrumb. A node only counts as a structure when its value
+    /// child's kind appears in `function_body_kinds`.
+    promoted_kinds: &'static [&'static str],
+    /// Node kinds that introduce a function body. Used for two purposes:
+    /// (1) promotion value check (is the wrapper's `value` a function?),
+    /// and (2) nesting check (is this scope inside another function body,
+    /// making it a local helper rather than an anchor?). Includes both
+    /// expression forms (`arrow_function`, `function_expression`) and
+    /// declaration forms (`function_declaration`, `method_definition`,
+    /// `function_item`, ...).
+    function_body_kinds: &'static [&'static str],
 }
 
 /// A parsed source file with its syntax tree and language metadata.
@@ -32,6 +46,12 @@ pub struct ParsedFile {
     /// Node kinds used as hunk anchors when no structure contains the change.
     /// Anchored with outermost-fit strategy.
     pub data_kinds: &'static [&'static str],
+    /// Wrapper kinds promoted to structure when their `value` field is a
+    /// function body. See `LangEntry::promoted_kinds`.
+    pub promoted_kinds: &'static [&'static str],
+    /// Node kinds that introduce a function body. See
+    /// `LangEntry::function_body_kinds`.
+    pub function_body_kinds: &'static [&'static str],
 }
 
 /// Detect the language from a file path and parse the source text.
@@ -46,6 +66,8 @@ pub fn parse_file(path: &str, source: &str) -> Option<ParsedFile> {
         tree,
         structure_kinds: entry.structure_kinds,
         data_kinds: entry.data_kinds,
+        promoted_kinds: entry.promoted_kinds,
+        function_body_kinds: entry.function_body_kinds,
     })
 }
 
@@ -69,11 +91,15 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "mod_item",
             ],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_item", "closure_expression"],
         }),
         "py" | "pyi" => Some(LangEntry {
             language: tree_sitter_python::LANGUAGE,
             structure_kinds: &["function_definition", "class_definition"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_definition", "lambda"],
         }),
         "js" | "mjs" | "cjs" | "jsx" => Some(LangEntry {
             language: tree_sitter_javascript::LANGUAGE,
@@ -83,6 +109,19 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "method_definition",
             ],
             data_kinds: &["object", "array"],
+            // JS class fields use the kind `field_definition`. Lexical and
+            // var declarations promote via their inner `variable_declarator`,
+            // which directly carries the `name` and `value` fields.
+            promoted_kinds: &["field_definition", "variable_declarator"],
+            function_body_kinds: &[
+                "function_declaration",
+                "method_definition",
+                "arrow_function",
+                "function_expression",
+                "function",
+                "generator_function",
+                "generator_function_declaration",
+            ],
         }),
         "ts" | "mts" | "cts" => Some(LangEntry {
             language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -94,6 +133,18 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "type_alias_declaration",
             ],
             data_kinds: &["object", "array"],
+            // TS class fields use `public_field_definition`. Lexical
+            // declarations promote via their inner `variable_declarator`.
+            promoted_kinds: &["public_field_definition", "variable_declarator"],
+            function_body_kinds: &[
+                "function_declaration",
+                "method_definition",
+                "arrow_function",
+                "function_expression",
+                "function",
+                "generator_function",
+                "generator_function_declaration",
+            ],
         }),
         "tsx" => Some(LangEntry {
             language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -105,6 +156,16 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "type_alias_declaration",
             ],
             data_kinds: &["object", "array"],
+            promoted_kinds: &["public_field_definition", "variable_declarator"],
+            function_body_kinds: &[
+                "function_declaration",
+                "method_definition",
+                "arrow_function",
+                "function_expression",
+                "function",
+                "generator_function",
+                "generator_function_declaration",
+            ],
         }),
         "go" => Some(LangEntry {
             language: tree_sitter_go::LANGUAGE,
@@ -114,11 +175,15 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "type_declaration",
             ],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_declaration", "method_declaration", "func_literal"],
         }),
         "rb" | "rake" | "gemspec" => Some(LangEntry {
             language: tree_sitter_ruby::LANGUAGE,
             structure_kinds: &["method", "singleton_method", "class", "module"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["method", "singleton_method", "block", "do_block", "lambda"],
         }),
         "java" => Some(LangEntry {
             language: tree_sitter_java::LANGUAGE,
@@ -129,11 +194,19 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "constructor_declaration",
             ],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &[
+                "method_declaration",
+                "constructor_declaration",
+                "lambda_expression",
+            ],
         }),
         "c" | "h" => Some(LangEntry {
             language: tree_sitter_c::LANGUAGE,
             structure_kinds: &["function_definition", "struct_specifier"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_definition"],
         }),
         "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => Some(LangEntry {
             language: tree_sitter_cpp::LANGUAGE,
@@ -143,46 +216,64 @@ fn detect_language(path: &str) -> Option<LangEntry> {
                 "namespace_definition",
             ],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_definition", "lambda_expression"],
         }),
         "sh" | "bash" | "zsh" => Some(LangEntry {
             language: tree_sitter_bash::LANGUAGE,
             structure_kinds: &["function_definition"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_definition"],
         }),
         "lua" => Some(LangEntry {
             language: tree_sitter_lua::LANGUAGE,
             structure_kinds: &["function_declaration"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &["function_declaration", "function_definition"],
         }),
         "css" | "scss" => Some(LangEntry {
             language: tree_sitter_css::LANGUAGE,
             structure_kinds: &["rule_set", "media_statement"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &[],
         }),
         "tf" | "hcl" => Some(LangEntry {
             language: tree_sitter_hcl::LANGUAGE,
             structure_kinds: &["block"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &[],
         }),
         "md" | "markdown" => Some(LangEntry {
             language: tree_sitter_md::LANGUAGE,
             structure_kinds: &["atx_heading", "setext_heading"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &[],
         }),
         "toml" => Some(LangEntry {
             language: tree_sitter_toml_ng::LANGUAGE,
             structure_kinds: &["table", "table_array_element"],
             data_kinds: &[],
+            promoted_kinds: &[],
+            function_body_kinds: &[],
         }),
         "json" => Some(LangEntry {
             language: tree_sitter_json::LANGUAGE,
             structure_kinds: &[],
             data_kinds: &["object", "array"],
+            promoted_kinds: &[],
+            function_body_kinds: &[],
         }),
         "yaml" | "yml" => Some(LangEntry {
             language: tree_sitter_yaml::LANGUAGE,
             structure_kinds: &[],
             data_kinds: &["block_mapping", "block_sequence"],
+            promoted_kinds: &[],
+            function_body_kinds: &[],
         }),
         _ => None,
     }

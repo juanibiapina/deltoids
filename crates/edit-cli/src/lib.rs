@@ -10,7 +10,10 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use trace_store::TraceStore;
+use trace_store::{
+    EditFailureHistoryEntry, EditHistoryEntry, TraceStore, WriteFailureHistoryEntry,
+    WriteHistoryEntry,
+};
 pub use trace_store::{HistoryEntry, TraceSummary, trace_root_directory};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,68 +75,6 @@ struct MatchedEdit {
     start: usize,
     end: usize,
     new_text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct EditHistoryEntry {
-    v: u8,
-    tool: &'static str,
-    #[serde(rename = "traceId")]
-    trace_id: String,
-    timestamp: String,
-    cwd: String,
-    path: String,
-    summary: String,
-    ok: bool,
-    edits: Vec<TextEdit>,
-    diff: String,
-    hunks: Vec<deltoids::Hunk>,
-}
-
-#[derive(Debug, Serialize)]
-struct EditFailureHistoryEntry {
-    v: u8,
-    tool: &'static str,
-    #[serde(rename = "traceId")]
-    trace_id: String,
-    timestamp: String,
-    cwd: String,
-    path: String,
-    summary: String,
-    ok: bool,
-    edits: Vec<TextEdit>,
-    error: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteHistoryEntry {
-    v: u8,
-    tool: &'static str,
-    #[serde(rename = "traceId")]
-    trace_id: String,
-    timestamp: String,
-    cwd: String,
-    path: String,
-    summary: String,
-    ok: bool,
-    content: String,
-    diff: String,
-    hunks: Vec<deltoids::Hunk>,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteFailureHistoryEntry {
-    v: u8,
-    tool: &'static str,
-    #[serde(rename = "traceId")]
-    trace_id: String,
-    timestamp: String,
-    cwd: String,
-    path: String,
-    summary: String,
-    ok: bool,
-    content: String,
-    error: String,
 }
 
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {

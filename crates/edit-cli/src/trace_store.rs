@@ -229,11 +229,83 @@ pub(crate) fn validate_trace_id(trace_id: &str) -> Result<(), String> {
         .map_err(|_| format!("Invalid trace id: {trace_id}"))
 }
 
+// ---------------------------------------------------------------------------
+// Write-side entry shapes
+// ---------------------------------------------------------------------------
+//
+// Four shape variants written by `execute_*_with_trace` and the failure
+// loggers, kept separate so type-level invariants stay tight at the
+// write site (an ok-edit always has `edits` and `hunks`, a failed-edit
+// always has `error`, etc.). All four serialise to the same flat JSON
+// shape that `HistoryEntry` deserialises.
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct EditHistoryEntry {
+    pub v: u8,
+    pub tool: &'static str,
+    #[serde(rename = "traceId")]
+    pub trace_id: String,
+    pub timestamp: String,
+    pub cwd: String,
+    pub path: String,
+    pub summary: String,
+    pub ok: bool,
+    pub edits: Vec<TextEdit>,
+    pub diff: String,
+    pub hunks: Vec<deltoids::Hunk>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct EditFailureHistoryEntry {
+    pub v: u8,
+    pub tool: &'static str,
+    #[serde(rename = "traceId")]
+    pub trace_id: String,
+    pub timestamp: String,
+    pub cwd: String,
+    pub path: String,
+    pub summary: String,
+    pub ok: bool,
+    pub edits: Vec<TextEdit>,
+    pub error: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct WriteHistoryEntry {
+    pub v: u8,
+    pub tool: &'static str,
+    #[serde(rename = "traceId")]
+    pub trace_id: String,
+    pub timestamp: String,
+    pub cwd: String,
+    pub path: String,
+    pub summary: String,
+    pub ok: bool,
+    pub content: String,
+    pub diff: String,
+    pub hunks: Vec<deltoids::Hunk>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct WriteFailureHistoryEntry {
+    pub v: u8,
+    pub tool: &'static str,
+    #[serde(rename = "traceId")]
+    pub trace_id: String,
+    pub timestamp: String,
+    pub cwd: String,
+    pub path: String,
+    pub summary: String,
+    pub ok: bool,
+    pub content: String,
+    pub error: String,
+}
+
 /// One entry in a trace's `entries.jsonl`.
 ///
-/// Carries the union of fields written by the four private write-side
-/// entry structs in `lib.rs`. Optional fields use `#[serde(default)]` so
-/// historical entries continue to deserialise.
+/// Carries the union of fields written by the four write-side entry
+/// structs above. Optional fields use `#[serde(default)]` so historical
+/// entries continue to deserialise.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HistoryEntry {
     pub v: u8,

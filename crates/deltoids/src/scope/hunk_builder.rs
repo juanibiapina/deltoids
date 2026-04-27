@@ -8,10 +8,8 @@
 //!
 //! Entry point: [`build`].
 
-use super::{
-    AncestorSource, ContextRange, DiffLine, Hunk, LineKind, ScopeNode, insert_forms_new_scope,
-    same_slot,
-};
+use super::range::{insert_forms_new_scope, same_slot};
+use super::{AncestorSource, ContextRange, DiffLine, Hunk, LineKind, ScopeNode};
 
 struct HunkBuildContext<'a> {
     old_parsed: &'a crate::syntax::ParsedFile,

@@ -56,6 +56,58 @@ impl TraceStore {
             .exists()
     }
 
+    /// Aggregate every trace under this store that has at least one entry
+    /// recorded in `cwd`. Each `TraceSummary` carries the count and the
+    /// last entry's metadata, sorted newest-first.
+    pub fn list_for_cwd(&self, cwd: &str) -> Result<Vec<TraceSummary>, String> {
+        if !self.root.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut traces = Vec::new();
+        let directories = fs::read_dir(&self.root)
+            .map_err(|err| format!("Failed to read {}: {}", self.root.display(), err))?;
+        for directory in directories {
+            let directory = directory
+                .map_err(|err| format!("Failed to read {}: {}", self.root.display(), err))?;
+            let trace_dir = directory.path();
+            if !trace_dir.is_dir() {
+                continue;
+            }
+
+            let trace_id = directory.file_name().to_string_lossy().into_owned();
+            if validate_trace_id(&trace_id).is_err() {
+                continue;
+            }
+
+            let entries_path = trace_dir.join("entries.jsonl");
+            if !entries_path.exists() {
+                continue;
+            }
+
+            let entries = read_history_entries_from_path(&entries_path)?;
+            let matching_entries = entries
+                .iter()
+                .filter(|entry| entry.cwd == cwd)
+                .collect::<Vec<_>>();
+            let Some(last_entry) = matching_entries.last() else {
+                continue;
+            };
+
+            traces.push(TraceSummary {
+                trace_id,
+                entry_count: matching_entries.len(),
+                last_timestamp: last_entry.timestamp.clone(),
+                last_tool: last_entry.tool.clone(),
+                last_path: last_entry.path.clone(),
+                last_summary: last_entry.summary.clone(),
+            });
+        }
+
+        traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
+        Ok(traces)
+    }
+
     /// Read every entry recorded for `trace_id` in this store.
     /// Validates the id, then loads the jsonl file.
     pub fn read(&self, trace_id: &str) -> Result<Vec<HistoryEntry>, String> {
@@ -149,11 +201,8 @@ pub struct HistoryEntry {
     pub hunks: Vec<deltoids::Hunk>,
 }
 
-/// Parse a trace's `entries.jsonl` file. Used by `TraceStore::read` and
-/// (until slice 5) by lib.rs's `list_traces_for_current_directory`.
-pub(crate) fn read_history_entries_from_path(
-    entries_path: &Path,
-) -> Result<Vec<HistoryEntry>, String> {
+/// Parse a trace's `entries.jsonl` file.
+fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntry>, String> {
     let contents = fs::read_to_string(entries_path)
         .map_err(|err| format!("Failed to read {}: {}", entries_path.display(), err))?;
     let mut entries = Vec::new();

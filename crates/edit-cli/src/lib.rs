@@ -452,53 +452,7 @@ pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String>
 
 pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> {
     let cwd = current_working_directory()?;
-    let trace_root = trace_store::trace_root_directory()?;
-    if !trace_root.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut traces = Vec::new();
-    let directories = fs::read_dir(&trace_root)
-        .map_err(|err| format!("Failed to read {}: {}", trace_root.display(), err))?;
-    for directory in directories {
-        let directory =
-            directory.map_err(|err| format!("Failed to read {}: {}", trace_root.display(), err))?;
-        let trace_dir = directory.path();
-        if !trace_dir.is_dir() {
-            continue;
-        }
-
-        let trace_id = directory.file_name().to_string_lossy().into_owned();
-        if trace_store::validate_trace_id(&trace_id).is_err() {
-            continue;
-        }
-
-        let entries_path = trace_dir.join("entries.jsonl");
-        if !entries_path.exists() {
-            continue;
-        }
-
-        let entries = trace_store::read_history_entries_from_path(&entries_path)?;
-        let matching_entries = entries
-            .iter()
-            .filter(|entry| entry.cwd == cwd)
-            .collect::<Vec<_>>();
-        let Some(last_entry) = matching_entries.last() else {
-            continue;
-        };
-
-        traces.push(TraceSummary {
-            trace_id,
-            entry_count: matching_entries.len(),
-            last_timestamp: last_entry.timestamp.clone(),
-            last_tool: last_entry.tool.clone(),
-            last_path: last_entry.path.clone(),
-            last_summary: last_entry.summary.clone(),
-        });
-    }
-
-    traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
-    Ok(traces)
+    TraceStore::from_env()?.list_for_cwd(&cwd)
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), String> {

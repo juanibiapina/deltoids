@@ -1,0 +1,6 @@
+@@ -4,4 +4,4 @@ [impl_item Foo] [function_item compute]
+     fn compute(&self) -> i32 {
+         let x = 1;
+-        x + 1
++        x + 2
+     }

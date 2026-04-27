@@ -1,0 +1,18 @@
+@@ -1,13 +1,12 @@ [class_declaration TaskService] [method_definition processTask]
+-import { OLD_A, OLD_B, OLD_C } from './constants';
++import { NEW } from './constants';
+ 
+ export class TaskService {
+   private processTask(task: Task) {
+     const mapping = {
+-      [TaskType.TYPE_A]: OLD_A,
+-      [TaskType.TYPE_B]: OLD_B,
+-      [TaskType.TYPE_C]:
+-        OLD_C,
++      [TaskType.TYPE_A]: NEW.a.value,
++      [TaskType.TYPE_B]: NEW.b.value,
++      [TaskType.TYPE_C]: NEW.c.value,
+     };
+ 
+     return mapping[task.type];
+   }

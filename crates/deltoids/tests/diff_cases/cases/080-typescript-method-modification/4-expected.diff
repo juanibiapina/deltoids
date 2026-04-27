@@ -1,0 +1,6 @@
+@@ -2,4 +2,4 @@ [class_declaration Greeter] [method_definition greet]
+   greet(name: string): string {
+-    const prefix = "Hello";
++    const prefix = "Hi";
+     return `${prefix}, ${name}!`;
+   }

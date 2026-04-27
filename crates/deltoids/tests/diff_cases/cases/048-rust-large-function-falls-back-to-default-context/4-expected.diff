@@ -1,0 +1,9 @@
+@@ -98,7 +98,7 @@ [function_item big]
+     let x97 = 97;
+     let x98 = 98;
+     let x99 = 99;
+-    let x100 = 100;
++    let x100 = 1000;
+     let x101 = 101;
+     let x102 = 102;
+     let x103 = 103;

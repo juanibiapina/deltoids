@@ -1,0 +1,9 @@
+@@ -1,7 +1,7 @@
+ export default defineConfig({
+   env: {
+     schema: {
+-      PUBLIC_KEY: "value1",
++      PUBLIC_KEY: "value2",
+     },
+   },
+ });

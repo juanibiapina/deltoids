@@ -1,0 +1,5 @@
+@@ -5,4 +5,0 @@ [function_item to_delete]
+-fn to_delete() {
+-    let b = 2;
+-}
+-

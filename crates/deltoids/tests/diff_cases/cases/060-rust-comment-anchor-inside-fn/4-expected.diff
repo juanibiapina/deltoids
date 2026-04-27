@@ -1,0 +1,8 @@
+@@ -1,5 +1,5 @@ [function_item compute]
+-/// Old docs
++/// New docs
+ fn compute() {
+-    let x = 1;
++    let x = 10;
+     let y = 2;
+ }

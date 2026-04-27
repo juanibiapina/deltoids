@@ -1,0 +1,49 @@
+@@ -5 +5,23 @@ [struct_item VisibleChar]
++struct VisibleChar {
++    text: String,
++    width: usize,
++}
++
++fn visible_char(ch: char) -> Option<VisibleChar> {
++    if ch == '\t' {
++        return Some(VisibleChar {
++            text: "    ".to_string(),
++            width: 4,
++        });
++    }
++    let width = ch.width().unwrap_or(0);
++    if width == 0 {
++        return None;
++    }
++    Some(VisibleChar {
++        text: ch.to_string(),
++        width,
++    })
++}
++
+ fn truncate_ranges(base_style: Style) -> Vec<Span> {
+
+@@ -5,19 +27,14 @@ [function_item truncate_ranges]
+ fn truncate_ranges(base_style: Style) -> Vec<Span> {
+     let mut spans = Vec::new();
+     let mut width = 0;
+ 
+     for ch in "example".chars() {
+-        // Old inline logic that will be replaced
+-        let ch_width = if ch == '\t' {
+-            4
+-        } else {
+-            ch.width().unwrap_or(0)
++        // New logic using helper
++        let Some(visible) = visible_char(ch) else {
++            continue;
+         };
+-        if ch_width == 0 {
+-            continue;
+-        }
+-        width += ch_width;
++        width += visible.width;
+     }
+ 
+     spans
+ }

@@ -1,0 +1,7 @@
+@@ -1,0 +1,6 @@
++jobs:
++  build:
++    steps:
++      - name: checkout
++        with:
++          key: value

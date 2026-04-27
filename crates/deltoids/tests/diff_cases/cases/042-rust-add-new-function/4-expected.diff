@@ -1,0 +1,5 @@
+@@ -4,0 +4,4 @@ [function_item new_function]
++
++fn new_function() {
++    let y = 2;
++}

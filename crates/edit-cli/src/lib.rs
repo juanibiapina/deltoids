@@ -137,18 +137,19 @@ struct WriteFailureHistoryEntry {
 }
 
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
-    execute_request_with_trace(request, None)
-}
-
-pub fn execute_request_with_trace(
-    request: EditRequest,
-    trace_id: Option<&str>,
-) -> Result<SuccessResponse, ToolError> {
     let store = TraceStore::from_env().map_err(|error| ToolError {
         error,
         trace_id: String::new(),
         message: String::new(),
     })?;
+    execute_request_with_trace(&store, request, None)
+}
+
+pub fn execute_request_with_trace(
+    store: &TraceStore,
+    request: EditRequest,
+    trace_id: Option<&str>,
+) -> Result<SuccessResponse, ToolError> {
     let resolved_trace = store.resolve(trace_id).map_err(|error| ToolError {
         error,
         trace_id: String::new(),
@@ -156,14 +157,14 @@ pub fn execute_request_with_trace(
     })?;
 
     match try_execute_edit(
-        &store,
+        store,
         &request,
         &resolved_trace.trace_id,
         resolved_trace.reused,
     ) {
         Ok(response) => Ok(response),
         Err(error) => Err(log_edit_failure(
-            &store,
+            store,
             request,
             resolved_trace.trace_id,
             resolved_trace.reused,
@@ -173,18 +174,19 @@ pub fn execute_request_with_trace(
 }
 
 pub fn execute_write_request(request: WriteRequest) -> Result<SuccessResponse, ToolError> {
-    execute_write_request_with_trace(request, None)
-}
-
-pub fn execute_write_request_with_trace(
-    request: WriteRequest,
-    trace_id: Option<&str>,
-) -> Result<SuccessResponse, ToolError> {
     let store = TraceStore::from_env().map_err(|error| ToolError {
         error,
         trace_id: String::new(),
         message: String::new(),
     })?;
+    execute_write_request_with_trace(&store, request, None)
+}
+
+pub fn execute_write_request_with_trace(
+    store: &TraceStore,
+    request: WriteRequest,
+    trace_id: Option<&str>,
+) -> Result<SuccessResponse, ToolError> {
     let resolved_trace = store.resolve(trace_id).map_err(|error| ToolError {
         error,
         trace_id: String::new(),
@@ -192,14 +194,14 @@ pub fn execute_write_request_with_trace(
     })?;
 
     match try_execute_write(
-        &store,
+        store,
         &request,
         &resolved_trace.trace_id,
         resolved_trace.reused,
     ) {
         Ok(response) => Ok(response),
         Err(error) => Err(log_write_failure(
-            &store,
+            store,
             request,
             resolved_trace.trace_id,
             resolved_trace.reused,
@@ -532,27 +534,11 @@ pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<Str
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::OnceLock;
 
     use super::{
-        EditRequest, TextEdit, WriteRequest, apply_edits, execute_write_request, render_diff,
-        validate_request,
+        EditRequest, TextEdit, WriteRequest, apply_edits, execute_write_request_with_trace,
+        render_diff, trace_store::TraceStore, validate_request,
     };
-
-    /// Pin `XDG_DATA_HOME` to a shared per-process tempdir so unit tests that
-    /// call into the tracing paths never touch the user's real data home.
-    fn isolate_data_home() {
-        static TEST_DATA_HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
-        let dir =
-            TEST_DATA_HOME.get_or_init(|| tempfile::tempdir().expect("test data home tempdir"));
-        // SAFETY: every test that writes traces calls this helper, which always
-        // sets `XDG_DATA_HOME` to the same tempdir for the entire test binary.
-        // The value is stable once initialised, so repeated sets from parallel
-        // tests are race-free in practice.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", dir.path());
-        }
-    }
 
     #[test]
     fn applies_single_exact_edit() {
@@ -758,16 +744,22 @@ mod tests {
 
     #[test]
     fn writes_full_content_and_returns_diff() {
-        isolate_data_home();
+        let trace_root = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(trace_root.path().to_path_buf());
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         fs::write(&path, "{\n  \"version\": 1\n}\n").unwrap();
 
-        let response = execute_write_request(WriteRequest {
-            summary: "Rewrite config".to_string(),
-            path: path.to_string_lossy().into_owned(),
-            content: "{\n  \"version\": 2\n}\n".to_string(),
-        })
+        let response = execute_write_request_with_trace(
+            &store,
+            WriteRequest {
+                summary: "Rewrite config".to_string(),
+                path: path.to_string_lossy().into_owned(),
+                content: "{\n  \"version\": 2\n}\n".to_string(),
+            },
+            None,
+        )
         .unwrap();
 
         assert!(response.ok);
@@ -782,12 +774,18 @@ mod tests {
 
     #[test]
     fn rejects_empty_write_summary() {
-        isolate_data_home();
-        let error = execute_write_request(WriteRequest {
-            summary: String::new(),
-            path: "test.txt".to_string(),
-            content: "hello\n".to_string(),
-        })
+        let trace_root = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(trace_root.path().to_path_buf());
+
+        let error = execute_write_request_with_trace(
+            &store,
+            WriteRequest {
+                summary: String::new(),
+                path: "test.txt".to_string(),
+                content: "hello\n".to_string(),
+            },
+            None,
+        )
         .unwrap_err();
 
         assert!(error.error.contains("summary must not be empty"));

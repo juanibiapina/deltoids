@@ -2,7 +2,9 @@ use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit_cli::{ErrorResponse, WriteRequest, execute_write_request_with_trace};
+use edit_cli::{
+    ErrorResponse, WriteRequest, execute_write_request_with_trace, trace_store::TraceStore,
+};
 
 const OVERVIEW: &str = r#"CLI for agents to rewrite files.
 
@@ -85,14 +87,13 @@ fn run() -> Result<(), ErrorResponse> {
             .map_err(|err| simple_error(format!("Invalid request JSON: {err}")))?
     };
 
-    let response =
-        execute_write_request_with_trace(request, cli.trace_id.as_deref()).map_err(|error| {
-            ErrorResponse {
-                ok: false,
-                error: error.error,
-                trace_id: (!error.trace_id.is_empty()).then_some(error.trace_id),
-                message: (!error.message.is_empty()).then_some(error.message),
-            }
+    let store = TraceStore::from_env().map_err(simple_error)?;
+    let response = execute_write_request_with_trace(&store, request, cli.trace_id.as_deref())
+        .map_err(|error| ErrorResponse {
+            ok: false,
+            error: error.error,
+            trace_id: (!error.trace_id.is_empty()).then_some(error.trace_id),
+            message: (!error.message.is_empty()).then_some(error.message),
         })?;
     println!(
         "{}",

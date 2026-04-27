@@ -6,10 +6,12 @@
 //! primitives consumed by `execute_*_with_trace` and the TUI.
 
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::TextEdit;
@@ -54,6 +56,61 @@ impl TraceStore {
         self.trace_directory(trace_id)
             .join("entries.jsonl")
             .exists()
+    }
+
+    /// Append a serializable entry to `trace_id`'s `entries.jsonl`.
+    /// Creates the trace directory on first append and takes an
+    /// exclusive flock for the duration of the write.
+    pub fn append<T: Serialize>(&self, trace_id: &str, entry: &T) -> Result<(), String> {
+        let trace_dir = self.trace_directory(trace_id);
+        fs::create_dir_all(&trace_dir).map_err(|err| {
+            format!(
+                "Failed to create trace directory {}: {}",
+                trace_dir.display(),
+                err
+            )
+        })?;
+
+        let lock_path = trace_dir.join(".lock");
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|err| format!("Failed to open trace lock {}: {}", lock_path.display(), err))?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|err| format!("Failed to lock trace {trace_id}: {err}"))?;
+
+        let result = (|| {
+            let entries_path = trace_dir.join("entries.jsonl");
+            let mut entries_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&entries_path)
+                .map_err(|err| {
+                    format!(
+                        "Failed to open trace entries {}: {}",
+                        entries_path.display(),
+                        err
+                    )
+                })?;
+            serde_json::to_writer(&mut entries_file, entry)
+                .map_err(|err| format!("Failed to serialize trace entry: {err}"))?;
+            writeln!(&mut entries_file).map_err(|err| {
+                format!(
+                    "Failed to append trace entry {}: {}",
+                    entries_path.display(),
+                    err
+                )
+            })
+        })();
+
+        let unlock_result = lock_file.unlock();
+        result?;
+        unlock_result.map_err(|err| format!("Failed to unlock trace {trace_id}: {err}"))?;
+        Ok(())
     }
 
     /// Aggregate every trace under this store that has at least one entry
@@ -143,12 +200,11 @@ impl TraceStore {
     }
 }
 
-/// Path to a single trace's directory under the trace root.
-pub(crate) fn trace_directory(trace_id: &str) -> Result<PathBuf, String> {
-    Ok(trace_root_directory()?.join(trace_id))
-}
-
 /// Root directory containing every trace for the current data home.
+///
+/// Internal callers should prefer `TraceStore::from_env()` which carries
+/// this root for subsequent operations. Exposed for the TUI's filesystem
+/// watcher, which needs the path itself rather than a store handle.
 pub fn trace_root_directory() -> Result<PathBuf, String> {
     Ok(data_home_directory()?.join("edit").join("traces"))
 }

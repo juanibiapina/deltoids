@@ -4,12 +4,10 @@ pub mod trace_store;
 pub mod tui;
 
 use std::env;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::Path;
 
 use chrono::{SecondsFormat, Utc};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use trace_store::TraceStore;
@@ -157,9 +155,15 @@ pub fn execute_request_with_trace(
         message: String::new(),
     })?;
 
-    match try_execute_edit(&request, &resolved_trace.trace_id, resolved_trace.reused) {
+    match try_execute_edit(
+        &store,
+        &request,
+        &resolved_trace.trace_id,
+        resolved_trace.reused,
+    ) {
         Ok(response) => Ok(response),
         Err(error) => Err(log_edit_failure(
+            &store,
             request,
             resolved_trace.trace_id,
             resolved_trace.reused,
@@ -187,9 +191,15 @@ pub fn execute_write_request_with_trace(
         message: String::new(),
     })?;
 
-    match try_execute_write(&request, &resolved_trace.trace_id, resolved_trace.reused) {
+    match try_execute_write(
+        &store,
+        &request,
+        &resolved_trace.trace_id,
+        resolved_trace.reused,
+    ) {
         Ok(response) => Ok(response),
         Err(error) => Err(log_write_failure(
+            &store,
             request,
             resolved_trace.trace_id,
             resolved_trace.reused,
@@ -199,6 +209,7 @@ pub fn execute_write_request_with_trace(
 }
 
 fn try_execute_edit(
+    store: &TraceStore,
     request: &EditRequest,
     trace_id: &str,
     reused_trace: bool,
@@ -218,7 +229,7 @@ fn try_execute_edit(
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
-    append_trace_entry(
+    store.append(
         trace_id,
         &EditHistoryEntry {
             v: 2,
@@ -245,6 +256,7 @@ fn try_execute_edit(
 }
 
 fn try_execute_write(
+    store: &TraceStore,
     request: &WriteRequest,
     trace_id: &str,
     reused_trace: bool,
@@ -278,7 +290,7 @@ fn try_execute_write(
     fs::write(path, &request.content)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
-    append_trace_entry(
+    store.append(
         trace_id,
         &WriteHistoryEntry {
             v: 2,
@@ -315,53 +327,57 @@ fn success_message(trace_id: &str, reused_trace: bool) -> String {
 }
 
 fn log_edit_failure(
+    store: &TraceStore,
     request: EditRequest,
     trace_id: String,
     reused_trace: bool,
     error: String,
 ) -> ToolError {
-    let logging_error = append_trace_entry(
-        &trace_id,
-        &EditFailureHistoryEntry {
-            v: 1,
-            tool: "edit",
-            trace_id: trace_id.clone(),
-            timestamp: current_timestamp(),
-            cwd: current_working_directory().unwrap_or_else(|_| String::new()),
-            path: request.path,
-            summary: request.summary,
-            ok: false,
-            edits: request.edits,
-            error: error.clone(),
-        },
-    )
-    .err();
+    let logging_error = store
+        .append(
+            &trace_id,
+            &EditFailureHistoryEntry {
+                v: 1,
+                tool: "edit",
+                trace_id: trace_id.clone(),
+                timestamp: current_timestamp(),
+                cwd: current_working_directory().unwrap_or_else(|_| String::new()),
+                path: request.path,
+                summary: request.summary,
+                ok: false,
+                edits: request.edits,
+                error: error.clone(),
+            },
+        )
+        .err();
 
     tool_error(trace_id, reused_trace, error, logging_error)
 }
 
 fn log_write_failure(
+    store: &TraceStore,
     request: WriteRequest,
     trace_id: String,
     reused_trace: bool,
     error: String,
 ) -> ToolError {
-    let logging_error = append_trace_entry(
-        &trace_id,
-        &WriteFailureHistoryEntry {
-            v: 1,
-            tool: "write",
-            trace_id: trace_id.clone(),
-            timestamp: current_timestamp(),
-            cwd: current_working_directory().unwrap_or_else(|_| String::new()),
-            path: request.path,
-            summary: request.summary,
-            ok: false,
-            content: request.content,
-            error: error.clone(),
-        },
-    )
-    .err();
+    let logging_error = store
+        .append(
+            &trace_id,
+            &WriteFailureHistoryEntry {
+                v: 1,
+                tool: "write",
+                trace_id: trace_id.clone(),
+                timestamp: current_timestamp(),
+                cwd: current_working_directory().unwrap_or_else(|_| String::new()),
+                path: request.path,
+                summary: request.summary,
+                ok: false,
+                content: request.content,
+                error: error.clone(),
+            },
+        )
+        .err();
 
     tool_error(trace_id, reused_trace, error, logging_error)
 }
@@ -392,58 +408,6 @@ fn current_working_directory() -> Result<String, String> {
     env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|err| format!("Failed to read current directory: {err}"))
-}
-
-fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), String> {
-    let trace_dir = trace_store::trace_directory(trace_id)?;
-    fs::create_dir_all(&trace_dir).map_err(|err| {
-        format!(
-            "Failed to create trace directory {}: {}",
-            trace_dir.display(),
-            err
-        )
-    })?;
-
-    let lock_path = trace_dir.join(".lock");
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|err| format!("Failed to open trace lock {}: {}", lock_path.display(), err))?;
-    lock_file
-        .lock_exclusive()
-        .map_err(|err| format!("Failed to lock trace {}: {}", trace_id, err))?;
-
-    let result = (|| {
-        let entries_path = trace_dir.join("entries.jsonl");
-        let mut entries_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&entries_path)
-            .map_err(|err| {
-                format!(
-                    "Failed to open trace entries {}: {}",
-                    entries_path.display(),
-                    err
-                )
-            })?;
-        serde_json::to_writer(&mut entries_file, entry)
-            .map_err(|err| format!("Failed to serialize trace entry: {err}"))?;
-        writeln!(&mut entries_file).map_err(|err| {
-            format!(
-                "Failed to append trace entry {}: {}",
-                entries_path.display(),
-                err
-            )
-        })
-    })();
-
-    let unlock_result = lock_file.unlock();
-    result?;
-    unlock_result.map_err(|err| format!("Failed to unlock trace {}: {}", trace_id, err))?;
-    Ok(())
 }
 
 pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String> {

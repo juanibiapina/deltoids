@@ -447,14 +447,7 @@ fn append_trace_entry<T: Serialize>(trace_id: &str, entry: &T) -> Result<(), Str
 }
 
 pub fn read_history_entries(trace_id: &str) -> Result<Vec<HistoryEntry>, String> {
-    trace_store::validate_trace_id(trace_id)?;
-
-    let entries_path = trace_store::trace_directory(trace_id)?.join("entries.jsonl");
-    if !entries_path.exists() {
-        return Err(format!("Trace not found: {trace_id}"));
-    }
-
-    read_history_entries_from_path(&entries_path)
+    TraceStore::from_env()?.read(trace_id)
 }
 
 pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> {
@@ -485,7 +478,7 @@ pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> 
             continue;
         }
 
-        let entries = read_history_entries_from_path(&entries_path)?;
+        let entries = trace_store::read_history_entries_from_path(&entries_path)?;
         let matching_entries = entries
             .iter()
             .filter(|entry| entry.cwd == cwd)
@@ -506,29 +499,6 @@ pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> 
 
     traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
     Ok(traces)
-}
-
-fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntry>, String> {
-    let contents = fs::read_to_string(entries_path)
-        .map_err(|err| format!("Failed to read {}: {}", entries_path.display(), err))?;
-    let mut entries = Vec::new();
-    for (index, line) in contents.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let entry = serde_json::from_str(line).map_err(|err| {
-            format!(
-                "Failed to parse history entry {} in {}: {}",
-                index + 1,
-                entries_path.display(),
-                err
-            )
-        })?;
-        entries.push(entry);
-    }
-
-    Ok(entries)
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), String> {

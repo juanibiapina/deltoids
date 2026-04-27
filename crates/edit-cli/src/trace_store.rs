@@ -6,7 +6,8 @@
 //! primitives consumed by `execute_*_with_trace` and the TUI.
 
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use ulid::Ulid;
@@ -53,6 +54,17 @@ impl TraceStore {
         self.trace_directory(trace_id)
             .join("entries.jsonl")
             .exists()
+    }
+
+    /// Read every entry recorded for `trace_id` in this store.
+    /// Validates the id, then loads the jsonl file.
+    pub fn read(&self, trace_id: &str) -> Result<Vec<HistoryEntry>, String> {
+        validate_trace_id(trace_id)?;
+        let entries_path = self.trace_directory(trace_id).join("entries.jsonl");
+        if !entries_path.exists() {
+            return Err(format!("Trace not found: {trace_id}"));
+        }
+        read_history_entries_from_path(&entries_path)
     }
 
     /// Resolve a caller-supplied optional trace id.
@@ -135,6 +147,33 @@ pub struct HistoryEntry {
     pub error: Option<String>,
     #[serde(default)]
     pub hunks: Vec<deltoids::Hunk>,
+}
+
+/// Parse a trace's `entries.jsonl` file. Used by `TraceStore::read` and
+/// (until slice 5) by lib.rs's `list_traces_for_current_directory`.
+pub(crate) fn read_history_entries_from_path(
+    entries_path: &Path,
+) -> Result<Vec<HistoryEntry>, String> {
+    let contents = fs::read_to_string(entries_path)
+        .map_err(|err| format!("Failed to read {}: {}", entries_path.display(), err))?;
+    let mut entries = Vec::new();
+    for (index, line) in contents.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry = serde_json::from_str(line).map_err(|err| {
+            format!(
+                "Failed to parse history entry {} in {}: {}",
+                index + 1,
+                entries_path.display(),
+                err
+            )
+        })?;
+        entries.push(entry);
+    }
+
+    Ok(entries)
 }
 
 /// Aggregate view of one trace, used by the TUI list pane.

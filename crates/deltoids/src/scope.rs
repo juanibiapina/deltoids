@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
-use tree_sitter::{Node, Point};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -106,8 +105,8 @@ impl Diff {
         let hunks = if original.is_empty() {
             build_hunks_from_unified(&text_diff)
         } else {
-            let old_parsed = crate::syntax::parse_file(path, original);
-            let new_parsed = crate::syntax::parse_file(path, updated);
+            let old_parsed = crate::syntax::ParsedFile::parse(path, original);
+            let new_parsed = crate::syntax::ParsedFile::parse(path, updated);
 
             match (&old_parsed, &new_parsed) {
                 (Some(old_p), Some(new_p)) => {
@@ -163,8 +162,6 @@ fn build_hunks_with_scope(
         &ops,
         old_parsed,
         new_parsed,
-        original.as_bytes(),
-        updated.as_bytes(),
         old_lines.len(),
         new_lines.len(),
     );
@@ -172,14 +169,7 @@ fn build_hunks_with_scope(
     let merged = merge_ranges(context_ranges);
 
     build_hunks_from_ranges(
-        &ops,
-        &merged,
-        old_parsed,
-        new_parsed,
-        original.as_bytes(),
-        updated.as_bytes(),
-        &old_lines,
-        &new_lines,
+        &ops, &merged, old_parsed, new_parsed, &old_lines, &new_lines,
     )
 }
 
@@ -241,26 +231,8 @@ fn default_context_range(
 struct ScopeRangeContext<'a> {
     old_parsed: &'a crate::syntax::ParsedFile,
     new_parsed: &'a crate::syntax::ParsedFile,
-    old_source: &'a [u8],
-    new_source: &'a [u8],
     total_old: usize,
     total_new: usize,
-}
-
-/// True when `scope.kind` belongs to the language's structure tier.
-///
-/// Promoted kinds (e.g. `public_field_definition` with an arrow-function
-/// value) are also considered structures. `enclosing_scopes` only
-/// constructs `ScopeNode`s of a promoted kind when the value field is
-/// function-like, so the kind alone is enough to identify them here.
-fn is_structure(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
-    parsed.structure_kinds.contains(&scope.kind.as_str())
-        || parsed.promoted_kinds.contains(&scope.kind.as_str())
-}
-
-/// True when `scope.kind` belongs to the language's data tier.
-fn is_data(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
-    parsed.data_kinds.contains(&scope.kind.as_str())
 }
 
 /// Pick the hunk-anchor scope for a range of lines.
@@ -282,11 +254,10 @@ fn is_data(scope: &ScopeNode, parsed: &crate::syntax::ParsedFile) -> bool {
 /// 3. Otherwise return `None` and let the caller use default 3-line context.
 fn scope_for_range(
     parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
     range_start: usize,
     range_end: usize,
 ) -> Option<ScopeNode> {
-    let scopes = enclosing_scopes(parsed.tree.root_node(), source, range_start, parsed);
+    let scopes = parsed.enclosing_scopes(range_start);
     let contains_range = |scope: &ScopeNode| {
         let (scope_start, scope_end, _) = scope_bounds(scope);
         scope_start <= range_start && scope_end >= range_end.saturating_sub(1)
@@ -298,7 +269,7 @@ fn scope_for_range(
     //    innermost one does not fit. If the innermost structure exists
     //    but does not fit, fall through to the data tier (rare for code)
     //    or to default context.
-    if let Some(s) = scopes.iter().rev().find(|s| is_structure(s, parsed))
+    if let Some(s) = scopes.iter().rev().find(|s| parsed.is_structure(s))
         && fits(s)
     {
         return Some(s.clone());
@@ -307,7 +278,7 @@ fn scope_for_range(
     // 2. Outermost data container that contains the range and fits.
     if let Some(s) = scopes
         .iter()
-        .find(|s| is_data(s, parsed) && contains_range(s) && fits(s))
+        .find(|s| parsed.is_data(s) && contains_range(s) && fits(s))
     {
         return Some(s.clone());
     }
@@ -318,21 +289,17 @@ fn scope_for_range(
 /// Pick the hunk-anchor scope at a single line.
 ///
 /// Uses the same structure-first, data-fallback strategy as `scope_for_range`.
-fn scope_at(parsed: &crate::syntax::ParsedFile, source: &[u8], line: usize) -> Option<ScopeNode> {
-    scope_for_range(parsed, source, line, line + 1)
+fn scope_at(parsed: &crate::syntax::ParsedFile, line: usize) -> Option<ScopeNode> {
+    scope_for_range(parsed, line, line + 1)
 }
 
 /// Innermost named structure (function, class, method, promoted arrow-field)
 /// that encloses `line`, regardless of size. Used as the breadcrumb anchor
 /// and `scope_id` even when the structure is too large to expand the hunk
 /// to its full extent.
-fn innermost_structure_at(
-    parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
-    line: usize,
-) -> Option<ScopeNode> {
-    let scopes = enclosing_scopes(parsed.tree.root_node(), source, line, parsed);
-    scopes.into_iter().rev().find(|s| is_structure(s, parsed))
+fn innermost_structure_at(parsed: &crate::syntax::ParsedFile, line: usize) -> Option<ScopeNode> {
+    let scopes = parsed.enclosing_scopes(line);
+    scopes.into_iter().rev().find(|s| parsed.is_structure(s))
 }
 
 fn scope_bounds(scope: &ScopeNode) -> (usize, usize, usize) {
@@ -352,13 +319,12 @@ fn query_old_line(old_index: usize, total_old: usize) -> usize {
 
 fn find_inserted_scope_line(
     parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
     new_start: usize,
     new_end: usize,
     total_new: usize,
 ) -> Option<usize> {
     for line in new_start..new_end.min(total_new) {
-        let Some(scope) = scope_at(parsed, source, line) else {
+        let Some(scope) = scope_at(parsed, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -374,12 +340,11 @@ fn find_inserted_scope_line(
 /// Used to avoid duplicating new scope content in sibling function hunks.
 fn insert_forms_new_scope(
     parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
     new_start: usize,
     new_end: usize,
 ) -> bool {
     for line in new_start..new_end {
-        let Some(scope) = scope_at(parsed, source, line) else {
+        let Some(scope) = scope_at(parsed, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -393,13 +358,12 @@ fn insert_forms_new_scope(
 
 fn find_replace_scope_line(
     parsed: &crate::syntax::ParsedFile,
-    source: &[u8],
     new_start: usize,
     new_end: usize,
     total_new: usize,
 ) -> Option<usize> {
     for line in new_start..new_end.min(total_new) {
-        let Some(scope) = scope_at(parsed, source, line) else {
+        let Some(scope) = scope_at(parsed, line) else {
             continue;
         };
         let (scope_start, _, scope_lines) = scope_bounds(&scope);
@@ -419,18 +383,13 @@ fn context_ranges_for_insert(
     let new_start = new_index;
     let new_end = new_index + new_len;
 
-    if let Some(scope_line) = find_inserted_scope_line(
-        ctx.new_parsed,
-        ctx.new_source,
-        new_start,
-        new_end,
-        ctx.total_new,
-    ) {
-        let scope_id =
-            scope_at(ctx.new_parsed, ctx.new_source, scope_line.saturating_sub(1)).map(|s| {
-                let (s0, s1, _) = scope_bounds(&s);
-                (s0, s1)
-            });
+    if let Some(scope_line) =
+        find_inserted_scope_line(ctx.new_parsed, new_start, new_end, ctx.total_new)
+    {
+        let scope_id = scope_at(ctx.new_parsed, scope_line.saturating_sub(1)).map(|s| {
+            let (s0, s1, _) = scope_bounds(&s);
+            (s0, s1)
+        });
         return vec![ContextRange {
             start: old_index,
             end: old_index,
@@ -442,12 +401,12 @@ fn context_ranges_for_insert(
     }
 
     let scope_line = query_old_line(old_index, ctx.total_old);
-    let inner = innermost_structure_at(ctx.old_parsed, ctx.old_source, scope_line);
+    let inner = innermost_structure_at(ctx.old_parsed, scope_line);
     let inner_id = inner.as_ref().map(|s| {
         let (st, en, _) = scope_bounds(s);
         (st, en)
     });
-    if let Some(scope) = scope_at(ctx.old_parsed, ctx.old_source, scope_line) {
+    if let Some(scope) = scope_at(ctx.old_parsed, scope_line) {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
             return vec![ContextRange {
@@ -480,14 +439,14 @@ fn context_ranges_for_delete(
     let old_start = old_index;
     let old_end = old_index + old_len;
 
-    let inner = innermost_structure_at(ctx.old_parsed, ctx.old_source, old_start);
+    let inner = innermost_structure_at(ctx.old_parsed, old_start);
     let inner_id = inner.as_ref().map(|s| {
         let (st, en, _) = scope_bounds(s);
         (st, en)
     });
 
     for line in old_start..old_end.min(ctx.total_old) {
-        let Some(scope) = scope_at(ctx.old_parsed, ctx.old_source, line) else {
+        let Some(scope) = scope_at(ctx.old_parsed, line) else {
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
@@ -541,13 +500,13 @@ fn old_replace_context_range(
     // context. This keeps adjacent edits inside the same big method in
     // their own merged hunk and prevents accidental merges with
     // neighbouring methods.
-    let inner = innermost_structure_at(ctx.old_parsed, ctx.old_source, old_start);
+    let inner = innermost_structure_at(ctx.old_parsed, old_start);
     let inner_id = inner.as_ref().map(|s| {
         let (st, en, _) = scope_bounds(s);
         (st, en)
     });
 
-    if let Some(scope) = scope_for_range(ctx.old_parsed, ctx.old_source, old_start, old_end) {
+    if let Some(scope) = scope_for_range(ctx.old_parsed, old_start, old_end) {
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines <= MAX_SCOPE_LINES {
             // Extend the range to cover the change itself when it sits
@@ -648,22 +607,16 @@ fn new_replace_scope_range(
     let new_start = new_index;
     let new_end = new_index + new_len;
 
-    let scope_line = find_replace_scope_line(
-        ctx.new_parsed,
-        ctx.new_source,
-        new_start,
-        new_end,
-        ctx.total_new,
-    )?;
+    let scope_line = find_replace_scope_line(ctx.new_parsed, new_start, new_end, ctx.total_new)?;
 
-    let new_scope = scope_at(ctx.new_parsed, ctx.new_source, scope_line)?;
+    let new_scope = scope_at(ctx.new_parsed, scope_line)?;
     let (new_scope_start, new_scope_end, _) = scope_bounds(&new_scope);
 
     // Same slot: the OLD scope at `old_index` aligns with the NEW scope
     // through the diff. This catches both pure renames and structural
     // conversions (arrow-property -> method) of the same logical member,
     // even when earlier edits in the file shifted line numbers.
-    if let Some(old_scope) = scope_at(ctx.old_parsed, ctx.old_source, old_index)
+    if let Some(old_scope) = scope_at(ctx.old_parsed, old_index)
         && same_slot(&old_scope, &new_scope, ops)
     {
         return None;
@@ -704,16 +657,12 @@ fn compute_context_ranges(
     ops: &[similar::DiffOp],
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
-    old_source: &[u8],
-    new_source: &[u8],
     total_old: usize,
     total_new: usize,
 ) -> Vec<ContextRange> {
     let ctx = ScopeRangeContext {
         old_parsed,
         new_parsed,
-        old_source,
-        new_source,
         total_old,
         total_new,
     };
@@ -789,8 +738,6 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
 struct HunkBuildContext<'a> {
     old_parsed: &'a crate::syntax::ParsedFile,
     new_parsed: &'a crate::syntax::ParsedFile,
-    old_source: &'a [u8],
-    new_source: &'a [u8],
     old_lines: &'a [&'a str],
     new_lines: &'a [&'a str],
 }
@@ -869,12 +816,7 @@ fn collect_insert_lines(
     // Skip inserts that form a new scope when building an old-scope hunk.
     // The new scope has its own hunk; we don't want to duplicate it as context.
     if range.ancestor_source == AncestorSource::Old
-        && insert_forms_new_scope(
-            ctx.new_parsed,
-            ctx.new_source,
-            new_index,
-            new_index + new_len,
-        )
+        && insert_forms_new_scope(ctx.new_parsed, new_index, new_index + new_len)
     {
         return;
     }
@@ -948,7 +890,6 @@ fn collect_replace_added_lines(
             new_index,
             new_index + new_len,
             ctx.new_parsed,
-            ctx.new_source,
             ops,
         )
     });
@@ -999,22 +940,12 @@ fn collect_replace_new_scope_lines(
         return;
     }
 
-    let new_scope = enclosing_scopes(
-        ctx.new_parsed.tree.root_node(),
-        ctx.new_source,
-        range.scope_line,
-        ctx.new_parsed,
-    )
-    .last()
-    .cloned();
-    let old_scope = enclosing_scopes(
-        ctx.old_parsed.tree.root_node(),
-        ctx.old_source,
-        old_index,
-        ctx.old_parsed,
-    )
-    .last()
-    .cloned();
+    let new_scope = ctx
+        .new_parsed
+        .enclosing_scopes(range.scope_line)
+        .last()
+        .cloned();
+    let old_scope = ctx.old_parsed.enclosing_scopes(old_index).last().cloned();
 
     let Some(new_scope) = new_scope else {
         return;
@@ -1098,14 +1029,10 @@ fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Opti
         return None;
     }
 
-    enclosing_scopes(
-        ctx.old_parsed.tree.root_node(),
-        ctx.old_source,
-        range.scope_line,
-        ctx.old_parsed,
-    )
-    .last()
-    .cloned()
+    ctx.old_parsed
+        .enclosing_scopes(range.scope_line)
+        .last()
+        .cloned()
 }
 
 fn build_hunk_from_range(
@@ -1182,8 +1109,6 @@ fn build_hunk_from_range(
         range.ancestor_source,
         ctx.old_parsed,
         ctx.new_parsed,
-        ctx.old_source,
-        ctx.new_source,
     )
     .unwrap_or_else(|| {
         ancestors_at_line(
@@ -1191,8 +1116,6 @@ fn build_hunk_from_range(
             range.scope_line,
             ctx.old_parsed,
             ctx.new_parsed,
-            ctx.old_source,
-            ctx.new_source,
         )
     });
 
@@ -1215,16 +1138,12 @@ fn build_hunks_from_ranges(
     ranges: &[ContextRange],
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
-    old_source: &[u8],
-    new_source: &[u8],
     old_lines: &[&str],
     new_lines: &[&str],
 ) -> Vec<Hunk> {
     let ctx = HunkBuildContext {
         old_parsed,
         new_parsed,
-        old_source,
-        new_source,
         old_lines,
         new_lines,
     };
@@ -1240,8 +1159,6 @@ fn select_hunk_ancestors(
     preferred_source: AncestorSource,
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
-    old_source: &[u8],
-    new_source: &[u8],
 ) -> Option<Vec<ScopeNode>> {
     let alternate_source = match preferred_source {
         AncestorSource::Old => AncestorSource::New,
@@ -1256,14 +1173,7 @@ fn select_hunk_ancestors(
                 continue;
             }
 
-            let ancestors = ancestors_at_line(
-                *candidate_source,
-                *line,
-                old_parsed,
-                new_parsed,
-                old_source,
-                new_source,
-            );
+            let ancestors = ancestors_at_line(*candidate_source, *line, old_parsed, new_parsed);
 
             if ancestors.len() > best_ancestors.as_ref().map_or(0, Vec::len) {
                 best_ancestors = Some(ancestors);
@@ -1285,25 +1195,17 @@ fn ancestors_at_line(
     line: usize,
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
-    old_source: &[u8],
-    new_source: &[u8],
 ) -> Vec<ScopeNode> {
     let (parsed, scopes) = match ancestor_source {
-        AncestorSource::Old => (
-            old_parsed,
-            enclosing_scopes(old_parsed.tree.root_node(), old_source, line, old_parsed),
-        ),
-        AncestorSource::New => (
-            new_parsed,
-            enclosing_scopes(new_parsed.tree.root_node(), new_source, line, new_parsed),
-        ),
+        AncestorSource::Old => (old_parsed, old_parsed.enclosing_scopes(line)),
+        AncestorSource::New => (new_parsed, new_parsed.enclosing_scopes(line)),
     };
     // Hunk breadcrumbs show named code structures only. Data containers
     // (JSON/TS objects and arrays, YAML mappings) have no name and would
     // just add noise.
     scopes
         .into_iter()
-        .filter(|s| is_structure(s, parsed))
+        .filter(|s| parsed.is_structure(s))
         .collect()
 }
 
@@ -1312,19 +1214,17 @@ fn first_different_new_scope_start(
     new_start: usize,
     new_end: usize,
     new_parsed: &crate::syntax::ParsedFile,
-    new_source: &[u8],
     ops: &[similar::DiffOp],
 ) -> Option<usize> {
     for line in new_start..new_end {
-        let new_scopes =
-            enclosing_scopes(new_parsed.tree.root_node(), new_source, line, new_parsed);
+        let new_scopes = new_parsed.enclosing_scopes(line);
         let Some(innermost) = new_scopes.last() else {
             continue;
         };
 
         // Data-tier scopes (objects, arrays, JSON pairs) never get their own
         // hunk, so they must not cut off the enclosing hunk either.
-        if is_data(innermost, new_parsed) {
+        if new_parsed.is_data(innermost) {
             continue;
         }
 
@@ -1348,146 +1248,8 @@ fn first_different_new_scope_start(
 }
 
 // ---------------------------------------------------------------------------
-// Core algorithm
+// Tests
 // ---------------------------------------------------------------------------
-
-/// If `node` (or any of its ancestors) is a `decorator`, jump forward to
-/// the structure that decorator decorates. For chained decorators we walk
-/// through every named sibling that is itself a decorator, so we land on
-/// the decorated structure regardless of how many decorators precede it.
-///
-/// Returns `node` unchanged if no enclosing decorator is found.
-fn skip_decorators(node: Node) -> Node {
-    let mut decorator: Option<Node> = None;
-    let mut cur = Some(node);
-    while let Some(c) = cur {
-        if c.kind() == "decorator" {
-            decorator = Some(c);
-            break;
-        }
-        cur = c.parent();
-    }
-    let Some(mut d) = decorator else {
-        return node;
-    };
-    while d.kind() == "decorator" {
-        let Some(sib) = d.next_named_sibling() else {
-            return d;
-        };
-        d = sib;
-    }
-    d
-}
-
-/// Find all enclosing scope nodes from outermost to innermost.
-/// Returns a vec of `ScopeNode` with outermost first. A node is included when
-/// its kind matches either `structure_kinds` or `data_kinds` on the parsed
-/// file.
-fn enclosing_scopes(
-    root: Node,
-    source: &[u8],
-    line: usize,
-    parsed: &crate::syntax::ParsedFile,
-) -> Vec<ScopeNode> {
-    let point = point_at_first_non_whitespace(source, line);
-    let Some(node) = root.descendant_for_point_range(point, point) else {
-        return Vec::new();
-    };
-
-    // Method- and class-level decorators (e.g. `@Cron(...)` above a class
-    // method or `@Injectable()` above a class) appear in the tree as
-    // siblings of the decorated node, not as children. A query at a
-    // decorator line would otherwise walk up through `class_body` straight
-    // to the class, skipping the method the decorator belongs to.
-    let node = skip_decorators(node);
-
-    let mut ancestors = Vec::new();
-    let mut current = Some(node);
-    while let Some(n) = current {
-        let kind_is_structure = parsed.structure_kinds.contains(&n.kind());
-        let kind_is_data = parsed.data_kinds.contains(&n.kind());
-        let kind_is_promoted = parsed.promoted_kinds.contains(&n.kind());
-        let include = kind_is_structure
-            || kind_is_data
-            || (kind_is_promoted && has_function_value(&n, parsed));
-        // Demote structures and promoted scopes that live inside another
-        // function body. They're local helpers, not anchors. Data scopes
-        // (objects/arrays) are unaffected; their existing
-        // outermost-fit logic already handles nesting sensibly.
-        let include = include
-            && !((kind_is_structure || kind_is_promoted) && is_nested_in_function(n, parsed));
-        if include {
-            let start_line = n.start_position().row + 1;
-            let end_line = n.end_position().row + 1;
-            // `property` covers JS `field_definition`'s name field name.
-            let name = n
-                .child_by_field_name("name")
-                .or_else(|| n.child_by_field_name("property"))
-                .or_else(|| n.child_by_field_name("type"))
-                .or_else(|| n.child_by_field_name("key"))
-                .and_then(|name_node| name_node.utf8_text(source).ok())
-                .unwrap_or("")
-                .to_string();
-            let text = source_line_raw(source, n.start_position().row).unwrap_or_default();
-            ancestors.push(ScopeNode {
-                kind: n.kind().to_string(),
-                name,
-                start_line,
-                end_line,
-                text,
-            });
-        }
-        current = n.parent();
-    }
-
-    ancestors.reverse();
-    ancestors
-}
-
-/// True when `node`'s `value` field holds a function body (arrow
-/// function, function expression, named function, or any other kind
-/// listed in the language's `function_body_kinds`). Used to gate
-/// promotion of wrapper kinds (class fields, variable declarators) to
-/// structures.
-fn has_function_value(node: &Node, parsed: &crate::syntax::ParsedFile) -> bool {
-    let Some(value) = node.child_by_field_name("value") else {
-        return false;
-    };
-    parsed.function_body_kinds.contains(&value.kind())
-}
-
-/// True when any ancestor of `node` introduces a function body, per the
-/// language's `function_body_kinds`. Used to demote local helpers (`fn
-/// inner` inside `fn outer`, `const inner = () => {}` inside a method
-/// body) so they do not steal the hunk anchor from the enclosing named
-/// container. Class members like `method_definition` directly under
-/// `class_body` are not nested in a function body and remain anchors.
-fn is_nested_in_function(node: Node, parsed: &crate::syntax::ParsedFile) -> bool {
-    let mut cur = node.parent();
-    while let Some(p) = cur {
-        if parsed.function_body_kinds.contains(&p.kind()) {
-            return true;
-        }
-        cur = p.parent();
-    }
-    false
-}
-
-fn point_at_first_non_whitespace(source: &[u8], line: usize) -> Point {
-    let column = source_line_raw(source, line)
-        .map(|text| {
-            let trimmed = text.trim_start_matches(|c: char| c.is_whitespace());
-            text.len().saturating_sub(trimmed.len())
-        })
-        .unwrap_or(0);
-    Point::new(line, column)
-}
-
-/// Return the 0-indexed source line with original indentation preserved.
-fn source_line_raw(source: &[u8], line: usize) -> Option<String> {
-    let text = std::str::from_utf8(source).ok()?;
-    text.lines().nth(line).map(|l| l.to_string())
-}
 
 #[cfg(test)]
 mod tests {
@@ -2147,8 +1909,8 @@ fn small() {
     // -----------------------------------------------------------------------
 
     fn parse_and_scopes(source: &str, path: &str, line: usize) -> Vec<ScopeNode> {
-        let parsed = crate::syntax::parse_file(path, source).unwrap();
-        enclosing_scopes(parsed.tree.root_node(), source.as_bytes(), line, &parsed)
+        let parsed = crate::syntax::ParsedFile::parse(path, source).unwrap();
+        parsed.enclosing_scopes(line)
     }
 
     #[test]
@@ -2335,14 +2097,12 @@ fn new_function() {
 ";
         let diff = TextDiff::from_lines(original, updated);
         let ops = diff.ops().to_vec();
-        let old_parsed = crate::syntax::parse_file("test.rs", original).unwrap();
-        let new_parsed = crate::syntax::parse_file("test.rs", updated).unwrap();
+        let old_parsed = crate::syntax::ParsedFile::parse("test.rs", original).unwrap();
+        let new_parsed = crate::syntax::ParsedFile::parse("test.rs", updated).unwrap();
         let ranges = compute_context_ranges(
             &ops,
             &old_parsed,
             &new_parsed,
-            original.as_bytes(),
-            updated.as_bytes(),
             original.lines().count(),
             updated.lines().count(),
         );

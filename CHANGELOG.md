@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `deltoids`: `syntax::ParsedFile` now hides its tree-sitter `Tree`, source buffer, and language `*_kinds` tables behind a small interface. Public methods: `ParsedFile::parse(path, source)`, `enclosing_scopes(line)`, `is_structure(&scope)`, `is_data(&scope)`.
+
+### Removed
+
+- `deltoids`: `syntax::parse_file` free function (replaced by `ParsedFile::parse`).
+- `deltoids`: public fields on `syntax::ParsedFile` (`tree`, `structure_kinds`, `data_kinds`, `promoted_kinds`, `function_body_kinds`) — now private.
+
+## [0.2.0] - 2026-04-27
+
 ### Added
 
 - Landing page at https://deltoids.dev

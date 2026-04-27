@@ -1,14 +1,16 @@
 //! Tree-sitter language detection and parsing.
 //!
 //! Detects the programming language from a file path and parses source code
-//! into a tree-sitter syntax tree. This module provides the shared foundation
-//! for all tree-sitter based features: scope context, breadcrumbs, sibling
-//! folding, and change classification.
+//! into a tree-sitter syntax tree. Constructed via [`ParsedFile::parse`];
+//! all syntax-level questions (enclosing scopes, structure-vs-data tier)
+//! are answered through methods on [`ParsedFile`].
 
 use std::path::Path;
 
-use tree_sitter::{Parser, Tree};
+use tree_sitter::{Node, Parser, Point, Tree};
 use tree_sitter_language::LanguageFn;
+
+use crate::scope::ScopeNode;
 
 /// Per-language tree-sitter configuration.
 struct LangEntry {
@@ -37,38 +39,199 @@ struct LangEntry {
     function_body_kinds: &'static [&'static str],
 }
 
-/// A parsed source file with its syntax tree and language metadata.
+/// A parsed source file: its syntax tree, the source it came from, and the
+/// language taxonomy needed to interpret nodes. Constructed via
+/// [`ParsedFile::parse`].
 pub struct ParsedFile {
-    pub tree: Tree,
-    /// Node kinds used for the ancestor chain (display breadcrumb). Anchored
-    /// with innermost strategy for hunk boundaries.
-    pub structure_kinds: &'static [&'static str],
+    tree: Tree,
+    source: Vec<u8>,
+    /// Node kinds used for the ancestor chain (display breadcrumb).
+    structure_kinds: &'static [&'static str],
     /// Node kinds used as hunk anchors when no structure contains the change.
-    /// Anchored with outermost-fit strategy.
-    pub data_kinds: &'static [&'static str],
+    data_kinds: &'static [&'static str],
     /// Wrapper kinds promoted to structure when their `value` field is a
-    /// function body. See `LangEntry::promoted_kinds`.
-    pub promoted_kinds: &'static [&'static str],
-    /// Node kinds that introduce a function body. See
-    /// `LangEntry::function_body_kinds`.
-    pub function_body_kinds: &'static [&'static str],
+    /// function body.
+    promoted_kinds: &'static [&'static str],
+    /// Node kinds that introduce a function body.
+    function_body_kinds: &'static [&'static str],
 }
 
-/// Detect the language from a file path and parse the source text.
+impl ParsedFile {
+    /// Parse `source` for the language detected from `path`.
+    ///
+    /// Returns `None` if the language is not recognized or parsing fails.
+    pub fn parse(path: &str, source: &str) -> Option<Self> {
+        let entry = detect_language(path)?;
+        let mut parser = Parser::new();
+        parser.set_language(&entry.language.into()).ok()?;
+        let tree = parser.parse(source, None)?;
+        Some(ParsedFile {
+            tree,
+            source: source.as_bytes().to_vec(),
+            structure_kinds: entry.structure_kinds,
+            data_kinds: entry.data_kinds,
+            promoted_kinds: entry.promoted_kinds,
+            function_body_kinds: entry.function_body_kinds,
+        })
+    }
+
+    /// Return all enclosing scope nodes at the given 0-indexed `line`,
+    /// outermost first. A scope is included when its tree-sitter kind is
+    /// part of the language's structure or data tier, or is a wrapper kind
+    /// that has been promoted because its value is a function body.
+    /// Structures and promoted scopes nested inside another function body
+    /// (local helpers) are excluded.
+    pub fn enclosing_scopes(&self, line: usize) -> Vec<ScopeNode> {
+        let point = self.point_at_first_non_whitespace(line);
+        let Some(node) = self
+            .tree
+            .root_node()
+            .descendant_for_point_range(point, point)
+        else {
+            return Vec::new();
+        };
+
+        // Method- and class-level decorators (e.g. `@Cron(...)` above a class
+        // method or `@Injectable()` above a class) appear in the tree as
+        // siblings of the decorated node, not as children. A query at a
+        // decorator line would otherwise walk up through `class_body` straight
+        // to the class, skipping the method the decorator belongs to.
+        let node = skip_decorators(node);
+
+        let mut ancestors = Vec::new();
+        let mut current = Some(node);
+        while let Some(n) = current {
+            let kind_is_structure = self.structure_kinds.contains(&n.kind());
+            let kind_is_data = self.data_kinds.contains(&n.kind());
+            let kind_is_promoted = self.promoted_kinds.contains(&n.kind());
+            let include = kind_is_structure
+                || kind_is_data
+                || (kind_is_promoted && self.has_function_value(&n));
+            // Demote structures and promoted scopes that live inside another
+            // function body. They're local helpers, not anchors. Data scopes
+            // (objects/arrays) are unaffected; their existing
+            // outermost-fit logic already handles nesting sensibly.
+            let include = include
+                && !((kind_is_structure || kind_is_promoted) && self.is_nested_in_function(n));
+            if include {
+                let start_line = n.start_position().row + 1;
+                let end_line = n.end_position().row + 1;
+                // `property` covers JS `field_definition`'s name field name.
+                let name = n
+                    .child_by_field_name("name")
+                    .or_else(|| n.child_by_field_name("property"))
+                    .or_else(|| n.child_by_field_name("type"))
+                    .or_else(|| n.child_by_field_name("key"))
+                    .and_then(|name_node| name_node.utf8_text(&self.source).ok())
+                    .unwrap_or("")
+                    .to_string();
+                let text = self
+                    .source_line_raw(n.start_position().row)
+                    .unwrap_or_default();
+                ancestors.push(ScopeNode {
+                    kind: n.kind().to_string(),
+                    name,
+                    start_line,
+                    end_line,
+                    text,
+                });
+            }
+            current = n.parent();
+        }
+
+        ancestors.reverse();
+        ancestors
+    }
+
+    /// True when `scope`'s kind belongs to this language's structure tier.
+    ///
+    /// Promoted kinds (e.g. a JS class field whose value is an arrow
+    /// function) also count as structures. `enclosing_scopes` only emits
+    /// promoted-kind scopes when their value is function-like, so the
+    /// kind alone is enough to decide.
+    pub fn is_structure(&self, scope: &ScopeNode) -> bool {
+        let kind = scope.kind.as_str();
+        self.structure_kinds.contains(&kind) || self.promoted_kinds.contains(&kind)
+    }
+
+    /// True when `scope`'s kind belongs to this language's data tier
+    /// (anonymous containers like JS objects/arrays or YAML mappings).
+    pub fn is_data(&self, scope: &ScopeNode) -> bool {
+        self.data_kinds.contains(&scope.kind.as_str())
+    }
+
+    /// True when `node`'s `value` field holds a function body (arrow
+    /// function, function expression, named function, or any other kind
+    /// listed in `function_body_kinds`). Gates promotion of wrapper kinds
+    /// (class fields, variable declarators) to structures.
+    fn has_function_value(&self, node: &Node) -> bool {
+        let Some(value) = node.child_by_field_name("value") else {
+            return false;
+        };
+        self.function_body_kinds.contains(&value.kind())
+    }
+
+    /// True when any ancestor of `node` introduces a function body, per
+    /// `function_body_kinds`. Demotes local helpers (`fn inner` inside
+    /// `fn outer`, `const inner = () => {}` inside a method body) so they
+    /// do not steal the hunk anchor from the enclosing named container.
+    /// Class members like `method_definition` directly under `class_body`
+    /// are not nested in a function body and remain anchors.
+    fn is_nested_in_function(&self, node: Node) -> bool {
+        let mut cur = node.parent();
+        while let Some(p) = cur {
+            if self.function_body_kinds.contains(&p.kind()) {
+                return true;
+            }
+            cur = p.parent();
+        }
+        false
+    }
+
+    fn point_at_first_non_whitespace(&self, line: usize) -> Point {
+        let column = self
+            .source_line_raw(line)
+            .map(|text| {
+                let trimmed = text.trim_start_matches(|c: char| c.is_whitespace());
+                text.len().saturating_sub(trimmed.len())
+            })
+            .unwrap_or(0);
+        Point::new(line, column)
+    }
+
+    /// Return the 0-indexed source line with original indentation preserved.
+    fn source_line_raw(&self, line: usize) -> Option<String> {
+        let text = std::str::from_utf8(&self.source).ok()?;
+        text.lines().nth(line).map(|l| l.to_string())
+    }
+}
+
+/// If `node` (or any of its ancestors) is a `decorator`, jump forward to
+/// the structure that decorator decorates. For chained decorators we walk
+/// through every named sibling that is itself a decorator, so we land on
+/// the decorated structure regardless of how many decorators precede it.
 ///
-/// Returns `None` if the language is not recognized or parsing fails.
-pub fn parse_file(path: &str, source: &str) -> Option<ParsedFile> {
-    let entry = detect_language(path)?;
-    let mut parser = Parser::new();
-    parser.set_language(&entry.language.into()).ok()?;
-    let tree = parser.parse(source, None)?;
-    Some(ParsedFile {
-        tree,
-        structure_kinds: entry.structure_kinds,
-        data_kinds: entry.data_kinds,
-        promoted_kinds: entry.promoted_kinds,
-        function_body_kinds: entry.function_body_kinds,
-    })
+/// Returns `node` unchanged if no enclosing decorator is found.
+fn skip_decorators(node: Node) -> Node {
+    let mut decorator: Option<Node> = None;
+    let mut cur = Some(node);
+    while let Some(c) = cur {
+        if c.kind() == "decorator" {
+            decorator = Some(c);
+            break;
+        }
+        cur = c.parent();
+    }
+    let Some(mut d) = decorator else {
+        return node;
+    };
+    while d.kind() == "decorator" {
+        let Some(sib) = d.next_named_sibling() else {
+            return d;
+        };
+        d = sib;
+    }
+    d
 }
 
 // ---------------------------------------------------------------------------
@@ -284,64 +447,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_rust_file() {
-        let source = "fn main() { let x = 1; }\n";
-        let parsed = parse_file("src/main.rs", source).unwrap();
-        assert_eq!(parsed.tree.root_node().kind(), "source_file");
-        assert!(parsed.structure_kinds.contains(&"function_item"));
-        assert!(parsed.data_kinds.is_empty());
+    fn parsed_file_parse_returns_some_for_known_extension() {
+        assert!(ParsedFile::parse("src/main.rs", "fn main() {}\n").is_some());
     }
 
     #[test]
-    fn parses_python_file() {
-        let source = "def hello():\n    pass\n";
-        let parsed = parse_file("app.py", source).unwrap();
-        assert_eq!(parsed.tree.root_node().kind(), "module");
-        assert!(parsed.structure_kinds.contains(&"function_definition"));
+    fn parsed_file_parse_returns_none_for_unknown_extension() {
+        assert!(ParsedFile::parse("data.xyz", "content").is_none());
     }
 
     #[test]
-    fn parses_markdown_file() {
-        let source = "# Heading\n\nSome text.\n";
-        let parsed = parse_file("README.md", source).unwrap();
-        assert_eq!(parsed.tree.root_node().kind(), "document");
-        assert!(parsed.structure_kinds.contains(&"atx_heading"));
+    fn parsed_file_parse_returns_none_for_no_extension() {
+        assert!(ParsedFile::parse("Makefile", "all: build").is_none());
     }
 
     #[test]
-    fn parses_toml_file() {
-        let source = "[package]\nname = \"test\"\n";
-        let parsed = parse_file("Cargo.toml", source).unwrap();
-        assert_eq!(parsed.tree.root_node().kind(), "document");
-        assert!(parsed.structure_kinds.contains(&"table"));
+    fn is_structure_true_for_function_item_in_rust() {
+        let parsed = ParsedFile::parse("src/x.rs", "fn main() {}\n").expect("parse");
+        let scopes = parsed.enclosing_scopes(0);
+        let func = scopes
+            .iter()
+            .find(|s| s.kind == "function_item")
+            .expect("function_item scope");
+        assert!(parsed.is_structure(func));
+        assert!(!parsed.is_data(func));
     }
 
     #[test]
-    fn parses_json_file() {
-        let source = "{\"name\": \"test\", \"version\": \"1.0\"}\n";
-        let parsed = parse_file("package.json", source).unwrap();
-        assert_eq!(parsed.tree.root_node().kind(), "document");
-        assert!(parsed.structure_kinds.is_empty());
-        assert!(parsed.data_kinds.contains(&"object"));
+    fn is_data_true_for_object_in_javascript() {
+        let source = "\
+const config = {
+    name: \"test\",
+    version: 1,
+};
+";
+        let parsed = ParsedFile::parse("app.js", source).expect("parse");
+        // line 1 is `    name: "test",` inside the object literal
+        let scopes = parsed.enclosing_scopes(1);
+        let object = scopes
+            .iter()
+            .find(|s| s.kind == "object")
+            .expect("object scope");
+        assert!(parsed.is_data(object));
+        assert!(!parsed.is_structure(object));
     }
 
     #[test]
-    fn parses_yaml_file() {
-        let source = "name: test\nversion: 1.0\n";
-        let parsed = parse_file("config.yaml", source).unwrap();
-        assert_eq!(parsed.tree.root_node().kind(), "stream");
-        assert!(parsed.structure_kinds.is_empty());
-        assert!(parsed.data_kinds.contains(&"block_mapping"));
-    }
+    fn enclosing_scopes_returns_outermost_first_chain() {
+        let source = "\
+struct Foo;
 
-    #[test]
-    fn returns_none_for_unknown_extension() {
-        assert!(parse_file("data.xyz", "content").is_none());
+impl Foo {
+    fn compute(&self) -> i32 {
+        42
     }
-
-    #[test]
-    fn returns_none_for_no_extension() {
-        assert!(parse_file("Makefile", "all: build").is_none());
+}
+";
+        let parsed = ParsedFile::parse("src/lib.rs", source).expect("parse");
+        // line 4 (0-indexed) is `        42` inside compute inside impl Foo
+        let scopes = parsed.enclosing_scopes(4);
+        let kinds: Vec<&str> = scopes.iter().map(|s| s.kind.as_str()).collect();
+        let names: Vec<&str> = scopes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(kinds, vec!["impl_item", "function_item"]);
+        assert_eq!(names, vec!["Foo", "compute"]);
     }
 
     #[test]
@@ -368,7 +536,10 @@ mod tests {
             ("test.yml", "key: value"),
         ];
         for (path, source) in cases {
-            assert!(parse_file(path, source).is_some(), "failed to parse {path}");
+            assert!(
+                ParsedFile::parse(path, source).is_some(),
+                "failed to parse {path}"
+            );
         }
     }
 }

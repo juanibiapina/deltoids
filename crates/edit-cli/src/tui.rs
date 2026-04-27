@@ -31,7 +31,10 @@ use unicode_width::UnicodeWidthChar;
 use crate::highlight::{highlighted_spans, highlighted_spans_with_emphasis};
 use crate::theme::{ResolvedTheme, to_color};
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
-use deltoids::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
+use deltoids::{
+    DiffLine, EmphKind, EmphSection, Hunk, HunkRun, LineEmphasis, LineKind,
+    compute_subhunk_emphasis,
+};
 
 const DIFF_SCROLL_STEP: usize = 3;
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -795,34 +798,57 @@ fn short_trace_id(trace_id: &str) -> String {
     }
 }
 
-fn detail_lines(entry: &HistoryEntry) -> Vec<String> {
-    if entry.ok {
-        // v1 entries have empty hunks - show deprecation message
-        if entry.hunks.is_empty() {
-            return vec!["(old format, cannot display)".to_string()];
-        }
-        return detail_diff_lines_from_hunks(entry);
-    } else if let Some(error) = &entry.error {
-        return vec![format!("error: {error}")];
-    }
-
-    Vec::new()
+/// One unit of the entry detail view, ready to be rendered.
+///
+/// Built once per visible entry; `render_detail_for` walks the items and
+/// dispatches each variant to the right renderer. Lifetimes borrow from
+/// the originating `HistoryEntry`, so building this list is allocation
+/// light.
+#[derive(Debug)]
+enum DetailItem<'a> {
+    /// v1 trace entry: hunks were not recorded, only legacy diff text.
+    OldFormatNotice,
+    /// Failure entry's error message.
+    ErrorLine(&'a str),
+    /// Edit-tool summaries to render before the next hunk.
+    EditBlock(Vec<&'a str>),
+    /// Blank line between hunks.
+    HunkSpacer,
+    /// Hunk header (breadcrumb box or line-number-only box).
+    HunkHeader(&'a Hunk),
+    /// A single context line.
+    Context(&'a DiffLine),
+    /// A maximal run of consecutive change lines, ready for intraline pairing.
+    Subhunk(&'a [DiffLine]),
 }
 
-fn detail_diff_lines_from_hunks(entry: &HistoryEntry) -> Vec<String> {
-    use deltoids::LineKind;
+/// Build the structured detail view for a history entry.
+///
+/// Walks `entry.hunks` directly; emits edit summaries, hunk headers,
+/// context, and subhunks in the order the renderer needs them.
+fn detail_items(entry: &HistoryEntry) -> Vec<DetailItem<'_>> {
+    if !entry.ok {
+        return entry
+            .error
+            .as_deref()
+            .map(|err| vec![DetailItem::ErrorLine(err)])
+            .unwrap_or_default();
+    }
 
-    let mut result = Vec::new();
+    if entry.hunks.is_empty() {
+        // v1 entries have no hunks; show deprecation notice.
+        return vec![DetailItem::OldFormatNotice];
+    }
+
+    let mut items = Vec::new();
     let hunk_count = entry.hunks.len();
     let mut next_edit_index = 0usize;
 
     for (hunk_index, hunk) in entry.hunks.iter().enumerate() {
-        // Add blank line between hunks
-        if !result.is_empty() {
-            result.push(String::new());
+        if hunk_index > 0 {
+            items.push(DetailItem::HunkSpacer);
         }
 
-        // Add edit summaries before the hunk
         if !entry.edits.is_empty() {
             let remaining_hunks = hunk_count.saturating_sub(hunk_index);
             let remaining_edits = entry.edits.len().saturating_sub(next_edit_index);
@@ -833,44 +859,28 @@ fn detail_diff_lines_from_hunks(entry: &HistoryEntry) -> Vec<String> {
             } else {
                 remaining_edits - (remaining_hunks - 1)
             };
-
-            let edit_slice = &entry.edits[next_edit_index..next_edit_index + edits_for_this_hunk];
-            result.extend(
-                edit_slice
+            if edits_for_this_hunk > 0 {
+                let summaries: Vec<&str> = entry.edits
+                    [next_edit_index..next_edit_index + edits_for_this_hunk]
                     .iter()
-                    .map(|edit| format!("edit-summary: {}", edit.summary)),
-            );
-            next_edit_index += edits_for_this_hunk;
+                    .map(|edit| edit.summary.as_str())
+                    .collect();
+                items.push(DetailItem::EditBlock(summaries));
+                next_edit_index += edits_for_this_hunk;
+            }
         }
 
-        // Add the @@ header line
-        let old_count = hunk
-            .lines
-            .iter()
-            .filter(|l| l.kind != LineKind::Added)
-            .count();
-        let new_count = hunk
-            .lines
-            .iter()
-            .filter(|l| l.kind != LineKind::Removed)
-            .count();
-        result.push(format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.old_start, old_count, hunk.new_start, new_count
-        ));
+        items.push(DetailItem::HunkHeader(hunk));
 
-        // Add the diff lines
-        for line in &hunk.lines {
-            let prefix = match line.kind {
-                LineKind::Added => '+',
-                LineKind::Removed => '-',
-                LineKind::Context => ' ',
-            };
-            result.push(format!("{}{}", prefix, line.content));
+        for run in hunk.runs() {
+            match run {
+                HunkRun::Context(line) => items.push(DetailItem::Context(line)),
+                HunkRun::Change(slice) => items.push(DetailItem::Subhunk(slice)),
+            }
         }
     }
 
-    result
+    items
 }
 
 fn diff_hunk_count(entry: &HistoryEntry) -> usize {
@@ -914,27 +924,41 @@ fn render_detail_for(
         return Vec::new();
     };
 
-    let lines = detail_lines(entry);
+    let items = detail_items(entry);
     let mut rendered = render_detail_header(entry, width, theme);
 
-    if !rendered.is_empty() && !lines.is_empty() {
+    if !rendered.is_empty() && !items.is_empty() {
         rendered.push(Line::from(""));
     }
 
-    // Group lines into runs: subhunks (consecutive -/+ lines) and
-    // non-subhunk lines (context, hunk headers, edit summaries, etc.).
-    let groups = group_into_subhunks(&lines);
-
-    for group in &groups {
-        match group {
-            LineGroup::Subhunk { start, end } => {
-                render_subhunk(entry, &lines[*start..*end], width, &mut rendered, theme);
+    for item in items {
+        match item {
+            DetailItem::OldFormatNotice => {
+                rendered.push(Line::from("(old format, cannot display)"));
             }
-            LineGroup::EditBlock(edit_lines) => {
-                rendered.extend(render_edit_block(edit_lines, width, theme));
+            DetailItem::ErrorLine(err) => {
+                rendered.push(labeled_line("error", err, Color::Red));
             }
-            LineGroup::Other { index } => {
-                rendered.extend(render_detail_line(entry, &lines[*index], width, theme));
+            DetailItem::EditBlock(summaries) => {
+                rendered.extend(render_edit_block(&summaries, width, theme));
+            }
+            DetailItem::HunkSpacer => {
+                rendered.push(Line::from(""));
+            }
+            DetailItem::HunkHeader(hunk) => {
+                rendered.extend(render_hunk_header(hunk, &entry.path, width, theme));
+            }
+            DetailItem::Context(line) => {
+                rendered.push(syntax_diff_line(
+                    &line.content,
+                    Color::Reset,
+                    &entry.path,
+                    width,
+                    theme,
+                ));
+            }
+            DetailItem::Subhunk(slice) => {
+                render_subhunk(slice, &entry.path, width, &mut rendered, theme);
             }
         }
     }
@@ -942,121 +966,65 @@ fn render_detail_for(
     rendered
 }
 
-/// A group of consecutive lines in the detail view.
-#[derive(Debug, Clone)]
-enum LineGroup {
-    /// A subhunk: consecutive minus/plus diff lines.
-    Subhunk { start: usize, end: usize },
-    /// A block of consecutive edit-summary lines.
-    EditBlock(Vec<String>),
-    /// A single non-subhunk line (context, hunk header, etc.).
-    Other { index: usize },
-}
-
-/// Group detail lines into subhunks and other lines.
-///
-/// A subhunk is a maximal run of lines starting with `-` or `+` (but not
-/// `---` or `+++`). Edit-summary blocks are grouped together. Everything
-/// else is a single `Other` entry.
-fn group_into_subhunks(lines: &[String]) -> Vec<LineGroup> {
-    let mut groups = Vec::new();
-    let mut index = 0;
-
-    while index < lines.len() {
-        if let Some((edit_lines, next_index)) = edit_block_markers(lines, index) {
-            groups.push(LineGroup::EditBlock(edit_lines));
-            index = next_index;
-            continue;
-        }
-
-        if is_diff_change_line(&lines[index]) {
-            let start = index;
-            while index < lines.len() && is_diff_change_line(&lines[index]) {
-                index += 1;
-            }
-            groups.push(LineGroup::Subhunk { start, end: index });
-        } else {
-            groups.push(LineGroup::Other { index });
-            index += 1;
-        }
-    }
-
-    groups
-}
-
-/// Check if a line is a diff change line (starts with `-` or `+`,
-/// but not `---` or `+++`).
-fn is_diff_change_line(line: &str) -> bool {
-    (line.starts_with('-') && !line.starts_with("---"))
-        || (line.starts_with('+') && !line.starts_with("+++"))
-}
-
-/// Render a subhunk with within-line emphasis.
-///
-/// Extracts minus and plus lines, computes emphasis via the intraline
-/// module, and renders each line with the appropriate backgrounds.
+/// Render a subhunk (a `Hunk::runs` `Change` slice) with within-line
+/// emphasis. The slice is a maximal run of consecutive `Removed`/`Added`
+/// lines; pairing the two pools drives intraline emphasis.
 fn render_subhunk(
-    entry: &HistoryEntry,
-    lines: &[String],
+    lines: &[DiffLine],
+    path: &str,
     width: usize,
     rendered: &mut Vec<Line<'static>>,
     theme: &ResolvedTheme,
 ) {
-    // Separate minus and plus lines, preserving their order in the subhunk.
-    let mut minus_contents: Vec<&str> = Vec::new();
-    let mut plus_contents: Vec<&str> = Vec::new();
-    let mut line_kinds: Vec<char> = Vec::new(); // '-' or '+'
-
-    for line in lines {
-        if let Some(content) = line.strip_prefix('-') {
-            minus_contents.push(content);
-            line_kinds.push('-');
-        } else if let Some(content) = line.strip_prefix('+') {
-            plus_contents.push(content);
-            line_kinds.push('+');
-        }
-    }
+    let minus_contents: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Removed)
+        .map(|l| l.content.as_str())
+        .collect();
+    let plus_contents: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.content.as_str())
+        .collect();
 
     let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_contents, &plus_contents);
 
-    // Render in standard order (minus lines first, then plus lines, within
-    // the subhunk). The lines are already in standard order from the diff.
+    // Walk the slice in original order, pulling the next emphasis entry
+    // from the matching pool.
     let mut mi = 0usize;
     let mut pi = 0usize;
 
-    for kind in &line_kinds {
-        match kind {
-            '-' => {
-                let content = minus_contents[mi];
-                let emphasis = &minus_emphasis[mi];
+    for line in lines {
+        match line.kind {
+            LineKind::Removed => {
                 rendered.push(render_emphasized_line(
-                    content,
-                    emphasis,
+                    &line.content,
+                    &minus_emphasis[mi],
                     to_color(theme.ui.diff_deleted_bg),
                     to_color(theme.ui.diff_deleted_emph_bg),
                     to_color(theme.ui.diff_deleted_bg),
-                    &entry.path,
+                    path,
                     width,
                     theme,
                 ));
                 mi += 1;
             }
-            '+' => {
-                let content = plus_contents[pi];
-                let emphasis = &plus_emphasis[pi];
+            LineKind::Added => {
                 rendered.push(render_emphasized_line(
-                    content,
-                    emphasis,
+                    &line.content,
+                    &plus_emphasis[pi],
                     to_color(theme.ui.diff_added_bg),
                     to_color(theme.ui.diff_added_emph_bg),
                     to_color(theme.ui.diff_added_bg),
-                    &entry.path,
+                    path,
                     width,
                     theme,
                 ));
                 pi += 1;
             }
-            _ => {}
+            // `Hunk::runs::Change` only emits Added/Removed; Context
+            // lines arrive separately as `HunkRun::Context`.
+            LineKind::Context => {}
         }
     }
 }
@@ -1130,22 +1098,6 @@ fn header_metadata_line(entry: &HistoryEntry) -> String {
     parts.join(" • ")
 }
 
-fn render_detail_line(
-    entry: &HistoryEntry,
-    line: &str,
-    width: usize,
-    theme: &ResolvedTheme,
-) -> Vec<Line<'static>> {
-    if line.starts_with("edit-summary: ") {
-        return vec![Line::from(Span::raw(line.to_string()))];
-    }
-    if let Some(rest) = line.strip_prefix("error: ") {
-        return vec![labeled_line("error", rest, Color::Red)];
-    }
-
-    render_diff_line(entry, line, width, theme)
-}
-
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -1154,56 +1106,6 @@ fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
         ),
         Span::raw(value.to_string()),
     ])
-}
-
-fn render_diff_line(
-    entry: &HistoryEntry,
-    line: &str,
-    width: usize,
-    theme: &ResolvedTheme,
-) -> Vec<Line<'static>> {
-    if let Some(content) = line.strip_prefix('+').filter(|_| !line.starts_with("+++")) {
-        return vec![syntax_diff_line(
-            content,
-            to_color(theme.ui.diff_added_bg),
-            &entry.path,
-            width,
-            theme,
-        )];
-    }
-    if let Some(content) = line.strip_prefix('-').filter(|_| !line.starts_with("---")) {
-        return vec![syntax_diff_line(
-            content,
-            to_color(theme.ui.diff_deleted_bg),
-            &entry.path,
-            width,
-            theme,
-        )];
-    }
-    if let Some(content) = line.strip_prefix(' ') {
-        return vec![syntax_diff_line(
-            content,
-            Color::Reset,
-            &entry.path,
-            width,
-            theme,
-        )];
-    }
-    if line.starts_with("@@") {
-        // Look up structural scopes for this hunk from entry.hunks.
-        let ancestors = parse_hunk_new_start(line)
-            .and_then(|new_start| {
-                entry
-                    .hunks
-                    .iter()
-                    .find(|h| h.new_start == new_start)
-                    .map(|h| h.ancestors.as_slice())
-            })
-            .unwrap_or(&[]);
-        return render_hunk_separator(line, &entry.path, width, Some(ancestors), theme);
-    }
-
-    vec![Line::from(Span::raw(fit_line(line, width)))]
 }
 
 fn display_width(text: &str) -> usize {
@@ -1334,27 +1236,7 @@ fn render_header_block(
     lines
 }
 
-fn edit_block_markers(lines: &[String], start: usize) -> Option<(Vec<String>, usize)> {
-    if start >= lines.len() {
-        return None;
-    }
-
-    let first = lines[start].strip_prefix("edit-summary: ")?;
-
-    let mut items = vec![first.to_string()];
-    let mut index = start + 1;
-    while index < lines.len() {
-        let Some(rest) = lines[index].strip_prefix("edit-summary: ") else {
-            break;
-        };
-        items.push(rest.to_string());
-        index += 1;
-    }
-
-    Some((items, index))
-}
-
-fn render_edit_block(lines: &[String], width: usize, theme: &ResolvedTheme) -> Vec<Line<'static>> {
+fn render_edit_block(lines: &[&str], width: usize, theme: &ResolvedTheme) -> Vec<Line<'static>> {
     let border = Style::default().fg(to_color(theme.ui.border_active));
     let content_width = lines
         .iter()
@@ -1399,30 +1281,35 @@ fn syntax_diff_line(
     Line::from(spans)
 }
 
-/// Parse the new-file start line from a diff hunk header.
-/// Input: `@@ -74,15 +75,14 @@` -> Some(75)
-fn parse_hunk_new_start(line: &str) -> Option<usize> {
-    let after_plus = line.find('+').map(|i| &line[i + 1..])?;
-    let end = after_plus.find([',', ' '])?;
-    after_plus[..end].parse().ok()
-}
-
-fn render_hunk_separator(
-    line: &str,
+/// Render a hunk's header. With ancestors, draws the multi-line
+/// breadcrumb box. Without ancestors, draws a small line-number-only box
+/// using `hunk.new_start`.
+fn render_hunk_header(
+    hunk: &Hunk,
     path: &str,
     width: usize,
-    ancestors: Option<&[deltoids::ScopeNode]>,
     theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
-    // If we have structural scope ancestors, render the multi-line breadcrumb box.
-    if let Some(ancestors) = ancestors
-        && !ancestors.is_empty()
-    {
-        return render_breadcrumb_box(ancestors, path, width, theme);
+    if !hunk.ancestors.is_empty() {
+        return render_breadcrumb_box(&hunk.ancestors, path, width, theme);
     }
+    render_line_number_box(hunk.new_start, theme)
+}
 
-    // Fall back to the legacy single-line rendering.
-    render_hunk_separator_legacy(line, path, width, theme)
+/// Three-line box containing only the new-file line number. Used when a
+/// hunk has no enclosing structural scope.
+fn render_line_number_box(line_number: usize, theme: &ResolvedTheme) -> Vec<Line<'static>> {
+    let border = Style::default().fg(to_color(theme.ui.border));
+    let label = line_number.to_string();
+    let label_width = display_width(&label);
+    let top = format!("{}╮", "─".repeat(label_width + 1));
+    let mid = format!("{label} │");
+    let bot = format!("{}╯", "─".repeat(label_width + 1));
+    vec![
+        Line::from(Span::styled(top, border)),
+        Line::from(Span::styled(mid, border)),
+        Line::from(Span::styled(bot, border)),
+    ]
 }
 
 fn render_breadcrumb_box(
@@ -1519,73 +1406,6 @@ fn render_breadcrumb_box(
 
     lines.push(Line::from(Span::styled(bot, border)));
     lines
-}
-
-fn render_hunk_separator_legacy(
-    line: &str,
-    path: &str,
-    width: usize,
-    theme: &ResolvedTheme,
-) -> Vec<Line<'static>> {
-    // Parse optional function context from `@@ -N,M +N,M @@ context`.
-    let context = line
-        .find("@@ ")
-        .and_then(|start| {
-            let rest = &line[start + 3..];
-            rest.find("@@").map(|end| rest[end + 2..].trim())
-        })
-        .unwrap_or("");
-
-    let line_number = parse_hunk_new_start(line);
-    let border = Style::default().fg(to_color(theme.ui.border));
-
-    let prefix = match line_number {
-        Some(n) => format!("{n}: "),
-        None => String::new(),
-    };
-    let prefix_width = display_width(&prefix);
-    let max_label_width = width.saturating_sub(2);
-
-    if context.is_empty() {
-        let label = match line_number {
-            Some(n) => n.to_string(),
-            None => return vec![Line::from("")],
-        };
-        let label_width = display_width(&label);
-        let top = format!("{}╮", "─".repeat(label_width + 1));
-        let mid = format!("{label} │");
-        let bot = format!("{}╯", "─".repeat(label_width + 1));
-        return vec![
-            Line::from(Span::styled(top, border)),
-            Line::from(Span::styled(mid, border)),
-            Line::from(Span::styled(bot, border)),
-        ];
-    }
-
-    let available_context_width = max_label_width.saturating_sub(prefix_width);
-    let (mut code_spans, code_width) = highlighted_spans(
-        theme,
-        path,
-        context,
-        Style::default(),
-        available_context_width.max(1),
-    );
-    let label_width = prefix_width + code_width;
-    let top = format!("{}╮", "─".repeat(label_width + 1));
-    let bot = format!("{}╯", "─".repeat(label_width + 1));
-
-    let mut mid_spans = Vec::new();
-    if !prefix.is_empty() {
-        mid_spans.push(Span::styled(prefix, border));
-    }
-    mid_spans.append(&mut code_spans);
-    mid_spans.push(Span::styled(" │", border));
-
-    vec![
-        Line::from(Span::styled(top, border)),
-        Line::from(mid_spans),
-        Line::from(Span::styled(bot, border)),
-    ]
 }
 
 fn fit_line(line: &str, width: usize) -> String {
@@ -2040,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_lines_renders_from_hunks() {
+    fn detail_items_renders_hunk_with_header_context_and_change() {
         use deltoids::{DiffLine, Hunk, LineKind, ScopeNode};
 
         let mut entry = edit_entry();
@@ -2070,34 +1890,32 @@ mod tests {
             }],
         }];
 
-        let lines = detail_lines(&entry);
+        let items = detail_items(&entry);
 
-        // Should have hunk separator + diff lines
-        assert!(
-            lines.iter().any(|l: &String| l.starts_with("@@")),
-            "should have hunk header"
-        );
-        assert!(
-            lines.iter().any(|l: &String| l == " context line"),
-            "should have context line"
-        );
-        assert!(
-            lines.iter().any(|l: &String| l == "-old line"),
-            "should have removed line"
-        );
-        assert!(
-            lines.iter().any(|l: &String| l == "+new line"),
-            "should have added line"
-        );
+        // EditBlock (1 edit on 1 hunk), HunkHeader, Context, Subhunk = 4 items.
+        assert_eq!(items.len(), 4);
+        assert!(matches!(items[0], DetailItem::EditBlock(_)));
+        assert!(matches!(items[1], DetailItem::HunkHeader(_)));
+        match &items[2] {
+            DetailItem::Context(line) => assert_eq!(line.content, "context line"),
+            other => panic!("expected Context, got {other:?}"),
+        }
+        match &items[3] {
+            DetailItem::Subhunk(slice) => {
+                assert_eq!(slice.len(), 2);
+                assert_eq!(slice[0].content, "old line");
+                assert_eq!(slice[1].content, "new line");
+            }
+            other => panic!("expected Subhunk, got {other:?}"),
+        }
     }
 
     #[test]
-    fn detail_lines_shows_deprecation_for_v1_entry() {
+    fn detail_items_v1_entry_yields_old_format_notice() {
         let entry = edit_entry(); // v1 entry with empty hunks
-
-        let lines = detail_lines(&entry);
-
-        assert_eq!(lines, vec!["(old format, cannot display)".to_string()]);
+        let items = detail_items(&entry);
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], DetailItem::OldFormatNotice));
     }
 
     #[test]
@@ -2426,14 +2244,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_hunk_new_start_extracts_line_number() {
-        assert_eq!(parse_hunk_new_start("@@ -74,15 +75,14 @@"), Some(75));
-        assert_eq!(parse_hunk_new_start("@@ -1 +1,3 @@"), Some(1));
-        assert_eq!(parse_hunk_new_start("@@ -10,5 +20 @@"), Some(20));
-        assert_eq!(parse_hunk_new_start("not a hunk"), None);
-    }
-
-    #[test]
     fn render_detail_header_uses_summary_path_metadata_and_rule() {
         let theme = test_theme();
         let lines = render_detail_header(&edit_entry(), 80, &theme);
@@ -2547,7 +2357,7 @@ mod tests {
     #[test]
     fn render_edit_block_uses_border_active_box() {
         let theme = test_theme();
-        let lines = render_edit_block(&["Rename renderer".to_string()], 80, &theme);
+        let lines = render_edit_block(&["Rename renderer"], 80, &theme);
         assert_eq!(lines.len(), 3);
         assert!(lines[0].to_string().starts_with('─'));
         assert!(lines[1].to_string().starts_with("Rename renderer"));
@@ -2559,110 +2369,28 @@ mod tests {
     }
 
     #[test]
-    fn hunk_separator_renders_boxed_label_with_line_number_and_context() {
-        let theme = test_theme();
-        let lines = render_hunk_separator(
-            "@@ -10,5 +42,6 @@ fn hello() {",
-            "src/lib.rs",
-            80,
-            None,
-            &theme,
-        );
-        assert_eq!(lines.len(), 3, "expected 3 lines for box");
+    fn render_hunk_header_no_ancestors_shows_line_number_box() {
+        use deltoids::Hunk;
 
-        let top = lines[0].to_string();
+        let theme = test_theme();
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 7,
+            lines: Vec::new(),
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk_header(&hunk, "src/lib.rs", 80, &theme);
+
+        assert_eq!(lines.len(), 3, "expected 3-line line-number box");
         let mid = lines[1].to_string();
-        let bot = lines[2].to_string();
-
-        assert!(top.starts_with('─'), "top should start with ─");
-        assert!(top.ends_with('\u{256e}'), "top should end with ╮");
         assert!(
-            mid.starts_with("42: fn hello() {"),
-            "mid should contain line number and context"
+            mid.contains("7"),
+            "mid should contain new_start line number"
         );
-        assert!(mid.ends_with('│'), "mid should end with │");
         assert!(
-            lines[1].spans.len() >= 2,
-            "mid line should be split into styled spans"
+            !mid.contains(':'),
+            "no colon: header has no breadcrumb context"
         );
-        assert!(bot.starts_with('─'), "bot should start with ─");
-        assert!(bot.ends_with('\u{256f}'), "bot should end with ╯");
-    }
-
-    #[test]
-    fn hunk_separator_renders_line_number_only_when_no_context() {
-        let theme = test_theme();
-        let lines = render_hunk_separator("@@ -1,3 +7,3 @@", "src/lib.rs", 80, None, &theme);
-        assert_eq!(lines.len(), 3);
-        let mid = lines[1].to_string();
-        assert!(mid.contains("7"), "mid should contain line number");
-        assert!(!mid.contains(':'), "no colon when there is no context");
-    }
-
-    #[test]
-    fn hunk_separator_renders_empty_for_no_info() {
-        let theme = test_theme();
-        // Malformed line with no parseable info.
-        let lines = render_hunk_separator("@@ @@", "src/lib.rs", 80, None, &theme);
-        assert_eq!(lines.len(), 1, "should fall back to single empty line");
-    }
-
-    #[test]
-    fn group_into_subhunks_groups_change_lines() {
-        let lines: Vec<String> = vec![
-            "@@ -1,3 +1,3 @@".into(),
-            "-old line 1".into(),
-            "-old line 2".into(),
-            "+new line 1".into(),
-            "+new line 2".into(),
-            " context".into(),
-        ];
-        let groups = group_into_subhunks(&lines);
-        assert_eq!(groups.len(), 3); // hunk header, subhunk, context
-        assert!(matches!(groups[0], LineGroup::Other { index: 0 }));
-        assert!(matches!(groups[1], LineGroup::Subhunk { start: 1, end: 5 }));
-        assert!(matches!(groups[2], LineGroup::Other { index: 5 }));
-    }
-
-    #[test]
-    fn group_into_subhunks_splits_on_context_lines() {
-        let lines: Vec<String> = vec![
-            "-old1".into(),
-            "+new1".into(),
-            " context".into(),
-            "-old2".into(),
-            "+new2".into(),
-        ];
-        let groups = group_into_subhunks(&lines);
-        assert_eq!(groups.len(), 3);
-        assert!(matches!(groups[0], LineGroup::Subhunk { start: 0, end: 2 }));
-        assert!(matches!(groups[1], LineGroup::Other { index: 2 }));
-        assert!(matches!(groups[2], LineGroup::Subhunk { start: 3, end: 5 }));
-    }
-
-    #[test]
-    fn group_into_subhunks_handles_edit_summaries() {
-        let lines: Vec<String> = vec![
-            "edit-summary: first".into(),
-            "edit-summary: second".into(),
-            "@@ -1 +1 @@".into(),
-            "-old".into(),
-            "+new".into(),
-        ];
-        let groups = group_into_subhunks(&lines);
-        assert!(matches!(groups[0], LineGroup::EditBlock(_)));
-        assert!(matches!(groups[1], LineGroup::Other { index: 2 }));
-        assert!(matches!(groups[2], LineGroup::Subhunk { start: 3, end: 5 }));
-    }
-
-    #[test]
-    fn is_diff_change_line_recognizes_minus_and_plus() {
-        assert!(is_diff_change_line("-old line"));
-        assert!(is_diff_change_line("+new line"));
-        assert!(!is_diff_change_line("--- a/file"));
-        assert!(!is_diff_change_line("+++ b/file"));
-        assert!(!is_diff_change_line(" context"));
-        assert!(!is_diff_change_line("@@ -1 +1 @@"));
     }
 
     #[test]
@@ -2730,13 +2458,25 @@ mod tests {
         assert!(has_non_emph_bg, "paired line should have non-emph bg spans");
     }
 
+    fn diff_line(kind: deltoids::LineKind, content: &str) -> deltoids::DiffLine {
+        deltoids::DiffLine {
+            kind,
+            content: content.to_string(),
+        }
+    }
+
     #[test]
     fn render_subhunk_pairs_similar_lines() {
+        use deltoids::LineKind;
+
         let theme = test_theme();
         let entry = edit_entry();
-        let lines = vec!["-const x = 1;".to_string(), "+const x = 2;".to_string()];
+        let lines = vec![
+            diff_line(LineKind::Removed, "const x = 1;"),
+            diff_line(LineKind::Added, "const x = 2;"),
+        ];
         let mut rendered = Vec::new();
-        render_subhunk(&entry, &lines, 80, &mut rendered, &theme);
+        render_subhunk(&lines, &entry.path, 80, &mut rendered, &theme);
         assert_eq!(rendered.len(), 2);
 
         // Paired minus line should have emph bg on the changed token.
@@ -2762,14 +2502,16 @@ mod tests {
 
     #[test]
     fn render_subhunk_leaves_dissimilar_lines_plain() {
+        use deltoids::LineKind;
+
         let theme = test_theme();
         let entry = edit_entry();
         let lines = vec![
-            "-aaa bbb ccc ddd eee".to_string(),
-            "+xxx yyy zzz www qqq".to_string(),
+            diff_line(LineKind::Removed, "aaa bbb ccc ddd eee"),
+            diff_line(LineKind::Added, "xxx yyy zzz www qqq"),
         ];
         let mut rendered = Vec::new();
-        render_subhunk(&entry, &lines, 80, &mut rendered, &theme);
+        render_subhunk(&lines, &entry.path, 80, &mut rendered, &theme);
         assert_eq!(rendered.len(), 2);
 
         // Dissimilar lines should use the plain background.
@@ -2819,13 +2561,7 @@ mod tests {
                 "    fn compute(&self) -> i32 {",
             ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -74,7 +75,7 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // top border + 2 ancestor lines + dots row + bottom border = 5
         assert_eq!(
             lines.len(),
@@ -2869,13 +2605,7 @@ mod tests {
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
             scope_node("function_item", "new", 4, 10, "    fn new() -> Self {"),
         ];
-        let lines = render_hunk_separator(
-            "@@ -4,3 +4,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
         assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
         // No dots line
@@ -2897,13 +2627,7 @@ mod tests {
             10,
             "fn bar(a: i32, b: i32) -> i32 {",
         )];
-        let lines = render_hunk_separator(
-            "@@ -6,3 +6,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // top + 1 ancestor + bottom = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
@@ -2912,21 +2636,22 @@ mod tests {
     }
 
     #[test]
-    fn breadcrumb_box_empty_ancestors_falls_back_to_legacy() {
+    fn breadcrumb_box_empty_ancestors_renders_line_number_box() {
+        use deltoids::Hunk;
+
         let theme = test_theme();
-        // Empty ancestors should fall back to legacy @@ parsing
-        let lines = render_hunk_separator(
-            "@@ -1,3 +7,3 @@ fn hello() {",
-            "src/lib.rs",
-            80,
-            Some(&[]),
-            &theme,
-        );
-        // Legacy rendering: top + mid + bot = 3
+        // No ancestors: render_hunk_header falls back to a small line-number box
+        // anchored on Hunk::new_start. No legacy `@@`-string parsing involved.
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 7,
+            lines: Vec::new(),
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk_header(&hunk, "src/lib.rs", 80, &theme);
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
-        assert!(mid.contains("7:"), "legacy: line number from @@");
-        assert!(mid.contains("fn hello"), "legacy: context from @@");
+        assert!(mid.contains("7"), "line number from Hunk::new_start");
     }
 
     #[test]
@@ -2942,13 +2667,7 @@ mod tests {
                 "    if let Some(val) = body {",
             ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -120,3 +120,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // Line numbers should be right-aligned: "  1:" and "120:"
         let mid1 = lines[1].to_string();
         let mid2 = lines[3].to_string(); // after dots row
@@ -2982,13 +2701,7 @@ mod tests {
                 "        if let Some(val) = body {",
             ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -120,3 +120,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
         assert_eq!(
             lines.len(),
@@ -3015,13 +2728,7 @@ mod tests {
                 "    fn compute(&self) {",
             ),
         ];
-        let lines = render_hunk_separator(
-            "@@ -10,3 +10,3 @@",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // Should show both: top + impl + dots + fn + bottom = 5
         assert_eq!(lines.len(), 5, "should show all ancestors");
         let combined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -3034,13 +2741,7 @@ mod tests {
         let theme = test_theme();
         // Single ancestor is always shown
         let ancestors = vec![scope_node("function_item", "bar", 6, 10, "fn bar() {")];
-        let lines = render_hunk_separator(
-            "@@ -6,3 +6,3 @@ fn bar() {",
-            "src/lib.rs",
-            80,
-            Some(&ancestors),
-            &theme,
-        );
+        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
         // Should show ancestor: top + mid + bottom = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();

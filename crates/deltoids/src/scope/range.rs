@@ -266,46 +266,69 @@ fn context_ranges_for_delete(
         (st, en)
     });
 
-    for line in old_start..old_end.min(ctx.total_old) {
-        let Some(scope) = scope_at(ctx.old_parsed, line) else {
+    let mut ranges = Vec::new();
+    let mut cursor = old_start;
+    let mut last_pushed_end: Option<usize> = None;
+    while cursor < old_end.min(ctx.total_old) {
+        let Some(scope) = scope_at(ctx.old_parsed, cursor) else {
+            cursor += 1;
             continue;
         };
         let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
         if scope_lines > MAX_SCOPE_LINES {
+            cursor += 1;
             continue;
         }
 
+        // Adjacent ranges must not overlap. When nothing has been
+        // pushed yet, anchor at the start of the delete op (preserves
+        // single-scope and run-of-fully-deleted-scopes shapes).
+        let range_start = match last_pushed_end {
+            Some(prev) => prev + 1,
+            None => old_start,
+        };
+
         let is_scope_deleted = scope_start >= old_start && scope_end < old_end;
         if is_scope_deleted {
-            return vec![ContextRange {
-                start: old_start,
-                end: old_end.saturating_sub(1),
+            let range_end = old_end.saturating_sub(1);
+            ranges.push(ContextRange {
+                start: range_start,
+                end: range_end,
                 ancestor_source: AncestorSource::Old,
                 scope_line: scope_start,
                 prevent_merge: true,
                 scope_id: Some((scope_start, scope_end)),
-            }];
+            });
+            last_pushed_end = Some(range_end);
+            cursor = old_end;
+            continue;
         }
 
-        return vec![ContextRange {
+        ranges.push(ContextRange {
             start: scope_start,
             end: scope_end,
             ancestor_source: AncestorSource::Old,
-            scope_line: line,
+            scope_line: cursor,
             prevent_merge: false,
             scope_id: Some((scope_start, scope_end)),
-        }];
+        });
+        last_pushed_end = Some(scope_end);
+        cursor = scope_end + 1;
     }
 
-    let mut range = default_context_range(
-        old_start,
-        old_end.saturating_sub(1),
-        ctx.total_old,
-        AncestorSource::Old,
-        old_start,
-    );
-    range.scope_id = inner_id;
-    vec![range]
+    if ranges.is_empty() {
+        let mut range = default_context_range(
+            old_start,
+            old_end.saturating_sub(1),
+            ctx.total_old,
+            AncestorSource::Old,
+            old_start,
+        );
+        range.scope_id = inner_id;
+        ranges.push(range);
+    }
+
+    ranges
 }
 
 fn old_replace_context_range(
@@ -605,6 +628,78 @@ fn new_function() {
                 && range.prevent_merge
                 && range.start == range.end
         }));
+    }
+
+    #[test]
+    fn delete_spanning_partial_scope_then_full_scope_covers_full_scope() {
+        // Hand-crafted Delete op that legitimately spans a partial scope
+        // (the tail of `outer`) and a fully-deleted sibling (`deleted`),
+        // without relying on a `similar` alignment artifact. Whatever
+        // shape the upstream diff library produces, the planner must
+        // emit at least one range that covers the fully-deleted scope.
+        // If it does not, every line of `fn deleted` is silently
+        // dropped from the engine's hunks.
+        let original = concat!(
+            "fn outer() {\n",       // 0
+            "    keep_me();\n",     // 1
+            "    drop_me();\n",     // 2
+            "    drop_me_too();\n", // 3
+            "}\n",                  // 4
+            "\n",                   // 5
+            "fn deleted() {\n",     // 6
+            "    body_line();\n",   // 7
+            "}\n",                  // 8
+            "\n",                   // 9
+            "fn last() {\n",        // 10
+            "    last_body();\n",   // 11
+            "}\n",                  // 12
+        );
+        // The updated content is irrelevant for the planner's delete
+        // path, which only consults `old_parsed`. We pass a placeholder
+        // so the parsed-file accessors used by the planner work.
+        let updated = original;
+
+        // Synthetic ops: Equal[0..2] / Delete[2..9] / Equal[9..13].
+        // The Delete starts inside `outer` (at line 2) and runs through
+        // the whole `deleted` fn (lines 6..8) plus the trailing blank.
+        let ops = vec![
+            similar::DiffOp::Equal {
+                old_index: 0,
+                new_index: 0,
+                len: 2,
+            },
+            similar::DiffOp::Delete {
+                old_index: 2,
+                old_len: 7,
+                new_index: 2,
+            },
+            similar::DiffOp::Equal {
+                old_index: 9,
+                new_index: 2,
+                len: 4,
+            },
+        ];
+
+        let old_parsed = crate::syntax::ParsedFile::parse("test.rs", original).unwrap();
+        let new_parsed = crate::syntax::ParsedFile::parse("test.rs", updated).unwrap();
+        let ranges = compute_context_ranges(
+            &ops,
+            &old_parsed,
+            &new_parsed,
+            original.lines().count(),
+            updated.lines().count(),
+        );
+
+        let deleted_fn_line = original
+            .lines()
+            .position(|line| line == "fn deleted() {")
+            .unwrap();
+        assert!(
+            ranges
+                .iter()
+                .any(|r| r.start <= deleted_fn_line && r.end >= deleted_fn_line),
+            "expected at least one range to cover line {deleted_fn_line} (`fn deleted()`); got: {ranges:?}"
+        );
     }
 
     #[test]

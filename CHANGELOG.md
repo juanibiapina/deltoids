@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `deltoids`: `syntax::ParsedFile` now hides its tree-sitter `Tree`, source buffer, and language `*_kinds` tables behind a small interface. Public methods: `ParsedFile::parse(path, source)`, `enclosing_scopes(line)`, `is_structure(&scope)`, `is_data(&scope)`.
 
+### Fixed
+
+- `deltoids`: fix bug where a `Delete` op spanning a partial scope plus one or more fully-deleted sibling scopes silently dropped every line beyond the first scope from the engine's hunks. The planner now walks the full delete range and emits one range per scope it intersects, so every removed line is accounted for in some hunk.
+
 ### Removed
 
 - `deltoids`: `syntax::parse_file` free function (replaced by `ParsedFile::parse`).

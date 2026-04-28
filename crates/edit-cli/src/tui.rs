@@ -285,6 +285,44 @@ fn app_command_for_event(
     }
 }
 
+/// Read every input event already buffered into a single batch, blocking up
+/// to `timeout` for the first one. Returns an empty `Vec` on timeout.
+fn read_event_burst(timeout: Duration) -> Result<Vec<Event>, String> {
+    let poll_err = |err| format!("Failed to poll input event: {err}");
+    let read_err = |err| format!("Failed to read input event: {err}");
+
+    if !event::poll(timeout).map_err(poll_err)? {
+        return Ok(Vec::new());
+    }
+    let mut burst = vec![event::read().map_err(read_err)?];
+    while event::poll(Duration::ZERO).map_err(poll_err)? {
+        burst.push(event::read().map_err(read_err)?);
+    }
+    Ok(burst)
+}
+
+/// Apply a batch of input events to `state`, stopping early on `Quit`.
+///
+/// The TUI loop collects every event already buffered before redrawing so a
+/// burst of key repeats (e.g. holding `j`) collapses into a single redraw
+/// instead of one redraw per repeat.
+fn apply_events(
+    state: &mut AppState,
+    traces: &[LoadedTrace],
+    events: impl IntoIterator<Item = Event>,
+    detail_row_count: usize,
+    detail_height: usize,
+) -> AppCommand {
+    for event in events {
+        if app_command_for_event(state, traces, event, detail_row_count, detail_height)
+            == AppCommand::Quit
+        {
+            return AppCommand::Quit;
+        }
+    }
+    AppCommand::Continue
+}
+
 /// Reload traces from disk unconditionally. When a new trace appears at
 /// index 0 (newest), automatically switches to it. Otherwise preserves the
 /// current selection by trace id and entry index when the selected trace
@@ -412,17 +450,11 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str, theme: &ResolvedTheme) -> Re
             None => POLL_TIMEOUT,
         };
 
-        let has_event =
-            event::poll(timeout).map_err(|err| format!("Failed to poll input event: {err}"))?;
-
-        if has_event {
-            let event =
-                event::read().map_err(|err| format!("Failed to read input event: {err}"))?;
-            if app_command_for_event(&mut state, &traces, event, detail_row_count, detail_height)
-                == AppCommand::Quit
-            {
-                break;
-            }
+        let burst = read_event_burst(timeout)?;
+        if apply_events(&mut state, &traces, burst, detail_row_count, detail_height)
+            == AppCommand::Quit
+        {
+            break;
         }
 
         // Drain all pending filesystem notifications.
@@ -1741,6 +1773,70 @@ mod tests {
         handle_key(&mut state, &traces, KeyCode::Char('j'), 0, 0);
         assert_eq!(state.entry_index(), 1);
         assert_eq!(state.trace_index, 0);
+    }
+
+    fn key_press(code: KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    }
+
+    #[test]
+    fn apply_events_advances_state_once_per_event() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 4, "a"),
+            entries: vec![edit_entry(), edit_entry(), edit_entry(), edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        assert_eq!(state.entry_index(), 0);
+
+        let burst = vec![
+            key_press(KeyCode::Char('j')),
+            key_press(KeyCode::Char('j')),
+            key_press(KeyCode::Char('j')),
+        ];
+        let command = apply_events(&mut state, &traces, burst, 0, 0);
+
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.entry_index(), 3);
+    }
+
+    #[test]
+    fn apply_events_quit_short_circuits_remaining_burst() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 4, "a"),
+            entries: vec![edit_entry(), edit_entry(), edit_entry(), edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+
+        let burst = vec![
+            key_press(KeyCode::Char('j')),
+            key_press(KeyCode::Char('q')),
+            key_press(KeyCode::Char('j')),
+        ];
+        let command = apply_events(&mut state, &traces, burst, 0, 0);
+
+        assert_eq!(command, AppCommand::Quit);
+        // Only the first j was applied; the second j after q must not run.
+        assert_eq!(state.entry_index(), 1);
+    }
+
+    #[test]
+    fn apply_events_empty_burst_is_noop() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
+            entries: vec![edit_entry(), edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.set_entry_index(1);
+        let before_focus = state.focus;
+
+        let command = apply_events(&mut state, &traces, std::iter::empty(), 0, 0);
+
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.entry_index(), 1);
+        assert_eq!(state.focus, before_focus);
     }
 
     #[test]

@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `deltoids`: new public `Snapshot` and `DiffOp` types for line-level diffs without tree-sitter scope expansion. `Snapshot::compute(original, updated)` runs the line-level engine once and exposes `ops()`, `unified_text()`, and `align_old_to_new(line)`. `Diff::snapshot()` exposes the underlying snapshot.
+
 ### Changed
 
 - `deltoids`: `syntax::ParsedFile` now hides its tree-sitter `Tree`, source buffer, and language `*_kinds` tables behind a small interface. Public methods: `ParsedFile::parse(path, source)`, `enclosing_scopes(line)`, `is_structure(&scope)`, `is_data(&scope)`.
+- `deltoids`: line-level diff engine extracted from `scope.rs` into a private `engine` module. `Diff` now owns a `Snapshot` and delegates to it for raw ops and unified text. The scope planner and hunk builder consume `engine::DiffOp` instead of an inline copy.
+- `deltoids`: line-level diff backend swapped from `similar` to `gix-imara-diff` with the Histogram algorithm and imara's line postprocessing. Hunks and unified text are produced by the same shared backend.
 
 ### Fixed
 

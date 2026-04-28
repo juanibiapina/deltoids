@@ -1,0 +1,12 @@
+@@ -1,4 +1,4 @@ [function_item first]
+ fn first() {
+-    let x = old();
++    let x = new();
+     println!("{}", x);
+ }
+
+@@ -6,4 +6,0 @@ [function_item second]
+-fn second() {
+-    let y = 2;
+-}
+-

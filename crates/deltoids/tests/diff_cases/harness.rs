@@ -327,21 +327,59 @@ pub fn report_failures(failures: &[CaseFailure]) -> String {
 }
 
 fn unified_diff(expected: &str, actual: &str) -> String {
-    use similar::{ChangeTag, TextDiff};
-    let diff = TextDiff::from_lines(expected, actual);
+    use gix_imara_diff::{Algorithm, Diff, InternedInput};
+
+    let input = InternedInput::new(expected, actual);
+    let mut diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.postprocess_lines(&input);
+
+    let expected_lines: Vec<&str> = expected.lines().collect();
+    let actual_lines: Vec<&str> = actual.lines().collect();
+
     let mut out = String::new();
-    for change in diff.iter_all_changes() {
-        let prefix = match change.tag() {
-            ChangeTag::Equal => "    ",
-            ChangeTag::Delete => "  - ",
-            ChangeTag::Insert => "  + ",
-        };
+    let mut old_cursor: usize = 0;
+    let mut new_cursor: usize = 0;
+
+    let push_line = |out: &mut String, prefix: &str, line: &str| {
         out.push_str(prefix);
-        out.push_str(change.value());
-        if !change.value().ends_with('\n') {
-            out.push('\n');
+        out.push_str(line);
+        out.push('\n');
+    };
+
+    for hunk in diff.hunks() {
+        let bs = hunk.before.start as usize;
+        let be = hunk.before.end as usize;
+        let as_ = hunk.after.start as usize;
+        let ae = hunk.after.end as usize;
+
+        for i in old_cursor..bs {
+            push_line(
+                &mut out,
+                "    ",
+                expected_lines.get(i).copied().unwrap_or(""),
+            );
         }
+        for i in bs..be {
+            push_line(
+                &mut out,
+                "  - ",
+                expected_lines.get(i).copied().unwrap_or(""),
+            );
+        }
+        for i in as_..ae {
+            push_line(&mut out, "  + ", actual_lines.get(i).copied().unwrap_or(""));
+        }
+        old_cursor = be;
+        new_cursor = ae;
     }
+    for i in old_cursor..expected_lines.len() {
+        push_line(
+            &mut out,
+            "    ",
+            expected_lines.get(i).copied().unwrap_or(""),
+        );
+    }
+    let _ = new_cursor;
     out
 }
 

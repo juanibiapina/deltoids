@@ -34,14 +34,14 @@
 -            4
 -        } else {
 -            ch.width().unwrap_or(0)
+-        };
+-        if ch_width == 0 {
 +        // New logic using helper
 +        let Some(visible) = visible_char(ch) else {
-+            continue;
-         };
--        if ch_width == 0 {
--            continue;
+             continue;
 -        }
 -        width += ch_width;
++        };
 +        width += visible.width;
      }
  

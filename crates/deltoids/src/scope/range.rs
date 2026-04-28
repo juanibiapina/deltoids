@@ -8,6 +8,7 @@
 //! Entry point: [`plan`].
 
 use super::{AncestorSource, ContextRange, ScopeNode};
+use crate::engine::{DiffOp, align_old_to_new};
 use crate::syntax::ParsedFile;
 
 const MAX_SCOPE_LINES: usize = 200;
@@ -19,7 +20,7 @@ const DEFAULT_CONTEXT: usize = 3;
 /// hunk to be built. Each range carries the anchor scope identity and
 /// the tree (old or new) to query for ancestor breadcrumbs.
 pub(super) fn plan(
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
     old_parsed: &ParsedFile,
     new_parsed: &ParsedFile,
     total_old: usize,
@@ -381,64 +382,17 @@ fn old_replace_context_range(
     range
 }
 
-/// Map an OLD-file 0-indexed line to its NEW-file equivalent through the
-/// diff ops. Returns `None` for lines that fall in a `Delete` op (no
-/// counterpart in NEW). For lines in a `Replace` op, returns the closest
-/// line in the new range, clamped to the last line of the new range. The
-/// clamp matters for `scope.end` of multi-line replaces so `}` maps to
-/// `}` rather than to the start of the new range.
-fn map_old_to_new(line: usize, ops: &[similar::DiffOp]) -> Option<usize> {
-    for op in ops {
-        match op {
-            similar::DiffOp::Equal {
-                old_index,
-                new_index,
-                len,
-            } => {
-                if line >= *old_index && line < old_index + len {
-                    return Some(new_index + (line - old_index));
-                }
-            }
-            similar::DiffOp::Replace {
-                old_index,
-                old_len,
-                new_index,
-                new_len,
-            } => {
-                if line >= *old_index && line < old_index + old_len {
-                    let local = line - old_index;
-                    let clamped = local.min(new_len.saturating_sub(1));
-                    return Some(new_index + clamped);
-                }
-            }
-            similar::DiffOp::Delete {
-                old_index, old_len, ..
-            } => {
-                if line >= *old_index && line < old_index + old_len {
-                    return None;
-                }
-            }
-            similar::DiffOp::Insert { .. } => {}
-        }
-    }
-    None
-}
-
 /// True when an OLD scope and a NEW scope occupy the same logical slot in
 /// the diff, i.e. the OLD scope's start and end lines map through the diff
 /// to the NEW scope's start and end lines. Robust against earlier edits
 /// that shifted line numbers, unlike absolute position equality.
-pub(super) fn same_slot(
-    old_scope: &ScopeNode,
-    new_scope: &ScopeNode,
-    ops: &[similar::DiffOp],
-) -> bool {
+pub(super) fn same_slot(old_scope: &ScopeNode, new_scope: &ScopeNode, ops: &[DiffOp]) -> bool {
     let (old_start, old_end, _) = scope_bounds(old_scope);
     let (new_start, new_end, _) = scope_bounds(new_scope);
-    let Some(mapped_start) = map_old_to_new(old_start, ops) else {
+    let Some(mapped_start) = align_old_to_new(old_start, ops) else {
         return false;
     };
-    let Some(mapped_end) = map_old_to_new(old_end, ops) else {
+    let Some(mapped_end) = align_old_to_new(old_end, ops) else {
         return false;
     };
     mapped_start == new_start && mapped_end == new_end
@@ -450,7 +404,7 @@ fn new_replace_scope_range(
     new_index: usize,
     new_len: usize,
     ctx: &ScopeRangeContext<'_>,
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
 ) -> Option<ContextRange> {
     let new_start = new_index;
     let new_end = new_index + new_len;
@@ -486,7 +440,7 @@ fn context_ranges_for_replace(
     new_index: usize,
     new_len: usize,
     ctx: &ScopeRangeContext<'_>,
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
 ) -> Vec<ContextRange> {
     let mut ranges = vec![old_replace_context_range(old_index, old_len, ctx)];
     if let Some(range) = new_replace_scope_range(old_index, old_len, new_index, new_len, ctx, ops) {
@@ -502,7 +456,7 @@ fn context_ranges_for_replace(
 /// 2. Whether the change is Exact (spans entire scope) or Contained (within scope)
 /// 3. Context expansion: Exact uses minimal range, Contained uses scope expansion
 fn compute_context_ranges(
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
     total_old: usize,
@@ -518,18 +472,18 @@ fn compute_context_ranges(
 
     for op in ops {
         match op {
-            similar::DiffOp::Equal { .. } => {}
-            similar::DiffOp::Insert {
+            DiffOp::Equal { .. } => {}
+            DiffOp::Insert {
                 old_index,
                 new_index,
                 new_len,
             } => ranges.extend(context_ranges_for_insert(
                 *old_index, *new_index, *new_len, &ctx,
             )),
-            similar::DiffOp::Delete {
+            DiffOp::Delete {
                 old_index, old_len, ..
             } => ranges.extend(context_ranges_for_delete(*old_index, *old_len, &ctx)),
-            similar::DiffOp::Replace {
+            DiffOp::Replace {
                 old_index,
                 old_len,
                 new_index,
@@ -586,7 +540,12 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use similar::TextDiff;
+
+    fn ops_for(original: &str, updated: &str) -> Vec<DiffOp> {
+        crate::engine::Snapshot::compute(original, updated)
+            .ops()
+            .to_vec()
+    }
 
     #[test]
     fn query_old_line_clamps_to_last_old_line() {
@@ -611,8 +570,7 @@ fn new_function() {
     let y = 2;
 }
 ";
-        let diff = TextDiff::from_lines(original, updated);
-        let ops = diff.ops().to_vec();
+        let ops = ops_for(original, updated);
         let old_parsed = crate::syntax::ParsedFile::parse("test.rs", original).unwrap();
         let new_parsed = crate::syntax::ParsedFile::parse("test.rs", updated).unwrap();
         let ranges = compute_context_ranges(
@@ -663,17 +621,17 @@ fn new_function() {
         // The Delete starts inside `outer` (at line 2) and runs through
         // the whole `deleted` fn (lines 6..8) plus the trailing blank.
         let ops = vec![
-            similar::DiffOp::Equal {
+            DiffOp::Equal {
                 old_index: 0,
                 new_index: 0,
                 len: 2,
             },
-            similar::DiffOp::Delete {
+            DiffOp::Delete {
                 old_index: 2,
                 old_len: 7,
                 new_index: 2,
             },
-            similar::DiffOp::Equal {
+            DiffOp::Equal {
                 old_index: 9,
                 new_index: 2,
                 len: 4,
@@ -700,87 +658,5 @@ fn new_function() {
                 .any(|r| r.start <= deleted_fn_line && r.end >= deleted_fn_line),
             "expected at least one range to cover line {deleted_fn_line} (`fn deleted()`); got: {ranges:?}"
         );
-    }
-
-    #[test]
-    fn map_old_to_new_equal_op_returns_aligned_line() {
-        // Equal { old=5..10, new=8..13 }: line 5 -> 8, line 7 -> 10, line 9 -> 12.
-        let ops = vec![similar::DiffOp::Equal {
-            old_index: 5,
-            new_index: 8,
-            len: 5,
-        }];
-        assert_eq!(map_old_to_new(5, &ops), Some(8));
-        assert_eq!(map_old_to_new(7, &ops), Some(10));
-        assert_eq!(map_old_to_new(9, &ops), Some(12));
-        // Line outside the equal range has no mapping.
-        assert_eq!(map_old_to_new(10, &ops), None);
-    }
-
-    #[test]
-    fn map_old_to_new_replace_op_clamps_to_last_new_line() {
-        // Replace { old=10..15 (5 lines), new=20..23 (3 lines) }.
-        // Inside the replace, lines map to ni + min(local_offset, new_len-1).
-        // This keeps the LAST old line mapped to the LAST new line, which
-        // is what `same_slot` needs for `scope.end` of asymmetric replaces
-        // (e.g. `};` -> `}` where the closing brace IS the replace).
-        let ops = vec![similar::DiffOp::Replace {
-            old_index: 10,
-            old_len: 5,
-            new_index: 20,
-            new_len: 3,
-        }];
-        assert_eq!(map_old_to_new(10, &ops), Some(20)); // first -> first
-        assert_eq!(map_old_to_new(11, &ops), Some(21));
-        assert_eq!(map_old_to_new(12, &ops), Some(22)); // clamped
-        assert_eq!(map_old_to_new(13, &ops), Some(22)); // clamped
-        assert_eq!(map_old_to_new(14, &ops), Some(22)); // last old -> last new
-    }
-
-    #[test]
-    fn map_old_to_new_delete_op_returns_none() {
-        // Delete { old=4..7 }: lines 4..7 have no NEW counterpart.
-        let ops = vec![similar::DiffOp::Delete {
-            old_index: 4,
-            old_len: 3,
-            new_index: 4,
-        }];
-        assert_eq!(map_old_to_new(4, &ops), None);
-        assert_eq!(map_old_to_new(5, &ops), None);
-        assert_eq!(map_old_to_new(6, &ops), None);
-    }
-
-    #[test]
-    fn map_old_to_new_chain_with_insert_keeps_alignment() {
-        // Realistic chain: Equal -> Insert (no OLD lines) -> Equal.
-        // The insert shifts NEW indices but does not consume OLD indices,
-        // so OLD lines after the insert map cleanly via the second Equal
-        // op (whose new_index already accounts for the shift).
-        let ops = vec![
-            similar::DiffOp::Equal {
-                old_index: 0,
-                new_index: 0,
-                len: 3,
-            },
-            similar::DiffOp::Insert {
-                old_index: 3,
-                new_index: 3,
-                new_len: 2,
-            },
-            similar::DiffOp::Equal {
-                old_index: 3,
-                new_index: 5,
-                len: 4,
-            },
-        ];
-        // Lines 0..3 map identity (first Equal).
-        assert_eq!(map_old_to_new(0, &ops), Some(0));
-        assert_eq!(map_old_to_new(2, &ops), Some(2));
-        // Lines 3..7 map +2 (after the 2-line Insert).
-        assert_eq!(map_old_to_new(3, &ops), Some(5));
-        assert_eq!(map_old_to_new(4, &ops), Some(6));
-        assert_eq!(map_old_to_new(6, &ops), Some(8));
-        // Beyond the last op: no mapping.
-        assert_eq!(map_old_to_new(7, &ops), None);
     }
 }

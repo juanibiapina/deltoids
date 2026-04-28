@@ -41,6 +41,7 @@ crates/
 
   deltoids/
     src/lib.rs              # Library exports
+    src/engine.rs           # Line-level diff engine: Snapshot, DiffOp, align_old_to_new
     src/parse.rs            # Git diff parsing
     src/scope.rs            # Hunk types, Hunk::runs / HunkRun, public entry
     src/scope/range.rs      # Planning phase: ContextRange per diff op
@@ -92,7 +93,7 @@ See `web/AGENTS.md` for component conventions.
 ## Key Patterns
 
 - **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`). The public surface is `ParsedFile` in `deltoids/src/syntax.rs`, which owns the parsed source and exposes `enclosing_scopes(line)`, `is_structure(scope)`, and `is_data(scope)`. Per-language node-kind tables (`structure_kinds`, `data_kinds`, `promoted_kinds`, `function_body_kinds`) are internal config of `ParsedFile` — callers never touch raw tree-sitter taxonomy. `promoted_kinds` covers wrappers like `public_field_definition` or `variable_declarator` that count as a structure when their `value` field is a function body (JS/TS class arrow-fields, top-level `const f = () => {}`). `function_body_kinds` both gates promotion and demotes nested helpers (e.g. `fn inner` inside `fn outer`) so they don't steal the outer anchor.
-- **Diff computation**: `deltoids::Diff::compute()` parses both old and new files, then runs two phases in `scope/`: `range.rs` plans `ContextRange`s per diff op (anchored on enclosing scope or default 3-line fallback), and `hunk_builder.rs` fills each range into a `Hunk` from the diff ops.
+- **Diff computation**: `deltoids::Diff::compute()` first runs `engine::Snapshot::compute()` (line-level diff via `gix-imara-diff` Histogram + line postprocessing) to produce a `Vec<DiffOp>` and unified text. It then parses both old and new files and runs two phases in `scope/`: `range.rs` plans `ContextRange`s per diff op (anchored on enclosing scope or default 3-line fallback), and `hunk_builder.rs` fills each range into a `Hunk` from the diff ops. `engine::align_old_to_new(line, ops)` is the shared helper for mapping OLD line numbers through the diff (used by `same_slot` rename detection).
 - **Hunk iteration**: Consumers walk hunks via `Hunk::runs()` -> `HunkRun` (`Header` / `Subhunk` / `Context`) instead of regrouping lines themselves. Both `render::render_hunk` and the TUI's `detail_items` share this iterator; reach for it before adding new line-grouping code.
 - **TUI layout**: Three-pane lazygit-inspired layout (entries, traces, diff).
 - **Traces**: Stored in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.

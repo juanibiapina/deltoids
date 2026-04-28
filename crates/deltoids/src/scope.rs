@@ -4,8 +4,8 @@
 //! scope (function, class, module, etc.) for any line number. This context is
 //! used by the TUI to display which function a change belongs to.
 
+use crate::engine::{DiffOp, Snapshot};
 use serde::{Deserialize, Serialize};
-use similar::{ChangeTag, TextDiff};
 
 mod hunk_builder;
 mod range;
@@ -133,8 +133,8 @@ pub struct ScopeNode {
 /// ancestor scope chains.
 #[derive(Debug, Clone)]
 pub struct Diff {
+    snapshot: Snapshot,
     hunks: Vec<Hunk>,
-    text: String,
 }
 
 impl Diff {
@@ -145,37 +145,26 @@ impl Diff {
     /// context (up to 50-line scopes). The `text()` method returns standard
     /// 3-line context.
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
-        let text_diff = TextDiff::from_lines(original, updated);
-
-        // For new files (empty original), skip scope expansion since the entire
-        // file is added and showing ancestor scope boxes would be misleading.
-        let hunks = if original.is_empty() {
-            build_hunks_from_unified(&text_diff)
-        } else {
-            let old_parsed = crate::syntax::ParsedFile::parse(path, original);
-            let new_parsed = crate::syntax::ParsedFile::parse(path, updated);
-
-            match (&old_parsed, &new_parsed) {
-                (Some(old_p), Some(new_p)) => {
-                    build_hunks_with_scope(&text_diff, old_p, new_p, original, updated)
-                }
-                _ => build_hunks_from_unified(&text_diff),
-            }
-        };
-
-        let text = unified_diff_text(&text_diff);
-
-        Diff { hunks, text }
+        let snapshot = Snapshot::compute(original, updated);
+        let hunks = build_hunks(&snapshot, original, updated, path);
+        Diff { snapshot, hunks }
     }
 
     /// Returns the diff text with standard 3-line context.
     pub fn text(&self) -> &str {
-        &self.text
+        self.snapshot.unified_text()
     }
 
     /// Returns the enriched hunks.
     pub fn hunks(&self) -> &[Hunk] {
         &self.hunks
+    }
+
+    /// Returns the underlying [`Snapshot`] (raw diff op stream and
+    /// unified text). Use this when you want to walk the diff without
+    /// the tree-sitter scope expansion that `hunks()` applies.
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
     }
 }
 
@@ -183,11 +172,27 @@ impl Diff {
 // Scope-expanded context helpers
 // ---------------------------------------------------------------------------
 
-/// Create unified diff text with 3-line context.
-fn unified_diff_text(text_diff: &TextDiff<'_, '_, str>) -> String {
-    let mut unified = text_diff.unified_diff();
-    unified.context_radius(3).header("original", "modified");
-    unified.to_string()
+/// Build the enriched hunk list for a diff.
+///
+/// Dispatches between the scope-expanded path (when tree-sitter can
+/// parse both sides) and the plain unified-diff path (new files,
+/// unsupported languages, or parse failures).
+fn build_hunks(snapshot: &Snapshot, original: &str, updated: &str, path: &str) -> Vec<Hunk> {
+    // For new files (empty original), skip scope expansion since the entire
+    // file is added and showing ancestor scope boxes would be misleading.
+    if original.is_empty() {
+        return build_hunks_from_unified(snapshot.ops(), original, updated);
+    }
+
+    let old_parsed = crate::syntax::ParsedFile::parse(path, original);
+    let new_parsed = crate::syntax::ParsedFile::parse(path, updated);
+
+    match (&old_parsed, &new_parsed) {
+        (Some(old_p), Some(new_p)) => {
+            build_hunks_with_scope(snapshot.ops(), old_p, new_p, original, updated)
+        }
+        _ => build_hunks_from_unified(snapshot.ops(), original, updated),
+    }
 }
 
 /// Build hunks with tree-sitter scope expansion.
@@ -195,7 +200,7 @@ fn unified_diff_text(text_diff: &TextDiff<'_, '_, str>) -> String {
 /// Uses scope-expanded context (up to MAX_SCOPE_LINES scopes) and populates ancestor chains.
 /// For insertions, queries the new tree; for deletions/replacements, queries the old tree.
 fn build_hunks_with_scope(
-    text_diff: &TextDiff<'_, '_, str>,
+    ops: &[DiffOp],
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
     original: &str,
@@ -203,49 +208,150 @@ fn build_hunks_with_scope(
 ) -> Vec<Hunk> {
     let old_lines: Vec<&str> = original.lines().collect();
     let new_lines: Vec<&str> = updated.lines().collect();
-    let ops: Vec<_> = text_diff.ops().to_vec();
 
     let ranges = range::plan(
-        &ops,
+        ops,
         old_parsed,
         new_parsed,
         old_lines.len(),
         new_lines.len(),
     );
 
-    hunk_builder::build(
-        &ops, &ranges, old_parsed, new_parsed, &old_lines, &new_lines,
-    )
+    hunk_builder::build(ops, &ranges, old_parsed, new_parsed, &old_lines, &new_lines)
 }
 
-/// Build hunks from similar's unified diff when tree-sitter parsing is unavailable.
-///
-/// Uses similar's built-in 3-line context and produces hunks with empty ancestors.
-fn build_hunks_from_unified(text_diff: &TextDiff<'_, '_, str>) -> Vec<Hunk> {
-    let mut unified = text_diff.unified_diff();
-    unified.context_radius(3);
-    unified
-        .iter_hunks()
-        .map(|hunk| {
-            let ops = hunk.ops();
-            let old_start = ops.first().map(|op| op.old_range().start + 1).unwrap_or(1);
-            let new_start = ops.first().map(|op| op.new_range().start + 1).unwrap_or(1);
+/// The bounds (in OLD and NEW line space) of one change op. Pure data
+/// structure used to drive the unified-diff builder below.
+#[derive(Debug, Clone, Copy)]
+struct Change {
+    before_start: usize,
+    before_end: usize,
+    after_start: usize,
+    after_end: usize,
+}
 
-            let lines = hunk
-                .iter_changes()
-                .map(|change| DiffLine {
-                    kind: match change.tag() {
-                        ChangeTag::Equal => LineKind::Context,
-                        ChangeTag::Delete => LineKind::Removed,
-                        ChangeTag::Insert => LineKind::Added,
-                    },
-                    content: change.value().trim_end_matches('\n').to_string(),
-                })
-                .collect();
+fn change_from_op(op: &DiffOp) -> Option<Change> {
+    match *op {
+        DiffOp::Equal { .. } => None,
+        DiffOp::Insert {
+            old_index,
+            new_index,
+            new_len,
+        } => Some(Change {
+            before_start: old_index,
+            before_end: old_index,
+            after_start: new_index,
+            after_end: new_index + new_len,
+        }),
+        DiffOp::Delete {
+            old_index,
+            old_len,
+            new_index,
+        } => Some(Change {
+            before_start: old_index,
+            before_end: old_index + old_len,
+            after_start: new_index,
+            after_end: new_index,
+        }),
+        DiffOp::Replace {
+            old_index,
+            old_len,
+            new_index,
+            new_len,
+        } => Some(Change {
+            before_start: old_index,
+            before_end: old_index + old_len,
+            after_start: new_index,
+            after_end: new_index + new_len,
+        }),
+    }
+}
+
+/// Build hunks directly from the diff op stream when tree-sitter
+/// parsing is unavailable. Synthesizes 3-line context around each
+/// change and produces hunks with empty ancestors.
+fn build_hunks_from_unified(ops: &[DiffOp], original: &str, updated: &str) -> Vec<Hunk> {
+    const CONTEXT: usize = 3;
+    let old_lines: Vec<&str> = original.lines().collect();
+    let new_lines: Vec<&str> = updated.lines().collect();
+
+    // Group adjacent change ops whose context windows touch into one
+    // unified hunk, matching standard `diff -u` behaviour.
+    #[derive(Debug)]
+    struct Group {
+        old_start: usize,
+        old_end: usize,
+        new_start: usize,
+        new_end: usize,
+        changes: Vec<Change>,
+    }
+
+    let mut groups: Vec<Group> = Vec::new();
+    for op in ops {
+        let Some(change) = change_from_op(op) else {
+            continue;
+        };
+
+        let win_old_start = change.before_start.saturating_sub(CONTEXT);
+        let win_old_end = (change.before_end + CONTEXT).min(old_lines.len());
+        let win_new_start = change.after_start.saturating_sub(CONTEXT);
+        let win_new_end = (change.after_end + CONTEXT).min(new_lines.len());
+
+        if let Some(last) = groups.last_mut()
+            && win_old_start <= last.old_end
+        {
+            last.old_end = last.old_end.max(win_old_end);
+            last.new_end = last.new_end.max(win_new_end);
+            last.changes.push(change);
+        } else {
+            groups.push(Group {
+                old_start: win_old_start,
+                old_end: win_old_end,
+                new_start: win_new_start,
+                new_end: win_new_end,
+                changes: vec![change],
+            });
+        }
+    }
+
+    groups
+        .into_iter()
+        .map(|group| {
+            let mut lines = Vec::new();
+            let mut cursor_old = group.old_start;
+            for change in &group.changes {
+                // Context lines between cursor and this change.
+                for i in cursor_old..change.before_start {
+                    lines.push(DiffLine {
+                        kind: LineKind::Context,
+                        content: old_lines.get(i).copied().unwrap_or("").to_string(),
+                    });
+                }
+                for i in change.before_start..change.before_end {
+                    lines.push(DiffLine {
+                        kind: LineKind::Removed,
+                        content: old_lines.get(i).copied().unwrap_or("").to_string(),
+                    });
+                }
+                for i in change.after_start..change.after_end {
+                    lines.push(DiffLine {
+                        kind: LineKind::Added,
+                        content: new_lines.get(i).copied().unwrap_or("").to_string(),
+                    });
+                }
+                cursor_old = change.before_end;
+            }
+            // Trailing context.
+            for i in cursor_old..group.old_end {
+                lines.push(DiffLine {
+                    kind: LineKind::Context,
+                    content: old_lines.get(i).copied().unwrap_or("").to_string(),
+                });
+            }
 
             Hunk {
-                old_start,
-                new_start,
+                old_start: group.old_start + 1,
+                new_start: group.new_start + 1,
                 lines,
                 ancestors: Vec::new(),
             }
@@ -2456,13 +2562,4 @@ fn target_renamed(
                 .collect::<Vec<_>>()
         );
     }
-
-    // -----------------------------------------------------------------------
-    // map_old_to_new direct unit tests
-    //
-    // The function is exercised end-to-end by the `same_slot` tests, but
-    // these unit tests pin its contract per `similar::DiffOp` variant so
-    // future refactors that move it (e.g. to a separate `align` module)
-    // do not change behaviour silently.
-    // -----------------------------------------------------------------------
 }

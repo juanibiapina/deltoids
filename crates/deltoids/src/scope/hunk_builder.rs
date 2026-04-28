@@ -10,6 +10,7 @@
 
 use super::range::{insert_forms_new_scope, same_slot};
 use super::{AncestorSource, ContextRange, DiffLine, Hunk, LineKind, ScopeNode};
+use crate::engine::DiffOp;
 
 struct HunkBuildContext<'a> {
     old_parsed: &'a crate::syntax::ParsedFile,
@@ -158,7 +159,7 @@ fn collect_replace_added_lines(
     new_index: usize,
     new_len: usize,
     ctx: &HunkBuildContext<'_>,
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
 ) {
     let new_scope_cutoff = old_scope.and_then(|old_scope| {
         first_different_new_scope_start(
@@ -268,7 +269,7 @@ fn collect_replace_lines(
     replace: ReplaceOpData,
     old_scope: Option<&ScopeNode>,
     ctx: &HunkBuildContext<'_>,
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
 ) {
     let added_in_range = collect_replace_removed_lines(
         builder,
@@ -312,7 +313,7 @@ fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Opti
 }
 
 fn build_hunk_from_range(
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
     range: &ContextRange,
     ctx: &HunkBuildContext<'_>,
 ) -> Option<Hunk> {
@@ -321,7 +322,7 @@ fn build_hunk_from_range(
 
     for op in ops {
         match op {
-            similar::DiffOp::Equal {
+            DiffOp::Equal {
                 old_index,
                 new_index,
                 len,
@@ -333,7 +334,7 @@ fn build_hunk_from_range(
                 *len,
                 ctx.old_lines,
             ),
-            similar::DiffOp::Delete {
+            DiffOp::Delete {
                 old_index,
                 old_len,
                 new_index,
@@ -345,12 +346,12 @@ fn build_hunk_from_range(
                 *new_index,
                 ctx.old_lines,
             ),
-            similar::DiffOp::Insert {
+            DiffOp::Insert {
                 old_index,
                 new_index,
                 new_len,
             } => collect_insert_lines(&mut builder, range, *old_index, *new_index, *new_len, ctx),
-            similar::DiffOp::Replace {
+            DiffOp::Replace {
                 old_index,
                 old_len,
                 new_index,
@@ -410,7 +411,7 @@ fn build_hunk_from_range(
 /// appropriate tree based on the range's ancestor_source.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build(
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
     ranges: &[ContextRange],
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
@@ -490,7 +491,7 @@ fn first_different_new_scope_start(
     new_start: usize,
     new_end: usize,
     new_parsed: &crate::syntax::ParsedFile,
-    ops: &[similar::DiffOp],
+    ops: &[DiffOp],
 ) -> Option<usize> {
     for line in new_start..new_end {
         let new_scopes = new_parsed.enclosing_scopes(line);

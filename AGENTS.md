@@ -30,21 +30,25 @@ cargo install --path crates/deltoids-cli  # deltoids
 ```
 crates/
   edit-cli/
-    src/lib.rs          # Core library: trace logic, request types, edit/write execution
-    src/tui.rs          # TUI rendering and event handling
-    src/highlight.rs    # Syntax highlighting for diffs
-    src/bin/edit.rs     # Edit CLI binary
-    src/bin/write.rs    # Write CLI binary
-    src/bin/edit-tui.rs # TUI binary
+    src/lib.rs              # Library entry: request types, edit/write execution
+    src/trace_store.rs      # TraceStore: trace dir layout, append/read/list
+    src/theme.rs            # TUI theme resolution (syntax + UI colors)
+    src/tui.rs              # TUI rendering and event handling
+    src/highlight.rs        # Syntax highlighting for diffs
+    src/bin/edit.rs         # Edit CLI binary
+    src/bin/write.rs        # Write CLI binary
+    src/bin/edit-tui.rs     # TUI binary
 
   deltoids/
-    src/lib.rs          # Library exports
-    src/parse.rs        # Git diff parsing
-    src/scope.rs        # Tree-sitter scope detection and hunk construction
-    src/render.rs       # Diff rendering
-    src/intraline.rs    # Within-line diff algorithm
-    src/reverse.rs      # Diff reversal
-    src/syntax.rs       # Language detection and tree-sitter setup
+    src/lib.rs              # Library exports
+    src/parse.rs            # Git diff parsing
+    src/scope.rs            # Hunk types, Hunk::runs / HunkRun, public entry
+    src/scope/range.rs      # Planning phase: ContextRange per diff op
+    src/scope/hunk_builder.rs # Filling phase: ContextRange -> Hunk
+    src/render.rs           # Diff rendering
+    src/intraline.rs        # Within-line diff algorithm
+    src/reverse.rs          # Diff reversal
+    src/syntax.rs           # Language detection, ParsedFile, scope taxonomy
     tests/diff_cases.rs       # Entry point for the diff-case reference suite
     tests/diff_cases/         # Harness, README, and case directories
       cases/<NNN-slug>/       # 1-case.md, 2-original.<EXT>, 3-updated.<EXT>, 4-expected.diff
@@ -87,8 +91,9 @@ See `web/AGENTS.md` for component conventions.
 
 ## Key Patterns
 
-- **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`). Per-language node kinds live in `deltoids/src/syntax.rs`: `structure_kinds` (functions, classes, methods), `data_kinds` (JSON/YAML containers), `promoted_kinds` (wrapper kinds like `public_field_definition` or `variable_declarator` that count as a structure when their `value` field is a function body — used for JS/TS class arrow-fields and top-level `const f = () => {}`), and `function_body_kinds` (nodes that introduce a function body; used both to gate promotion and to demote nested helpers like `fn inner` inside `fn outer` so they don't steal the outer anchor).
-- **Diff computation**: `deltoids::Diff::compute()` parses both old and new files, uses diff-op-aware scope lookup.
+- **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`). The public surface is `ParsedFile` in `deltoids/src/syntax.rs`, which owns the parsed source and exposes `enclosing_scopes(line)`, `is_structure(scope)`, and `is_data(scope)`. Per-language node-kind tables (`structure_kinds`, `data_kinds`, `promoted_kinds`, `function_body_kinds`) are internal config of `ParsedFile` — callers never touch raw tree-sitter taxonomy. `promoted_kinds` covers wrappers like `public_field_definition` or `variable_declarator` that count as a structure when their `value` field is a function body (JS/TS class arrow-fields, top-level `const f = () => {}`). `function_body_kinds` both gates promotion and demotes nested helpers (e.g. `fn inner` inside `fn outer`) so they don't steal the outer anchor.
+- **Diff computation**: `deltoids::Diff::compute()` parses both old and new files, then runs two phases in `scope/`: `range.rs` plans `ContextRange`s per diff op (anchored on enclosing scope or default 3-line fallback), and `hunk_builder.rs` fills each range into a `Hunk` from the diff ops.
+- **Hunk iteration**: Consumers walk hunks via `Hunk::runs()` -> `HunkRun` (`Header` / `Subhunk` / `Context`) instead of regrouping lines themselves. Both `render::render_hunk` and the TUI's `detail_items` share this iterator; reach for it before adding new line-grouping code.
 - **TUI layout**: Three-pane lazygit-inspired layout (entries, traces, diff).
 - **Traces**: Stored in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.
 

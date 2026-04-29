@@ -62,16 +62,18 @@ crates/
     tests/tui_cli.rs    # Integration tests for edit + write + edit-tui interaction
 ```
 
-## Web
+## Site
 
-Marketing/landing site for `deltoids.dev`, under `web/` (Next.js 15 App
-Router, Tailwind v4, shadcn primitives, Motion, `@vercel/og`). Deploys to
-Vercel; uses **hand-coded React product mocks** instead of screenshots.
+Marketing/landing site for `deltoids.dev`, under `site/` (bare Astro,
+no integrations, zero client JS). Deploys to GitHub Pages from the
+`Pages` workflow on push to `main` when `site/**` changes. Self-hosted
+IBM Plex Sans + JetBrains Mono.
 
-Local dev (from `web/`): `npm install`, `npm run dev` (`:3000`),
-`npm run build`, `npm run lint`, `npx tsc --noEmit`.
+Local dev (from `site/`): `npm install`, `npm run dev` (`:4321`),
+`npm run build`, `npm run preview`, `npx astro check`.
 
-See `web/AGENTS.md` for component conventions.
+See `site/AGENTS.md` for component conventions and the release
+checklist.
 
 ## Key Patterns
 

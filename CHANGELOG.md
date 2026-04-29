@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `deltoids`: `syntax::ParsedFile` now hides its tree-sitter `Tree`, source buffer, and language `*_kinds` tables behind a small interface. Public methods: `ParsedFile::parse(path, source)`, `enclosing_scopes(line)`, `is_structure(&scope)`, `is_data(&scope)`.
 - `deltoids`: line-level diff engine extracted from `scope.rs` into a private `engine` module. `Diff` now owns a `Snapshot` and delegates to it for raw ops and unified text. The scope planner and hunk builder consume `engine::DiffOp` instead of an inline copy.
 - `deltoids`: line-level diff backend swapped from `similar` to `gix-imara-diff` with the Histogram algorithm and imara's line postprocessing. Hunks and unified text are produced by the same shared backend.
+- Marketing site at `deltoids.dev` rewritten in bare Astro under `site/` and moved back to GitHub Pages (was Next.js on Vercel under `web/`). Zero client JS, self-hosted IBM Plex Sans + JetBrains Mono, Lighthouse 100/100/100/100 mobile and desktop. The Next.js implementation under `web/` and its Vercel deploy workflow are removed.
 
 ### Fixed
 

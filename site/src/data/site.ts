@@ -37,7 +37,7 @@ export type Tool = {
   code: string;
 };
 
-/** `git diff | deltoids` snippets per tool. Carried from web/Pager.tsx. */
+/** `git diff | deltoids` snippets per tool. */
 export const PAGER_TOOLS: Tool[] = [
   {
     id: "git",
@@ -66,7 +66,7 @@ git:
   },
 ];
 
-/** edit-tui install snippets per coding agent. Carried from web/Agents.tsx. */
+/** edit-tui install snippets per coding agent. */
 export const AGENT_TOOLS: { id: string; label: string; code?: string; coming?: boolean }[] = [
   {
     id: "pi",
@@ -117,7 +117,7 @@ cargo install --git https://github.com/juanibiapina/deltoids edit-cli`,
   },
 ];
 
-/** FAQ from web/Faq.tsx, kept verbatim. */
+/** FAQ. */
 export const FAQ: { q: string; a: string }[] = [
   {
     q: "How is this different from `git diff -W`?",

@@ -1,0 +1,62 @@
+---
+import { Image } from "astro:assets";
+import { AGENT_TOOLS } from "../data/site";
+import editTuiShot from "../assets/screenshots/edit-tui.png";
+---
+
+<section id="agents" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Review every edit by coding agents</h2>
+      <p>
+        <code>edit-tui</code> browses every edit, with its reason and
+        semantic context.
+      </p>
+    </div>
+
+    <div class="install-grid agents-snippets">
+      {
+        AGENT_TOOLS.map((a) => (
+          <div class="install-card">
+            <div class="install-card-label">{a.label}</div>
+            {a.coming ? (
+              <div class="code-card-coming">Coming soon</div>
+            ) : (
+              <pre><code>{a.code}</code></pre>
+            )}
+          </div>
+        ))
+      }
+    </div>
+
+    <figure class="proof">
+      <Image
+        src={editTuiShot}
+        alt="edit-tui showing a trace of agent edits with diffs and reasons"
+        widths={[800, 1200, 1600]}
+        sizes="(min-width: 1024px) 1024px, 100vw"
+        format="webp"
+        loading="lazy"
+      />
+    </figure>
+  </div>
+</section>
+
+<style>
+  .agents-snippets {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  .proof {
+    margin-top: 56px;
+  }
+
+  .proof :global(img) {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-code);
+  }
+</style>

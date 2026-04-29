@@ -1,0 +1,106 @@
+---
+import { Image } from "astro:assets";
+import { SITE } from "../data/site";
+import deltaShot from "../assets/screenshots/delta.png";
+import deltoidsShot from "../assets/screenshots/deltoids.png";
+---
+
+<section class="hero">
+  <div class="container hero-inner">
+    <div class="hero-badge">
+      v{SITE.version}
+      <span class="hero-badge-sep">/</span>
+      open source
+    </div>
+
+    <h1>
+      Diffs for the<br />
+      <span class="accent">agentic era.</span>
+    </h1>
+
+    <p class="hero-sub">
+      <code>deltoids</code> expands every hunk to include the enclosing
+      context. Hold the code in your head even when you're not the one
+      typing it.
+    </p>
+
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#install">Install</a>
+      <a
+        class="btn btn-secondary"
+        href={SITE.repo.url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        View on GitHub →
+      </a>
+    </div>
+
+    <div class="hero-install" aria-label="Install command">
+      <span>brew install {SITE.brewTap}/deltoids-cli</span>
+    </div>
+  </div>
+
+  <div class="container hero-compare">
+    <figure class="compare-pane">
+      <figcaption>default</figcaption>
+      <Image
+        src={deltaShot}
+        alt="Default git diff: 3 lines of context, scope is invisible"
+        widths={[640, 960, 1280]}
+        sizes="(min-width: 768px) 50vw, 100vw"
+        format="webp"
+        loading="lazy"
+      />
+    </figure>
+    <figure class="compare-pane">
+      <figcaption>deltoids</figcaption>
+      <Image
+        src={deltoidsShot}
+        alt="deltoids: hunk expanded to the enclosing function"
+        widths={[640, 960, 1280]}
+        sizes="(min-width: 768px) 50vw, 100vw"
+        format="webp"
+        loading="lazy"
+      />
+    </figure>
+  </div>
+</section>
+
+<style>
+  .hero-compare {
+    margin-top: 56px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  @media (min-width: 768px) {
+    .hero-compare {
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+  }
+
+  .compare-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .compare-pane figcaption {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+  }
+
+  .compare-pane :global(img) {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-code);
+  }
+</style>

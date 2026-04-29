@@ -1,0 +1,58 @@
+---
+import { Image } from "astro:assets";
+import { PAGER_TOOLS } from "../data/site";
+import lazygitShot from "../assets/screenshots/lazygit.png";
+---
+
+<section id="pager" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Use as a diff pager</h2>
+      <p>
+        Pipe a single diff, or set <code>deltoids</code> as the default for
+        every git command.
+      </p>
+    </div>
+
+    <div class="install-grid pager-snippets">
+      {
+        PAGER_TOOLS.map((t) => (
+          <div class="install-card">
+            <div class="install-card-label">{t.label}</div>
+            <pre><code>{t.code}</code></pre>
+          </div>
+        ))
+      }
+    </div>
+
+    <figure class="proof">
+      <Image
+        src={lazygitShot}
+        alt="lazygit running with deltoids as the pager: hunks expanded to the enclosing function"
+        widths={[800, 1200, 1600]}
+        sizes="(min-width: 1024px) 1024px, 100vw"
+        format="webp"
+        loading="lazy"
+      />
+    </figure>
+  </div>
+</section>
+
+<style>
+  .pager-snippets {
+    max-width: 880px;
+    margin: 0 auto;
+  }
+
+  .proof {
+    margin-top: 56px;
+  }
+
+  .proof :global(img) {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-code);
+  }
+</style>

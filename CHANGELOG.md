@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `deltoids`: fix bug where a `Delete` op spanning a partial scope plus one or more fully-deleted sibling scopes silently dropped every line beyond the first scope from the engine's hunks. The planner now walks the full delete range and emits one range per scope it intersects, so every removed line is accounted for in some hunk.
 - `edit-tui`: holding `j`/`k` no longer falls behind the keyboard. The input loop now drains every buffered event into one batch and applies the whole batch before the next redraw, so a key-repeat burst collapses into a single redraw at the end of the burst instead of one redraw per repeat.
+- `site`: the global stylesheet is now inlined into the HTML instead of loaded as an external file. The single ~10 KB CSS bundle was the only render-blocking request on the page; inlining it removes one round-trip and drops mobile LCP from ~2.6 s to ~1.7 s.
 
 ### Removed
 

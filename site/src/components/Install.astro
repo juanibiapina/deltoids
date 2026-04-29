@@ -5,10 +5,10 @@ import { INSTALL_CARDS, SITE } from "../data/site";
 <section id="install" class="section">
   <div class="container">
     <div class="section-head">
-      <h2>Installation</h2>
+      <h2>Install</h2>
       <p>
-        Prebuilt binaries for macOS and Linux. Build from source with cargo
-        if you want.
+        Prebuilt binaries for macOS and Linux. Or build from source with
+        cargo.
       </p>
     </div>
 
@@ -24,13 +24,20 @@ import { INSTALL_CARDS, SITE } from "../data/site";
       }
     </div>
 
-    <p
-      style="text-align:center; margin-top: 28px; font-size: 0.875rem; color: var(--text-muted);"
-    >
-      Looking for the deb / rpm / archive downloads? See{" "}
+    <p class="install-aside">
+      Other formats (deb, rpm, tarball) on{" "}
       <a href={`${SITE.repo.url}/releases`} target="_blank" rel="noreferrer"
         >GitHub Releases</a
       >.
     </p>
   </div>
 </section>
+
+<style>
+  .install-aside {
+    text-align: center;
+    margin-top: 28px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+  }
+</style>

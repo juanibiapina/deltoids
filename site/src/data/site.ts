@@ -1,18 +1,16 @@
 /**
- * Single source of truth for everything that might change between
- * releases or that appears in more than one component. Update here, do
- * not hardcode in templates.
+ * Single source of truth. Update here, do not hardcode.
  */
 
 export const SITE = {
   name: "deltoids",
   domain: "deltoids.dev",
   url: "https://deltoids.dev",
-  version: "0.1.0",
+  version: "0.2.0",
   license: "MIT",
   tagline: "Diffs for the agentic era.",
   description:
-    "Tree-sitter-aware diff pager. Expands every hunk to include the enclosing context. Pipe git diff, gh pr diff, or set as your default pager.",
+    "deltoids expands every hunk in a unified diff to include the entire enclosing context. Tree-sitter resolved. Pipe git diff, gh pr diff, or set as your pager.",
   repo: {
     owner: "juanibiapina",
     name: "deltoids",
@@ -26,7 +24,8 @@ export const SITE = {
 } as const;
 
 export const NAV_LINKS = [
-  { href: "#features", label: "Features" },
+  { href: "#pager", label: "Pager" },
+  { href: "#agents", label: "Agents" },
   { href: "#install", label: "Install" },
   { href: "#faq", label: "FAQ" },
 ] as const;
@@ -38,7 +37,7 @@ export type Tool = {
   code: string;
 };
 
-/** `git diff | deltoids` snippets per tool. */
+/** `git diff | deltoids` snippets per tool. Carried from web/Pager.tsx. */
 export const PAGER_TOOLS: Tool[] = [
   {
     id: "git",
@@ -67,7 +66,7 @@ git:
   },
 ];
 
-/** `edit-tui` install snippets per coding agent. */
+/** edit-tui install snippets per coding agent. Carried from web/Agents.tsx. */
 export const AGENT_TOOLS: { id: string; label: string; code?: string; coming?: boolean }[] = [
   {
     id: "pi",
@@ -85,49 +84,43 @@ export type InstallCard = {
   note?: string;
 };
 
+/**
+ * Verified install paths:
+ * - brew formulas live at github.com/juanibiapina/homebrew-taps
+ * - shell installer URL pattern is what cargo-dist emits per release
+ * - cargo install --git is the documented from-source path in README
+ */
 export const INSTALL_CARDS: InstallCard[] = [
   {
-    id: "homebrew",
+    id: "homebrew-deltoids",
     label: "homebrew",
     code: "brew install juanibiapina/taps/deltoids-cli",
-    note: "macOS / Linux. Installs the deltoids diff pager.",
+    note: "deltoids diff pager. macOS and Linux.",
   },
   {
     id: "homebrew-edit",
     label: "homebrew (edit-tui)",
     code: "brew install juanibiapina/taps/edit-cli",
-    note: "Adds edit, write, and edit-tui for AI-agent traces.",
+    note: "edit, write, and edit-tui — for tracing agent edits.",
   },
   {
     id: "shell",
     label: "shell installer",
     code: "curl -sSL https://github.com/juanibiapina/deltoids/releases/latest/download/deltoids-cli-installer.sh | sh",
-    note: "Prebuilt binaries from GitHub Releases (linux + macOS, x86_64 / aarch64).",
+    note: "Prebuilt binaries from GitHub Releases.",
   },
   {
     id: "cargo",
-    label: "cargo",
+    label: "cargo (from source)",
     code: `cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
 cargo install --git https://github.com/juanibiapina/deltoids edit-cli`,
-    note: "Build from source. Requires Rust 1.85+.",
   },
 ];
 
+/** FAQ from web/Faq.tsx, kept verbatim. */
 export const FAQ: { q: string; a: string }[] = [
   {
     q: "How is this different from `git diff -W`?",
-    a: "`git diff -W` finds scope with regex. `deltoids` parses the file with tree-sitter, so it understands functions, classes, methods, and impls — not just brace-matching.",
-  },
-  {
-    q: "Which languages does it support?",
-    a: "Rust, Go, JavaScript, TypeScript, Python, Ruby, Java, C, C++, and a few more. Anything without a tree-sitter parser falls back to a 3-line context, identical to plain `diff -U3`.",
-  },
-  {
-    q: "Does it modify the diff content?",
-    a: "No. `deltoids` only changes which lines are shown. The added / removed lines are exactly what `git diff` produced; only the context window grows to include the enclosing scope.",
-  },
-  {
-    q: "Will it work as my default git pager?",
-    a: "Yes. `git config --global core.pager 'deltoids | less -R'` and every `git diff`, `git log -p`, `git show` runs through it. Same for lazygit, gh, and any tool that pipes unified diff to a pager.",
+    a: "`git diff -W` finds scope with regex. `deltoids` parses the file with tree-sitter.",
   },
 ];

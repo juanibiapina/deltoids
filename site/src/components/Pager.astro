@@ -1,5 +1,7 @@
 ---
+import { Image } from "astro:assets";
 import { PAGER_TOOLS } from "../data/site";
+import lazygitShot from "../assets/screenshots/lazygit.png";
 ---
 
 <section id="pager" class="section">
@@ -12,7 +14,7 @@ import { PAGER_TOOLS } from "../data/site";
       </p>
     </div>
 
-    <div class="install-grid" style="max-width: 880px; margin: 0 auto;">
+    <div class="install-grid pager-snippets">
       {
         PAGER_TOOLS.map((t) => (
           <div class="install-card">
@@ -22,5 +24,35 @@ import { PAGER_TOOLS } from "../data/site";
         ))
       }
     </div>
+
+    <figure class="proof">
+      <Image
+        src={lazygitShot}
+        alt="lazygit running with deltoids as the pager: hunks expanded to the enclosing function"
+        widths={[800, 1200, 1600]}
+        sizes="(min-width: 1024px) 1024px, 100vw"
+        format="webp"
+        loading="lazy"
+      />
+    </figure>
   </div>
 </section>
+
+<style>
+  .pager-snippets {
+    max-width: 880px;
+    margin: 0 auto;
+  }
+
+  .proof {
+    margin-top: 56px;
+  }
+
+  .proof :global(img) {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-code);
+  }
+</style>

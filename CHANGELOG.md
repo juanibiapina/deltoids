@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `deltoids`: new public `Snapshot` and `DiffOp` types for line-level diffs without tree-sitter scope expansion. `Snapshot::compute(original, updated)` runs the line-level engine once and exposes `ops()`, `unified_text()`, and `align_old_to_new(line)`. `Diff::snapshot()` exposes the underlying snapshot.
+- syntax highlighting now also detects languages from shebang lines, filenames, and modelines (e.g. a Bash file named `script`).
 
 ### Changed
 

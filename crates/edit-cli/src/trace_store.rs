@@ -253,6 +253,8 @@ pub(crate) struct EditHistoryEntry {
     pub edits: Vec<TextEdit>,
     pub diff: String,
     pub hunks: Vec<deltoids::Hunk>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<deltoids::Language>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -284,6 +286,8 @@ pub(crate) struct WriteHistoryEntry {
     pub content: String,
     pub diff: String,
     pub hunks: Vec<deltoids::Hunk>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<deltoids::Language>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -327,6 +331,10 @@ pub struct HistoryEntry {
     pub error: Option<String>,
     #[serde(default)]
     pub hunks: Vec<deltoids::Hunk>,
+    /// Language detected for the diff (`None` for v1/v2 entries written
+    /// before language detection landed, or for unsupported files).
+    #[serde(default)]
+    pub language: Option<deltoids::Language>,
 }
 
 /// Parse a trace's `entries.jsonl` file.

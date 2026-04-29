@@ -1,30 +1,14 @@
-use std::path::Path;
-
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::FontStyle;
-use syntect::parsing::SyntaxReference;
 use unicode_width::UnicodeWidthChar;
+
+use deltoids::Language;
 
 use crate::theme::ResolvedTheme;
 
 const TAB_WIDTH: usize = 4;
-
-fn syntax_for_path<'a>(theme: &'a ResolvedTheme, path: &str) -> &'a SyntaxReference {
-    let path = Path::new(path);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-
-    theme
-        .syntax_set
-        .find_syntax_by_extension(file_name)
-        .or_else(|| theme.syntax_set.find_syntax_by_extension(extension))
-        .unwrap_or_else(|| theme.syntax_set.find_syntax_plain_text())
-}
 
 /// Convert syntect foreground color to ratatui Color.
 ///
@@ -194,7 +178,7 @@ fn plain_text_spans(
 
 pub(crate) fn highlighted_spans(
     theme: &ResolvedTheme,
-    path: &str,
+    language: Option<Language>,
     line: &str,
     base_style: Style,
     max_width: usize,
@@ -203,10 +187,10 @@ pub(crate) fn highlighted_spans(
         return (Vec::new(), 0);
     }
 
-    let syntax = syntax_for_path(theme, path);
-    let mut highlighter = HighlightLines::new(syntax, &theme.syntax_theme);
+    let syntax = theme.syntax_assets.syntax_for(language);
+    let mut highlighter = HighlightLines::new(syntax, theme.syntax_assets.syntax_theme);
 
-    match highlighter.highlight_line(line, &theme.syntax_set) {
+    match highlighter.highlight_line(line, theme.syntax_assets.syntax_set) {
         Ok(ranges) => truncate_highlighted_ranges(ranges, base_style, max_width),
         Err(_) => plain_text_spans(line, base_style, max_width),
     }
@@ -221,7 +205,7 @@ use deltoids::EmphSection;
 /// colors are preserved.
 pub(crate) fn highlighted_spans_with_emphasis(
     theme: &ResolvedTheme,
-    path: &str,
+    language: Option<Language>,
     line: &str,
     sections: &[EmphSection],
     bg_for_section: impl Fn(&EmphSection) -> ratatui::style::Color,
@@ -231,13 +215,13 @@ pub(crate) fn highlighted_spans_with_emphasis(
         return (Vec::new(), 0);
     }
 
-    let syntax = syntax_for_path(theme, path);
-    let mut highlighter = HighlightLines::new(syntax, &theme.syntax_theme);
+    let syntax = theme.syntax_assets.syntax_for(language);
+    let mut highlighter = HighlightLines::new(syntax, theme.syntax_assets.syntax_theme);
 
     // Build a byte-offset to section-index map.
     let section_ranges = build_section_byte_ranges(sections);
 
-    match highlighter.highlight_line(line, &theme.syntax_set) {
+    match highlighter.highlight_line(line, theme.syntax_assets.syntax_set) {
         Ok(ranges) => truncate_with_emphasis(
             ranges,
             sections,
@@ -369,34 +353,34 @@ mod tests {
     }
 
     #[test]
-    fn detects_rust_syntax_from_path() {
+    fn highlighted_spans_use_syntax_colors_for_supported_language() {
         let theme = test_theme();
-        assert_eq!(syntax_for_path(&theme, "src/main.rs").name, "Rust");
-    }
-
-    #[test]
-    fn falls_back_to_plain_text_for_unknown_extension() {
-        let theme = test_theme();
-        assert_eq!(
-            syntax_for_path(&theme, "notes/file.unknown").name,
-            "Plain Text"
+        let (spans, _) = highlighted_spans(
+            &theme,
+            Some(Language::Rust),
+            "fn main() {}",
+            Style::default(),
+            20,
         );
-    }
-
-    #[test]
-    fn highlighted_spans_use_syntax_colors() {
-        let theme = test_theme();
-        let (spans, _) =
-            highlighted_spans(&theme, "src/main.rs", "fn main() {}", Style::default(), 20);
 
         assert!(spans.iter().any(|span| span.style.fg != Some(Color::Reset)));
+    }
+
+    #[test]
+    fn highlighted_spans_falls_back_to_plain_when_language_unknown() {
+        let theme = test_theme();
+        let (spans, _) = highlighted_spans(&theme, None, "fn main() {}", Style::default(), 20);
+
+        // Plain text means a single base-styled span.
+        assert_eq!(spans.len(), 1);
     }
 
     #[test]
     fn highlighted_spans_preserve_base_background() {
         let theme = test_theme();
         let base_style = Style::default().bg(Color::Rgb(29, 43, 52));
-        let (spans, _) = highlighted_spans(&theme, "src/main.rs", "fn main() {}", base_style, 20);
+        let (spans, _) =
+            highlighted_spans(&theme, Some(Language::Rust), "fn main() {}", base_style, 20);
 
         assert!(!spans.is_empty());
         assert!(spans.iter().all(|span| span.style.bg == base_style.bg));

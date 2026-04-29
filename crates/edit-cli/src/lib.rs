@@ -168,6 +168,7 @@ fn try_execute_edit(
     let computed = deltoids::Diff::compute(&original, &updated, &request.path);
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
+    let language = computed.language();
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -186,6 +187,7 @@ fn try_execute_edit(
             edits: request.edits.clone(),
             diff: diff.clone(),
             hunks,
+            language,
         },
     )?;
 
@@ -218,6 +220,7 @@ fn try_execute_write(
     let computed = deltoids::Diff::compute(&original, &request.content, &request.path);
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
+    let language = computed.language();
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -247,6 +250,7 @@ fn try_execute_write(
             content: request.content.clone(),
             diff: diff.clone(),
             hunks,
+            language,
         },
     )?;
 

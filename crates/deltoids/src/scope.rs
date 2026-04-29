@@ -4,6 +4,7 @@
 //! scope (function, class, module, etc.) for any line number. This context is
 //! used by the TUI to display which function a change belongs to.
 
+use crate::Language;
 use crate::engine::{DiffOp, Snapshot};
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +136,7 @@ pub struct ScopeNode {
 pub struct Diff {
     snapshot: Snapshot,
     hunks: Vec<Hunk>,
+    language: Option<Language>,
 }
 
 impl Diff {
@@ -146,8 +148,13 @@ impl Diff {
     /// 3-line context.
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
         let snapshot = Snapshot::compute(original, updated);
-        let hunks = build_hunks(&snapshot, original, updated, path);
-        Diff { snapshot, hunks }
+        let language = Language::detect(path, updated).or_else(|| Language::detect(path, original));
+        let hunks = build_hunks(&snapshot, original, updated, language);
+        Diff {
+            snapshot,
+            hunks,
+            language,
+        }
     }
 
     /// Returns the diff text with standard 3-line context.
@@ -158,6 +165,11 @@ impl Diff {
     /// Returns the enriched hunks.
     pub fn hunks(&self) -> &[Hunk] {
         &self.hunks
+    }
+
+    /// Returns the detected language used for tree-sitter scope expansion.
+    pub fn language(&self) -> Option<Language> {
+        self.language
     }
 
     /// Returns the underlying [`Snapshot`] (raw diff op stream and
@@ -177,15 +189,24 @@ impl Diff {
 /// Dispatches between the scope-expanded path (when tree-sitter can
 /// parse both sides) and the plain unified-diff path (new files,
 /// unsupported languages, or parse failures).
-fn build_hunks(snapshot: &Snapshot, original: &str, updated: &str, path: &str) -> Vec<Hunk> {
+fn build_hunks(
+    snapshot: &Snapshot,
+    original: &str,
+    updated: &str,
+    language: Option<Language>,
+) -> Vec<Hunk> {
     // For new files (empty original), skip scope expansion since the entire
     // file is added and showing ancestor scope boxes would be misleading.
     if original.is_empty() {
         return build_hunks_from_unified(snapshot.ops(), original, updated);
     }
 
-    let old_parsed = crate::syntax::ParsedFile::parse(path, original);
-    let new_parsed = crate::syntax::ParsedFile::parse(path, updated);
+    let (old_parsed, new_parsed) = language.map_or((None, None), |language| {
+        (
+            crate::syntax::ParsedFile::parse_as(language, original),
+            crate::syntax::ParsedFile::parse_as(language, updated),
+        )
+    });
 
     match (&old_parsed, &new_parsed) {
         (Some(old_p), Some(new_p)) => {
@@ -498,6 +519,38 @@ impl Foo {
         assert_eq!(hunks[0].ancestors[0].name, "Foo");
         assert_eq!(hunks[0].ancestors[1].kind, "function_item");
         assert_eq!(hunks[0].ancestors[1].name, "compute");
+    }
+
+    #[test]
+    fn diff_reports_language_detected_from_shebang() {
+        let original = "#!/usr/bin/env python3\n\ndef run():\n    return 1\n";
+        let updated = "#!/usr/bin/env python3\n\ndef run():\n    return 2\n";
+
+        let diff = Diff::compute(original, updated, "script");
+
+        assert_eq!(
+            diff.language().map(|language| language.id()),
+            Some("python")
+        );
+    }
+
+    #[test]
+    fn diff_uses_detected_language_when_updated_lacks_shebang() {
+        let original = "#!/usr/bin/env python3\n\ndef run():\n    return 1\n";
+        let updated = "def run():\n    return 2\n";
+
+        let diff = Diff::compute(original, updated, "script");
+
+        assert_eq!(
+            diff.language().map(|language| language.id()),
+            Some("python")
+        );
+        assert!(
+            diff.hunks()
+                .iter()
+                .flat_map(|hunk| &hunk.ancestors)
+                .any(|scope| scope.kind == "function_definition")
+        );
     }
 
     #[test]

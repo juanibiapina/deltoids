@@ -3,26 +3,20 @@
 //! Combines syntax highlighting assets from deltoids with UI theme colors.
 
 use ratatui::style::Color;
-use syntect::highlighting::Theme as SyntectTheme;
-use syntect::parsing::SyntaxSet;
 
-pub use deltoids::{SyntaxAssets, Theme};
+use deltoids::{SyntaxAssets, Theme};
 
-/// Resolved theme with syntax highlighting and UI colors.
+/// Resolved theme: syntax assets (set + theme + lookup) plus UI colors.
 pub struct ResolvedTheme {
-    pub syntax_theme: &'static SyntectTheme,
-    pub syntax_set: &'static SyntaxSet,
+    pub syntax_assets: SyntaxAssets,
     pub ui: Theme,
 }
 
 impl ResolvedTheme {
     /// Resolve theme from environment and config.
     pub fn resolve() -> Self {
-        let assets = SyntaxAssets::load();
-
         Self {
-            syntax_theme: assets.syntax_theme,
-            syntax_set: assets.syntax_set,
+            syntax_assets: SyntaxAssets::load(),
             ui: Theme::load(),
         }
     }

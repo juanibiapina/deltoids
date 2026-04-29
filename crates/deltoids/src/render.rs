@@ -1,71 +1,38 @@
 //! Render diff output with ANSI colors and breadcrumb boxes.
-
-use std::path::Path;
+//!
+//! Public entry points are `render_file_header`, `render_rename_header`, and
+//! `render_hunk`. `render_hunk` takes the diff's already-detected
+//! [`Language`] (typically obtained via `Diff::language()`) so highlighting
+//! works for files whose language was resolved via shebang or filename rather
+//! than extension.
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::FontStyle;
-use syntect::parsing::SyntaxReference;
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{SyntaxAssets, Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
 use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
-use crate::{Hunk, HunkRun, LineKind, ScopeNode};
+use crate::{Hunk, HunkRun, Language, LineKind, ScopeNode};
 
 const TAB_WIDTH: usize = 4;
 
-// ANSI color codes
+// ANSI control sequences.
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
-const ERASE_EOL: &str = "\x1b[0K"; // Erase to end of line
-const DEFAULT_FG: &str = "\x1b[38;2;220;223;228m"; // Default text color for empty lines
-
-/// Convert a syntect color to an ANSI foreground escape sequence.
-///
-/// The "ansi" theme encodes ANSI color indices specially:
-/// - `r=N, g=0, b=0, a=0` means ANSI color N (0-15)
-/// - `r=0, g=0, b=0, a=1` means default foreground
-fn syntect_color_to_ansi_fg(color: syntect::highlighting::Color) -> String {
-    // ANSI theme encoding: g=0, b=0, a=0 means r is the ANSI color index
-    if color.g == 0 && color.b == 0 && color.a == 0 && color.r <= 15 {
-        // Use 256-color mode for indices 0-15 (maps to terminal's 16 colors)
-        return format!("\x1b[38;5;{}m", color.r);
-    }
-
-    // Default foreground (a=1 with black RGB) - reset to default
-    if color.r == 0 && color.g == 0 && color.b == 0 && color.a == 1 {
-        return "\x1b[39m".to_string(); // Default foreground
-    }
-
-    // Actual RGB color
-    format!("\x1b[38;2;{};{};{}m", color.r, color.g, color.b)
-}
+const ERASE_EOL: &str = "\x1b[0K";
+const DEFAULT_FG: &str = "\x1b[38;2;220;223;228m";
 
 /// How to fill background color to end of line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BgFill {
-    /// Use ANSI CSI sequence (\x1b[0K) - efficient but not supported by `less -R`.
+    /// Use ANSI CSI sequence (`\x1b[0K`) — efficient but not supported by
+    /// `less -R`.
     AnsiErase,
-    /// Pad with spaces to terminal width - works through pagers.
+    /// Pad with spaces to terminal width — works through pagers.
     Spaces,
 }
 
-fn syntax_for_path(path: &str) -> &'static SyntaxReference {
-    let assets = SyntaxAssets::load();
-    let syntax_set = assets.syntax_set;
-    let path = Path::new(path);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-
-    syntax_set
-        .find_syntax_by_extension(file_name)
-        .or_else(|| syntax_set.find_syntax_by_extension(extension))
-        .unwrap_or_else(|| syntax_set.find_syntax_plain_text())
-}
-
-/// Render a file header (2 lines: path, then separator).
+/// Render a file header (path line plus separator rule).
 pub fn render_file_header(path: &str, width: usize, theme: &Theme) -> Vec<String> {
     let separator_fg = rgb_to_ansi_fg(theme.separator.0, theme.separator.1, theme.separator.2);
     vec![
@@ -74,16 +41,66 @@ pub fn render_file_header(path: &str, width: usize, theme: &Theme) -> Vec<String
     ]
 }
 
-/// Render a rename header showing old ⟶ new path.
+/// Render a rename header showing `old ⟶ new`.
 pub fn render_rename_header(old_path: &str, new_path: &str, theme: &Theme) -> String {
     let muted_fg = rgb_to_ansi_fg(theme.muted.0, theme.muted.1, theme.muted.2);
     format!("{muted_fg}renamed: {old_path} ⟶ {new_path}{RESET}")
 }
 
-/// Render a breadcrumb box showing ancestor scopes.
-pub fn render_breadcrumb_box(
+/// Render a full hunk: breadcrumb box (if any ancestors) followed by the
+/// diff body with intraline emphasis. Highlighting uses `language`, which
+/// callers should obtain from `Diff::language()`.
+pub fn render_hunk(
+    hunk: &Hunk,
+    language: Option<Language>,
+    width: usize,
+    fill: BgFill,
+    theme: &Theme,
+) -> Vec<String> {
+    let mut output = Vec::new();
+
+    if !hunk.ancestors.is_empty() {
+        output.extend(render_breadcrumb_box(
+            &hunk.ancestors,
+            language,
+            width,
+            theme,
+        ));
+    }
+
+    for run in hunk.runs() {
+        match run {
+            HunkRun::Context(line) => {
+                output.push(render_diff_line(
+                    &line.kind,
+                    &line.content,
+                    language,
+                    width,
+                    fill,
+                    theme,
+                ));
+            }
+            HunkRun::Change(slice) => {
+                let subhunk: Vec<(LineKind, &str)> = slice
+                    .iter()
+                    .map(|l| (l.kind.clone(), l.content.as_str()))
+                    .collect();
+                output.extend(render_subhunk(&subhunk, language, width, fill, theme));
+            }
+        }
+    }
+
+    output
+}
+
+// ---------------------------------------------------------------------------
+// Internal renderers
+// ---------------------------------------------------------------------------
+
+/// Render the breadcrumb box for a hunk's enclosing scopes.
+fn render_breadcrumb_box(
     ancestors: &[ScopeNode],
-    path: &str,
+    language: Option<Language>,
     width: usize,
     theme: &Theme,
 ) -> Vec<String> {
@@ -99,11 +116,9 @@ pub fn render_breadcrumb_box(
     );
     let max_content_width = width.saturating_sub(2); // room for " │"
 
-    // Compute the widest line number for right-alignment
     let max_line_num = ancestors.iter().map(|a| a.start_line).max().unwrap_or(0);
     let num_col_width = max_line_num.to_string().len();
 
-    // Build content rows: ancestor lines with optional "..." gaps between
     struct Row {
         line_num: Option<usize>,
         text: Option<String>, // None for "..." rows
@@ -125,7 +140,6 @@ pub fn render_breadcrumb_box(
         });
     }
 
-    // Compute the widest rendered line for box width
     let prefix_width = num_col_width + 2; // "NNN: "
     let mut max_row_width = 0usize;
     for row in &rows {
@@ -150,7 +164,7 @@ pub fn render_breadcrumb_box(
                     row.line_num.unwrap_or(0),
                     width = num_col_width
                 );
-                let highlighted = highlight_line(text, path);
+                let highlighted = highlight_line(text, language);
                 let text_width = display_width(text);
                 let padding = content_width.saturating_sub(prefix_width + text_width);
 
@@ -160,7 +174,6 @@ pub fn render_breadcrumb_box(
                 ));
             }
             None => {
-                // "..." gap row
                 let dots = format!("{:>width$}  ...", "", width = num_col_width);
                 let padding = content_width.saturating_sub(display_width(&dots));
                 lines.push(format!(
@@ -175,11 +188,12 @@ pub fn render_breadcrumb_box(
     lines
 }
 
-/// Render a diff line with syntax highlighting and appropriate background.
-pub fn render_diff_line(
+/// Render one diff line (added/removed/context) with syntax highlighting and
+/// the appropriate background.
+fn render_diff_line(
     kind: &LineKind,
     content: &str,
-    path: &str,
+    language: Option<Language>,
     width: usize,
     fill: BgFill,
     theme: &Theme,
@@ -198,13 +212,12 @@ pub fn render_diff_line(
         LineKind::Context => String::new(),
     };
 
-    let highlighted = highlight_line(content, path);
+    let highlighted = highlight_line(content, language);
 
     if bg.is_empty() {
         format!("{highlighted}{RESET}")
     } else {
         let fill_str = bg_fill_string(content, width, fill);
-        // For empty lines, set a default foreground color to ensure background renders
         if highlighted.is_empty() {
             format!("{bg}{DEFAULT_FG}{fill_str}{RESET}")
         } else {
@@ -213,78 +226,12 @@ pub fn render_diff_line(
     }
 }
 
-/// Generate the string to fill background to end of line.
-fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
-    match fill {
-        BgFill::AnsiErase => ERASE_EOL.to_string(),
-        BgFill::Spaces => {
-            let content_width = display_width(content);
-            let padding = width.saturating_sub(content_width);
-            " ".repeat(padding)
-        }
-    }
-}
-
-/// Syntax-highlight a line and return ANSI-escaped string.
-///
-/// Note: This only sets foreground colors, not background. The caller is
-/// responsible for setting/resetting background. This allows background
-/// colors to persist across all tokens.
-pub fn highlight_line(line: &str, path: &str) -> String {
-    let assets = SyntaxAssets::load();
-    let syntax = syntax_for_path(path);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
-
-    match highlighter.highlight_line(line, assets.syntax_set) {
-        Ok(ranges) => {
-            let mut result = String::new();
-            for (style, text) in ranges {
-                // Convert tabs to spaces
-                let text = text.replace('\t', &" ".repeat(TAB_WIDTH));
-
-                // Build ANSI escape sequence for foreground only
-                // We don't reset here so background colors persist
-                //
-                // The "ansi" theme encodes ANSI colors specially:
-                // - r=N, g=0, b=0, a=0 means ANSI color N (0-15)
-                // - r=0, g=0, b=0, a=1 means default foreground
-                let fg = syntect_color_to_ansi_fg(style.foreground);
-
-                if style.font_style.contains(FontStyle::BOLD) {
-                    result.push_str(BOLD);
-                }
-
-                result.push_str(&fg);
-                result.push_str(&text);
-            }
-            result
-        }
-        Err(_) => {
-            // Fallback to plain text
-            line.replace('\t', &" ".repeat(TAB_WIDTH))
-        }
-    }
-}
-
-/// Compute display width of a string (handling tabs and unicode).
-fn display_width(s: &str) -> usize {
-    let mut width = 0;
-    for ch in s.chars() {
-        if ch == '\t' {
-            width += TAB_WIDTH;
-        } else {
-            width += UnicodeWidthStr::width(ch.to_string().as_str());
-        }
-    }
-    width
-}
-
-/// Render a diff line with emphasis sections for intraline highlighting.
-pub fn render_diff_line_with_emphasis(
+/// Render a diff line with intraline emphasis (paired added/removed runs).
+fn render_diff_line_with_emphasis(
     kind: &LineKind,
     content: &str,
     emphasis: &LineEmphasis,
-    path: &str,
+    language: Option<Language>,
     width: usize,
     fill: BgFill,
     theme: &Theme,
@@ -314,11 +261,13 @@ pub fn render_diff_line_with_emphasis(
                 theme.diff_deleted_emph_bg.2,
             ),
         ),
-        LineKind::Context => return render_diff_line(kind, content, path, width, fill, theme),
+        LineKind::Context => {
+            return render_diff_line(kind, content, language, width, fill, theme);
+        }
     };
 
     match emphasis {
-        LineEmphasis::Plain => render_diff_line(kind, content, path, width, fill, theme),
+        LineEmphasis::Plain => render_diff_line(kind, content, language, width, fill, theme),
         LineEmphasis::Paired(sections) => {
             let mut result = String::new();
             result.push_str(&plain_bg);
@@ -328,37 +277,30 @@ pub fn render_diff_line_with_emphasis(
                     EmphKind::Emph => &emph_bg,
                     EmphKind::NonEmph => &plain_bg,
                 };
-                let highlighted = highlight_line(&section.text, path);
+                let highlighted = highlight_line(&section.text, language);
                 result.push_str(bg);
                 result.push_str(&highlighted);
             }
 
-            // Reset to plain background before filling to end of line
             result.push_str(&plain_bg);
-            // For empty lines, set a default foreground color to ensure background renders
             if content.is_empty() {
                 result.push_str(DEFAULT_FG);
             }
             result.push_str(&bg_fill_string(content, width, fill));
-
             result.push_str(RESET);
             result
         }
     }
 }
 
-/// Render a subhunk (consecutive +/- lines) with intraline emphasis.
-///
-/// Extracts minus and plus lines, computes emphasis, and renders with
-/// word-level highlighting for changed portions.
-pub fn render_subhunk(
+/// Render a run of consecutive +/- lines with intraline emphasis.
+fn render_subhunk(
     lines: &[(LineKind, &str)],
-    path: &str,
+    language: Option<Language>,
     width: usize,
     fill: BgFill,
     theme: &Theme,
 ) -> Vec<String> {
-    // Separate minus and plus lines
     let mut minus_lines: Vec<&str> = Vec::new();
     let mut plus_lines: Vec<&str> = Vec::new();
 
@@ -370,10 +312,8 @@ pub fn render_subhunk(
         }
     }
 
-    // Compute emphasis
     let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_lines, &plus_lines);
 
-    // Render in original order
     let mut output = Vec::new();
     let mut minus_idx = 0;
     let mut plus_idx = 0;
@@ -385,7 +325,7 @@ pub fn render_subhunk(
                     kind,
                     content,
                     &minus_emphasis[minus_idx],
-                    path,
+                    language,
                     width,
                     fill,
                     theme,
@@ -397,7 +337,7 @@ pub fn render_subhunk(
                     kind,
                     content,
                     &plus_emphasis[plus_idx],
-                    path,
+                    language,
                     width,
                     fill,
                     theme,
@@ -405,7 +345,9 @@ pub fn render_subhunk(
                 plus_idx += 1;
             }
             LineKind::Context => {
-                output.push(render_diff_line(kind, content, path, width, fill, theme));
+                output.push(render_diff_line(
+                    kind, content, language, width, fill, theme,
+                ));
             }
         }
     }
@@ -413,52 +355,76 @@ pub fn render_subhunk(
     output
 }
 
-/// Render a full hunk with breadcrumb box and diff lines.
-pub fn render_hunk(
-    hunk: &Hunk,
-    path: &str,
-    width: usize,
-    fill: BgFill,
-    theme: &Theme,
-) -> Vec<String> {
-    let mut output = Vec::new();
+/// Syntax-highlight a line and return ANSI-escaped string.
+///
+/// Sets foreground colors only — the caller owns background. This lets
+/// background colors persist across all tokens.
+fn highlight_line(line: &str, language: Option<Language>) -> String {
+    let assets = SyntaxAssets::load();
+    let syntax = assets.syntax_for(language);
+    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
 
-    // Render breadcrumb box if we have ancestors
-    if !hunk.ancestors.is_empty() {
-        output.extend(render_breadcrumb_box(&hunk.ancestors, path, width, theme));
+    match highlighter.highlight_line(line, assets.syntax_set) {
+        Ok(ranges) => {
+            let mut result = String::new();
+            for (style, text) in ranges {
+                let text = text.replace('\t', &" ".repeat(TAB_WIDTH));
+                let fg = syntect_color_to_ansi_fg(style.foreground);
+
+                if style.font_style.contains(FontStyle::BOLD) {
+                    result.push_str(BOLD);
+                }
+                result.push_str(&fg);
+                result.push_str(&text);
+            }
+            result
+        }
+        Err(_) => line.replace('\t', &" ".repeat(TAB_WIDTH)),
     }
+}
 
-    // Render diff lines with intraline emphasis for consecutive +/- runs.
-    // `Hunk::runs` already groups change lines for us; we just dispatch.
-    for run in hunk.runs() {
-        match run {
-            HunkRun::Context(line) => {
-                output.push(render_diff_line(
-                    &line.kind,
-                    &line.content,
-                    path,
-                    width,
-                    fill,
-                    theme,
-                ));
-            }
-            HunkRun::Change(slice) => {
-                let subhunk: Vec<(LineKind, &str)> = slice
-                    .iter()
-                    .map(|l| (l.kind.clone(), l.content.as_str()))
-                    .collect();
-                output.extend(render_subhunk(&subhunk, path, width, fill, theme));
-            }
+/// Convert a syntect color to an ANSI foreground escape sequence.
+///
+/// The "ansi" theme encodes ANSI color indices specially:
+/// - `r=N, g=0, b=0, a=0` means ANSI color N (0-15)
+/// - `r=0, g=0, b=0, a=1` means default foreground
+fn syntect_color_to_ansi_fg(color: syntect::highlighting::Color) -> String {
+    if color.g == 0 && color.b == 0 && color.a == 0 && color.r <= 15 {
+        return format!("\x1b[38;5;{}m", color.r);
+    }
+    if color.r == 0 && color.g == 0 && color.b == 0 && color.a == 1 {
+        return "\x1b[39m".to_string();
+    }
+    format!("\x1b[38;2;{};{};{}m", color.r, color.g, color.b)
+}
+
+fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
+    match fill {
+        BgFill::AnsiErase => ERASE_EOL.to_string(),
+        BgFill::Spaces => {
+            let content_width = display_width(content);
+            let padding = width.saturating_sub(content_width);
+            " ".repeat(padding)
         }
     }
+}
 
-    output
+fn display_width(s: &str) -> usize {
+    let mut width = 0;
+    for ch in s.chars() {
+        if ch == '\t' {
+            width += TAB_WIDTH;
+        } else {
+            width += UnicodeWidthStr::width(ch.to_string().as_str());
+        }
+    }
+    width
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DiffLine;
+    use crate::{Diff, DiffLine};
 
     #[test]
     fn file_header_contains_path() {
@@ -470,82 +436,17 @@ mod tests {
     }
 
     #[test]
-    fn breadcrumb_box_has_corners() {
+    fn rename_header_shows_arrow() {
         let theme = Theme::default();
-        let ancestors = vec![ScopeNode {
-            kind: "function_item".to_string(),
-            name: "main".to_string(),
-            start_line: 1,
-            end_line: 10,
-            text: "fn main() {".to_string(),
-        }];
-        let lines = render_breadcrumb_box(&ancestors, "test.rs", 80, &theme);
-        assert!(lines[0].contains("┐"));
-        assert!(lines.last().unwrap().contains("┘"));
+        let header = render_rename_header("old/path.rs", "new/path.rs", &theme);
+        assert!(header.contains("old/path.rs"));
+        assert!(header.contains("new/path.rs"));
+        assert!(header.contains("⟶"));
+        assert!(header.contains("renamed:"));
     }
 
-    #[test]
-    fn breadcrumb_box_shows_gap_markers() {
-        let theme = Theme::default();
-        let ancestors = vec![
-            ScopeNode {
-                kind: "impl_item".to_string(),
-                name: "Config".to_string(),
-                start_line: 3,
-                end_line: 50,
-                text: "impl Config {".to_string(),
-            },
-            ScopeNode {
-                kind: "function_item".to_string(),
-                name: "process".to_string(),
-                start_line: 14,
-                end_line: 30,
-                text: "    fn process(&self) -> Result<(), Error> {".to_string(),
-            },
-        ];
-        let lines = render_breadcrumb_box(&ancestors, "test.rs", 80, &theme);
-        let all = lines.join("\n");
-        assert!(all.contains("..."), "should have gap marker");
-    }
-
-    #[test]
-    fn diff_line_added_has_green_bg() {
-        let theme = Theme::default();
-        let line = render_diff_line(
-            &LineKind::Added,
-            "let x = 1;",
-            "test.rs",
-            80,
-            BgFill::AnsiErase,
-            &theme,
-        );
-        assert!(line.contains("\x1b[48;2;32;48;59m")); // GREEN_BG
-    }
-
-    #[test]
-    fn diff_line_removed_has_red_bg() {
-        let theme = Theme::default();
-        let line = render_diff_line(
-            &LineKind::Removed,
-            "let y = 2;",
-            "test.rs",
-            80,
-            BgFill::AnsiErase,
-            &theme,
-        );
-        assert!(line.contains("\x1b[48;2;55;34;44m")); // RED_BG
-    }
-
-    #[test]
-    fn highlight_produces_ansi() {
-        let highlighted = highlight_line("fn main() {}", "test.rs");
-        assert!(highlighted.contains("\x1b[")); // Contains ANSI codes
-    }
-
-    #[test]
-    fn render_hunk_shows_all_ancestors() {
-        let theme = Theme::default();
-        let hunk = Hunk {
+    fn rust_function_hunk() -> Hunk {
+        Hunk {
             old_start: 10,
             new_start: 10,
             lines: vec![
@@ -565,100 +466,135 @@ mod tests {
                 end_line: 20,
                 text: "fn main() {".to_string(),
             }],
-        };
+        }
+    }
 
-        let lines = render_hunk(&hunk, "test.rs", 80, BgFill::AnsiErase, &theme);
-
-        // Should have breadcrumb box with ancestor even if visible in diff
+    #[test]
+    fn render_hunk_includes_breadcrumb_when_ancestors_present() {
+        let theme = Theme::default();
+        let hunk = rust_function_hunk();
+        let lines = render_hunk(&hunk, Some(Language::Rust), 80, BgFill::AnsiErase, &theme);
         assert!(lines.iter().any(|l| l.contains("┐")));
     }
 
     #[test]
-    fn render_subhunk_similar_lines_have_emphasis_bg() {
-        let theme = Theme::default();
-        // Similar lines should be paired and have emphasis backgrounds
-        let lines: Vec<(LineKind, &str)> = vec![
-            (LineKind::Removed, "const x = 1;"),
-            (LineKind::Added, "const x = 2;"),
-        ];
-        let output = render_subhunk(&lines, "test.rs", 80, BgFill::AnsiErase, &theme);
+    fn render_hunk_uses_language_for_highlighting_extensionless_path() {
+        // The bug this guards against: `Diff::compute(path="script", ...)`
+        // detects Bash from the shebang, but a renderer that ignores the
+        // detected language and re-detects per line falls back to plain text
+        // because no single line carries the shebang.
+        let original = "#!/usr/bin/env bash\n\nfunction name() {\n  echo old\n}\n";
+        let updated = "#!/usr/bin/env bash\n\nfunction name() {\n  echo new\n}\n";
 
-        // Both lines should have emphasis background for the changed portion
-        // GREEN_EMPH_BG = \x1b[48;2;44;90;102m
-        // RED_EMPH_BG = \x1b[48;2;113;49;55m
-        assert!(
-            output[0].contains("\x1b[48;2;113;49;55m"),
-            "minus should have RED_EMPH_BG"
-        );
-        assert!(
-            output[1].contains("\x1b[48;2;44;90;102m"),
-            "plus should have GREEN_EMPH_BG"
-        );
+        let with_extension = Diff::compute(original, updated, "script.sh");
+        let extensionless = Diff::compute(original, updated, "script");
+
+        assert_eq!(with_extension.language(), Some(Language::Bash));
+        assert_eq!(extensionless.language(), Some(Language::Bash));
+
+        let theme = Theme::default();
+        let render = |diff: &Diff| -> Vec<String> {
+            diff.hunks()
+                .iter()
+                .flat_map(|h| render_hunk(h, diff.language(), 120, BgFill::Spaces, &theme))
+                .collect()
+        };
+
+        assert_eq!(render(&with_extension), render(&extensionless));
     }
 
     #[test]
-    fn render_subhunk_dissimilar_lines_plain() {
+    fn render_hunk_added_line_carries_added_bg() {
         let theme = Theme::default();
-        // Dissimilar lines should NOT be paired, so no emphasis backgrounds
-        let lines: Vec<(LineKind, &str)> = vec![
-            (LineKind::Removed, "aaa bbb ccc ddd eee fff ggg hhh"),
-            (LineKind::Added, "xxx yyy zzz www uuu vvv ppp qqq"),
-        ];
-        let output = render_subhunk(&lines, "test.rs", 80, BgFill::AnsiErase, &theme);
-
-        // Should have plain backgrounds only, no emphasis
-        assert!(
-            !output[0].contains("\x1b[48;2;113;49;55m"),
-            "minus should NOT have RED_EMPH_BG"
-        );
-        assert!(
-            !output[1].contains("\x1b[48;2;44;90;102m"),
-            "plus should NOT have GREEN_EMPH_BG"
-        );
+        let hunk = rust_function_hunk();
+        let lines = render_hunk(&hunk, Some(Language::Rust), 80, BgFill::AnsiErase, &theme);
+        assert!(lines.iter().any(|l| l.contains("\x1b[48;2;32;48;59m")));
     }
 
     #[test]
-    fn rename_header_shows_arrow() {
+    fn render_hunk_paired_change_uses_emphasis_bg() {
         let theme = Theme::default();
-        let header = render_rename_header("old/path.rs", "new/path.rs", &theme);
-        assert!(header.contains("old/path.rs"));
-        assert!(header.contains("new/path.rs"));
-        assert!(header.contains("⟶"));
-        assert!(header.contains("renamed:"));
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: "const x = 1;".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "const x = 2;".to_string(),
+                },
+            ],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, Some(Language::Rust), 80, BgFill::AnsiErase, &theme);
+        // No ancestors -> no breadcrumb box; rendered lines are the change
+        // run in order: removed first, added second.
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("\x1b[48;2;113;49;55m"), "minus emph bg");
+        assert!(lines[1].contains("\x1b[48;2;44;90;102m"), "plus emph bg");
     }
 
     #[test]
-    fn diff_line_uses_erase_eol_when_ansi_mode() {
+    fn render_hunk_dissimilar_change_skips_emphasis_bg() {
         let theme = Theme::default();
-        let line = render_diff_line(
-            &LineKind::Added,
-            "let x = 1;",
-            "test.rs",
-            80,
-            BgFill::AnsiErase,
-            &theme,
-        );
-        assert!(line.contains("\x1b[0K"), "should contain ERASE_EOL");
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: "aaa bbb ccc ddd eee fff ggg hhh".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "xxx yyy zzz www uuu vvv ppp qqq".to_string(),
+                },
+            ],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, Some(Language::Rust), 80, BgFill::AnsiErase, &theme);
+        for line in &lines {
+            assert!(
+                !line.contains("\x1b[48;2;113;49;55m"),
+                "minus should not have emph bg: {line}"
+            );
+            assert!(
+                !line.contains("\x1b[48;2;44;90;102m"),
+                "plus should not have emph bg: {line}"
+            );
+        }
     }
 
     #[test]
-    fn diff_line_uses_spaces_when_space_mode() {
+    fn render_hunk_uses_erase_eol_in_ansi_mode() {
         let theme = Theme::default();
-        let line = render_diff_line(
-            &LineKind::Added,
-            "short",
-            "test.rs",
-            20,
-            BgFill::Spaces,
-            &theme,
-        );
-        // "short" = 5 chars, width = 20, so 15 spaces padding
-        assert!(!line.contains("\x1b[0K"), "should NOT contain ERASE_EOL");
-        // Count trailing spaces before RESET
-        let before_reset = line.strip_suffix("\x1b[0m").unwrap();
+        let hunk = rust_function_hunk();
+        let lines = render_hunk(&hunk, Some(Language::Rust), 80, BgFill::AnsiErase, &theme);
+        assert!(lines.iter().any(|l| l.contains("\x1b[0K")));
+    }
+
+    #[test]
+    fn render_hunk_uses_space_padding_when_requested() {
+        let theme = Theme::default();
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: "short".to_string(),
+            }],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, Some(Language::Rust), 20, BgFill::Spaces, &theme);
+        let line = lines.first().expect("rendered line");
+        assert!(!line.contains("\x1b[0K"));
+        let before_reset = line.strip_suffix("\x1b[0m").expect("reset suffix");
         assert!(
             before_reset.ends_with("               "),
-            "should have 15 trailing spaces"
+            "expected 15 trailing spaces, got {line:?}"
         );
     }
 }

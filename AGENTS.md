@@ -49,7 +49,8 @@ crates/
     src/render.rs           # Diff rendering
     src/intraline.rs        # Within-line diff algorithm
     src/reverse.rs          # Diff reversal
-    src/syntax.rs           # Language detection, ParsedFile, scope taxonomy
+    src/language.rs         # Stable language detection and per-language parser config
+    src/syntax.rs           # ParsedFile tree-sitter parsing and scope queries
     tests/diff_cases.rs       # Entry point for the diff-case reference suite
     tests/diff_cases/         # Harness, README, and case directories
       cases/<NNN-slug>/       # 1-case.md, 2-original.<EXT>, 3-updated.<EXT>, 4-expected.diff
@@ -92,8 +93,8 @@ See `web/AGENTS.md` for component conventions.
 
 ## Key Patterns
 
-- **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`). The public surface is `ParsedFile` in `deltoids/src/syntax.rs`, which owns the parsed source and exposes `enclosing_scopes(line)`, `is_structure(scope)`, and `is_data(scope)`. Per-language node-kind tables (`structure_kinds`, `data_kinds`, `promoted_kinds`, `function_body_kinds`) are internal config of `ParsedFile` — callers never touch raw tree-sitter taxonomy. `promoted_kinds` covers wrappers like `public_field_definition` or `variable_declarator` that count as a structure when their `value` field is a function body (JS/TS class arrow-fields, top-level `const f = () => {}`). `function_body_kinds` both gates promotion and demotes nested helpers (e.g. `fn inner` inside `fn outer`) so they don't steal the outer anchor.
-- **Diff computation**: `deltoids::Diff::compute()` first runs `engine::Snapshot::compute()` (line-level diff via `gix-imara-diff` Histogram + line postprocessing) to produce a `Vec<DiffOp>` and unified text. It then parses both old and new files and runs two phases in `scope/`: `range.rs` plans `ContextRange`s per diff op (anchored on enclosing scope or default 3-line fallback), and `hunk_builder.rs` fills each range into a `Hunk` from the diff ops. `engine::align_old_to_new(line, ops)` is the shared helper for mapping OLD line numbers through the diff (used by `same_slot` rename detection).
+- **Tree-sitter scope context**: Diffs expand hunks to show enclosing functions/classes. Configuration in `deltoids/src/scope.rs` (`MAX_SCOPE_LINES = 200`). `deltoids/src/language.rs` owns stable language detection (bundled syntect path/shebang detection), `Language` ids, tree-sitter parser selection, and per-language node-kind tables. The public parsing surface is `ParsedFile` in `deltoids/src/syntax.rs`, which owns the parsed source and exposes `enclosing_scopes(line)`, `is_structure(scope)`, and `is_data(scope)`. Callers never touch raw tree-sitter taxonomy. `promoted_kinds` covers wrappers like `public_field_definition` or `variable_declarator` that count as a structure when their `value` field is a function body (JS/TS class arrow-fields, top-level `const f = () => {}`). `function_body_kinds` both gates promotion and demotes nested helpers (e.g. `fn inner` inside `fn outer`) so they don't steal the outer anchor.
+- **Diff computation**: `deltoids::Diff::compute()` first runs `engine::Snapshot::compute()` (line-level diff via `gix-imara-diff` Histogram + line postprocessing) to produce a `Vec<DiffOp>` and unified text. It then detects one stable `Language` from the path plus in-memory snapshots, parses both old and new snapshots with that language, and runs two phases in `scope/`: `range.rs` plans `ContextRange`s per diff op (anchored on enclosing scope or default 3-line fallback), and `hunk_builder.rs` fills each range into a `Hunk` from the diff ops. `engine::align_old_to_new(line, ops)` is the shared helper for mapping OLD line numbers through the diff (used by `same_slot` rename detection).
 - **Hunk iteration**: Consumers walk hunks via `Hunk::runs()` -> `HunkRun` (`Header` / `Subhunk` / `Context`) instead of regrouping lines themselves. Both `render::render_hunk` and the TUI's `detail_items` share this iterator; reach for it before adding new line-grouping code.
 - **TUI layout**: Three-pane lazygit-inspired layout (entries, traces, diff).
 - **Traces**: Stored in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.
@@ -107,7 +108,7 @@ holds a description, an `original`/`updated` input pair, and an
 `tests/diff_cases/README.md` for the format.
 
 **Whenever you change the diff engine** (`scope.rs`, `syntax.rs`,
-`parse.rs`, `intraline.rs`, `reverse.rs`, hunk construction, breadcrumb
+`language.rs`, `parse.rs`, `intraline.rs`, `reverse.rs`, hunk construction, breadcrumb
 rules, etc.) follow this loop:
 
 1. Pick the case that matches the behaviour, or add a new one. New cases

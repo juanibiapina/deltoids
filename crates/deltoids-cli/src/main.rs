@@ -288,7 +288,7 @@ fn process_diff(input: &str, width: usize, fill: BgFill, theme: &Theme) -> Strin
             // Blank line before each hunk
             output.push('\n');
 
-            let hunk_lines = render_hunk(hunk, path, width, fill, theme);
+            let hunk_lines = render_hunk(hunk, diff.language(), width, fill, theme);
             for line in hunk_lines {
                 output.push_str(&line);
                 output.push('\n');

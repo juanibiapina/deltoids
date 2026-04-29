@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 use bat::assets::HighlightingAssets;
 use serde::Deserialize;
 use syntect::highlighting::Theme as SyntectTheme;
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
 /// Theme colors used by deltoids rendering.
@@ -131,6 +131,21 @@ impl SyntaxAssets {
             syntax_set,
             syntax_theme,
         }
+    }
+
+    /// Look up the syntax to use for an already-detected deltoids language.
+    ///
+    /// Returns the bundled plain-text syntax when `language` is `None` or
+    /// unsupported. Detection is the caller's job (`Diff::compute` resolves
+    /// it through `Language::detect`); rendering should never re-detect from
+    /// a single line.
+    pub fn syntax_for(&self, language: Option<crate::Language>) -> &'static SyntaxReference {
+        language
+            .and_then(|language| {
+                self.syntax_set
+                    .find_syntax_by_token(language.syntax_token())
+            })
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text())
     }
 }
 

@@ -978,19 +978,19 @@ fn render_detail_for(
                 rendered.push(Line::from(""));
             }
             DetailItem::HunkHeader(hunk) => {
-                rendered.extend(render_hunk_header(hunk, &entry.path, width, theme));
+                rendered.extend(render_hunk_header(hunk, entry.language, width, theme));
             }
             DetailItem::Context(line) => {
                 rendered.push(syntax_diff_line(
                     &line.content,
                     Color::Reset,
-                    &entry.path,
+                    entry.language,
                     width,
                     theme,
                 ));
             }
             DetailItem::Subhunk(slice) => {
-                render_subhunk(slice, &entry.path, width, &mut rendered, theme);
+                render_subhunk(slice, entry.language, width, &mut rendered, theme);
             }
         }
     }
@@ -1003,7 +1003,7 @@ fn render_detail_for(
 /// lines; pairing the two pools drives intraline emphasis.
 fn render_subhunk(
     lines: &[DiffLine],
-    path: &str,
+    language: Option<deltoids::Language>,
     width: usize,
     rendered: &mut Vec<Line<'static>>,
     theme: &ResolvedTheme,
@@ -1032,10 +1032,8 @@ fn render_subhunk(
                 rendered.push(render_emphasized_line(
                     &line.content,
                     &minus_emphasis[mi],
-                    to_color(theme.ui.diff_deleted_bg),
-                    to_color(theme.ui.diff_deleted_emph_bg),
-                    to_color(theme.ui.diff_deleted_bg),
-                    path,
+                    LineKind::Removed,
+                    language,
                     width,
                     theme,
                 ));
@@ -1045,10 +1043,8 @@ fn render_subhunk(
                 rendered.push(render_emphasized_line(
                     &line.content,
                     &plus_emphasis[pi],
-                    to_color(theme.ui.diff_added_bg),
-                    to_color(theme.ui.diff_added_emph_bg),
-                    to_color(theme.ui.diff_added_bg),
-                    path,
+                    LineKind::Added,
+                    language,
                     width,
                     theme,
                 ));
@@ -1062,29 +1058,42 @@ fn render_subhunk(
 }
 
 /// Render a single diff line with emphasis information.
+///
+/// `kind` selects which theme background pair to use; only `Added` and
+/// `Removed` reach this function (subhunks emit those exclusively).
 fn render_emphasized_line(
     content: &str,
     emphasis: &LineEmphasis,
-    plain_bg: Color,
-    emph_bg: Color,
-    non_emph_bg: Color,
-    path: &str,
+    kind: LineKind,
+    language: Option<deltoids::Language>,
     width: usize,
     theme: &ResolvedTheme,
 ) -> Line<'static> {
+    let (plain_bg, emph_bg) = match kind {
+        LineKind::Added => (
+            to_color(theme.ui.diff_added_bg),
+            to_color(theme.ui.diff_added_emph_bg),
+        ),
+        LineKind::Removed => (
+            to_color(theme.ui.diff_deleted_bg),
+            to_color(theme.ui.diff_deleted_emph_bg),
+        ),
+        // Subhunks never emit context lines; render flat for safety.
+        LineKind::Context => (Color::Reset, Color::Reset),
+    };
+
     match emphasis {
-        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, path, width, theme),
+        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, language, width, theme),
         LineEmphasis::Paired(sections) => {
             let bg_for_section = |section: &EmphSection| -> Color {
                 match section.kind {
                     EmphKind::Emph => emph_bg,
-                    EmphKind::NonEmph => non_emph_bg,
+                    EmphKind::NonEmph => plain_bg,
                 }
             };
-            let padding_bg = non_emph_bg;
             let (mut spans, visual_width) = highlighted_spans_with_emphasis(
                 theme,
-                path,
+                language,
                 content,
                 sections,
                 bg_for_section,
@@ -1094,7 +1103,7 @@ fn render_emphasized_line(
             if padding > 0 {
                 spans.push(Span::styled(
                     " ".repeat(padding),
-                    Style::default().bg(padding_bg),
+                    Style::default().bg(plain_bg),
                 ));
             }
             Line::from(spans)
@@ -1298,13 +1307,13 @@ fn render_edit_block(lines: &[&str], width: usize, theme: &ResolvedTheme) -> Vec
 fn syntax_diff_line(
     content: &str,
     bg: Color,
-    path: &str,
+    language: Option<deltoids::Language>,
     width: usize,
     theme: &ResolvedTheme,
 ) -> Line<'static> {
     let base_style = Style::default().bg(bg);
 
-    let (mut spans, visual_width) = highlighted_spans(theme, path, content, base_style, width);
+    let (mut spans, visual_width) = highlighted_spans(theme, language, content, base_style, width);
     let padding = width.saturating_sub(visual_width);
     if padding > 0 {
         spans.push(Span::styled(" ".repeat(padding), base_style));
@@ -1318,12 +1327,12 @@ fn syntax_diff_line(
 /// using `hunk.new_start`.
 fn render_hunk_header(
     hunk: &Hunk,
-    path: &str,
+    language: Option<deltoids::Language>,
     width: usize,
     theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
     if !hunk.ancestors.is_empty() {
-        return render_breadcrumb_box(&hunk.ancestors, path, width, theme);
+        return render_breadcrumb_box(&hunk.ancestors, language, width, theme);
     }
     render_line_number_box(hunk.new_start, theme)
 }
@@ -1346,7 +1355,7 @@ fn render_line_number_box(line_number: usize, theme: &ResolvedTheme) -> Vec<Line
 
 fn render_breadcrumb_box(
     ancestors: &[deltoids::ScopeNode],
-    path: &str,
+    language: Option<deltoids::Language>,
     width: usize,
     theme: &ResolvedTheme,
 ) -> Vec<Line<'static>> {
@@ -1407,7 +1416,7 @@ fn render_breadcrumb_box(
                 let available_text_width = content_width.saturating_sub(prefix_width);
                 let (mut code_spans, code_width) = highlighted_spans(
                     theme,
-                    path,
+                    language,
                     text,
                     Style::default(),
                     available_text_width.max(1),
@@ -1631,6 +1640,7 @@ mod tests {
             ),
             error: None,
             hunks: Vec::new(),
+            language: None,
         }
     }
 
@@ -1652,6 +1662,7 @@ mod tests {
             ),
             error: None,
             hunks: Vec::new(),
+            language: None,
         }
     }
 
@@ -2475,7 +2486,7 @@ mod tests {
             lines: Vec::new(),
             ancestors: Vec::new(),
         };
-        let lines = render_hunk_header(&hunk, "src/lib.rs", 80, &theme);
+        let lines = render_hunk_header(&hunk, Some(deltoids::Language::Rust), 80, &theme);
 
         assert_eq!(lines.len(), 3, "expected 3-line line-number box");
         let mid = lines[1].to_string();
@@ -2495,10 +2506,8 @@ mod tests {
         let line = render_emphasized_line(
             "const x = 1;",
             &LineEmphasis::Plain,
-            to_color(theme.ui.diff_deleted_bg),
-            to_color(theme.ui.diff_deleted_emph_bg),
-            to_color(theme.ui.diff_deleted_bg),
-            "test.rs",
+            LineKind::Removed,
+            Some(deltoids::Language::Rust),
             80,
             &theme,
         );
@@ -2534,10 +2543,8 @@ mod tests {
         let line = render_emphasized_line(
             "const x = 1;",
             &LineEmphasis::Paired(sections),
-            to_color(theme.ui.diff_deleted_bg),
-            to_color(theme.ui.diff_deleted_emph_bg),
-            to_color(theme.ui.diff_deleted_bg),
-            "test.rs",
+            LineKind::Removed,
+            Some(deltoids::Language::Rust),
             80,
             &theme,
         );
@@ -2566,13 +2573,18 @@ mod tests {
         use deltoids::LineKind;
 
         let theme = test_theme();
-        let entry = edit_entry();
         let lines = vec![
             diff_line(LineKind::Removed, "const x = 1;"),
             diff_line(LineKind::Added, "const x = 2;"),
         ];
         let mut rendered = Vec::new();
-        render_subhunk(&lines, &entry.path, 80, &mut rendered, &theme);
+        render_subhunk(
+            &lines,
+            Some(deltoids::Language::Rust),
+            80,
+            &mut rendered,
+            &theme,
+        );
         assert_eq!(rendered.len(), 2);
 
         // Paired minus line should have emph bg on the changed token.
@@ -2601,13 +2613,18 @@ mod tests {
         use deltoids::LineKind;
 
         let theme = test_theme();
-        let entry = edit_entry();
         let lines = vec![
             diff_line(LineKind::Removed, "aaa bbb ccc ddd eee"),
             diff_line(LineKind::Added, "xxx yyy zzz www qqq"),
         ];
         let mut rendered = Vec::new();
-        render_subhunk(&lines, &entry.path, 80, &mut rendered, &theme);
+        render_subhunk(
+            &lines,
+            Some(deltoids::Language::Rust),
+            80,
+            &mut rendered,
+            &theme,
+        );
         assert_eq!(rendered.len(), 2);
 
         // Dissimilar lines should use the plain background.
@@ -2657,7 +2674,7 @@ mod tests {
                 "    fn compute(&self) -> i32 {",
             ),
         ];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // top border + 2 ancestor lines + dots row + bottom border = 5
         assert_eq!(
             lines.len(),
@@ -2701,7 +2718,7 @@ mod tests {
             scope_node("impl_item", "Foo", 3, 50, "impl Foo {"),
             scope_node("function_item", "new", 4, 10, "    fn new() -> Self {"),
         ];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // top + 2 ancestors + bottom = 4 (no dots because end_line+1 >= next.start_line)
         assert_eq!(lines.len(), 4, "expected 4 lines for adjacent ancestors");
         // No dots line
@@ -2723,7 +2740,7 @@ mod tests {
             10,
             "fn bar(a: i32, b: i32) -> i32 {",
         )];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // top + 1 ancestor + bottom = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
@@ -2744,7 +2761,7 @@ mod tests {
             lines: Vec::new(),
             ancestors: Vec::new(),
         };
-        let lines = render_hunk_header(&hunk, "src/lib.rs", 80, &theme);
+        let lines = render_hunk_header(&hunk, Some(deltoids::Language::Rust), 80, &theme);
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();
         assert!(mid.contains("7"), "line number from Hunk::new_start");
@@ -2763,8 +2780,9 @@ mod tests {
                 "    if let Some(val) = body {",
             ),
         ];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // Line numbers should be right-aligned: "  1:" and "120:"
+
         let mid1 = lines[1].to_string();
         let mid2 = lines[3].to_string(); // after dots row
         assert!(
@@ -2797,7 +2815,7 @@ mod tests {
                 "        if let Some(val) = body {",
             ),
         ];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // top + ancestor1 + dots + ancestor2 + dots + ancestor3 + bottom = 7
         assert_eq!(
             lines.len(),
@@ -2824,7 +2842,7 @@ mod tests {
                 "    fn compute(&self) {",
             ),
         ];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // Should show both: top + impl + dots + fn + bottom = 5
         assert_eq!(lines.len(), 5, "should show all ancestors");
         let combined: String = lines.iter().map(|l| l.to_string()).collect();
@@ -2837,7 +2855,7 @@ mod tests {
         let theme = test_theme();
         // Single ancestor is always shown
         let ancestors = vec![scope_node("function_item", "bar", 6, 10, "fn bar() {")];
-        let lines = render_breadcrumb_box(&ancestors, "src/lib.rs", 80, &theme);
+        let lines = render_breadcrumb_box(&ancestors, Some(deltoids::Language::Rust), 80, &theme);
         // Should show ancestor: top + mid + bottom = 3
         assert_eq!(lines.len(), 3);
         let mid = lines[1].to_string();

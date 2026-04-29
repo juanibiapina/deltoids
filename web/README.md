@@ -3,10 +3,7 @@
 Marketing/landing site for `deltoids`, built with Next.js 15 App Router,
 Tailwind v4, shadcn-style primitives, Motion, and Vercel OG.
 
-This is a **second** landing site that lives in parallel with the existing
-Astro+Starlight site under `../website/`. Astro keeps deploying to GitHub
-Pages (`deltoids.dev`); this Next.js site is deployed to Vercel. We can
-swap them later by flipping the CNAME or adding a subdomain.
+Deployed to Vercel at `deltoids.dev`.
 
 ## Stack
 

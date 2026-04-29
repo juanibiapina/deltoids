@@ -62,29 +62,11 @@ crates/
     tests/tui_cli.rs    # Integration tests for edit + write + edit-tui interaction
 ```
 
-## Website
+## Web
 
-Marketing/landing site for `deltoids.dev`, built with Astro + Starlight.
-
-```
-website/
-  astro.config.mjs        # Astro + Starlight configuration
-  src/content/docs/       # Markdown/MDX pages (Starlight content collection)
-  public/                 # Static assets served as-is
-  SCREENSHOTS.md          # Recipes for reproducing landing-page screenshots
-```
-
-Local dev (from `website/`): `npm install`, `npm run dev` (`:4321`), `npm run build`, `npm run preview`.
-
-Landing-page screenshots: see `website/SCREENSHOTS.md` for capture recipes.
-
-## Web (Next.js, parallel)
-
-A second landing site lives under `web/` (Next.js 15 App Router, Tailwind
-v4, shadcn primitives, Motion, `@vercel/og`). It deploys to Vercel and uses
-**hand-coded React product mocks** instead of screenshots. Astro under
-`website/` keeps deploying to GitHub Pages; the two coexist until a
-decision is made.
+Marketing/landing site for `deltoids.dev`, under `web/` (Next.js 15 App
+Router, Tailwind v4, shadcn primitives, Motion, `@vercel/og`). Deploys to
+Vercel; uses **hand-coded React product mocks** instead of screenshots.
 
 Local dev (from `web/`): `npm install`, `npm run dev` (`:3000`),
 `npm run build`, `npm run lint`, `npx tsc --noEmit`.

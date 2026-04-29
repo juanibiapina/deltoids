@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `deltoids`: `syntax::parse_file` free function (replaced by `ParsedFile::parse`).
 - `deltoids`: public fields on `syntax::ParsedFile` (`tree`, `structure_kinds`, `data_kinds`, `promoted_kinds`, `function_body_kinds`) — now private.
+- `website/`: Astro + Starlight landing site and its `.github/workflows/pages.yml` GitHub Pages deploy workflow. The Next.js site under `web/` (deployed to Vercel) is now the sole landing site for `deltoids.dev`.
 
 ## [0.2.0] - 2026-04-27
 

@@ -1,7 +1,5 @@
 # Agent notes for `web/`
 
-Scope: this directory only. The Astro site under `../website/` is unaffected.
-
 ## Stack invariants
 
 - **Next.js 15 App Router** with Turbopack. Server Components by default; mark

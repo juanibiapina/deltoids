@@ -1,0 +1,26 @@
+---
+import { PAGER_TOOLS } from "../data/site";
+---
+
+<section id="pager" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Use as a diff pager</h2>
+      <p>
+        Pipe a single diff, or set <code>deltoids</code> as the default for
+        every git command.
+      </p>
+    </div>
+
+    <div class="install-grid" style="max-width: 880px; margin: 0 auto;">
+      {
+        PAGER_TOOLS.map((t) => (
+          <div class="install-card">
+            <div class="install-card-label">{t.label}</div>
+            <pre><code>{t.code}</code></pre>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

@@ -1,0 +1,29 @@
+---
+import { FAQ } from "../data/site";
+
+// Render markdown-style backticks as <code> for question and answer.
+function renderInline(s: string): string {
+  return s.replaceAll(/`([^`]+)`/g, "<code>$1</code>");
+}
+---
+
+<section id="faq" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>FAQ</h2>
+    </div>
+
+    <div class="faq">
+      {
+        FAQ.map((item, i) => (
+          <details open={i === 0}>
+            <summary>
+              <span set:html={renderInline(item.q)} />
+            </summary>
+            <div class="answer" set:html={renderInline(item.a)} />
+          </details>
+        ))
+      }
+    </div>
+  </div>
+</section>

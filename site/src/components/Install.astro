@@ -1,0 +1,36 @@
+---
+import { INSTALL_CARDS, SITE } from "../data/site";
+---
+
+<section id="install" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Installation</h2>
+      <p>
+        Prebuilt binaries for macOS and Linux. Build from source with cargo
+        if you want.
+      </p>
+    </div>
+
+    <div class="install-grid">
+      {
+        INSTALL_CARDS.map((c) => (
+          <div class="install-card">
+            <div class="install-card-label">{c.label}</div>
+            <pre><code>{c.code}</code></pre>
+            {c.note && <div class="install-card-note">{c.note}</div>}
+          </div>
+        ))
+      }
+    </div>
+
+    <p
+      style="text-align:center; margin-top: 28px; font-size: 0.875rem; color: var(--text-muted);"
+    >
+      Looking for the deb / rpm / archive downloads? See{" "}
+      <a href={`${SITE.repo.url}/releases`} target="_blank" rel="noreferrer"
+        >GitHub Releases</a
+      >.
+    </p>
+  </div>
+</section>

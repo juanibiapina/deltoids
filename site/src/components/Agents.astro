@@ -1,0 +1,30 @@
+---
+import { AGENT_TOOLS } from "../data/site";
+---
+
+<section id="agents" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Review every edit by coding agents</h2>
+      <p>
+        <code>edit-tui</code> browses every edit, with its reason and
+        semantic context.
+      </p>
+    </div>
+
+    <div class="install-grid" style="max-width: 720px; margin: 0 auto;">
+      {
+        AGENT_TOOLS.map((a) => (
+          <div class="install-card">
+            <div class="install-card-label">{a.label}</div>
+            {a.coming ? (
+              <div class="code-card-coming">Coming soon</div>
+            ) : (
+              <pre><code>{a.code}</code></pre>
+            )}
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

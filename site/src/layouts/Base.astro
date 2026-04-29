@@ -1,0 +1,142 @@
+---
+import "../styles/global.css";
+import { SITE, NAV_LINKS } from "../data/site";
+import DeltoidsMark from "../components/DeltoidsMark.astro";
+import GitHubIcon from "../components/GitHubIcon.astro";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const { title, description = SITE.description } = Astro.props;
+const fullTitle = title
+  ? `${title} · ${SITE.name}`
+  : `${SITE.name} — ${SITE.tagline}`;
+const canonical = new URL(Astro.url.pathname, SITE.url).toString();
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: SITE.name,
+  description: SITE.description,
+  url: SITE.url,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "macOS, Linux",
+  softwareVersion: SITE.version,
+  license: `${SITE.repo.url}/blob/main/LICENSE`,
+  author: {
+    "@type": "Person",
+    name: SITE.author.name,
+    url: SITE.author.url,
+  },
+  offers: {
+    "@type": "Offer",
+    price: "0",
+    priceCurrency: "USD",
+  },
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <meta name="author" content={SITE.author.name} />
+    <link rel="canonical" href={canonical} />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" sizes="any" href="/favicon.ico" />
+
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/ibm-plex-sans-latin.woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/jetbrains-mono-latin.woff2"
+      crossorigin
+    />
+
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:site_name" content={SITE.name} />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+
+    <meta name="theme-color" content="#1a1b26" />
+
+    <script
+      is:inline
+      type="application/ld+json"
+      set:html={JSON.stringify(jsonLd)}
+    />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="container nav-inner">
+        <a class="nav-brand" href="/">
+          <DeltoidsMark />
+          <span>{SITE.name}</span>
+        </a>
+
+        <nav aria-label="Primary">
+          <ul class="nav-links">
+            {
+              NAV_LINKS.map((l) => (
+                <li>
+                  <a href={l.href}>{l.label}</a>
+                </li>
+              ))
+            }
+          </ul>
+        </nav>
+
+        <div class="nav-actions">
+          <a
+            class="nav-icon-link"
+            href={SITE.repo.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="GitHub repository"
+          >
+            <GitHubIcon />
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <slot />
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-inner">
+        <div>
+          <span style="color: var(--text)">{SITE.name}</span>
+          <span class="sep"> · </span>
+          <span>diffs for the agentic era</span>
+        </div>
+        <a
+          href={`${SITE.repo.url}/blob/main/LICENSE`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {SITE.license} licensed
+        </a>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,40 @@
+---
+import { SITE } from "../data/site";
+---
+
+<section class="hero">
+  <div class="container hero-inner">
+    <div class="hero-badge">
+      v{SITE.version}
+      <span class="hero-badge-sep">/</span>
+      open source
+    </div>
+
+    <h1>
+      Diffs for the<br />
+      <span class="accent">agentic era.</span>
+    </h1>
+
+    <p class="hero-sub">
+      <code>deltoids</code> expands every hunk to include the enclosing
+      context. Hold the code in your head even when you're not the one
+      typing it.
+    </p>
+
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#install">Install</a>
+      <a
+        class="btn btn-secondary"
+        href={SITE.repo.url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        View on GitHub →
+      </a>
+    </div>
+
+    <div class="hero-install" aria-label="Install command">
+      <span>brew install {SITE.brewTap}/deltoids-cli</span>
+    </div>
+  </div>
+</section>

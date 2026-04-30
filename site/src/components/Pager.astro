@@ -9,18 +9,27 @@ import lazygitShot from "../assets/screenshots/lazygit.png";
     <div class="section-head">
       <h2>Use as a diff pager</h2>
       <p>
-        Pipe a single diff, or set <code>deltoids</code> as the default for
-        every git command.
+        Pipe a single diff, or set <code>deltoids</code> as the default in
+        your tools.
       </p>
     </div>
 
-    <div class="install-grid pager-snippets">
+    <div class="pager-grid">
       {
-        PAGER_TOOLS.map((t) => (
-          <div class="install-card">
-            <div class="install-card-label">{t.label}</div>
-            <pre><code>{t.code}</code></pre>
-          </div>
+        PAGER_TOOLS.map((tool) => (
+          <article class="pager-card">
+            <header class="pager-card-name">{tool.name}</header>
+            <ul class="pager-snippet-list">
+              {tool.snippets.map((s) => (
+                <li class="pager-snippet">
+                  {tool.snippets.length > 1 && (
+                    <div class="pager-snippet-role">{s.role}</div>
+                  )}
+                  <pre><code>{s.code}</code></pre>
+                </li>
+              ))}
+            </ul>
+          </article>
         ))
       }
     </div>
@@ -39,9 +48,69 @@ import lazygitShot from "../assets/screenshots/lazygit.png";
 </section>
 
 <style>
-  .pager-snippets {
-    max-width: 880px;
+  .pager-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+    max-width: 1040px;
     margin: 0 auto;
+  }
+
+  .pager-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 20px 22px 22px;
+    display: flex;
+    flex-direction: column;
+    transition:
+      border-color 120ms ease,
+      transform 120ms ease;
+  }
+
+  .pager-card:hover {
+    border-color: var(--border);
+  }
+
+  .pager-card-name {
+    font-family: var(--font-mono);
+    font-size: 0.9375rem;
+    color: var(--text);
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    letter-spacing: 0.01em;
+  }
+
+  .pager-snippet-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+  }
+
+  .pager-snippet {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pager-snippet-role {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+  }
+
+  .pager-snippet pre {
+    margin: 0;
+    font-size: 0.8125rem;
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 
   .proof {

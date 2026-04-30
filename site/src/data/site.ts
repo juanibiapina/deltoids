@@ -30,41 +30,65 @@ export const NAV_LINKS = [
   { href: "#faq", label: "FAQ" },
 ] as const;
 
-export type Tool = {
-  id: string;
-  label: string;
+export type PagerSnippet = {
+  role: string;
   language: "bash" | "yaml" | "toml";
   code: string;
 };
 
-/** `git diff | deltoids` snippets per tool. */
-export const PAGER_TOOLS: Tool[] = [
+export type PagerTool = {
+  id: string;
+  name: string;
+  snippets: PagerSnippet[];
+};
+
+/** `deltoids` integration snippets, grouped by tool. */
+export const PAGER_TOOLS: PagerTool[] = [
   {
-    id: "git-pipe",
-    label: "git (one-time use)",
-    language: "bash",
-    code: `git diff | deltoids | less -R`,
-  },
-  {
-    id: "git-default",
-    label: "git (default pager)",
-    language: "bash",
-    code: `git config --global core.pager 'deltoids | less -R'`,
+    id: "git",
+    name: "git",
+    snippets: [
+      {
+        role: "one-time",
+        language: "bash",
+        code: `git diff | deltoids | less -R`,
+      },
+      {
+        role: "default pager",
+        language: "bash",
+        code: `git config --global core.pager 'deltoids | less -R'`,
+      },
+    ],
   },
   {
     id: "gh",
-    label: "gh",
-    language: "bash",
-    code: `gh pr diff <number> | deltoids | less -R`,
+    name: "gh",
+    snippets: [
+      {
+        role: "one-time",
+        language: "bash",
+        code: `gh pr diff <number> | deltoids | less -R`,
+      },
+      {
+        role: "default pager",
+        language: "bash",
+        code: `gh config set pager 'deltoids | less -R'`,
+      },
+    ],
   },
   {
     id: "lazygit",
-    label: "lazygit",
-    language: "yaml",
-    code: `# ~/.config/lazygit/config.yml
+    name: "lazygit",
+    snippets: [
+      {
+        role: "config",
+        language: "yaml",
+        code: `# ~/.config/lazygit/config.yml
 git:
   paging:
     pager: deltoids`,
+      },
+    ],
   },
 ];
 

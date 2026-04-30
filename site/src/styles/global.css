@@ -424,18 +424,74 @@ pre code {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
+  padding: 10px 44px 10px 16px;
   border-radius: var(--radius);
   background: var(--bg-code);
   border: 1px solid var(--border-subtle);
   font-family: var(--font-mono);
   font-size: 0.875rem;
   color: var(--text);
+  position: relative;
 }
 
 .cmd-line::before {
   content: "$";
   color: var(--text-faint);
+}
+
+.cmd-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.cmd-copy:hover {
+  color: var(--text);
+  background: color-mix(in oklab, var(--text) 10%, transparent);
+}
+
+.cmd-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cmd-line[data-copied] .cmd-copy {
+  color: var(--add);
+}
+
+.cmd-copy svg {
+  width: 14px;
+  height: 14px;
+}
+
+.code-block {
+  position: relative;
+}
+
+.code-block .cmd-copy {
+  background: var(--bg-code);
+}
+
+.code-block .cmd-copy:hover {
+  background: color-mix(in oklab, var(--text) 12%, var(--bg-code));
+}
+
+.code-block[data-copied] .cmd-copy {
+  color: var(--add);
 }
 
 /* === Features grid === */

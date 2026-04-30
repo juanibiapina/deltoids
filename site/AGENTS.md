@@ -1,7 +1,7 @@
 # Site maintenance
 
 Bare Astro marketing site for `deltoids.dev`. No frameworks beyond Astro
-itself. No client JS in the output. Deploys to GitHub Pages.
+itself. Minimal client JS. Deploys to GitHub Pages.
 
 ## Local dev
 
@@ -31,9 +31,10 @@ site/
 
 - **`src/data/site.ts` is the single source of truth.** Update there;
   do not hardcode version, install commands, repo URLs, or copy.
-- **No client JS.** The `<details>` element handles FAQ open/close
-  natively; do not add a script. If a feature seems to need JS,
-  reconsider whether it's worth the bytes.
+- **Keep client JS minimal.** The `<details>` element handles FAQ
+  open/close natively. The only script is the inline click-to-copy
+  handler in `Base.astro` that targets `.cmd-line` elements. Before
+  adding more JS, reconsider whether it's worth the bytes.
 - **Fonts are self-hosted** as latin-subset woff2 in `public/fonts/`,
   preloaded in `Base.astro`. Do not switch to Google Fonts CDN.
 - **Headings use JetBrains Mono** (terminal aesthetic). Body text

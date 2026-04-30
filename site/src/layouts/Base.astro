@@ -138,5 +138,81 @@ const jsonLd = {
         </a>
       </div>
     </footer>
+
+    <script is:inline>
+      (() => {
+        const COPY_ICON =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+        const CHECK_ICON =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+        const writeClipboard = async (text) => {
+          if (navigator.clipboard && window.isSecureContext) {
+            try {
+              await navigator.clipboard.writeText(text);
+              return true;
+            } catch {}
+          }
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          let ok = false;
+          try {
+            ok = document.execCommand("copy");
+          } catch {}
+          document.body.removeChild(ta);
+          return ok;
+        };
+        const makeCopyButton = () => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "cmd-copy";
+          btn.setAttribute("aria-label", "Copy");
+          btn.setAttribute("title", "Copy");
+          btn.innerHTML = COPY_ICON;
+          return btn;
+        };
+        const wireCopy = (btn, host, getText) => {
+          btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (!(await writeClipboard(getText()))) return;
+            host.dataset.copied = "1";
+            btn.innerHTML = CHECK_ICON;
+            btn.setAttribute("aria-label", "Copied");
+            setTimeout(() => {
+              host.removeAttribute("data-copied");
+              btn.innerHTML = COPY_ICON;
+              btn.setAttribute("aria-label", "Copy");
+            }, 1200);
+          });
+        };
+        document.querySelectorAll(".cmd-line").forEach((el) => {
+          const btn = makeCopyButton();
+          el.appendChild(btn);
+          wireCopy(btn, el, () => {
+            const spans = el.querySelectorAll("span");
+            return (
+              spans.length
+                ? [...spans].map((s) => s.textContent.trim()).join("\n")
+                : el.textContent.trim()
+            ).trim();
+          });
+        });
+        document.querySelectorAll("pre").forEach((pre) => {
+          const code = pre.querySelector("code");
+          if (!code) return;
+          const wrap = document.createElement("div");
+          wrap.className = "code-block";
+          pre.replaceWith(wrap);
+          wrap.appendChild(pre);
+          const btn = makeCopyButton();
+          wrap.appendChild(btn);
+          wireCopy(btn, wrap, () => code.textContent.replace(/\s+$/, ""));
+        });
+      })();
+    </script>
   </body>
 </html>

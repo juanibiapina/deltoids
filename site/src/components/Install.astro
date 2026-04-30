@@ -17,18 +17,7 @@ import { INSTALL_CARDS, SITE } from "../data/site";
         INSTALL_CARDS.map((c) => (
           <div class="install-card">
             <div class="install-card-label">{c.label}</div>
-            {c.commands ? (
-              <div class="install-card-cmds">
-                {c.commands.map((cmd) => (
-                  <div class="cmd-line">
-                    <span>{cmd}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <pre><code>{c.code}</code></pre>
-            )}
-            {c.note && <div class="install-card-note">{c.note}</div>}
+            <pre><code>{c.code}</code></pre>
           </div>
         ))
       }
@@ -44,14 +33,6 @@ import { INSTALL_CARDS, SITE } from "../data/site";
 </section>
 
 <style>
-  .install-card-cmds {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-    margin-bottom: 10px;
-  }
-
   .install-aside {
     text-align: center;
     margin-top: 28px;

@@ -97,8 +97,7 @@ export const AGENT_TOOLS: { id: string; label: string; code?: string; coming?: b
   {
     id: "pi",
     label: "pi",
-    code: `pi install https://github.com/juanibiapina/deltoids
-edit-tui`,
+    code: `pi install https://github.com/juanibiapina/deltoids`,
   },
   { id: "claude", label: "Claude Code", coming: true },
 ];
@@ -107,10 +106,7 @@ export type InstallCard = {
   id: string;
   label: string;
   /** Multi-line block, rendered as a single <pre><code>. */
-  code?: string;
-  /** One or more shell-prompt lines, rendered each as a `.cmd-line` card. */
-  commands?: string[];
-  note?: string;
+  code: string;
 };
 
 /**
@@ -123,17 +119,13 @@ export const INSTALL_CARDS: InstallCard[] = [
   {
     id: "homebrew",
     label: "homebrew",
-    commands: [
-      "brew install juanibiapina/taps/deltoids-cli",
-      "brew install juanibiapina/taps/edit-cli",
-    ],
-    note: "deltoids diff pager, plus edit, write, and edit-tui for tracing agent edits.",
+    code: `brew install juanibiapina/taps/deltoids-cli
+brew install juanibiapina/taps/edit-cli`,
   },
   {
     id: "shell",
     label: "shell installer",
     code: "curl -sSL https://github.com/juanibiapina/deltoids/releases/latest/download/deltoids-cli-installer.sh | sh",
-    note: "Prebuilt binaries from GitHub Releases.",
   },
   {
     id: "cargo",

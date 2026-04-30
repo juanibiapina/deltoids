@@ -10,7 +10,7 @@ export const SITE = {
   license: "MIT",
   tagline: "Diffs for the agentic era.",
   description:
-    "deltoids expands every hunk in a unified diff to include the entire enclosing context. Tree-sitter resolved. Pipe git diff, gh pr diff, or set as your pager.",
+    "deltoids is a smart diff pager that expands hunks with the context you need to understand them.",
   repo: {
     owner: "juanibiapina",
     name: "deltoids",

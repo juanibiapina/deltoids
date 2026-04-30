@@ -1,0 +1,61 @@
+---
+import Base from "./Base.astro";
+import { DOCS_NAV } from "../data/docs";
+
+interface Frontmatter {
+  title?: string;
+  description?: string;
+}
+
+interface Props {
+  title?: string;
+  description?: string;
+  /** Astro passes `frontmatter` when this layout is used from a .md/.mdx page. */
+  frontmatter?: Frontmatter;
+}
+
+const { title, description, frontmatter } = Astro.props;
+const pageTitle = title ?? frontmatter?.title;
+const pageDescription = description ?? frontmatter?.description;
+
+// Normalise both sides so `/docs` and `/docs/` are treated the same.
+const normalise = (path: string) => {
+  const stripped = path.replace(/\/+$/, "");
+  return stripped === "" ? "/" : stripped;
+};
+const currentPath = normalise(Astro.url.pathname);
+const isActive = (href: string) => normalise(href) === currentPath;
+---
+
+<Base title={pageTitle} description={pageDescription}>
+  <div class="docs-layout container">
+    <aside class="docs-sidebar" aria-label="Documentation">
+      <nav>
+        {
+          DOCS_NAV.map((group) => (
+            <div class="docs-sidebar-group">
+              <h4>{group.label}</h4>
+              <ul>
+                {group.items.map((item) => (
+                  <li>
+                    <a
+                      href={item.href}
+                      aria-current={isActive(item.href) ? "page" : undefined}
+                      class:list={["docs-sidebar-link", { "is-active": isActive(item.href) }]}
+                    >
+                      {item.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </nav>
+    </aside>
+
+    <article class="docs-content">
+      <slot />
+    </article>
+  </div>
+</Base>

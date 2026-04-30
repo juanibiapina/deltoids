@@ -654,6 +654,213 @@ pre code {
   font-size: 0.875rem;
 }
 
+/* === Docs === */
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+  padding-top: 32px;
+  padding-bottom: 80px;
+}
+
+@media (min-width: 900px) {
+  .docs-layout {
+    grid-template-columns: 232px minmax(0, 1fr);
+    column-gap: 56px;
+    padding-top: 56px;
+    padding-bottom: 112px;
+  }
+}
+
+.docs-sidebar {
+  font-size: 0.875rem;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+@media (min-width: 900px) {
+  .docs-sidebar {
+    position: sticky;
+    top: calc(var(--nav-height) + 24px);
+    align-self: start;
+    max-height: calc(100vh - var(--nav-height) - 32px);
+    overflow-y: auto;
+    padding: 4px 24px 0 0;
+    border-bottom: 0;
+    border-right: 1px solid var(--border-subtle);
+    /* Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  /* WebKit */
+  .docs-sidebar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .docs-sidebar::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+  .docs-sidebar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+.docs-sidebar-group + .docs-sidebar-group {
+  margin-top: 24px;
+}
+
+.docs-sidebar h4 {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-faint);
+  margin-bottom: 10px;
+  padding: 0 10px;
+}
+
+.docs-sidebar ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.docs-sidebar-link {
+  display: block;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.docs-sidebar-link:hover {
+  color: var(--text);
+  background: var(--bg-surface);
+}
+
+.docs-sidebar-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  color: var(--text);
+}
+
+.docs-sidebar-link.is-active {
+  color: var(--accent-strong);
+  border-left-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  font-weight: 500;
+}
+
+.docs-content {
+  min-width: 0;
+  max-width: 720px;
+  font-size: 1rem;
+}
+
+/* Page title + lede.
+   In MDX docs the first <h1> + first <p> after it form a header band
+   separated from the body by a hairline rule. No wrapper element
+   needed — plain Markdown gets it for free. */
+.docs-content > h1:first-child {
+  font-size: clamp(1.625rem, 3vw, 2.125rem);
+  padding-bottom: 20px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.docs-content > h1:first-child + p {
+  font-size: 1.0625rem;
+  color: var(--text-muted);
+  margin-top: 0;
+  margin-bottom: 28px;
+}
+
+.docs-content h2 {
+  font-size: 1.375rem;
+  margin-top: 48px;
+  margin-bottom: 14px;
+  padding-top: 4px;
+}
+
+.docs-content h3 {
+  font-size: 1.0625rem;
+  margin-top: 32px;
+  margin-bottom: 10px;
+}
+
+.docs-content p {
+  margin: 0 0 16px;
+}
+
+.docs-content ul,
+.docs-content ol {
+  margin: 0 0 16px;
+  padding-left: 1.4em;
+  color: var(--text-muted);
+}
+
+.docs-content li {
+  margin-bottom: 4px;
+}
+
+.docs-content li > p {
+  margin-bottom: 4px;
+}
+
+.docs-content hr {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: 36px 0;
+}
+
+.docs-content pre {
+  margin: 0 0 20px;
+}
+
+.docs-content blockquote {
+  margin: 0 0 16px;
+  padding: 0 16px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+.docs-note {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 4px;
+  margin: 24px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--accent) 6%, var(--bg-surface));
+  font-size: 0.9375rem;
+  color: var(--text-muted);
+}
+
+.docs-note-label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.docs-note-body > :first-child {
+  margin-top: 0;
+}
+
+.docs-note-body > :last-child {
+  margin-bottom: 0;
+}
+
 /* === Footer === */
 
 .footer {

@@ -28,6 +28,7 @@ export const NAV_LINKS = [
   { href: "#agents", label: "Agents" },
   { href: "#install", label: "Install" },
   { href: "#faq", label: "FAQ" },
+  { href: "/docs/", label: "Docs" },
 ] as const;
 
 export type PagerSnippet = {

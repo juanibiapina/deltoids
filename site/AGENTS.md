@@ -20,17 +20,33 @@ site/
 ├── astro.config.mjs       # site URL = https://deltoids.dev
 ├── public/                # served verbatim (CNAME, fonts, robots, .nojekyll)
 └── src/
-    ├── data/site.ts       # version, install commands, FAQ — single source of truth
-    ├── styles/global.css  # palette, layout primitives, all section styles
-    ├── layouts/Base.astro # head, nav, footer, JSON-LD schema
-    ├── components/        # Hero, Features, Pager, Agents, Install, Faq, icons
-    └── pages/index.astro  # composes the sections
+    ├── data/site.ts         # version, install commands, FAQ — single source of truth
+    ├── data/docs.ts         # docs sidebar groups + items — single source of truth
+    ├── styles/global.css    # palette, layout primitives, all section styles
+    ├── layouts/Base.astro   # head, nav, footer, JSON-LD schema
+    ├── layouts/DocsLayout.astro # sidebar + content shell for /docs/* pages
+    ├── components/          # Hero, Features, Pager, Agents, Install, Faq, icons
+    ├── components/docs/     # docs-only components (Note callout, ...)
+    ├── pages/index.astro    # composes marketing sections
+    └── pages/docs/          # docs subtree (.mdx files using DocsLayout)
 ```
 
 ## Conventions
 
 - **`src/data/site.ts` is the single source of truth.** Update there;
   do not hardcode version, install commands, repo URLs, or copy.
+- **`src/data/docs.ts` is the docs sidebar's single source of truth.**
+  Add a docs page by creating an `.mdx` file under `src/pages/docs/`
+  and appending an entry to `DOCS_NAV`. Active state is decided by
+  exact pathname match in `DocsLayout.astro`.
+- **Docs pages are MDX, not Astro.** Each page sets
+  `layout: "../../layouts/DocsLayout.astro"` in its frontmatter and
+  is written as Markdown prose with H2 sections per topic.
+  Code blocks are intentionally plain (`markdown.syntaxHighlight:
+  false` in `astro.config.mjs`) to match the terminal aesthetic and
+  avoid Shiki's CSS surface. Use `<Note>` from
+  `src/components/docs/Note.astro` for inline callouts; reach for it
+  before reinventing a div.
 - **Keep client JS minimal.** The `<details>` element handles FAQ
   open/close natively. The only script is the inline click-to-copy
   handler in `Base.astro` that targets `.cmd-line` elements. Before

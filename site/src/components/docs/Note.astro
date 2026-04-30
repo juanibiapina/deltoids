@@ -1,0 +1,22 @@
+---
+/**
+ * Inline callout used inside docs MDX. Wraps any content in a tinted
+ * card with an accent left bar and a small uppercase label.
+ *
+ * Usage (MDX):
+ *   <Note>Some prose here, including <a href="...">links</a>.</Note>
+ *   <Note label="Tip">Custom label.</Note>
+ */
+interface Props {
+  label?: string;
+}
+
+const { label = "Note" } = Astro.props;
+---
+
+<aside class="docs-note">
+  <span class="docs-note-label">{label}</span>
+  <div class="docs-note-body">
+    <slot />
+  </div>
+</aside>

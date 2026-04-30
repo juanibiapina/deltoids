@@ -1,0 +1,43 @@
+---
+layout: "../../layouts/DocsLayout.astro"
+title: "Install"
+description: "Install deltoids — the pager binary, and the plugin for pi and coding agents."
+---
+
+import { SITE } from "../../data/site";
+
+# Install
+
+## Pager
+
+```bash
+brew install juanibiapina/taps/deltoids-cli
+```
+
+From source:
+
+```bash
+cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
+```
+
+A shell installer is also published on each
+<a href={`${SITE.repo.url}/releases`}>GitHub release</a>.
+
+## Plugin
+
+```bash
+brew install juanibiapina/taps/edit-cli
+```
+
+Provides the `edit`, `write`, and `edit-tui` commands. Then wire them
+into your agent.
+
+### pi
+
+```bash
+pi install https://github.com/juanibiapina/deltoids
+```
+
+### Claude Code
+
+Coming soon.

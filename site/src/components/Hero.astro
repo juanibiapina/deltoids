@@ -35,8 +35,9 @@ import deltoidsShot from "../assets/screenshots/deltoids.png";
       </a>
     </div>
 
-    <div class="hero-install" aria-label="Install command">
+    <div class="cmd-line" aria-label="Install command">
       <span>brew install {SITE.brewTap}/deltoids-cli</span>
+      <span>brew install {SITE.brewTap}/edit-cli</span>
     </div>
   </div>
 
@@ -67,6 +68,27 @@ import deltoidsShot from "../assets/screenshots/deltoids.png";
 </section>
 
 <style>
+  .cmd-line {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .cmd-line::before {
+    display: none;
+  }
+
+  .cmd-line span {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .cmd-line span::before {
+    content: "$";
+    color: var(--text-faint);
+  }
+
   .hero-compare {
     margin-top: 56px;
     display: grid;

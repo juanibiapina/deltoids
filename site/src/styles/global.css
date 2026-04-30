@@ -420,7 +420,7 @@ pre code {
   margin-bottom: 24px;
 }
 
-.hero-install {
+.cmd-line {
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -433,7 +433,7 @@ pre code {
   color: var(--text);
 }
 
-.hero-install::before {
+.cmd-line::before {
   content: "$";
   color: var(--text-faint);
 }

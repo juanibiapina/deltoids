@@ -106,7 +106,10 @@ edit-tui`,
 export type InstallCard = {
   id: string;
   label: string;
-  code: string;
+  /** Multi-line block, rendered as a single <pre><code>. */
+  code?: string;
+  /** One or more shell-prompt lines, rendered each as a `.cmd-line` card. */
+  commands?: string[];
   note?: string;
 };
 
@@ -118,16 +121,13 @@ export type InstallCard = {
  */
 export const INSTALL_CARDS: InstallCard[] = [
   {
-    id: "homebrew-deltoids",
+    id: "homebrew",
     label: "homebrew",
-    code: "brew install juanibiapina/taps/deltoids-cli",
-    note: "deltoids diff pager. macOS and Linux.",
-  },
-  {
-    id: "homebrew-edit",
-    label: "homebrew (edit-tui)",
-    code: "brew install juanibiapina/taps/edit-cli",
-    note: "edit, write, and edit-tui — for tracing agent edits.",
+    commands: [
+      "brew install juanibiapina/taps/deltoids-cli",
+      "brew install juanibiapina/taps/edit-cli",
+    ],
+    note: "deltoids diff pager, plus edit, write, and edit-tui for tracing agent edits.",
   },
   {
     id: "shell",

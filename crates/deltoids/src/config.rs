@@ -14,10 +14,20 @@ use syntect::highlighting::Theme as SyntectTheme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
+/// Whether the surrounding terminal is light or dark.
+///
+/// Determines which built-in palette [`Theme::for_mode`] returns and is the
+/// signal we use to pick a default syntax theme too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMode {
+    Light,
+    Dark,
+}
+
 /// Theme colors used by deltoids rendering.
 ///
 /// All colors are stored as RGB tuples `(r, g, b)`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     /// Background for added diff lines.
     pub diff_added_bg: (u8, u8, u8),
@@ -60,44 +70,78 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Load theme from config file, falling back to defaults per-field.
-    pub fn load() -> Self {
-        let Some(path) = config_file_path() else {
-            return Self::default();
-        };
-
-        let Ok(contents) = fs::read_to_string(&path) else {
-            return Self::default();
-        };
-
-        let Ok(config) = toml::from_str::<ConfigFile>(&contents) else {
-            return Self::default();
-        };
-
-        let defaults = Self::default();
-        let theme = config.theme.unwrap_or_default();
-
-        Self {
-            diff_added_bg: parse_hex_color(&theme.diff_added_bg).unwrap_or(defaults.diff_added_bg),
-            diff_added_emph_bg: parse_hex_color(&theme.diff_added_emph_bg)
-                .unwrap_or(defaults.diff_added_emph_bg),
-            diff_deleted_bg: parse_hex_color(&theme.diff_deleted_bg)
-                .unwrap_or(defaults.diff_deleted_bg),
-            diff_deleted_emph_bg: parse_hex_color(&theme.diff_deleted_emph_bg)
-                .unwrap_or(defaults.diff_deleted_emph_bg),
-            separator: parse_hex_color(&theme.separator).unwrap_or(defaults.separator),
-            border: parse_hex_color(&theme.border).unwrap_or(defaults.border),
-            border_active: parse_hex_color(&theme.border_active).unwrap_or(defaults.border_active),
-            line_number: parse_hex_color(&theme.line_number).unwrap_or(defaults.line_number),
-            muted: parse_hex_color(&theme.muted).unwrap_or(defaults.muted),
-            selection_bg: parse_hex_color(&theme.selection_bg).unwrap_or(defaults.selection_bg),
+    /// Built-in palette for the given [`ColorMode`].
+    ///
+    /// `Dark` returns the same RGBs as [`Theme::default`]. `Light` returns a
+    /// pastel-on-cream palette inspired by delta's defaults.
+    pub fn for_mode(mode: ColorMode) -> Self {
+        match mode {
+            ColorMode::Dark => Self::default(),
+            ColorMode::Light => Self {
+                diff_added_bg: (0xd0, 0xff, 0xd0),
+                diff_added_emph_bg: (0xa0, 0xef, 0xa0),
+                diff_deleted_bg: (0xff, 0xe0, 0xe0),
+                diff_deleted_emph_bg: (0xff, 0xc0, 0xc0),
+                // Chrome accents stay the saturated Tokyo Night blue/orange;
+                // they read on cream as well as on the dark default.
+                separator: (122, 162, 247),
+                border: (122, 162, 247),
+                border_active: (255, 150, 108),
+                line_number: (122, 162, 247),
+                muted: (113, 121, 158),
+                selection_bg: (212, 222, 252),
+            },
         }
+    }
+
+    /// Load theme by combining config file, terminal detection, and built-in palettes.
+    ///
+    /// Resolution order for the palette:
+    ///   1. `[theme] mode = "light"|"dark"` in `$XDG_CONFIG_HOME/deltoids/config.toml`.
+    ///   2. `mode = "auto"` (default): query the terminal via
+    ///      [`terminal_colorsaurus`].
+    ///   3. Fall back to [`ColorMode::Dark`].
+    ///
+    /// Per-field hex overrides in the same `[theme]` section then patch the
+    /// chosen palette.
+    pub fn load() -> Self {
+        let (explicit, overlay) = read_user_theme_config().unwrap_or_default();
+        resolve_theme(load_color_mode(explicit), &overlay)
     }
 }
 
+/// Read the user's `[theme]` config, returning `(explicit_mode, overlay)`.
+///
+/// Returns `None` if the file is missing, unreadable, or fails to parse so
+/// the caller can fall back to defaults silently.
+fn read_user_theme_config() -> Option<(Option<ColorMode>, ThemeConfig)> {
+    let path = config_file_path()?;
+    let contents = fs::read_to_string(&path).ok()?;
+    parse_theme_config(&contents)
+}
+
+fn load_color_mode(explicit: Option<ColorMode>) -> ColorMode {
+    if let Some(mode) = explicit {
+        mode
+    } else {
+        resolve_color_mode(None, detect_color_mode())
+    }
+}
+
+fn resolve_color_mode(explicit: Option<ColorMode>, detected: Option<ColorMode>) -> ColorMode {
+    explicit.or(detected).unwrap_or(ColorMode::Dark)
+}
+
+fn detect_color_mode() -> Option<ColorMode> {
+    theme_mode(QueryOptions::default()).ok().map(|m| match m {
+        ThemeMode::Light => ColorMode::Light,
+        ThemeMode::Dark => ColorMode::Dark,
+    })
+}
+
 // Delta's defaults for syntax themes.
-const DEFAULT_DARK_THEME: &str = "Monokai Extended";
-const DEFAULT_LIGHT_THEME: &str = "GitHub";
+const DEFAULT_DARK_SYNTAX_THEME: &str = "Monokai Extended";
+const DEFAULT_LIGHT_SYNTAX_THEME: &str = "GitHub";
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static SYNTAX_THEME: OnceLock<SyntectTheme> = OnceLock::new();
@@ -111,8 +155,9 @@ pub struct SyntaxAssets {
 impl SyntaxAssets {
     /// Load syntax assets from bat cache or binary fallback.
     ///
-    /// Uses `BAT_THEME` if set, otherwise detects dark/light mode and uses
-    /// appropriate defaults (Monokai Extended for dark, GitHub for light).
+    /// Uses `BAT_THEME` if set. Otherwise uses `[theme] mode` (or terminal
+    /// detection when mode is `auto`) to choose appropriate defaults: Monokai
+    /// Extended for dark, GitHub for light.
     pub fn load() -> Self {
         let syntax_set = SYNTAX_SET.get_or_init(|| {
             load_highlighting_assets()
@@ -174,12 +219,6 @@ fn bat_cache_dir() -> Option<PathBuf> {
     }
 }
 
-fn detect_is_light_mode() -> bool {
-    theme_mode(QueryOptions::default())
-        .map(|m| matches!(m, ThemeMode::Light))
-        .unwrap_or(false)
-}
-
 fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
     // 1. Check BAT_THEME
     if let Ok(theme) = env::var("BAT_THEME")
@@ -188,14 +227,45 @@ fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
         return theme;
     }
 
-    // 2. Use default based on light/dark
-    let is_light = detect_is_light_mode();
-    if is_light {
-        DEFAULT_LIGHT_THEME
-    } else {
-        DEFAULT_DARK_THEME
+    // 2. Use the resolved light/dark mode to pick a default syntax theme.
+    // This makes `[theme] mode = "light"` behave like delta's `light = true`:
+    // it affects both diff backgrounds and the syntax theme fallback.
+    let (explicit, _) = read_user_theme_config().unwrap_or_default();
+    default_syntax_theme_name(load_color_mode(explicit)).to_string()
+}
+
+fn default_syntax_theme_name(mode: ColorMode) -> &'static str {
+    match mode {
+        ColorMode::Light => DEFAULT_LIGHT_SYNTAX_THEME,
+        ColorMode::Dark => DEFAULT_DARK_SYNTAX_THEME,
     }
-    .to_string()
+}
+
+/// Resolve a [`Theme`] from a resolved color mode and user overrides.
+///
+/// Pure: takes whatever mode the caller has already resolved and patches
+/// per-field hex overrides on top of the chosen built-in palette. The impure
+/// orchestration (file IO, terminal probing) lives in [`Theme::load`].
+fn resolve_theme(mode: ColorMode, overlay: &ThemeConfig) -> Theme {
+    let base = Theme::for_mode(mode);
+    apply_overlay(base, overlay)
+}
+
+fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
+    Theme {
+        diff_added_bg: parse_hex_color(&overlay.diff_added_bg).unwrap_or(base.diff_added_bg),
+        diff_added_emph_bg: parse_hex_color(&overlay.diff_added_emph_bg)
+            .unwrap_or(base.diff_added_emph_bg),
+        diff_deleted_bg: parse_hex_color(&overlay.diff_deleted_bg).unwrap_or(base.diff_deleted_bg),
+        diff_deleted_emph_bg: parse_hex_color(&overlay.diff_deleted_emph_bg)
+            .unwrap_or(base.diff_deleted_emph_bg),
+        separator: parse_hex_color(&overlay.separator).unwrap_or(base.separator),
+        border: parse_hex_color(&overlay.border).unwrap_or(base.border),
+        border_active: parse_hex_color(&overlay.border_active).unwrap_or(base.border_active),
+        line_number: parse_hex_color(&overlay.line_number).unwrap_or(base.line_number),
+        muted: parse_hex_color(&overlay.muted).unwrap_or(base.muted),
+        selection_bg: parse_hex_color(&overlay.selection_bg).unwrap_or(base.selection_bg),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -205,6 +275,8 @@ struct ConfigFile {
 
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
+    /// `"light"`, `"dark"`, or `"auto"` (default).
+    mode: Option<String>,
     diff_added_bg: Option<String>,
     diff_added_emph_bg: Option<String>,
     diff_deleted_bg: Option<String>,
@@ -215,6 +287,26 @@ struct ThemeConfig {
     line_number: Option<String>,
     muted: Option<String>,
     selection_bg: Option<String>,
+}
+
+/// Parse a deltoids `config.toml` body into `(explicit_mode, overlay)`.
+///
+/// `explicit_mode` is `Some` only when the user wrote `mode = "light"` or
+/// `mode = "dark"`; `mode = "auto"`, missing, or absent `[theme]` all yield
+/// `None` so the caller can fall back to detection.
+///
+/// Returns `None` on TOML parse failure or unknown mode strings, letting the
+/// caller decide whether to ignore the file or surface an error.
+fn parse_theme_config(text: &str) -> Option<(Option<ColorMode>, ThemeConfig)> {
+    let config: ConfigFile = toml::from_str(text).ok()?;
+    let overlay = config.theme.unwrap_or_default();
+    let mode = match overlay.mode.as_deref() {
+        None | Some("auto") => None,
+        Some("light") => Some(ColorMode::Light),
+        Some("dark") => Some(ColorMode::Dark),
+        Some(_) => return None,
+    };
+    Some((mode, overlay))
 }
 
 fn config_file_path() -> Option<PathBuf> {
@@ -271,6 +363,127 @@ mod tests {
         assert_eq!(parse_hex_color(&Some("invalid".into())), None);
         assert_eq!(parse_hex_color(&Some("#12".into())), None);
         assert_eq!(parse_hex_color(&None), None);
+    }
+
+    #[test]
+    fn for_mode_dark_matches_default() {
+        assert_eq!(Theme::for_mode(ColorMode::Dark), Theme::default());
+    }
+
+    #[test]
+    fn resolve_color_mode_uses_explicit_mode_when_set() {
+        assert_eq!(
+            resolve_color_mode(Some(ColorMode::Light), None),
+            ColorMode::Light
+        );
+    }
+
+    #[test]
+    fn resolve_color_mode_falls_back_to_dark_when_nothing_known() {
+        assert_eq!(resolve_color_mode(None, None), ColorMode::Dark);
+    }
+
+    #[test]
+    fn resolve_color_mode_uses_detected_mode_when_no_explicit() {
+        assert_eq!(
+            resolve_color_mode(None, Some(ColorMode::Light)),
+            ColorMode::Light
+        );
+    }
+
+    #[test]
+    fn resolve_color_mode_explicit_beats_detected() {
+        assert_eq!(
+            resolve_color_mode(Some(ColorMode::Dark), Some(ColorMode::Light)),
+            ColorMode::Dark
+        );
+    }
+
+    #[test]
+    fn resolve_theme_applies_field_overrides_on_top_of_palette() {
+        let overlay = ThemeConfig {
+            diff_added_bg: Some("#112233".into()),
+            ..Default::default()
+        };
+        let theme = resolve_theme(ColorMode::Light, &overlay);
+        // Override wins for the specified field.
+        assert_eq!(theme.diff_added_bg, (0x11, 0x22, 0x33));
+        // Other fields retain the light palette.
+        let light = Theme::for_mode(ColorMode::Light);
+        assert_eq!(theme.diff_deleted_bg, light.diff_deleted_bg);
+        assert_eq!(theme.separator, light.separator);
+    }
+
+    #[test]
+    fn parse_theme_config_extracts_light_mode() {
+        let toml = r#"
+            [theme]
+            mode = "light"
+        "#;
+        let (mode, _overlay) = parse_theme_config(toml).expect("valid TOML");
+        assert_eq!(mode, Some(ColorMode::Light));
+    }
+
+    #[test]
+    fn parse_theme_config_extracts_dark_mode() {
+        let toml = r#"
+            [theme]
+            mode = "dark"
+        "#;
+        let (mode, _overlay) = parse_theme_config(toml).expect("valid TOML");
+        assert_eq!(mode, Some(ColorMode::Dark));
+    }
+
+    #[test]
+    fn parse_theme_config_treats_auto_as_no_explicit_mode() {
+        let toml = r#"
+            [theme]
+            mode = "auto"
+        "#;
+        let (mode, _overlay) = parse_theme_config(toml).expect("valid TOML");
+        assert_eq!(mode, None);
+    }
+
+    #[test]
+    fn parse_theme_config_returns_none_when_mode_absent() {
+        let toml = r##"
+            [theme]
+            diff_added_bg = "#112233"
+        "##;
+        let (mode, overlay) = parse_theme_config(toml).expect("valid TOML");
+        assert_eq!(mode, None);
+        assert_eq!(overlay.diff_added_bg.as_deref(), Some("#112233"));
+    }
+
+    #[test]
+    fn parse_theme_config_rejects_unknown_mode() {
+        let toml = r#"
+            [theme]
+            mode = "sepia"
+        "#;
+        assert!(parse_theme_config(toml).is_none());
+    }
+
+    #[test]
+    fn light_mode_uses_light_syntax_theme_fallback() {
+        assert_eq!(default_syntax_theme_name(ColorMode::Light), "GitHub");
+    }
+
+    #[test]
+    fn dark_mode_uses_dark_syntax_theme_fallback() {
+        assert_eq!(
+            default_syntax_theme_name(ColorMode::Dark),
+            "Monokai Extended"
+        );
+    }
+
+    #[test]
+    fn for_mode_light_uses_light_diff_backgrounds() {
+        let theme = Theme::for_mode(ColorMode::Light);
+        assert_eq!(theme.diff_added_bg, (0xd0, 0xff, 0xd0));
+        assert_eq!(theme.diff_added_emph_bg, (0xa0, 0xef, 0xa0));
+        assert_eq!(theme.diff_deleted_bg, (0xff, 0xe0, 0xe0));
+        assert_eq!(theme.diff_deleted_emph_bg, (0xff, 0xc0, 0xc0));
     }
 
     #[test]

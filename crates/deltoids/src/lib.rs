@@ -8,7 +8,7 @@ pub mod reverse;
 mod scope;
 pub mod syntax;
 
-pub use config::{SyntaxAssets, Theme};
+pub use config::{ColorMode, SyntaxAssets, Theme};
 pub use engine::{DiffOp, Snapshot};
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 pub use language::Language;

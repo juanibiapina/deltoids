@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `deltoids`: fail with a clear `git fetch` hint when the diff references blobs not in your local repo (e.g. `gh pr diff` for an unfetched PR). Previously rendered an empty or misleading diff.
+
 ## [0.3.0] - 2026-04-30
 
 ### Added

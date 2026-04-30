@@ -16,5 +16,8 @@ deltoids = { path = "../deltoids" }
 git2 = "0.20"
 terminal_size = "0.4"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

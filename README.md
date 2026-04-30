@@ -1,6 +1,6 @@
 # deltoids
 
-> **Beta**: This project is under active development. APIs and behavior may change.
+> **Beta**: This project is under active development. APIs and behavior may change. Diff output may still be broken; verify important changes.
 
 Tools for reviewing code in the agentic era.
 

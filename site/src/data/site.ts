@@ -11,6 +11,8 @@ export const SITE = {
   tagline: "Diffs for the agentic era.",
   description:
     "deltoids is a smart diff pager that expands hunks with the context you need to understand them.",
+  statusNote:
+    "Beta: diff output may still be broken. Verify important changes.",
   repo: {
     owner: "juanibiapina",
     name: "deltoids",
@@ -138,6 +140,10 @@ cargo install --git https://github.com/juanibiapina/deltoids edit-cli`,
 
 /** FAQ. */
 export const FAQ: { q: string; a: string }[] = [
+  {
+    q: "Are diffs guaranteed correct?",
+    a: "No. `deltoids` is beta; diff output may still be broken. Verify important changes with `git diff`.",
+  },
   {
     q: "How is this different from `git diff -W`?",
     a: "`git diff -W` finds scope with regex. `deltoids` parses the file with tree-sitter.",

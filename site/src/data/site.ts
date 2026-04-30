@@ -40,14 +40,16 @@ export type Tool = {
 /** `git diff | deltoids` snippets per tool. */
 export const PAGER_TOOLS: Tool[] = [
   {
-    id: "git",
-    label: "git",
+    id: "git-pipe",
+    label: "git (one-time use)",
     language: "bash",
-    code: `# pipe a single diff
-git diff | deltoids | less -R
-
-# or set as the default git pager
-git config --global core.pager 'deltoids | less -R'`,
+    code: `git diff | deltoids | less -R`,
+  },
+  {
+    id: "git-default",
+    label: "git (default pager)",
+    language: "bash",
+    code: `git config --global core.pager 'deltoids | less -R'`,
   },
   {
     id: "gh",

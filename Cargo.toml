@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Tools for reviewing code in the agentic era"
 authors = ["Juan Ibiapina <juanibiapina@gmail.com>"]

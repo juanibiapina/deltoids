@@ -24,10 +24,10 @@ export const SITE = {
 } as const;
 
 export const NAV_LINKS = [
-  { href: "#pager", label: "Pager" },
-  { href: "#agents", label: "Agents" },
-  { href: "#install", label: "Install" },
-  { href: "#faq", label: "FAQ" },
+  { href: "/#pager", label: "Pager" },
+  { href: "/#agents", label: "Agents" },
+  { href: "/#install", label: "Install" },
+  { href: "/#faq", label: "FAQ" },
   { href: "/docs/", label: "Docs" },
 ] as const;
 

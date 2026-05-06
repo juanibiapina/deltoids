@@ -20,6 +20,7 @@ path = "src/main.rs"
 crossterm = { version = "0.28", features = ["use-dev-tty"] }
 deltoids = { path = "../deltoids", features = ["blob-resolve", "ratatui"] }
 ratatui = "0.30"
+unicode-width = "0.2"
 
 [lints]
 workspace = true

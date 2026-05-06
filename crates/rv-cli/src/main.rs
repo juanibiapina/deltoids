@@ -45,6 +45,8 @@ use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::render_tui::{self, rgb_to_color};
 use deltoids::{Diff, LineKind, Theme, content, git};
+use ratatui::text::Span;
+use unicode_width::UnicodeWidthStr;
 
 mod sidebar;
 
@@ -577,7 +579,18 @@ fn draw_sidebar(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewStat
     let total = state.sidebar.row_count();
     let start = scroll.min(total);
     let end = start.saturating_add(viewport.max(1)).min(total);
-    let visible: Vec<Line<'static>> = state.sidebar.rows()[start..end].to_vec();
+    let mut visible: Vec<Line<'static>> = state.sidebar.rows()[start..end].to_vec();
+
+    // Extend the selection background across the full pane width so the
+    // highlighted row reads as a continuous bar (matching lazygit and
+    // edit-tui's `List` widget). Each rendered row stops at the end of
+    // its content; here we pad the selected row out to `area.width`
+    // with a trailing span styled with `selection_bg`.
+    if let Some(rel) = state.sidebar.selected().checked_sub(scroll)
+        && rel < visible.len()
+    {
+        pad_selected_row(&mut visible[rel], area.width as usize, theme);
+    }
 
     // No paragraph-level fg tint: the sidebar's spans set their own
     // colours. Focus is signalled by the separator bar's colour and by
@@ -599,6 +612,21 @@ fn draw_sidebar(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewStat
             .end_symbol(None);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
+}
+
+/// Append a trailing span of `selection_bg`-styled spaces so the row's
+/// highlight extends to `width`. No-op when the row is already wider
+/// than the pane (ratatui clips overflow).
+fn pad_selected_row(line: &mut Line<'static>, width: usize, theme: &Theme) {
+    let current: usize = line.spans.iter().map(|s| s.content.width()).sum();
+    if current >= width {
+        return;
+    }
+    let pad = width - current;
+    line.spans.push(Span::styled(
+        " ".repeat(pad),
+        Style::default().bg(rgb_to_color(theme.selection_bg)),
+    ));
 }
 
 fn draw_separator(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ViewState, theme: &Theme) {

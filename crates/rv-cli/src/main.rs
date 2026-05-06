@@ -26,6 +26,8 @@
 //! - `Shift+J`/`Shift+K` — scroll diff three lines, regardless of focus.
 //! - `PgDn`/`PgUp` / `Space` — page (current focus).
 //! - `g`/`G` / `Home`/`End` — jump to top/bottom (current focus).
+//! - `v` — cycle view mode: Full diff → Signatures only → Summary.
+//! - `p` — toggle public-only filter (drop files with no public changes).
 //! - `q`/`Esc` — quit.
 //!
 //! Set `RV_NO_ICONS=1` to disable nerd-font glyphs in the sidebar.
@@ -46,6 +48,7 @@ use deltoids::render_tui::{
     self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
     rgb_to_color,
 };
+use deltoids::structural::{StructuralDiff, SummaryOptions, format_summary_with};
 use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
@@ -94,8 +97,9 @@ fn run() -> Result<(), String> {
     let repo = git::Repo::discover();
     let resolved = resolve(&parsed, repo.as_ref())?;
     let diffs = precompute_diffs(&resolved);
+    let structurals = precompute_structurals(&resolved);
 
-    run_tui(&resolved, &diffs, &theme)
+    run_tui(&resolved, &diffs, &structurals, &theme)
 }
 
 /// One file's resolved content, ready for rendering.
@@ -158,6 +162,22 @@ fn precompute_diffs(files: &[ResolvedFile<'_>]) -> Vec<Diff> {
         .collect()
 }
 
+/// Compute one [`StructuralDiff`] per resolved file. Cached so the
+/// view-mode toggle is instant — no reparsing on every cycle.
+fn precompute_structurals(files: &[ResolvedFile<'_>]) -> Vec<StructuralDiff> {
+    files
+        .iter()
+        .map(|f| StructuralDiff::compute(&f.before, &f.after, display_path(f.file)))
+        .collect()
+}
+
+/// True when the file's structural diff has at least one change
+/// touching a public symbol. Used by the public-only filter to drop
+/// files entirely.
+fn file_has_public_change(s: &StructuralDiff) -> bool {
+    s.public_changes().next().is_some()
+}
+
 /// Sum added/deleted line counts across all hunks of one diff.
 fn count_deltas(diff: &Diff) -> (usize, usize) {
     let mut added = 0;
@@ -187,18 +207,18 @@ struct DiffView {
     file_offsets: Vec<usize>,
 }
 
-/// Build the diff pane as a flat list of ratatui lines. Same layout as
-/// before; renders files in `display_order` (sidebar tree order) so the
-/// diff pane's vertical layout matches the sidebar exactly. The
-/// returned `file_offsets` is keyed by *input* index — the caller looks
-/// up `file_offsets[input_index]` to find where that file's header
-/// starts in the rendered output.
+/// Build the right pane as a flat list of ratatui lines, honouring the
+/// current view settings. `display_order` is the order the sidebar
+/// would render files in; `file_offsets` is keyed by *input* index so
+/// callers always look up `file_offsets[input_index]`.
 fn build_view(
     files: &[ResolvedFile<'_>],
     diffs: &[Diff],
+    structurals: &[StructuralDiff],
     display_order: &[usize],
     width: usize,
     theme: &Theme,
+    settings: ViewSettings,
 ) -> DiffView {
     let mut lines = Vec::new();
     let mut file_offsets = vec![0usize; files.len()];
@@ -222,9 +242,25 @@ fn build_view(
         }
 
         let diff = &diffs[input_idx];
-        for hunk in diff.hunks() {
+        let structural = &structurals[input_idx];
+
+        if settings.public_only && !file_has_public_change(structural) {
             lines.push(Line::from(""));
-            lines.extend(render_tui::render_hunk(hunk, diff.language(), width, theme));
+            lines.push(Line::styled(
+                "  (no changes to public symbols)".to_string(),
+                Style::default().fg(rgb_to_color(theme.muted)),
+            ));
+            continue;
+        }
+
+        match settings.mode {
+            ViewMode::Full => append_full_hunks(&mut lines, diff, width, theme),
+            ViewMode::Signatures => {
+                append_summary_block(&mut lines, structural, settings, theme, true);
+            }
+            ViewMode::Summary => {
+                append_summary_block(&mut lines, structural, settings, theme, false);
+            }
         }
     }
 
@@ -232,6 +268,67 @@ fn build_view(
         lines,
         file_offsets,
     }
+}
+
+/// Render each hunk as ratatui lines (full diff view).
+fn append_full_hunks(out: &mut Vec<Line<'static>>, diff: &Diff, width: usize, theme: &Theme) {
+    for hunk in diff.hunks() {
+        out.push(Line::from(""));
+        out.extend(render_tui::render_hunk(hunk, diff.language(), width, theme));
+    }
+}
+
+/// Render the structural-change list for one file. `signatures_only`
+/// drops body-only changes (used by [`ViewMode::Signatures`]).
+fn append_summary_block(
+    out: &mut Vec<Line<'static>>,
+    structural: &StructuralDiff,
+    settings: ViewSettings,
+    theme: &Theme,
+    signatures_only: bool,
+) {
+    let opts = SummaryOptions {
+        indent: "  ",
+        title: false,
+        public_only: settings.public_only,
+        signatures_only,
+    };
+    let body = format_summary_with(structural, &opts);
+    if body.trim().is_empty() {
+        out.push(Line::from(""));
+        out.push(Line::styled(
+            "  (no structural changes)".to_string(),
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ));
+        return;
+    }
+    out.push(Line::from(""));
+    for line in body.lines() {
+        out.push(structural_line(line, theme));
+    }
+}
+
+/// Style a single structural-summary line with colours that reflect
+/// the leading bullet (`+` green, `-` red, `→` muted, `~` yellow).
+fn structural_line(line: &str, theme: &Theme) -> Line<'static> {
+    use ratatui::style::Color;
+    let trimmed = line.trim_start_matches(' ');
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+    let mut chars = trimmed.chars();
+    let bullet = chars.next().unwrap_or(' ');
+    let rest: String = chars.collect();
+    let color = match bullet {
+        '+' => Color::Green,
+        '-' => Color::Red,
+        '→' => rgb_to_color(theme.muted),
+        _ => Color::Yellow,
+    };
+    Line::from(vec![
+        Span::raw(indent.to_string()),
+        Span::styled(format!("{bullet} "), Style::default().fg(color)),
+        Span::raw(rest),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +339,64 @@ fn build_view(
 enum Focus {
     Sidebar,
     Diff,
+}
+
+/// What the right pane shows. Cycled with the `v` key. Layered on top
+/// of the public-only filter; both can be active at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewMode {
+    /// Full unified diff with deltoids breadcrumb context.
+    Full,
+    /// Only signature-affecting changes; body-only deltas are dropped
+    /// from the structural list, and hunks whose only change is a
+    /// function body are also collapsed.
+    Signatures,
+    /// Structural change summary only (no diff bodies).
+    Summary,
+}
+
+impl ViewMode {
+    fn cycle(self) -> Self {
+        match self {
+            ViewMode::Full => ViewMode::Signatures,
+            ViewMode::Signatures => ViewMode::Summary,
+            ViewMode::Summary => ViewMode::Full,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ViewMode::Full => "full",
+            ViewMode::Signatures => "signatures",
+            ViewMode::Summary => "summary",
+        }
+    }
+
+    fn pane_title(self) -> &'static str {
+        match self {
+            ViewMode::Full => " [2] Diff ",
+            ViewMode::Signatures => " [2] Diff (signatures) ",
+            ViewMode::Summary => " [2] Summary ",
+        }
+    }
+}
+
+/// View configuration that affects what `build_view` produces. Cheap
+/// to clone; stored on `ViewState` so it survives across resize
+/// rebuilds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ViewSettings {
+    mode: ViewMode,
+    public_only: bool,
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            mode: ViewMode::Full,
+            public_only: false,
+        }
+    }
 }
 
 struct ViewState {
@@ -262,10 +417,21 @@ struct ViewState {
     sidebar: Sidebar,
     /// Currently-focused pane. Determines where j/k/g/G/PgUp/PgDn go.
     focus: Focus,
+    /// View configuration (mode + public-only filter).
+    settings: ViewSettings,
+    /// Settings the cache was built for. `None` means "never built";
+    /// the resize loop rebuilds when this drifts from `settings`.
+    cached_settings: Option<ViewSettings>,
 }
 
 impl ViewState {
-    fn new(view: DiffView, sidebar: Sidebar, display_order: Vec<usize>, width: usize) -> Self {
+    fn new(
+        view: DiffView,
+        sidebar: Sidebar,
+        display_order: Vec<usize>,
+        width: usize,
+        settings: ViewSettings,
+    ) -> Self {
         Self {
             diff_lines: view.lines,
             file_offsets: view.file_offsets,
@@ -274,6 +440,8 @@ impl ViewState {
             diff_scroll: 0,
             sidebar,
             focus: Focus::Sidebar,
+            settings,
+            cached_settings: Some(settings),
         }
     }
 
@@ -365,15 +533,17 @@ fn handle_key(
 ) -> AppCommand {
     match key {
         KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
-        KeyCode::Tab => {
-            state.focus = match state.focus {
-                Focus::Sidebar => Focus::Diff,
-                Focus::Diff => Focus::Sidebar,
-            };
+        KeyCode::Char('v') => {
+            state.settings.mode = state.settings.mode.cycle();
+            state.diff_scroll = 0;
             AppCommand::Continue
         }
-        KeyCode::BackTab => {
-            // Two panes: BackTab is the same toggle.
+        KeyCode::Char('p') => {
+            state.settings.public_only = !state.settings.public_only;
+            state.diff_scroll = 0;
+            AppCommand::Continue
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
             state.focus = match state.focus {
                 Focus::Sidebar => Focus::Diff,
                 Focus::Diff => Focus::Sidebar,
@@ -388,9 +558,7 @@ fn handle_key(
             state.focus = Focus::Diff;
             AppCommand::Continue
         }
-        // Shift+J/K always scroll the diff regardless of focus, matching
-        // edit-tui — useful when navigating files but wanting to peek at
-        // a long diff.
+        // Shift+J/K always scroll the diff regardless of focus.
         KeyCode::Char('J') => {
             state.scroll_diff_by(SCROLL_STEP_LARGE as isize, diff_viewport);
             AppCommand::Continue
@@ -399,6 +567,17 @@ fn handle_key(
             state.scroll_diff_by(-(SCROLL_STEP_LARGE as isize), diff_viewport);
             AppCommand::Continue
         }
+        _ => handle_navigation_key(state, key, diff_viewport, sidebar_viewport),
+    }
+}
+
+fn handle_navigation_key(
+    state: &mut ViewState,
+    key: KeyCode,
+    diff_viewport: usize,
+    sidebar_viewport: usize,
+) -> AppCommand {
+    match key {
         KeyCode::Char('j') | KeyCode::Down => match state.focus {
             Focus::Sidebar => {
                 state.sidebar.move_down(sidebar_viewport);
@@ -482,7 +661,12 @@ fn sidebar_width(terminal_width: u16) -> u16 {
     DEFAULT_SIDEBAR_WIDTH.min(terminal_width / 3)
 }
 
-fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<(), String> {
+fn run_tui(
+    files: &[ResolvedFile<'_>],
+    diffs: &[Diff],
+    structurals: &[StructuralDiff],
+    theme: &Theme,
+) -> Result<(), String> {
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal =
@@ -510,8 +694,17 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
     let initial_diff_width = diff_pane_width(initial_total_width);
 
     let display_order = sidebar.display_order();
-    let view = build_view(files, diffs, &display_order, initial_diff_width, theme);
-    let mut state = ViewState::new(view, sidebar, display_order, initial_diff_width);
+    let settings = ViewSettings::default();
+    let view = build_view(
+        files,
+        diffs,
+        structurals,
+        &display_order,
+        initial_diff_width,
+        theme,
+        settings,
+    );
+    let mut state = ViewState::new(view, sidebar, display_order, initial_diff_width, settings);
 
     // Snap diff to the sidebar's initial selection. The viewport isn't
     // known until the first draw, so approximate it from terminal
@@ -537,17 +730,27 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         let diff_viewport = pane_viewport;
         let sidebar_viewport = pane_viewport;
 
-        // Rebuild the diff line cache if the diff pane changed width.
-        if diff_width != state.cached_width && diff_width > 0 {
-            let view = build_view(files, diffs, &state.display_order, diff_width, theme);
+        // Rebuild the diff line cache if the diff pane changed width
+        // OR the user toggled view settings since the last frame.
+        let want_rebuild = (diff_width != state.cached_width && diff_width > 0)
+            || state.cached_settings != Some(state.settings);
+        if want_rebuild && diff_width > 0 {
+            let view = build_view(
+                files,
+                diffs,
+                structurals,
+                &state.display_order,
+                diff_width,
+                theme,
+                state.settings,
+            );
             state.diff_lines = view.lines;
             state.file_offsets = view.file_offsets;
             state.cached_width = diff_width;
-            // Clamp scroll to the new content length.
+            state.cached_settings = Some(state.settings);
+            let min = state.min_diff_scroll();
             let max = state.max_diff_scroll(diff_viewport);
-            if state.diff_scroll > max {
-                state.diff_scroll = max;
-            }
+            state.diff_scroll = state.diff_scroll.clamp(min, max.max(min));
         }
 
         let cmd = read_event(diff_viewport, sidebar_viewport, &mut state)?;
@@ -681,7 +884,7 @@ fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, 
 
     let color = pane_border_color(state.focus == Focus::Diff, theme);
     let footer = diff_footer(state);
-    let block = pane_block_with_footer(" [2] Diff ", color, footer);
+    let block = pane_block_with_footer(state.settings.mode.pane_title(), color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
 
     // Vertical scrollbar reflects the *visible range*, not the full
@@ -692,8 +895,15 @@ fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, 
     render_pane_scrollbar(frame, area, span, position, pane_inner_height(area), theme);
 }
 
-fn draw_help(frame: &mut ratatui::Frame<'_>, area: Rect, _state: &ViewState, theme: &Theme) {
-    let text = "Tab/1/2 focus  j/k move  Shift+J/K scroll diff  g/G top/bottom  q quit";
+fn draw_help(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ViewState, theme: &Theme) {
+    let mut text = String::from(
+        "Tab/1/2 focus  j/k move  Shift+J/K scroll  g/G top/bottom  v view  p public  q quit  ",
+    );
+    text.push_str(&format!("[view: {}", state.settings.mode.label()));
+    if state.settings.public_only {
+        text.push_str(", public-only");
+    }
+    text.push(']');
     let p = Paragraph::new(text).style(Style::default().fg(rgb_to_color(theme.muted)));
     frame.render_widget(p, area);
 }
@@ -819,6 +1029,7 @@ mod tests {
 
     fn make_state(files: &[ResolvedFile<'_>]) -> ViewState {
         let diffs = precompute_diffs(files);
+        let structurals = precompute_structurals(files);
         let sidebar_files: Vec<SidebarFile<'_>> = files
             .iter()
             .zip(diffs.iter())
@@ -833,8 +1044,17 @@ mod tests {
             .collect();
         let sidebar = Sidebar::build_with_icons(&sidebar_files, &theme(), sidebar::IconMode::Off);
         let display_order = sidebar.display_order();
-        let view = build_view(files, &diffs, &display_order, 80, &theme());
-        ViewState::new(view, sidebar, display_order, 80)
+        let settings = ViewSettings::default();
+        let view = build_view(
+            files,
+            &diffs,
+            &structurals,
+            &display_order,
+            80,
+            &theme(),
+            settings,
+        );
+        ViewState::new(view, sidebar, display_order, 80, settings)
     }
 
     #[test]
@@ -846,7 +1066,15 @@ mod tests {
             after: "world\n".to_string(),
         }];
         let diffs = precompute_diffs(&resolved);
-        let view = build_view(&resolved, &diffs, &[0], 80, &theme());
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &precompute_structurals(&resolved),
+            &[0],
+            80,
+            &theme(),
+            ViewSettings::default(),
+        );
         let texts: Vec<String> = view.lines.iter().map(line_text).collect();
 
         assert!(
@@ -880,7 +1108,15 @@ mod tests {
             },
         ];
         let diffs = precompute_diffs(&resolved);
-        let view = build_view(&resolved, &diffs, &[0, 1], 80, &theme());
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &precompute_structurals(&resolved),
+            &[0, 1],
+            80,
+            &theme(),
+            ViewSettings::default(),
+        );
         assert_eq!(view.file_offsets.len(), 2);
         // First offset is 0 (no leading blank).
         assert_eq!(view.file_offsets[0], 0);
@@ -910,7 +1146,15 @@ mod tests {
             },
         ];
         let diffs = precompute_diffs(&resolved);
-        let view = build_view(&resolved, &diffs, &[1, 0], 80, &theme());
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &precompute_structurals(&resolved),
+            &[1, 0],
+            80,
+            &theme(),
+            ViewSettings::default(),
+        );
         assert_eq!(line_text(&view.lines[0]), "b.txt");
         assert_eq!(view.file_offsets[1], 0);
         assert!(view.file_offsets[0] > 0);
@@ -927,7 +1171,15 @@ mod tests {
             after: "y\n".to_string(),
         }];
         let diffs = precompute_diffs(&resolved);
-        let view = build_view(&resolved, &diffs, &[0], 80, &theme());
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &precompute_structurals(&resolved),
+            &[0],
+            80,
+            &theme(),
+            ViewSettings::default(),
+        );
         let combined: String = view
             .lines
             .iter()
@@ -1206,5 +1458,120 @@ mod tests {
         assert_eq!(sidebar_width(200), DEFAULT_SIDEBAR_WIDTH);
         // Narrower terminal → capped at third.
         assert_eq!(sidebar_width(90), 30);
+    }
+
+    // ---------------------------------------------------------------
+    // View-mode + public-only filter
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn view_mode_cycle_full_signatures_summary() {
+        assert_eq!(ViewMode::Full.cycle(), ViewMode::Signatures);
+        assert_eq!(ViewMode::Signatures.cycle(), ViewMode::Summary);
+        assert_eq!(ViewMode::Summary.cycle(), ViewMode::Full);
+    }
+
+    #[test]
+    fn pressing_v_cycles_the_view_mode() {
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn x() {}\n".to_string(),
+            after: "fn y() {}\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        assert_eq!(state.settings.mode, ViewMode::Full);
+        handle_key(&mut state, KeyCode::Char('v'), 4, 4);
+        assert_eq!(state.settings.mode, ViewMode::Signatures);
+        handle_key(&mut state, KeyCode::Char('v'), 4, 4);
+        assert_eq!(state.settings.mode, ViewMode::Summary);
+        handle_key(&mut state, KeyCode::Char('v'), 4, 4);
+        assert_eq!(state.settings.mode, ViewMode::Full);
+    }
+
+    #[test]
+    fn pressing_p_toggles_public_only() {
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn x() {}\n".to_string(),
+            after: "fn y() {}\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        assert!(!state.settings.public_only);
+        handle_key(&mut state, KeyCode::Char('p'), 4, 4);
+        assert!(state.settings.public_only);
+        handle_key(&mut state, KeyCode::Char('p'), 4, 4);
+        assert!(!state.settings.public_only);
+    }
+
+    #[test]
+    fn build_view_summary_mode_renders_structural_lines() {
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn alpha() {}\n".to_string(),
+            after: "fn alpha() {}\nfn beta() {}\n".to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let settings = ViewSettings {
+            mode: ViewMode::Summary,
+            public_only: false,
+        };
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &[0],
+            80,
+            &theme(),
+            settings,
+        );
+        let combined: String = view
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("Added function `beta`"),
+            "got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn public_only_renders_placeholder_for_private_only_files() {
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn priv_a() {}\n".to_string(),
+            after: "fn priv_a() { let x = 1; }\n".to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let settings = ViewSettings {
+            mode: ViewMode::Summary,
+            public_only: true,
+        };
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &[0],
+            80,
+            &theme(),
+            settings,
+        );
+        let combined: String = view
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("no changes to public symbols"),
+            "got:\n{combined}"
+        );
     }
 }

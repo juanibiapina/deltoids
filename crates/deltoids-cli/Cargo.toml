@@ -12,11 +12,11 @@ name = "deltoids"
 path = "src/main.rs"
 
 [dependencies]
-deltoids = { path = "../deltoids" }
-git2 = "0.20"
+deltoids = { path = "../deltoids", features = ["blob-resolve"] }
 terminal_size = "0.4"
 
 [dev-dependencies]
+git2 = "0.20"
 tempfile = "3"
 
 [lints]

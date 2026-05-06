@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add basic `rv` TUI for reviewing diffs. Currently the same as `deltoids` but in a TUI
+
 ## [0.4.0] - 2026-04-30
 
 ### Added

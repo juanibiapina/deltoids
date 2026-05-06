@@ -1,9 +1,15 @@
 pub mod config;
+#[cfg(feature = "blob-resolve")]
+pub mod content;
 mod engine;
+#[cfg(feature = "blob-resolve")]
+pub mod git;
 mod intraline;
 mod language;
 pub mod parse;
 pub mod render;
+#[cfg(feature = "ratatui")]
+pub mod render_tui;
 pub mod reverse;
 mod scope;
 pub mod syntax;

@@ -5,7 +5,8 @@ edition.workspace = true
 
 [dependencies]
 dirs = "6"
-git2 = "0.20"
+git2 = { version = "0.20", optional = true }
+ratatui = { version = "0.30", optional = true }
 toml = "0.8"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -34,6 +35,15 @@ tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+
+[features]
+default = []
+# Resolve before/after content for a `parse::FileDiff` from a git
+# repository's object database (uses libgit2 via the `git2` crate).
+blob-resolve = ["dep:git2"]
+# Render `Hunk`s and headers as ratatui `Line<'static>` values for use in
+# scrolling TUIs (rv, edit-tui).
+ratatui = ["dep:ratatui"]
 
 [lints]
 workspace = true

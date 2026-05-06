@@ -423,6 +423,7 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm_winapi",
+ "filedescriptor",
  "mio",
  "parking_lot",
  "rustix 0.38.44",
@@ -526,6 +527,7 @@ dependencies = [
  "dirs",
  "git2",
  "gix-imara-diff",
+ "ratatui",
  "regex",
  "serde",
  "syntect",
@@ -660,7 +662,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "syntect",
  "tempfile",
  "toml 0.8.23",
  "ulid",
@@ -2065,6 +2066,15 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "rv-cli"
+version = "0.4.0"
+dependencies = [
+ "crossterm 0.28.1",
+ "deltoids",
+ "ratatui",
+]
 
 [[package]]
 name = "ryu"

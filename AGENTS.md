@@ -6,8 +6,11 @@ This is a Rust workspace with CLI tools that trace file edits, plus a TUI to bro
 
 **Crates:**
 - `edit-cli` — `edit`, `write`, and `edit-tui` CLI commands, plus core trace management library
-- `deltoids` — diff library with tree-sitter scope context
-- `deltoids-cli` — `deltoids` diff filter CLI
+- `deltoids` — diff library with tree-sitter scope context. Optional features:
+  - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by `deltoids` and `rv` bins).
+  - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by `edit-tui` and `rv`).
+- `deltoids-cli` — `deltoids` ANSI diff filter CLI
+- `rv-cli` — `rv` interactive TUI for scrolling diffs (same input pipeline as `deltoids`, ratatui rendering)
 - `tests` — cross-crate integration tests
 
 ## Build & Test
@@ -23,6 +26,7 @@ Install binaries locally:
 ```bash
 cargo install --path crates/edit-cli     # edit, write, edit-tui
 cargo install --path crates/deltoids-cli  # deltoids
+cargo install --path crates/rv-cli        # rv
 ```
 
 ## Code Structure
@@ -32,9 +36,7 @@ crates/
   edit-cli/
     src/lib.rs              # Library entry: request types, edit/write execution
     src/trace_store.rs      # TraceStore: trace dir layout, append/read/list
-    src/theme.rs            # TUI theme resolution (syntax + UI colors)
-    src/tui.rs              # TUI rendering and event handling
-    src/highlight.rs        # Syntax highlighting for diffs
+    src/tui.rs              # edit-tui chrome (panes, lists, HistoryEntry header) — diff lines come from `deltoids::render_tui::render_hunk`
     src/bin/edit.rs         # Edit CLI binary
     src/bin/write.rs        # Write CLI binary
     src/bin/edit-tui.rs     # TUI binary
@@ -46,7 +48,10 @@ crates/
     src/scope.rs            # Hunk types, Hunk::runs / HunkRun, public entry
     src/scope/range.rs      # Planning phase: ContextRange per diff op
     src/scope/hunk_builder.rs # Filling phase: ContextRange -> Hunk
-    src/render.rs           # Diff rendering
+    src/render.rs           # Diff rendering as ANSI strings (used by deltoids CLI)
+    src/render_tui.rs       # Diff rendering as ratatui Line<'static> (feature: ratatui)
+    src/git.rs              # libgit2 wrapper for blob lookup (feature: blob-resolve)
+    src/content.rs          # Resolve before/after content for a FileDiff (feature: blob-resolve)
     src/intraline.rs        # Within-line diff algorithm
     src/reverse.rs          # Diff reversal
     src/language.rs         # Stable language detection and per-language parser config
@@ -56,7 +61,10 @@ crates/
       cases/<NNN-slug>/       # 1-case.md, 2-original.<EXT>, 3-updated.<EXT>, 4-expected.diff
 
   deltoids-cli/
-    src/main.rs         # Standalone diff filter CLI
+    src/main.rs         # Standalone ANSI diff filter CLI (uses deltoids::{git, content})
+
+  rv-cli/
+    src/main.rs         # Interactive scrolling TUI (uses deltoids::{git, content, render_tui})
 
   tests/
     tests/tui_cli.rs    # Integration tests for edit + write + edit-tui interaction

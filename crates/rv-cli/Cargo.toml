@@ -1,0 +1,25 @@
+[package]
+name = "rv-cli"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rv"
+path = "src/main.rs"
+
+[dependencies]
+# `use-dev-tty` swaps crossterm's mio/kqueue input source for a
+# `filedescriptor`/poll(2) one. Required on macOS: mio's kqueue
+# `EVFILT_READ` registration on a fresh `/dev/tty` fd returns EINVAL,
+# crossterm swallows the error, and every later `event::poll` surfaces
+# a generic "Failed to initialize input reader".
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
+deltoids = { path = "../deltoids", features = ["blob-resolve", "ratatui"] }
+ratatui = "0.30"
+
+[lints]
+workspace = true

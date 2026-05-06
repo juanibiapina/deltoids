@@ -26,13 +26,12 @@ path = "src/bin/edit-tui.rs"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
-deltoids = { path = "../deltoids" }
+deltoids = { path = "../deltoids", features = ["ratatui"] }
 fs2 = "0.4"
 notify = "7"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 toml = "0.8"
 ulid = "1"
 unicode-width = "0.2"

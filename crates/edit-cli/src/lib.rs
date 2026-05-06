@@ -1,5 +1,3 @@
-mod highlight;
-pub mod theme;
 pub mod trace_store;
 pub mod tui;
 

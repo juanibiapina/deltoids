@@ -70,24 +70,31 @@ pub fn pair_symbols_with(
     let mut new: Vec<Option<Symbol>> = new.into_iter().map(Some).collect();
 
     // Pass 1: same qualified path → Match.
-    for new_idx in 0..new.len() {
-        let Some(new_sym) = new[new_idx].as_ref() else {
-            continue;
-        };
-        let new_path = new_sym.path.clone();
-        let new_kind = new_sym.kind.clone();
-        if let Some(old_idx) = old.iter().position(|o| {
+    let new_len = new.len();
+    #[allow(clippy::needless_range_loop)]
+    for new_idx in 0..new_len {
+        let new_path;
+        let new_kind;
+        match new[new_idx].as_ref() {
+            Some(s) => {
+                new_path = s.path.clone();
+                new_kind = s.kind.clone();
+            }
+            None => continue,
+        }
+        let Some(old_idx) = old.iter().position(|o| {
             o.as_ref()
                 .map(|s| s.path == new_path && s.kind == new_kind)
                 .unwrap_or(false)
-        }) {
-            let old_sym = old[old_idx].take().unwrap();
-            let new_sym = new[new_idx].take().unwrap();
-            pairings.push(Pairing::Match {
-                old: old_sym,
-                new: new_sym,
-            });
-        }
+        }) else {
+            continue;
+        };
+        let old_sym = old[old_idx].take().unwrap();
+        let new_sym = new[new_idx].take().unwrap();
+        pairings.push(Pairing::Match {
+            old: old_sym,
+            new: new_sym,
+        });
     }
 
     // Pass 2: rename detection on leftovers.

@@ -109,6 +109,46 @@ impl Symbol {
     pub fn qualified_name(&self) -> String {
         self.path.join("::")
     }
+
+    /// Signature with leading visibility / accessibility tokens
+    /// removed, so two symbols that differ only in visibility have the
+    /// same `core_signature`. Used by the classifier to separate
+    /// pure-visibility changes from signature changes.
+    pub fn core_signature(&self) -> String {
+        let mut s = self.signature.trim_start();
+        // Per-language strip of leading visibility tokens.
+        let prefixes: &[&str] = match self.language {
+            Language::Rust => &["pub(crate)", "pub(super)", "pub(self)", "pub"],
+            Language::Java | Language::TypeScript | Language::Tsx | Language::JavaScript => {
+                &["public", "private", "protected"]
+            }
+            _ => &[],
+        };
+        for prefix in prefixes {
+            if let Some(rest) = strip_complete_token(s, prefix) {
+                s = rest;
+                break;
+            }
+        }
+        // Also drop a `pub(in something)` form.
+        if let Some(rest) = s.strip_prefix("pub(in ")
+            && let Some(end) = rest.find(')')
+        {
+            s = rest[end + 1..].trim_start();
+        }
+        s.to_string()
+    }
+}
+
+/// Strip `prefix` from `s` only if it's followed by whitespace (i.e.
+/// a complete token). Avoids munging things like `public_foo`.
+fn strip_complete_token<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(prefix)?;
+    let trimmed = rest.trim_start();
+    if rest.len() == trimmed.len() {
+        return None;
+    }
+    Some(trimmed)
 }
 
 // ---------------------------------------------------------------------------

@@ -388,16 +388,104 @@ fn process_diff(
 }
 
 /// Append every hunk in `diff` to `out`. One blank line precedes each
-/// hunk — callers don't need to add their own.
+/// hunk — callers don't need to add their own. When a hunk falls
+/// inside a symbol that has a structural change, an ANSI-coloured
+/// label is rendered just above the hunk ("+ Added function `parse`").
 fn append_hunks(out: &mut String, diff: &Diff, width: usize, fill: BgFill, theme: &Theme) {
+    let structural = diff.structural();
+    let span_index = build_change_span_index(&structural);
     for hunk in diff.hunks() {
         out.push('\n');
+        if let Some(change) = annotate_for_hunk(hunk, &span_index)
+            && let Some(line) = ansi_annotation_line(change, theme)
+        {
+            out.push_str(&line);
+            out.push('\n');
+        }
         let hunk_lines = render_hunk(hunk, diff.language(), width, fill, theme);
         for line in hunk_lines {
             out.push_str(&line);
             out.push('\n');
         }
     }
+}
+
+/// Build (LineSpan, change) index for one file's structural diff.
+fn build_change_span_index(
+    structural: &deltoids::StructuralDiff,
+) -> Vec<(deltoids::LineSpan, &deltoids::structural::StructuralChange)> {
+    structural
+        .changes()
+        .iter()
+        .filter_map(|c| {
+            let span = c
+                .after
+                .as_ref()
+                .map(|s| s.span)
+                .or_else(|| c.before.as_ref().map(|s| s.span));
+            span.map(|s| (s, c))
+        })
+        .collect()
+}
+
+/// Find the smallest span that overlaps `hunk` on the new side.
+fn annotate_for_hunk<'a>(
+    hunk: &deltoids::Hunk,
+    index: &'a [(
+        deltoids::LineSpan,
+        &'a deltoids::structural::StructuralChange,
+    )],
+) -> Option<&'a deltoids::structural::StructuralChange> {
+    use deltoids::LineKind;
+    let new_count = hunk
+        .lines
+        .iter()
+        .filter(|l| matches!(l.kind, LineKind::Added | LineKind::Context))
+        .count();
+    let h_start = hunk.new_start.max(1);
+    let h_end = if new_count == 0 {
+        h_start
+    } else {
+        h_start + new_count - 1
+    };
+    let mut best: Option<(usize, &deltoids::structural::StructuralChange)> = None;
+    for (span, change) in index {
+        if span.end < h_start || span.start > h_end {
+            continue;
+        }
+        let width = span.end.saturating_sub(span.start);
+        if best.map(|(w, _)| width < w).unwrap_or(true) {
+            best = Some((width, change));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Render an ANSI-coloured annotation line for the change. Returns
+/// `None` for body-only changes (the breadcrumb already names the
+/// symbol; the label would be noise).
+fn ansi_annotation_line(
+    change: &deltoids::structural::StructuralChange,
+    theme: &Theme,
+) -> Option<String> {
+    use deltoids::config::{rgb_to_ansi_bg, rgb_to_ansi_fg};
+    use deltoids::structural::ChangeKind;
+    if matches!(change.kind, ChangeKind::BodyChanged) {
+        return None;
+    }
+    let (bullet, fg_rgb): (char, (u8, u8, u8)) = match change.kind {
+        ChangeKind::Added => ('+', (114, 196, 110)), // green
+        ChangeKind::Removed => ('-', (219, 88, 96)), // red
+        ChangeKind::Renamed => ('→', theme.muted),
+        _ => ('~', (224, 175, 104)), // yellow
+    };
+    let _ = rgb_to_ansi_bg; // kept available, currently unused here
+    let bullet_color = rgb_to_ansi_fg(fg_rgb.0, fg_rgb.1, fg_rgb.2);
+    let muted_color = rgb_to_ansi_fg(theme.muted.0, theme.muted.1, theme.muted.2);
+    Some(format!(
+        "  {bullet_color}{bullet}\x1b[0m {muted_color}{}\x1b[0m",
+        change.description
+    ))
 }
 
 /// Append the structural summary for one file pair to `out`. Skips the

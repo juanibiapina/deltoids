@@ -131,12 +131,19 @@ pub struct ScopeNode {
 ///
 /// Use `Diff::compute()` to create a diff from original and updated content.
 /// The diff provides both raw diff text and structured hunks with
-/// ancestor scope chains.
+/// ancestor scope chains. After construction, [`Diff::structural`]
+/// returns the lazily-computed [`crate::StructuralDiff`] describing
+/// added / removed / modified named declarations.
 #[derive(Debug, Clone)]
 pub struct Diff {
     snapshot: Snapshot,
     hunks: Vec<Hunk>,
     language: Option<Language>,
+    /// Snapshots kept around so [`Diff::structural`] can reparse on
+    /// demand without callers needing to thread the source through.
+    original: String,
+    updated: String,
+    path: String,
 }
 
 impl Diff {
@@ -154,7 +161,16 @@ impl Diff {
             snapshot,
             hunks,
             language,
+            original: original.to_string(),
+            updated: updated.to_string(),
+            path: path.to_string(),
         }
+    }
+
+    /// Compute a [`crate::StructuralDiff`] for this file pair, naming
+    /// added / removed / modified named declarations.
+    pub fn structural(&self) -> crate::StructuralDiff {
+        crate::StructuralDiff::compute(&self.original, &self.updated, &self.path)
     }
 
     /// Returns the diff text with standard 3-line context.

@@ -130,24 +130,12 @@ fn classify_match(old: Symbol, new: Symbol) -> Option<StructuralChange> {
     })
 }
 
-/// Body comparison: we don't have the body text on the Symbol (yet),
-/// so fall back to body-span identity. If the spans differ, the body
-/// either grew, shrank, or moved — all of which count as a body
-/// change. When body spans match exactly *and* the signature matches,
-/// we treat the symbols as identical (the body interior may still
-/// have been edited, but we can't tell from spans alone — that's
-/// a pessimistic-on-purpose call which the line diff catches anyway).
-///
-/// To avoid false negatives, we also consider the overall span: if
-/// the outer span boundaries shifted, the body must have moved.
+/// True when the bodies differ in **content**. Span-only changes
+/// (e.g. a function moved lines because something was inserted above)
+/// are not body changes — we ignore them so a single edit doesn't
+/// flag every symbol below as Modified.
 fn body_text_differs(old: &Symbol, new: &Symbol) -> bool {
-    if old.body_span != new.body_span {
-        return true;
-    }
-    if old.span != new.span {
-        return true;
-    }
-    false
+    old.body_text != new.body_text
 }
 
 fn make_added(s: Symbol) -> StructuralChange {

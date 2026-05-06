@@ -101,6 +101,10 @@ pub struct Symbol {
     /// Where the body interior of this symbol lives, if it has one.
     /// Excludes the opening / closing delimiters.
     pub body_span: Option<LineSpan>,
+    /// Raw text of the body, when present. Used by the classifier to
+    /// detect body-only changes without being fooled by span shifts
+    /// (symbols can move lines without their content changing).
+    pub body_text: Option<String>,
     pub language: Language,
 }
 
@@ -149,17 +153,6 @@ fn strip_complete_token<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
         return None;
     }
     Some(trimmed)
-}
-
-// ---------------------------------------------------------------------------
-// Public stub container — fleshed out in later phases.
-// ---------------------------------------------------------------------------
-
-/// Placeholder for the eventual `StructuralDiff` API. Empty for now;
-/// later phases populate it with `changes()`, `public_changes()`, etc.
-#[derive(Debug, Clone, Default)]
-pub struct StructuralDiff {
-    _private: (),
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +213,7 @@ fn walk<'a>(
                 } = symbol_action;
                 let span = node_line_span(node);
                 let body_span = body.and_then(|b| body_interior_span(b, bytes));
+                let body_text = body.and_then(|b| body_interior_text(b, bytes));
                 let signature = compute_signature(node, body, source);
                 let mut full_path = path.clone();
                 full_path.push(name.clone());
@@ -230,6 +224,7 @@ fn walk<'a>(
                     signature,
                     span,
                     body_span,
+                    body_text,
                     language,
                 });
                 if pushes_path {
@@ -828,6 +823,32 @@ fn body_interior_span(body: Node<'_>, bytes: &[u8]) -> Option<LineSpan> {
     match (start, end) {
         (Some(s), Some(e)) if s <= e => Some(LineSpan::new(s, e)),
         _ => None,
+    }
+}
+
+/// Concatenated text of the body's children that aren't delimiter
+/// tokens. We use this for content equality checks; mirrors the
+/// rule used by [`body_interior_span`] so the two stay aligned.
+fn body_interior_text(body: Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut cursor = body.walk();
+    let mut parts = Vec::new();
+    if cursor.goto_first_child() {
+        loop {
+            let n = cursor.node();
+            if !is_delim_only(n, bytes)
+                && let Ok(t) = n.utf8_text(bytes)
+            {
+                parts.push(t.to_string());
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
     }
 }
 

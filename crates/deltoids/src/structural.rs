@@ -21,11 +21,11 @@
 //! rename detection as a fallback.
 
 mod classify;
+mod diff;
 mod pair;
 mod symbol;
 
 pub use classify::{ChangeKind, StructuralChange, classify, kind_word};
+pub use diff::StructuralDiff;
 pub use pair::{Pairing, pair_symbols};
-pub use symbol::{
-    LineSpan, StructuralDiff, Symbol, SymbolKind, SymbolPath, Visibility, extract_symbols,
-};
+pub use symbol::{LineSpan, Symbol, SymbolKind, SymbolPath, Visibility, extract_symbols};

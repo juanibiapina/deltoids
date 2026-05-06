@@ -49,7 +49,7 @@ crates/
     src/scope/range.rs      # Planning phase: ContextRange per diff op
     src/scope/hunk_builder.rs # Filling phase: ContextRange -> Hunk
     src/render.rs           # Diff rendering as ANSI strings (used by deltoids CLI)
-    src/render_tui.rs       # Diff rendering as ratatui Line<'static> (feature: ratatui)
+    src/render_tui.rs       # Diff rendering as ratatui Line<'static>; also exports shared pane chrome helpers (pane_block, pane_block_with_footer, pane_border_color, render_pane_scrollbar) used by edit-tui and rv (feature: ratatui)
     src/git.rs              # libgit2 wrapper for blob lookup (feature: blob-resolve)
     src/content.rs          # Resolve before/after content for a FileDiff (feature: blob-resolve)
     src/intraline.rs        # Within-line diff algorithm

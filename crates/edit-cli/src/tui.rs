@@ -17,19 +17,18 @@ use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Margin},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    symbols::scrollbar as scrollbar_symbols,
     text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState,
-    },
+    widgets::{List, ListItem, ListState, Paragraph},
 };
 use unicode_width::UnicodeWidthChar;
 
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
-use deltoids::render_tui::{self, rgb_to_color};
+use deltoids::render_tui::{
+    self, pane_block, pane_block_with_footer, pane_border_color, pane_inner_height,
+    position_footer, render_pane_scrollbar, rgb_to_color,
+};
 use deltoids::{Hunk, Theme};
 
 const DIFF_SCROLL_STEP: usize = 3;
@@ -712,79 +711,6 @@ fn draw(
     render_traces_pane(frame, sidebar[1], traces, state, theme);
     render_diff_pane(frame, body[1], active_trace, state, theme);
     frame.render_widget(help_bar(theme), root[1]);
-}
-
-fn render_pane_scrollbar(
-    frame: &mut ratatui::Frame<'_>,
-    area: ratatui::layout::Rect,
-    content_length: usize,
-    position: usize,
-    viewport: usize,
-    theme: &Theme,
-) {
-    if content_length <= viewport.max(1) {
-        return;
-    }
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .symbols(scrollbar_symbols::VERTICAL)
-        .thumb_symbol("\u{2590}")
-        .track_style(Style::default().fg(rgb_to_color(theme.border)))
-        .thumb_style(Style::default().fg(rgb_to_color(theme.border)))
-        .begin_symbol(None)
-        .end_symbol(None);
-    // Ratatui puts the thumb at the track bottom only when position ==
-    // content_length - 1.  Our scroll offset maxes out at content_length -
-    // viewport, so pass max_scroll + 1 as the content length and clamp
-    // position accordingly.  This makes the thumb reach the bottom for both
-    // offset-based (diff) and selection-based (list) panes.
-    let max_scroll = content_length.saturating_sub(viewport);
-    let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-        .position(position.min(max_scroll))
-        .viewport_content_length(viewport);
-    frame.render_stateful_widget(
-        scrollbar,
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scrollbar_state,
-    );
-}
-
-fn pane_inner_height(area: ratatui::layout::Rect) -> usize {
-    area.height.saturating_sub(2) as usize
-}
-
-fn pane_block(title: &'static str, color: Color) -> Block<'static> {
-    Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-}
-
-fn pane_block_with_footer(
-    title: &'static str,
-    color: Color,
-    footer: Option<String>,
-) -> Block<'static> {
-    let mut block = pane_block(title, color);
-    if let Some(footer) = footer {
-        block = block.title_bottom(Line::from(footer).right_aligned());
-    }
-    block
-}
-
-fn position_footer(position: usize, total: usize) -> String {
-    format!(" {position} of {total} ")
-}
-
-fn pane_border_color(active: bool, theme: &Theme) -> Color {
-    if active {
-        rgb_to_color(theme.border_active)
-    } else {
-        rgb_to_color(theme.border)
-    }
 }
 
 fn help_bar(theme: &Theme) -> Paragraph<'static> {

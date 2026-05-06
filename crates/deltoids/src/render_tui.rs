@@ -16,8 +16,14 @@
 //! All three accept `&Theme` for colours and load syntax assets internally
 //! via [`SyntaxAssets::load`] (cached). Callers do not pass syntax assets.
 
+use ratatui::Frame;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::scrollbar as scrollbar_symbols;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::FontStyle;
 use unicode_width::UnicodeWidthChar;
@@ -692,6 +698,112 @@ fn display_width(text: &str) -> usize {
             }
         })
         .sum()
+}
+
+// ---------------------------------------------------------------------------
+// Pane helpers (shared between edit-tui and rv)
+// ---------------------------------------------------------------------------
+//
+// These build the rounded, titled, optionally-footered [`Block`] used to
+// frame each pane in our TUIs, plus the matching scrollbar widget. Living
+// here keeps the two binaries visually identical without making either
+// of them depend on the other.
+
+/// Pick the border colour for a pane based on whether it currently has
+/// focus. Active panes use [`Theme::border_active`] (the bright accent),
+/// inactive panes use [`Theme::border`].
+pub fn pane_border_color(active: bool, theme: &Theme) -> Color {
+    if active {
+        rgb_to_color(theme.border_active)
+    } else {
+        rgb_to_color(theme.border)
+    }
+}
+
+/// Inner height of a pane block (its area minus the two border rows).
+pub fn pane_inner_height(area: Rect) -> usize {
+    area.height.saturating_sub(2) as usize
+}
+
+/// Inner width of a pane block (its area minus the two border columns).
+pub fn pane_inner_width(area: Rect) -> usize {
+    area.width.saturating_sub(2) as usize
+}
+
+/// Build a rounded-border [`Block`] with the given title and border
+/// colour. Use [`pane_block_with_footer`] when you also want a
+/// bottom-right counter.
+pub fn pane_block(title: &'static str, color: Color) -> Block<'static> {
+    Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+}
+
+/// Like [`pane_block`] but also renders a right-aligned footer string
+/// inside the bottom border. Pass `None` to skip the footer.
+pub fn pane_block_with_footer(
+    title: &'static str,
+    color: Color,
+    footer: Option<String>,
+) -> Block<'static> {
+    let mut block = pane_block(title, color);
+    if let Some(footer) = footer {
+        block = block.title_bottom(Line::from(footer).right_aligned());
+    }
+    block
+}
+
+/// Format a position counter for the pane footer: `" 3 of 12 "`.
+pub fn position_footer(position: usize, total: usize) -> String {
+    format!(" {position} of {total} ")
+}
+
+/// Render a vertical scrollbar inside the right border of `area`,
+/// styled with the theme's border colour. No-op when the content fits
+/// the viewport.
+///
+/// `content_length` is the number of logical rows of content;
+/// `position` is the current top-row index (or selected-row index in a
+/// list); `viewport` is the inner pane height. The scrollbar uses the
+/// inner area (1-row vertical margin) so the thumb stays clear of the
+/// rounded corners.
+pub fn render_pane_scrollbar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    content_length: usize,
+    position: usize,
+    viewport: usize,
+    theme: &Theme,
+) {
+    if content_length <= viewport.max(1) {
+        return;
+    }
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .symbols(scrollbar_symbols::VERTICAL)
+        .thumb_symbol("\u{2590}")
+        .track_style(Style::default().fg(rgb_to_color(theme.border)))
+        .thumb_style(Style::default().fg(rgb_to_color(theme.border)))
+        .begin_symbol(None)
+        .end_symbol(None);
+    // Ratatui only puts the thumb at the track bottom when position ==
+    // content_length - 1. Our scroll offsets max out at
+    // content_length - viewport, so pass max_scroll + 1 as the content
+    // length and clamp the position accordingly. This makes the thumb
+    // reach the bottom for both offset-based and selection-based panes.
+    let max_scroll = content_length.saturating_sub(viewport);
+    let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
+        .position(position.min(max_scroll))
+        .viewport_content_length(viewport);
+    frame.render_stateful_widget(
+        scrollbar,
+        area.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
 }
 
 #[cfg(test)]

@@ -37,13 +37,15 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Style;
-use ratatui::symbols::scrollbar as scrollbar_symbols;
 use ratatui::text::Line;
-use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::Paragraph;
 
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
-use deltoids::render_tui::{self, rgb_to_color};
+use deltoids::render_tui::{
+    self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
+    rgb_to_color,
+};
 use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
@@ -55,10 +57,11 @@ use sidebar::{Sidebar, SidebarFile};
 const SCROLL_STEP_SMALL: usize = 1;
 const SCROLL_STEP_LARGE: usize = 3;
 
-/// Default sidebar width in columns (clamped against the terminal width
-/// at draw time). Picked to fit a typical "crates/deltoids/src/" + file
-/// row without truncation.
-const DEFAULT_SIDEBAR_WIDTH: u16 = 36;
+/// Default sidebar width in columns, *including the two border
+/// columns* (clamped against the terminal width at draw time). Picked
+/// to fit a typical "crates/deltoids/src/" + file row without
+/// truncation: outer 38 = inner 36.
+const DEFAULT_SIDEBAR_WIDTH: u16 = 38;
 /// Below this terminal width the sidebar is hidden entirely.
 const MIN_TERMINAL_WIDTH_FOR_SIDEBAR: u16 = 80;
 
@@ -527,8 +530,12 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         let total_width = metrics.area.width;
         let total_height = metrics.area.height;
         let diff_width = diff_pane_width(total_width);
-        let diff_viewport = total_height.saturating_sub(1) as usize; // -1 for help bar
-        let sidebar_viewport = total_height.saturating_sub(1) as usize;
+        // -1 for the help bar at the bottom, -2 for the pane's top and
+        // bottom borders. The result is the number of content rows the
+        // pane shows, i.e. the scroll viewport.
+        let pane_viewport = total_height.saturating_sub(3) as usize;
+        let diff_viewport = pane_viewport;
+        let sidebar_viewport = pane_viewport;
 
         // Rebuild the diff line cache if the diff pane changed width.
         if diff_width != state.cached_width && diff_width > 0 {
@@ -552,12 +559,13 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
     Ok(())
 }
 
-/// Width budget for the diff pane (terminal minus sidebar minus
-/// separator column).
+/// Width budget for the diff pane *content* (terminal minus the
+/// sidebar pane minus this pane's own two border columns). When no
+/// sidebar is shown the diff pane spans the whole terminal, still
+/// minus its own two borders.
 fn diff_pane_width(terminal_width: u16) -> usize {
     let sw = sidebar_width(terminal_width);
-    let separator = if sw > 0 { 1 } else { 0 };
-    terminal_width.saturating_sub(sw + separator) as usize
+    terminal_width.saturating_sub(sw + 2) as usize
 }
 
 fn read_event(
@@ -596,15 +604,10 @@ fn draw(frame: &mut ratatui::Frame<'_>, state: &mut ViewState, theme: &Theme) {
     if sw > 0 {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(sw),
-                Constraint::Length(1),
-                Constraint::Min(10),
-            ])
+            .constraints([Constraint::Length(sw), Constraint::Min(10)])
             .split(body);
         draw_sidebar(frame, cols[0], state, theme);
-        draw_separator(frame, cols[1], state, theme);
-        draw_diff(frame, cols[2], state, theme);
+        draw_diff(frame, cols[1], state, theme);
     } else {
         draw_diff(frame, body, state, theme);
     }
@@ -613,44 +616,41 @@ fn draw(frame: &mut ratatui::Frame<'_>, state: &mut ViewState, theme: &Theme) {
 }
 
 fn draw_sidebar(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, theme: &Theme) {
-    let viewport = area.height as usize;
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    let viewport = inner.height as usize;
+    let inner_width = inner.width as usize;
     let scroll = state.sidebar.scroll();
     let total = state.sidebar.row_count();
     let start = scroll.min(total);
     let end = start.saturating_add(viewport.max(1)).min(total);
     let mut visible: Vec<Line<'static>> = state.sidebar.rows()[start..end].to_vec();
 
-    // Extend the selection background across the full pane width so the
-    // highlighted row reads as a continuous bar (matching lazygit and
-    // edit-tui's `List` widget). Each rendered row stops at the end of
-    // its content; here we pad the selected row out to `area.width`
-    // with a trailing span styled with `selection_bg`.
+    // Extend the selection background across the full inner pane width
+    // so the highlighted row reads as a continuous bar (matching
+    // lazygit and edit-tui's `List` widget). Pad against the inner
+    // width so the trailing block stops just before the right border.
     if let Some(rel) = state.sidebar.selected().checked_sub(scroll)
         && rel < visible.len()
     {
-        pad_selected_row(&mut visible[rel], area.width as usize, theme);
+        pad_selected_row(&mut visible[rel], inner_width, theme);
     }
 
-    // No paragraph-level fg tint: the sidebar's spans set their own
-    // colours. Focus is signalled by the separator bar's colour and by
-    // the help-bar prefix.
-    frame.render_widget(Paragraph::new(visible), area);
+    let color = pane_border_color(state.focus == Focus::Sidebar, theme);
+    let footer = sidebar_footer(state);
+    let block = pane_block_with_footer(" [1] Files ", color, footer);
+    frame.render_widget(Paragraph::new(visible).block(block), area);
 
-    if total > viewport.max(1) {
-        let max_scroll = total.saturating_sub(viewport);
-        let position = state.sidebar.selected().min(max_scroll);
-        let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-            .position(position)
-            .viewport_content_length(viewport);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .symbols(scrollbar_symbols::VERTICAL)
-            .thumb_symbol("\u{2590}")
-            .track_style(Style::default().fg(rgb_to_color(theme.border)))
-            .thumb_style(Style::default().fg(rgb_to_color(theme.border)))
-            .begin_symbol(None)
-            .end_symbol(None);
-        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
-    }
+    render_pane_scrollbar(
+        frame,
+        area,
+        total,
+        state.sidebar.selected(),
+        pane_inner_height(area),
+        theme,
+    );
 }
 
 /// Append a trailing span of `selection_bg`-styled spaces so the row's
@@ -668,92 +668,46 @@ fn pad_selected_row(line: &mut Line<'static>, width: usize, theme: &Theme) {
     ));
 }
 
-fn draw_separator(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ViewState, theme: &Theme) {
-    // Separator colour signals focus: bright orange when the sidebar
-    // is active (since it sits to its left), muted blue otherwise.
-    let color = match state.focus {
-        Focus::Sidebar => rgb_to_color(theme.border_active),
-        Focus::Diff => rgb_to_color(theme.border),
-    };
-    let style = Style::default().fg(color);
-    let line = "\u{2502}";
-    let lines: Vec<Line<'static>> = (0..area.height)
-        .map(|_| Line::styled(line, style))
-        .collect();
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
 fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, theme: &Theme) {
-    let viewport = area.height as usize;
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+    let viewport = inner.height as usize;
     let range = state.visible_diff_range();
     let scroll = state.diff_scroll.clamp(range.start, range.end);
     let end = scroll.saturating_add(viewport.max(1)).min(range.end);
     let visible: Vec<Line<'static>> = state.diff_lines[scroll..end].to_vec();
 
-    frame.render_widget(Paragraph::new(visible), area);
+    let color = pane_border_color(state.focus == Focus::Diff, theme);
+    let footer = diff_footer(state);
+    let block = pane_block_with_footer(" [2] Diff ", color, footer);
+    frame.render_widget(Paragraph::new(visible).block(block), area);
 
     // Vertical scrollbar reflects the *visible range*, not the full
     // diff: when the sidebar is on a directory the scrollbar tracks
     // progress through that subtree's files.
     let span = range.end.saturating_sub(range.start);
-    if span > viewport.max(1) {
-        let max_scroll = span.saturating_sub(viewport);
-        let position = scroll.saturating_sub(range.start).min(max_scroll);
-        let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-            .position(position)
-            .viewport_content_length(viewport);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .symbols(scrollbar_symbols::VERTICAL)
-            .thumb_symbol("\u{2590}")
-            .track_style(Style::default().fg(rgb_to_color(theme.border)))
-            .thumb_style(Style::default().fg(rgb_to_color(theme.border)))
-            .begin_symbol(None)
-            .end_symbol(None);
-        frame.render_stateful_widget(
-            scrollbar,
-            area.inner(Margin {
-                vertical: 0,
-                horizontal: 0,
-            }),
-            &mut scrollbar_state,
-        );
-    }
+    let position = scroll.saturating_sub(range.start);
+    render_pane_scrollbar(frame, area, span, position, pane_inner_height(area), theme);
 }
 
-fn draw_help(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ViewState, theme: &Theme) {
-    let counter = match state.focus {
-        Focus::Sidebar => sidebar_counter(state),
-        Focus::Diff => diff_counter(state, area),
-    };
-    let pane = match state.focus {
-        Focus::Sidebar => "sidebar",
-        Focus::Diff => "diff",
-    };
-    let prefix = if counter.is_empty() {
-        format!("[{pane}]")
-    } else {
-        format!("[{pane} {counter}]")
-    };
-    let text =
-        format!("{prefix}  Tab/1/2 focus  j/k move  Shift+J/K scroll diff  g/G top/bottom  q quit");
+fn draw_help(frame: &mut ratatui::Frame<'_>, area: Rect, _state: &ViewState, theme: &Theme) {
+    let text = "Tab/1/2 focus  j/k move  Shift+J/K scroll diff  g/G top/bottom  q quit";
     let p = Paragraph::new(text).style(Style::default().fg(rgb_to_color(theme.muted)));
     frame.render_widget(p, area);
 }
 
-/// Position of the selected file among all files (1-based), the total
-/// file count, and the aggregate `+N -N` line counts. When the
-/// selection is on a directory row the position tracks the first file
-/// inside that subtree (the file the diff pane is currently showing)
-/// and the prefix changes from `file` to `dir`.
-fn sidebar_counter(state: &ViewState) -> String {
+/// Build the sidebar pane's bottom-right footer: file/dir position
+/// among all files plus the aggregate `+N -N` line counts.
+///
+/// Returns `None` when there are no files to display.
+fn sidebar_footer(state: &ViewState) -> Option<String> {
     let total = state.display_order.len();
     if total == 0 {
-        return String::new();
+        return None;
     }
-    let selected_input = match state.sidebar.nearest_file_index() {
-        Some(i) => i,
-        None => return String::new(),
-    };
+    let selected_input = state.sidebar.nearest_file_index()?;
     let pos = state
         .display_order
         .iter()
@@ -766,9 +720,9 @@ fn sidebar_counter(state: &ViewState) -> String {
         "file"
     };
     let totals = state.sidebar.totals();
-    let mut s = format!("{label} {pos}/{total}");
+    let mut s = format!(" {label} {pos} of {total}");
     if totals.added > 0 || totals.deleted > 0 {
-        s.push_str(" — ");
+        s.push_str("  ");
         if totals.added > 0 {
             s.push_str(&format!("+{}", totals.added));
             if totals.deleted > 0 {
@@ -779,22 +733,25 @@ fn sidebar_counter(state: &ViewState) -> String {
             s.push_str(&format!("-{}", totals.deleted));
         }
     }
-    s
+    s.push(' ');
+    Some(s)
 }
 
-/// Diff scroll position summarised as `line X/Y`.
-fn diff_counter(state: &ViewState, _area: Rect) -> String {
+/// Build the diff pane's bottom-right footer: `" line X of Y "` for
+/// the current scroll position within the visible range, or `None`
+/// when the pane is empty.
+fn diff_footer(state: &ViewState) -> Option<String> {
     let range = state.visible_diff_range();
     let span = range.end.saturating_sub(range.start);
     if span == 0 {
-        return String::new();
+        return None;
     }
     let pos = state
         .diff_scroll
         .saturating_sub(range.start)
         .min(span.saturating_sub(1))
         + 1;
-    format!("line {pos}/{span}")
+    Some(format!(" line {pos} of {span} "))
 }
 
 struct TerminalSession;

@@ -413,6 +413,7 @@ fn append_file_summary(out: &mut String, before: &str, after: &str, path: &str, 
         title: false,
         public_only: args.public_only,
         signatures_only: args.signatures_only,
+        show_signatures: false,
     };
     let body = format_summary_with(&structural, &opts);
     if !body.trim().is_empty() {

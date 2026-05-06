@@ -256,10 +256,10 @@ fn build_view(
         match settings.mode {
             ViewMode::Full => append_full_hunks(&mut lines, diff, width, theme),
             ViewMode::Signatures => {
-                append_summary_block(&mut lines, structural, settings, theme, true);
+                append_summary_block(&mut lines, structural, settings, theme, true, true);
             }
             ViewMode::Summary => {
-                append_summary_block(&mut lines, structural, settings, theme, false);
+                append_summary_block(&mut lines, structural, settings, theme, false, false);
             }
         }
     }
@@ -279,19 +279,22 @@ fn append_full_hunks(out: &mut Vec<Line<'static>>, diff: &Diff, width: usize, th
 }
 
 /// Render the structural-change list for one file. `signatures_only`
-/// drops body-only changes (used by [`ViewMode::Signatures`]).
+/// drops body-only changes (used by [`ViewMode::Signatures`]);
+/// `show_signatures` switches the line text to the raw declaration.
 fn append_summary_block(
     out: &mut Vec<Line<'static>>,
     structural: &StructuralDiff,
     settings: ViewSettings,
     theme: &Theme,
     signatures_only: bool,
+    show_signatures: bool,
 ) {
     let opts = SummaryOptions {
         indent: "  ",
         title: false,
         public_only: settings.public_only,
         signatures_only,
+        show_signatures,
     };
     let body = format_summary_with(structural, &opts);
     if body.trim().is_empty() {

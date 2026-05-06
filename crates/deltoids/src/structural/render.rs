@@ -70,10 +70,31 @@ pub fn format_summary_with(diff: &StructuralDiff, opts: &SummaryOptions) -> Stri
         out.push_str(opts.indent);
         out.push(bullet);
         out.push(' ');
-        out.push_str(&change.description);
+        if opts.show_signatures {
+            out.push_str(&format_signature_line(change));
+        } else {
+            out.push_str(&change.description);
+        }
         out.push('\n');
     }
     out
+}
+
+/// Render a `StructuralChange` as a one-line signature listing:
+/// `<sig>` for added/removed,
+/// `<old_sig> → <new_sig>` for signature-changed/renamed,
+/// `<sig>` (no arrow) for body-only modifications.
+/// Falls back to the description when the change has no signature on
+/// either side (Added with no recorded signature, etc.).
+fn format_signature_line(change: &super::classify::StructuralChange) -> String {
+    let before = change.before.as_ref().map(|s| s.signature.as_str());
+    let after = change.after.as_ref().map(|s| s.signature.as_str());
+    match (before, after) {
+        (Some(b), Some(a)) if b == a => a.to_string(),
+        (Some(b), Some(a)) => format!("{b}  →  {a}"),
+        (None, Some(a)) | (Some(a), None) => a.to_string(),
+        (None, None) => change.description.clone(),
+    }
 }
 
 /// Counts of changes by polarity. Modified/Renamed/SignatureChanged/
@@ -120,6 +141,11 @@ pub struct SummaryOptions<'a> {
     pub title: bool,
     pub public_only: bool,
     pub signatures_only: bool,
+    /// When true, render the raw declaration signature instead of the
+    /// human-readable description (e.g. "pub fn parse(path: &str) -> i32"
+    /// instead of "Modified function `parse`"). Useful for the
+    /// signatures-only view in the TUI / CLI.
+    pub show_signatures: bool,
 }
 
 impl Default for SummaryOptions<'_> {
@@ -129,6 +155,7 @@ impl Default for SummaryOptions<'_> {
             title: true,
             public_only: false,
             signatures_only: false,
+            show_signatures: false,
         }
     }
 }
@@ -199,5 +226,39 @@ mod tests {
         let d = diff("", new, "a.rs");
         let s = format_summary(&d);
         assert!(s.starts_with("3 structural changes"), "{s}");
+    }
+
+    #[test]
+    fn show_signatures_renders_signature_change_with_arrow() {
+        let old = "pub fn add(a: i32) -> i32 {\n    a\n}\n";
+        let new = "pub fn add(a: i32, b: i32) -> i32 {\n    a\n}\n";
+        let d = diff(old, new, "a.rs");
+        let opts = SummaryOptions {
+            show_signatures: true,
+            title: false,
+            ..SummaryOptions::default()
+        };
+        let s = format_summary_with(&d, &opts);
+        assert!(s.contains("pub fn add(a: i32) -> i32"), "got:\n{s}");
+        assert!(s.contains("pub fn add(a: i32, b: i32) -> i32"), "got:\n{s}");
+        assert!(s.contains("→"), "got:\n{s}");
+    }
+
+    #[test]
+    fn show_signatures_renders_added_signature_only() {
+        let old = "";
+        let new = "pub fn brand_new() -> &'static str { \"hi\" }\n";
+        let d = diff(old, new, "a.rs");
+        let opts = SummaryOptions {
+            show_signatures: true,
+            title: false,
+            ..SummaryOptions::default()
+        };
+        let s = format_summary_with(&d, &opts);
+        assert!(
+            s.contains("pub fn brand_new() -> &'static str"),
+            "got:\n{s}"
+        );
+        assert!(!s.contains("→"), "got:\n{s}");
     }
 }

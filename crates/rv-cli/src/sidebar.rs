@@ -484,8 +484,13 @@ impl Sidebar {
     }
 
     /// Index into the original `&[SidebarFile]` slice for the selected
-    /// row, or `None` when a directory row is selected (only happens if
-    /// there are no files at all).
+    /// row, or `None` when a directory row is selected.
+    ///
+    /// Production code uses [`Sidebar::nearest_file_index`] instead, so
+    /// the diff pane stays in sync as the user traverses dirs; this
+    /// stricter accessor is kept for tests and for callers that want to
+    /// distinguish "a file is selected" from "a directory is selected".
+    #[allow(dead_code)]
     pub fn selected_file_index(&self) -> Option<usize> {
         match self.rows.get(self.selected) {
             Some(Row::File { file_index, .. }) => Some(*file_index),
@@ -499,77 +504,67 @@ impl Sidebar {
         self.scroll
     }
 
-    /// Move to the next file row (skipping directory rows).
+    /// Whether the currently-selected row is a directory header.
+    pub fn selected_is_dir(&self) -> bool {
+        matches!(self.rows.get(self.selected), Some(Row::Dir { .. }))
+    }
+
+    /// Input index of the file the diff pane should snap to for the
+    /// current selection.
+    ///
+    /// On a file row this is just the selected file. On a directory
+    /// row it's the first file inside that directory's subtree (the
+    /// next file row at or after the selection — since each directory
+    /// header is followed by its contents). `None` only when there are
+    /// no files at all.
+    pub fn nearest_file_index(&self) -> Option<usize> {
+        self.rows.iter().skip(self.selected).find_map(|r| match r {
+            Row::File { file_index, .. } => Some(*file_index),
+            Row::Dir { .. } => None,
+        })
+    }
+
+    /// Move to the next row (file or directory).
     pub fn move_down(&mut self, viewport: usize) {
-        if let Some(target) = self.next_file_row(self.selected) {
-            self.set_selected(target, viewport);
+        if self.selected + 1 < self.rows.len() {
+            self.set_selected(self.selected + 1, viewport);
         }
     }
 
-    /// Move to the previous file row (skipping directory rows).
+    /// Move to the previous row (file or directory).
     pub fn move_up(&mut self, viewport: usize) {
-        if let Some(target) = self.prev_file_row(self.selected) {
-            self.set_selected(target, viewport);
+        if self.selected > 0 {
+            self.set_selected(self.selected - 1, viewport);
         }
     }
 
+    /// Jump to the first row.
     pub fn top(&mut self, viewport: usize) {
-        if let Some(idx) = self.rows.iter().position(|r| matches!(r, Row::File { .. })) {
-            self.set_selected(idx, viewport);
+        if !self.rows.is_empty() {
+            self.set_selected(0, viewport);
         }
     }
 
+    /// Jump to the last row.
     pub fn bottom(&mut self, viewport: usize) {
-        if let Some(idx) = self
-            .rows
-            .iter()
-            .rposition(|r| matches!(r, Row::File { .. }))
-        {
-            self.set_selected(idx, viewport);
+        if let Some(last) = self.rows.len().checked_sub(1) {
+            self.set_selected(last, viewport);
         }
     }
 
+    /// Move down by `viewport` rows, clamped at the last row.
     pub fn page_down(&mut self, viewport: usize) {
-        let mut cursor = self.selected;
-        for _ in 0..viewport.max(1) {
-            if let Some(next) = self.next_file_row(cursor) {
-                cursor = next;
-            } else {
-                break;
-            }
-        }
-        self.set_selected(cursor, viewport);
+        let target = self
+            .selected
+            .saturating_add(viewport.max(1))
+            .min(self.rows.len().saturating_sub(1));
+        self.set_selected(target, viewport);
     }
 
+    /// Move up by `viewport` rows, clamped at the first row.
     pub fn page_up(&mut self, viewport: usize) {
-        let mut cursor = self.selected;
-        for _ in 0..viewport.max(1) {
-            if let Some(prev) = self.prev_file_row(cursor) {
-                cursor = prev;
-            } else {
-                break;
-            }
-        }
-        self.set_selected(cursor, viewport);
-    }
-
-    fn next_file_row(&self, from: usize) -> Option<usize> {
-        self.rows
-            .iter()
-            .enumerate()
-            .skip(from + 1)
-            .find(|(_, r)| matches!(r, Row::File { .. }))
-            .map(|(i, _)| i)
-    }
-
-    fn prev_file_row(&self, from: usize) -> Option<usize> {
-        self.rows
-            .iter()
-            .enumerate()
-            .take(from)
-            .rev()
-            .find(|(_, r)| matches!(r, Row::File { .. }))
-            .map(|(i, _)| i)
+        let target = self.selected.saturating_sub(viewport.max(1));
+        self.set_selected(target, viewport);
     }
 
     fn set_selected(&mut self, target: usize, viewport: usize) {
@@ -993,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn move_down_skips_directory_rows() {
+    fn move_down_advances_one_row_including_dirs() {
         // Layout:
         //   crates/                      row 0 dir
         //     deltoids/src/              row 1 dir
@@ -1015,15 +1010,25 @@ mod tests {
             },
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
-        // Initial selection: first file row (lib.rs is index 1 in inputs;
-        // sort puts deltoids-cli before deltoids — so first file is main.rs).
-        let first_idx = sidebar.selected_file_index().unwrap();
-        sidebar.move_down(20);
-        let second_idx = sidebar.selected_file_index().unwrap();
-        assert_ne!(
-            first_idx, second_idx,
-            "move_down should advance to the next file"
+        // Initial selection still lands on the first file row, so the
+        // diff has something useful to snap to on startup.
+        let first = sidebar.selected();
+        assert!(
+            !sidebar.selected_is_dir(),
+            "initial selection must be a file row"
         );
+        // From the first file, moving up walks back into directory
+        // headers one row at a time.
+        sidebar.move_up(20);
+        assert_eq!(sidebar.selected(), first - 1);
+        assert!(
+            sidebar.selected_is_dir(),
+            "move_up from a file should land on its parent dir row"
+        );
+        // Moving down again returns to the file.
+        sidebar.move_down(20);
+        assert_eq!(sidebar.selected(), first);
+        assert!(!sidebar.selected_is_dir());
     }
 
     #[test]
@@ -1041,7 +1046,9 @@ mod tests {
     }
 
     #[test]
-    fn move_up_at_first_file_is_noop() {
+    fn move_up_with_no_dirs_above_is_noop() {
+        // Top-level file: there's no row above row 0, so move_up has
+        // nowhere to go.
         let a = fd("a.rs");
         let files = vec![SidebarFile {
             file: &a,
@@ -1055,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn top_jumps_to_first_file_and_bottom_jumps_to_last() {
+    fn top_jumps_to_first_row_and_bottom_jumps_to_last() {
         let a = fd("a/x.rs");
         let b = fd("b/y.rs");
         let c = fd("c/z.rs");
@@ -1078,9 +1085,97 @@ mod tests {
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         sidebar.bottom(20);
-        assert_eq!(sidebar.selected_file_index(), Some(2));
+        // Last row is the last file (c/z.rs file), since each dir is
+        // followed by its single file leaf.
+        assert_eq!(sidebar.selected(), sidebar.row_count() - 1);
+        assert!(!sidebar.selected_is_dir());
         sidebar.top(20);
-        assert_eq!(sidebar.selected_file_index(), Some(0));
+        // First row is the first directory header.
+        assert_eq!(sidebar.selected(), 0);
+        assert!(sidebar.selected_is_dir());
+    }
+
+    #[test]
+    fn nearest_file_index_on_dir_returns_first_file_in_subtree() {
+        // Layout: src/{a.rs,b.rs}, top-level c.rs.
+        // Rows: src/ ; src/a.rs ; src/b.rs ; c.rs.
+        let a = fd("src/a.rs");
+        let b = fd("src/b.rs");
+        let c = fd("c.rs");
+        let files = vec![
+            SidebarFile {
+                file: &a,
+                added: 0,
+                deleted: 0,
+            },
+            SidebarFile {
+                file: &b,
+                added: 0,
+                deleted: 0,
+            },
+            SidebarFile {
+                file: &c,
+                added: 0,
+                deleted: 0,
+            },
+        ];
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        // Land on the src/ header.
+        sidebar.top(20);
+        assert!(sidebar.selected_is_dir());
+        // nearest_file_index points at src/a.rs (input index 0).
+        assert_eq!(sidebar.nearest_file_index(), Some(0));
+        // Move down to a.rs; nearest is itself.
+        sidebar.move_down(20);
+        assert_eq!(sidebar.nearest_file_index(), Some(0));
+        // Then b.rs.
+        sidebar.move_down(20);
+        assert_eq!(sidebar.nearest_file_index(), Some(1));
+        // Then c.rs (top-level file).
+        sidebar.move_down(20);
+        assert_eq!(sidebar.nearest_file_index(), Some(2));
+    }
+
+    #[test]
+    fn selected_file_index_returns_none_on_dir_row() {
+        let a = fd("src/a.rs");
+        let files = vec![SidebarFile {
+            file: &a,
+            added: 0,
+            deleted: 0,
+        }];
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        sidebar.top(20);
+        assert!(sidebar.selected_is_dir());
+        assert_eq!(sidebar.selected_file_index(), None);
+        // nearest_file_index still finds the file under it.
+        assert_eq!(sidebar.nearest_file_index(), Some(0));
+    }
+
+    #[test]
+    fn page_down_advances_by_viewport_rows() {
+        // 8 top-level files, viewport 3. From the initial selection
+        // (row 0), page_down(3) should land on row 3, then row 6, then
+        // clamp at the last row (7).
+        let owned: Vec<FileDiff> = (0..8).map(|i| fd(&format!("f{i}.rs"))).collect();
+        let files: Vec<_> = owned
+            .iter()
+            .map(|f| SidebarFile {
+                file: f,
+                added: 0,
+                deleted: 0,
+            })
+            .collect();
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        assert_eq!(sidebar.selected(), 0);
+        sidebar.page_down(3);
+        assert_eq!(sidebar.selected(), 3);
+        sidebar.page_down(3);
+        assert_eq!(sidebar.selected(), 6);
+        sidebar.page_down(3);
+        assert_eq!(sidebar.selected(), 7);
+        sidebar.page_up(3);
+        assert_eq!(sidebar.selected(), 4);
     }
 
     // --- scroll tracking ---------------------------------------------

@@ -291,10 +291,12 @@ impl ViewState {
         self.diff_scroll = self.max_diff_scroll(viewport);
     }
 
-    /// Sync the diff pane's scroll to the sidebar's selected file. No-op
-    /// when no file is selected.
+    /// Sync the diff pane's scroll to the file the sidebar is pointing
+    /// at. On a file row that's the selected file; on a directory row
+    /// it's the first file inside that subtree, so the diff updates as
+    /// the user traverses the tree.
     fn snap_diff_to_selected_file(&mut self, viewport: usize) {
-        let Some(file_idx) = self.sidebar.selected_file_index() else {
+        let Some(file_idx) = self.sidebar.nearest_file_index() else {
             return;
         };
         let Some(&offset) = self.file_offsets.get(file_idx) else {
@@ -668,13 +670,16 @@ fn draw_help(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ViewState, them
 }
 
 /// Position of the selected file among all files (1-based), the total
-/// file count, and the aggregate `+N -N` line counts.
+/// file count, and the aggregate `+N -N` line counts. When the
+/// selection is on a directory row the position tracks the first file
+/// inside that subtree (the file the diff pane is currently showing)
+/// and the prefix changes from `file` to `dir`.
 fn sidebar_counter(state: &ViewState) -> String {
     let total = state.display_order.len();
     if total == 0 {
         return String::new();
     }
-    let selected_input = match state.sidebar.selected_file_index() {
+    let selected_input = match state.sidebar.nearest_file_index() {
         Some(i) => i,
         None => return String::new(),
     };
@@ -684,8 +689,13 @@ fn sidebar_counter(state: &ViewState) -> String {
         .position(|&i| i == selected_input)
         .map(|p| p + 1)
         .unwrap_or(0);
+    let label = if state.sidebar.selected_is_dir() {
+        "dir"
+    } else {
+        "file"
+    };
     let totals = state.sidebar.totals();
-    let mut s = format!("file {pos}/{total}");
+    let mut s = format!("{label} {pos}/{total}");
     if totals.added > 0 || totals.deleted > 0 {
         s.push_str(" — ");
         if totals.added > 0 {

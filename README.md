@@ -4,6 +4,19 @@
 
 Tools for reviewing code in the agentic era.
 
+<table>
+  <tr>
+    <td valign="top"><img src="docs/images/delta.png" alt="Default: 3 lines of context"></td>
+    <td valign="top"><img src="docs/images/deltoids.png" alt="deltoids: hunk expanded to enclosing function"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>default</em></td>
+    <td align="center"><em>deltoids</em></td>
+  </tr>
+</table>
+
+Hunks expand to show the enclosing function, so you always know where you are.
+
 ## Installation
 
 **Homebrew:**

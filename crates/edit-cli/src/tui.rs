@@ -99,6 +99,10 @@ struct AppState {
     diff_cache: Option<DiffCache>,
     entries_list_state: ListState,
     traces_list_state: ListState,
+    /// True when the diff pane shows a structural summary (one line
+    /// per modified symbol) instead of the full hunk render. Toggled
+    /// with `s`.
+    summary_view: bool,
 }
 
 impl AppState {
@@ -111,6 +115,7 @@ impl AppState {
             diff_cache: None,
             entries_list_state: ListState::default().with_selected(Some(0)),
             traces_list_state: ListState::default().with_selected(Some(0)),
+            summary_view: false,
         }
     }
 
@@ -144,6 +149,12 @@ fn handle_key(
 ) -> AppCommand {
     match key {
         KeyCode::Char('q') => AppCommand::Quit,
+        KeyCode::Char('s') => {
+            state.summary_view = !state.summary_view;
+            state.diff_scroll = 0;
+            state.diff_cache = None;
+            AppCommand::Continue
+        }
         KeyCode::Tab => {
             state.focus = match state.focus {
                 Focus::Entries => Focus::Traces,
@@ -628,7 +639,13 @@ fn ensure_diff_cache(
         diff_cache_matches_selection_and_width(cache, state.trace_index, entry_index, detail_width)
     });
     if !cache_valid {
-        let lines = render_detail_for(active_trace, entry_index, detail_width, theme);
+        let lines = render_detail_for_with(
+            active_trace,
+            entry_index,
+            detail_width,
+            theme,
+            state.summary_view,
+        );
         state.diff_cache = Some(DiffCache {
             trace_index: state.trace_index,
             entry_index,
@@ -663,8 +680,13 @@ fn render_diff_pane(
         .as_ref()
         .map(|cache| cache.lines[start..end].to_vec())
         .unwrap_or_default();
+    let title = if state.summary_view {
+        " [3] Summary "
+    } else {
+        " [3] Diff "
+    };
     let diff = Paragraph::new(visible_lines).block(pane_block(
-        " [3] Diff ",
+        title,
         pane_border_color(state.focus == Focus::Diff, theme),
     ));
     frame.render_widget(diff, area);
@@ -714,8 +736,10 @@ fn draw(
 }
 
 fn help_bar(theme: &Theme) -> Paragraph<'static> {
-    Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
-        .style(Style::default().fg(rgb_to_color(theme.muted)))
+    Paragraph::new(
+        "Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  s summary  q quit",
+    )
+    .style(Style::default().fg(rgb_to_color(theme.muted)))
 }
 
 fn entry_icon(ok: bool) -> (&'static str, Color) {
@@ -867,12 +891,33 @@ fn render_detail_for(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    render_detail_for_with(trace, entry_index, width, theme, false)
+}
+
+/// `render_detail_for` with a `summary_view` toggle. When `summary_view`
+/// is true, the diff body is replaced by a per-entry structural summary
+/// derived from the hunks' breadcrumb ancestors (which symbols this
+/// entry touched). The header still renders.
+fn render_detail_for_with(
+    trace: &LoadedTrace,
+    entry_index: usize,
+    width: usize,
+    theme: &Theme,
+    summary_view: bool,
+) -> Vec<Line<'static>> {
     let Some(entry) = trace.entries.get(entry_index) else {
         return Vec::new();
     };
 
-    let items = detail_items(entry);
     let mut rendered = render_detail_header(entry, width, theme);
+
+    if summary_view {
+        rendered.push(Line::from(""));
+        rendered.extend(render_entry_summary(entry, theme));
+        return rendered;
+    }
+
+    let items = detail_items(entry);
 
     if !rendered.is_empty() && !items.is_empty() {
         rendered.push(Line::from(""));
@@ -899,6 +944,104 @@ fn render_detail_for(
     }
 
     rendered
+}
+
+/// Build the per-entry structural-summary panel: one line per unique
+/// symbol touched, identified by its deepest breadcrumb ancestor on
+/// each hunk. Falls back to a path-only line when an entry has no
+/// hunks (errors or v1 traces).
+///
+/// We don't reparse the file source (the trace doesn't carry it) so
+/// every change is reported as `~ Modified`. That's still useful as
+/// an at-a-glance "this edit touched these symbols" view.
+fn render_entry_summary(entry: &HistoryEntry, theme: &Theme) -> Vec<Line<'static>> {
+    use std::collections::HashSet;
+
+    let mut out = Vec::new();
+    if !entry.ok {
+        let err = entry.error.as_deref().unwrap_or("unknown error");
+        out.push(labeled_line("error", err, Color::Red));
+        return out;
+    }
+    if entry.hunks.is_empty() {
+        out.push(Line::from("  (no hunks recorded for this entry)"));
+        return out;
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut anonymous_hunks: usize = 0;
+    for hunk in &entry.hunks {
+        if let Some(scope) = hunk.ancestors.last() {
+            let key = (scope.kind.clone(), scope.name.clone());
+            if seen.insert(key.clone()) {
+                entries.push(key);
+            }
+        } else {
+            anonymous_hunks += 1;
+        }
+    }
+
+    let muted = Style::default().fg(rgb_to_color(theme.muted));
+    let bullet_style = Style::default().fg(Color::Yellow);
+
+    for (kind, name) in &entries {
+        out.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("~ ", bullet_style),
+            Span::raw(format!(
+                "Modified {} `{}`",
+                kind_word_for(kind.as_str()),
+                name
+            )),
+        ]));
+    }
+    if anonymous_hunks > 0 {
+        let label = if anonymous_hunks == 1 {
+            "hunk"
+        } else {
+            "hunks"
+        };
+        out.push(Line::styled(
+            format!("  ({anonymous_hunks} top-level {label}, no enclosing scope)"),
+            muted,
+        ));
+    }
+    if entries.is_empty() && anonymous_hunks == 0 {
+        out.push(Line::styled(
+            "  (no structural changes detected)".to_string(),
+            muted,
+        ));
+    }
+    out
+}
+
+/// Lower-case noun for a tree-sitter scope kind. Same vocabulary as
+/// `deltoids::structural::kind_word`, but operates on the raw kind
+/// string we get from breadcrumb ancestors rather than a `SymbolKind`.
+fn kind_word_for(kind: &str) -> &'static str {
+    match kind {
+        "function_item" | "function_declaration" | "function_definition" => "function",
+        "method_definition"
+        | "method_declaration"
+        | "method"
+        | "singleton_method"
+        | "function_signature_item" => "method",
+        "impl_item" => "impl",
+        "trait_item" | "interface_declaration" => "trait",
+        "struct_item" | "struct_specifier" => "struct",
+        "enum_item" | "enum_declaration" => "enum",
+        "class_declaration" | "class_specifier" | "class_definition" | "class" => "class",
+        "module" | "mod_item" | "namespace_definition" => "module",
+        "type_item" | "type_alias_declaration" => "type",
+        "const_item" | "static_item" => "constant",
+        "object" | "array" | "block_mapping" | "block_sequence" => "data block",
+        "table" | "table_array_element" => "table",
+        "atx_heading" | "setext_heading" => "heading",
+        "rule_set" | "media_statement" => "rule",
+        "block" => "block",
+        _ => "item",
+    }
 }
 
 fn render_detail_header(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -2109,5 +2252,108 @@ mod tests {
             Some(rgb_to_color(theme.border_active))
         );
         assert!(lines[2].to_string().ends_with('╯'));
+    }
+
+    fn entry_with_two_hunks(scope_kind: &str, scope_name: &str) -> HistoryEntry {
+        use deltoids::{DiffLine, Hunk, LineKind, ScopeNode};
+        let scope = ScopeNode {
+            kind: scope_kind.to_string(),
+            name: scope_name.to_string(),
+            start_line: 1,
+            end_line: 100,
+            text: format!("fn {scope_name}() {{"),
+        };
+        let hunk_a = Hunk {
+            old_start: 5,
+            new_start: 5,
+            ancestors: vec![scope.clone()],
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: "a".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "b".to_string(),
+                },
+            ],
+        };
+        let hunk_b = Hunk {
+            old_start: 50,
+            new_start: 50,
+            ancestors: vec![scope],
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: "c".to_string(),
+            }],
+        };
+        let mut entry = edit_entry();
+        entry.hunks = vec![hunk_a, hunk_b];
+        entry
+    }
+
+    #[test]
+    fn s_key_toggles_summary_view() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "Update"),
+            entries: vec![entry_with_two_hunks("function_item", "foo")],
+        }];
+        let mut state = AppState::new(traces.len());
+        assert!(!state.summary_view);
+        handle_key(&mut state, &traces, KeyCode::Char('s'), 4, 4);
+        assert!(state.summary_view);
+        handle_key(&mut state, &traces, KeyCode::Char('s'), 4, 4);
+        assert!(!state.summary_view);
+    }
+
+    #[test]
+    fn render_entry_summary_dedupes_by_scope_kind_and_name() {
+        let theme = test_theme();
+        let entry = entry_with_two_hunks("function_item", "foo");
+        let lines = render_entry_summary(&entry, &theme);
+        let texts: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let modified_lines: Vec<&String> =
+            texts.iter().filter(|t| t.contains("Modified")).collect();
+        // Two hunks pointing at the same scope = one summary line.
+        assert_eq!(modified_lines.len(), 1, "got: {texts:#?}");
+        assert!(
+            modified_lines[0].contains("function `foo`"),
+            "got: {:?}",
+            modified_lines[0]
+        );
+    }
+
+    #[test]
+    fn render_entry_summary_handles_anonymous_hunks() {
+        let theme = test_theme();
+        let mut entry = entry_with_two_hunks("function_item", "foo");
+        // Drop ancestors on one hunk.
+        entry.hunks[1].ancestors.clear();
+        let lines = render_entry_summary(&entry, &theme);
+        let combined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("top-level") && combined.contains("no enclosing scope"),
+            "got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn render_entry_summary_reports_error_for_failed_entries() {
+        let theme = test_theme();
+        let mut entry = entry_with_two_hunks("function_item", "foo");
+        entry.ok = false;
+        entry.error = Some("oh no".to_string());
+        entry.hunks.clear();
+        let lines = render_entry_summary(&entry, &theme);
+        let combined: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined.contains("oh no"), "got:\n{combined}");
     }
 }

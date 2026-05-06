@@ -274,19 +274,56 @@ impl ViewState {
         }
     }
 
-    /// Maximum scroll offset given the visible viewport height.
+    /// Window of `diff_lines` that should be visible right now.
+    ///
+    /// When a file is selected the full diff is visible (existing
+    /// behaviour: scroll-with-snap). When a directory is selected the
+    /// window narrows to that subtree's files — the diff acts as a
+    /// filter so the user sees only the changes inside the directory
+    /// they're focused on.
+    fn visible_diff_range(&self) -> std::ops::Range<usize> {
+        let Some(display_range) = self.sidebar.subtree_display_range() else {
+            return 0..self.diff_lines.len();
+        };
+        if display_range.is_empty() || self.display_order.is_empty() {
+            return 0..self.diff_lines.len();
+        }
+        let first_input = self.display_order[display_range.start];
+        let start = self.file_offsets[first_input];
+        let end = if display_range.end < self.display_order.len() {
+            // Stop just before the blank separator that precedes the
+            // next file. file_offsets points at the file *header*, so
+            // the line immediately above is the separator.
+            let next_input = self.display_order[display_range.end];
+            self.file_offsets[next_input].saturating_sub(1)
+        } else {
+            self.diff_lines.len()
+        };
+        start..end
+    }
+
+    /// Maximum scroll offset (an absolute index in `diff_lines`) such
+    /// that the viewport still sits inside the current visible range.
     fn max_diff_scroll(&self, viewport: usize) -> usize {
-        self.diff_lines.len().saturating_sub(viewport.max(1))
+        let range = self.visible_diff_range();
+        let span = range.end.saturating_sub(range.start);
+        range.start + span.saturating_sub(viewport.max(1))
+    }
+
+    /// Lower bound for `diff_scroll` (start of the visible range).
+    fn min_diff_scroll(&self) -> usize {
+        self.visible_diff_range().start
     }
 
     fn scroll_diff_by(&mut self, delta: isize, viewport: usize) {
+        let min = self.min_diff_scroll() as isize;
         let max = self.max_diff_scroll(viewport) as isize;
-        let target = (self.diff_scroll as isize + delta).clamp(0, max);
+        let target = (self.diff_scroll as isize + delta).clamp(min, max.max(min));
         self.diff_scroll = target as usize;
     }
 
     fn scroll_diff_to_top(&mut self) {
-        self.diff_scroll = 0;
+        self.diff_scroll = self.min_diff_scroll();
     }
 
     fn scroll_diff_to_bottom(&mut self, viewport: usize) {
@@ -296,7 +333,8 @@ impl ViewState {
     /// Sync the diff pane's scroll to the file the sidebar is pointing
     /// at. On a file row that's the selected file; on a directory row
     /// it's the first file inside that subtree, so the diff updates as
-    /// the user traverses the tree.
+    /// the user traverses the tree. Scroll is also clamped to the
+    /// visible range.
     fn snap_diff_to_selected_file(&mut self, viewport: usize) {
         let Some(file_idx) = self.sidebar.nearest_file_index() else {
             return;
@@ -304,8 +342,9 @@ impl ViewState {
         let Some(&offset) = self.file_offsets.get(file_idx) else {
             return;
         };
+        let min = self.min_diff_scroll();
         let max = self.max_diff_scroll(viewport);
-        self.diff_scroll = offset.min(max);
+        self.diff_scroll = offset.clamp(min, max.max(min));
     }
 }
 
@@ -646,18 +685,22 @@ fn draw_separator(frame: &mut ratatui::Frame<'_>, area: Rect, state: &ViewState,
 
 fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, theme: &Theme) {
     let viewport = area.height as usize;
-    let total = state.diff_lines.len();
-    let start = state.diff_scroll.min(total);
-    let end = start.saturating_add(viewport.max(1)).min(total);
-    let visible: Vec<Line<'static>> = state.diff_lines[start..end].to_vec();
+    let range = state.visible_diff_range();
+    let scroll = state.diff_scroll.clamp(range.start, range.end);
+    let end = scroll.saturating_add(viewport.max(1)).min(range.end);
+    let visible: Vec<Line<'static>> = state.diff_lines[scroll..end].to_vec();
 
     frame.render_widget(Paragraph::new(visible), area);
 
-    // Vertical scrollbar pinned to the right edge.
-    if total > viewport.max(1) {
-        let max_scroll = total.saturating_sub(viewport);
+    // Vertical scrollbar reflects the *visible range*, not the full
+    // diff: when the sidebar is on a directory the scrollbar tracks
+    // progress through that subtree's files.
+    let span = range.end.saturating_sub(range.start);
+    if span > viewport.max(1) {
+        let max_scroll = span.saturating_sub(viewport);
+        let position = scroll.saturating_sub(range.start).min(max_scroll);
         let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-            .position(state.diff_scroll.min(max_scroll))
+            .position(position)
             .viewport_content_length(viewport);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .symbols(scrollbar_symbols::VERTICAL)
@@ -741,11 +784,17 @@ fn sidebar_counter(state: &ViewState) -> String {
 
 /// Diff scroll position summarised as `line X/Y`.
 fn diff_counter(state: &ViewState, _area: Rect) -> String {
-    let total = state.diff_lines.len();
-    if total == 0 {
+    let range = state.visible_diff_range();
+    let span = range.end.saturating_sub(range.start);
+    if span == 0 {
         return String::new();
     }
-    format!("line {}/{}", state.diff_scroll + 1, total)
+    let pos = state
+        .diff_scroll
+        .saturating_sub(range.start)
+        .min(span.saturating_sub(1))
+        + 1;
+    format!("line {pos}/{span}")
 }
 
 struct TerminalSession;
@@ -1025,6 +1074,117 @@ mod tests {
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
         // Diff scroll should be at file 1's offset.
         assert_eq!(state.diff_scroll, state.file_offsets[1]);
+    }
+
+    #[test]
+    fn dir_filter_excludes_files_outside_subtree() {
+        // Three files under three different dirs. Each file's diff has
+        // a unique marker line so we can assert exactly which files are
+        // visible at any time.
+        let a = file_diff("alpha/a.rs");
+        let b = file_diff("beta/b.rs");
+        let c = file_diff("gamma/c.rs");
+        let resolved = vec![
+            ResolvedFile {
+                file: &a,
+                before: "old_alpha\n".to_string(),
+                after: "new_alpha\n".to_string(),
+            },
+            ResolvedFile {
+                file: &b,
+                before: "old_beta\n".to_string(),
+                after: "new_beta\n".to_string(),
+            },
+            ResolvedFile {
+                file: &c,
+                before: "old_gamma\n".to_string(),
+                after: "new_gamma\n".to_string(),
+            },
+        ];
+        let mut state = make_state(&resolved);
+        // Walk to the `beta/` dir header. Tree order: alpha/ (dir 0),
+        // alpha/a.rs (file 0), beta/ (dir 1), beta/b.rs (file 1),
+        // gamma/ (dir 2), gamma/c.rs (file 2).
+        // Initial selection is on file 0 (alpha/a.rs at row 1).
+        // Step down to row 2 = beta/.
+        state.sidebar.move_down(20);
+        assert!(state.sidebar.selected_is_dir());
+
+        let range = state.visible_diff_range();
+        let visible_text: String = state.diff_lines[range.clone()]
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Only beta/b.rs's content must be inside the range.
+        assert!(
+            visible_text.contains("beta/b.rs")
+                && visible_text.contains("old_beta")
+                && visible_text.contains("new_beta"),
+            "beta content missing from filtered range: {visible_text:?}"
+        );
+        assert!(
+            !visible_text.contains("alpha/a.rs") && !visible_text.contains("old_alpha"),
+            "alpha leaked into beta filter: {visible_text:?}"
+        );
+        assert!(
+            !visible_text.contains("gamma/c.rs") && !visible_text.contains("old_gamma"),
+            "gamma leaked into beta filter: {visible_text:?}"
+        );
+
+        // Move to a file row — visible range must expand back to the full diff.
+        state.sidebar.move_down(20); // file row inside beta/
+        assert!(!state.sidebar.selected_is_dir());
+        let full = state.visible_diff_range();
+        assert_eq!(full.start, 0);
+        assert_eq!(full.end, state.diff_lines.len());
+    }
+
+    #[test]
+    fn visible_diff_range_narrows_to_subtree_on_dir_selection() {
+        // Two files in different dirs: src/a.rs and other/b.rs. The
+        // sidebar tree puts each under its own dir header. Selecting
+        // src/ should restrict visible_diff_range to just src/a.rs's
+        // lines; selecting other/ should restrict to other/b.rs.
+        let a = file_diff("src/a.rs");
+        let b = file_diff("other/b.rs");
+        let resolved = vec![
+            ResolvedFile {
+                file: &a,
+                before: "a1\n".to_string(),
+                after: "a2\n".to_string(),
+            },
+            ResolvedFile {
+                file: &b,
+                before: "b1\n".to_string(),
+                after: "b2\n".to_string(),
+            },
+        ];
+        let mut state = make_state(&resolved);
+
+        // On a file: full diff is visible.
+        let full = state.visible_diff_range();
+        assert_eq!(full.start, 0);
+        assert_eq!(full.end, state.diff_lines.len());
+
+        // Move up onto the dir header above the first file (other/ is
+        // first alphabetically among the directory rows).
+        state.sidebar.top(20);
+        assert!(state.sidebar.selected_is_dir());
+        let narrowed = state.visible_diff_range();
+        // The range must be strictly smaller than the full diff.
+        assert!(
+            narrowed.end - narrowed.start < state.diff_lines.len(),
+            "expected subtree range to be narrower than full diff"
+        );
+        // The very first visible line should be the file header for
+        // whichever file the dir contains.
+        let first_line = line_text(&state.diff_lines[narrowed.start]);
+        assert!(
+            first_line == "src/a.rs" || first_line == "other/b.rs",
+            "expected dir's file header at start, got {first_line:?}"
+        );
     }
 
     #[test]

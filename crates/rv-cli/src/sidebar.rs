@@ -26,6 +26,8 @@
 //! - Status detection reads `FileDiff` paths and index hashes (null hash
 //!   → side absent → added/deleted; otherwise modified or renamed).
 
+use std::ops::Range;
+
 use deltoids::Theme;
 use deltoids::parse::FileDiff;
 use deltoids::render_tui::rgb_to_color;
@@ -522,6 +524,52 @@ impl Sidebar {
             Row::File { file_index, .. } => Some(*file_index),
             Row::Dir { .. } => None,
         })
+    }
+
+    /// Display-order positions of every file under the selected
+    /// directory's subtree, as a half-open range.
+    ///
+    /// Returns `None` when a file row is selected (no filtering
+    /// applies). When a directory is selected, the returned range
+    /// always covers a contiguous run of files — the renderer can
+    /// slice the diff lines between the first file's offset and the
+    /// last file's end without skipping anything.
+    pub fn subtree_display_range(&self) -> Option<Range<usize>> {
+        let Some(Row::Dir {
+            depth: parent_depth,
+            ..
+        }) = self.rows.get(self.selected)
+        else {
+            return None;
+        };
+        let parent_depth = *parent_depth;
+
+        // Files preceding the selected dir count as "before" the range.
+        let start = self.rows[..self.selected]
+            .iter()
+            .filter(|r| matches!(r, Row::File { .. }))
+            .count();
+
+        // Walk forward until we exit the subtree (any row at depth
+        // <= parent_depth ends it). Count files inside.
+        let mut count = 0usize;
+        for row in &self.rows[self.selected + 1..] {
+            let row_depth = match row {
+                Row::Dir { depth, .. } => *depth,
+                Row::File { depth, .. } => *depth,
+            };
+            if row_depth <= parent_depth {
+                break;
+            }
+            if matches!(row, Row::File { .. }) {
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            return None;
+        }
+        Some(start..start + count)
     }
 
     /// Move to the next row (file or directory).
@@ -1150,6 +1198,97 @@ mod tests {
         assert_eq!(sidebar.selected_file_index(), None);
         // nearest_file_index still finds the file under it.
         assert_eq!(sidebar.nearest_file_index(), Some(0));
+    }
+
+    #[test]
+    fn subtree_display_range_is_none_when_file_selected() {
+        let a = fd("src/a.rs");
+        let files = vec![SidebarFile {
+            file: &a,
+            added: 0,
+            deleted: 0,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        // Initial selection lands on the file row.
+        assert!(!sidebar.selected_is_dir());
+        assert_eq!(sidebar.subtree_display_range(), None);
+    }
+
+    #[test]
+    fn subtree_display_range_covers_files_under_top_level_dir() {
+        // Layout:
+        //   src/                     (dir 0)
+        //     a.rs                   (file 0)
+        //     b.rs                   (file 1)
+        //   util/                    (dir 2)
+        //     c.rs                   (file 2)
+        let a = fd("src/a.rs");
+        let b = fd("src/b.rs");
+        let c = fd("util/c.rs");
+        let files = vec![
+            SidebarFile {
+                file: &a,
+                added: 0,
+                deleted: 0,
+            },
+            SidebarFile {
+                file: &b,
+                added: 0,
+                deleted: 0,
+            },
+            SidebarFile {
+                file: &c,
+                added: 0,
+                deleted: 0,
+            },
+        ];
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        // Land on src/.
+        sidebar.top(20);
+        assert!(sidebar.selected_is_dir());
+        assert_eq!(sidebar.subtree_display_range(), Some(0..2));
+
+        // Land on util/ (dir 2 in row order, after src/, a.rs, b.rs).
+        sidebar.move_down(20); // a.rs
+        sidebar.move_down(20); // b.rs
+        sidebar.move_down(20); // util/
+        assert!(sidebar.selected_is_dir());
+        assert_eq!(sidebar.subtree_display_range(), Some(2..3));
+    }
+
+    #[test]
+    fn subtree_display_range_covers_nested_subtrees() {
+        // Layout (from earlier example, multiple subdirs under crates/):
+        //   crates/                          depth 0
+        //     deltoids/                      depth 1
+        //       src/                         depth 2
+        //         lib.rs                     depth 3 (file 0 in display)
+        //     deltoids-cli/                  depth 1
+        //       src/                         depth 2
+        //         main.rs                    depth 3 (file 1 in display)
+        let a = fd("crates/deltoids/src/lib.rs");
+        let b = fd("crates/deltoids-cli/src/main.rs");
+        let files = vec![
+            SidebarFile {
+                file: &a,
+                added: 0,
+                deleted: 0,
+            },
+            SidebarFile {
+                file: &b,
+                added: 0,
+                deleted: 0,
+            },
+        ];
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        // Land on crates/ (row 0). Subtree includes both files.
+        sidebar.top(20);
+        assert_eq!(sidebar.subtree_display_range(), Some(0..2));
+
+        // Move to deltoids/ (depth 1). Subtree includes only lib.rs (file 0).
+        sidebar.move_down(20);
+        assert!(sidebar.selected_is_dir());
+        assert_eq!(sidebar.subtree_display_range(), Some(0..1));
     }
 
     #[test]

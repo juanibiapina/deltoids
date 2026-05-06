@@ -164,6 +164,34 @@ impl ParsedFile {
         false
     }
 
+    /// Root node of the parsed tree-sitter tree. Used by the structural
+    /// diff layer to walk named declarations.
+    pub fn root_node(&self) -> Node<'_> {
+        self.tree.root_node()
+    }
+
+    /// The original source bytes the tree was parsed from. Stable across
+    /// the lifetime of `self`.
+    pub fn source_bytes(&self) -> &[u8] {
+        &self.source
+    }
+
+    /// The structure-tier node kinds for this file's language.
+    pub fn structure_kinds(&self) -> &'static [&'static str] {
+        self.structure_kinds
+    }
+
+    /// The wrapper kinds promoted to structure when their `value` field
+    /// holds a function body.
+    pub fn promoted_kinds(&self) -> &'static [&'static str] {
+        self.promoted_kinds
+    }
+
+    /// The function-body node kinds for this file's language.
+    pub fn function_body_kinds(&self) -> &'static [&'static str] {
+        self.function_body_kinds
+    }
+
     fn point_at_first_non_whitespace(&self, line: usize) -> Point {
         let column = self
             .source_line_raw(line)

@@ -1,0 +1,3 @@
+2 structural changes (+1 ~1 -0):
+  ~ Modified class `Foo`
+  + Added method `Foo::compute` (public)

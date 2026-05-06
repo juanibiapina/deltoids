@@ -1,0 +1,2 @@
+1 structural change (+0 ~1 -0):
+  → Renamed function `compute_total` → `calc_total`

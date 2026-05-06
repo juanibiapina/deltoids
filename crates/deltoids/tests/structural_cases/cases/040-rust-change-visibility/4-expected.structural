@@ -1,0 +1,2 @@
+1 structural change (+0 ~1 -0):
+  ~ Changed visibility of function `parse` (private → public)

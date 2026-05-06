@@ -39,6 +39,7 @@ impl StructuralDiff {
         let old = extract_symbols(path, original);
         let new = extract_symbols(path, updated);
         let mut changes = classify(pair_symbols(old, new));
+        changes = drop_redundant_container_changes(changes);
         changes.sort_by_key(sort_key);
         Self { changes, language }
     }
@@ -81,6 +82,34 @@ impl StructuralDiff {
 /// `Modified` includes the body.
 fn is_body_only(c: &StructuralChange) -> bool {
     matches!(c.kind, ChangeKind::BodyChanged)
+}
+
+/// Drop `BodyChanged` / `Modified` entries on container symbols whose
+/// only modification is a child being added / removed / modified.
+/// Without this, adding a method to a class would surface as **two**
+/// changes (the class "modified", the method "added"); after this
+/// pass only the leaf change survives.
+///
+/// Identification: a change `c` is redundant when its kind is
+/// `BodyChanged` or `Modified` AND some other change in the list has a
+/// path that strictly extends `c.path` (parent-of relationship).
+fn drop_redundant_container_changes(changes: Vec<StructuralChange>) -> Vec<StructuralChange> {
+    let paths: Vec<Vec<String>> = changes.iter().map(|c| c.primary().path.clone()).collect();
+    let mut keep = Vec::with_capacity(changes.len());
+    for (i, change) in changes.into_iter().enumerate() {
+        if matches!(change.kind, ChangeKind::BodyChanged | ChangeKind::Modified) {
+            let me = &paths[i];
+            let any_child = paths
+                .iter()
+                .enumerate()
+                .any(|(j, other)| i != j && other.len() > me.len() && other.starts_with(me));
+            if any_child {
+                continue;
+            }
+        }
+        keep.push(change);
+    }
+    keep
 }
 
 /// Sort changes for stable display: by the new-side line where the

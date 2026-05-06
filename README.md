@@ -6,15 +6,25 @@ Tools for reviewing code in the agentic era.
 
 ## Installation
 
-**From source:**
+**Homebrew:**
 
 ```bash
-git clone https://github.com/juanibiapina/deltoids.git
-cd deltoids
+brew install juanibiapina/taps/deltoids-cli
+brew install juanibiapina/taps/edit-cli
+```
 
-# Install all binaries
-cargo install --path crates/deltoids-cli
-cargo install --path crates/edit-cli
+**Prebuilt binaries (shell installer):**
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/juanibiapina/deltoids/releases/latest/download/deltoids-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/juanibiapina/deltoids/releases/latest/download/edit-cli-installer.sh | sh
+```
+
+**From source (cargo):**
+
+```bash
+cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
+cargo install --git https://github.com/juanibiapina/deltoids edit-cli
 ```
 
 This installs:
@@ -30,9 +40,9 @@ This installs:
 Pipe any unified diff through `deltoids`:
 
 ```bash
-git diff | deltoids
-git show HEAD~1 | deltoids
-git log -p --color=always | deltoids
+git diff | deltoids | less -R
+git show HEAD~1 | deltoids | less -R
+git log -p | deltoids | less -R
 ```
 
 ### Git Integration

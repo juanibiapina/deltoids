@@ -65,6 +65,7 @@ crates/
 
   rv-cli/
     src/main.rs         # Interactive scrolling TUI (uses deltoids::{git, content, render_tui})
+    src/sidebar.rs      # Lazygit-style file tree sidebar (status badges, icons, deltas)
 
   tests/
     tests/tui_cli.rs    # Integration tests for edit + write + edit-tui interaction

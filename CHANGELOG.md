@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Add basic `rv` TUI for reviewing diffs. Currently the same as `deltoids` but in a TUI
+- Add basic `rv` TUI for reviewing diffs. Currently the same as `deltoids` but in a TUI.
+- Add a left sidebar to `rv` listing files in a lazygit-style tree (single-child directory chains collapsed), with status badges (`A`/`D`/`M`/`R`), nerd-font icons, per-file `+N -N` line-delta counts, and rename arrows. Selecting a file scrolls the diff pane to that file. Tab/`1`/`2` switches focus; the diff pane otherwise behaves as before. Set `RV_NO_ICONS=1` to disable icons.
 
 ## [0.4.0] - 2026-04-30
 

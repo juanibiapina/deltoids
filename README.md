@@ -10,7 +10,7 @@ Tools for reviewing code in the agentic era.
     <td valign="top"><img src="docs/images/deltoids.png" alt="deltoids: hunk expanded to enclosing function"></td>
   </tr>
   <tr>
-    <td align="center"><em>default</em></td>
+    <td align="center"><em>git diff</em></td>
     <td align="center"><em>deltoids</em></td>
   </tr>
 </table>
@@ -19,11 +19,11 @@ Hunks expand to show the enclosing function, so you always know where you are.
 
 ## Overview
 
-The core idea of this project is to make diffs more powerful. Diffs produced by all tools have syntax highlighting and word-level highlight within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
+The core idea of this project is to make diffs more powerful. Diffs produced by all tools have syntax highlighting and word-level highlighting within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
 
-This project contains a collection of tools. The main tool is `deltoids`, a git pager inspired by `delta` and `difftastic`.
+The main tool is `deltoids`, a git pager inspired by `delta` and `difftastic`.
 
-Another set of tools is `edit`, `write` and `edit-tui`. `edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `edit-tui` separately from the coding agent UI.
+The project also includes `edit`, `write`, and `edit-tui`. `edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `edit-tui` separately from the coding agent UI.
 
 ## Installation
 
@@ -49,10 +49,10 @@ cargo install --git https://github.com/juanibiapina/deltoids edit-cli
 ```
 
 This installs:
-- `deltoids`: diff viewer
+- `deltoids`: git pager with scope context
 - `edit`: file edit tool (used by coding agents)
 - `write`: file write tool (used by coding agents)
-- `edit-tui`: trace browser to follow agents in real time
+- `edit-tui`: trace browser to follow agents in real-time
 
 ## Usage
 
@@ -96,7 +96,7 @@ git:
 
 ### pi
 
-Install the pi package to override built-in `edit` and `write` tools with the traced versions:
+Install the deltoids plugin for pi to override built-in `edit` and `write` tools with the traced versions:
 
 ```bash
 pi install https://github.com/juanibiapina/deltoids

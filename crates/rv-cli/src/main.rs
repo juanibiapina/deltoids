@@ -276,13 +276,13 @@ impl ViewState {
 
     /// Window of `diff_lines` that should be visible right now.
     ///
-    /// When a file is selected the full diff is visible (existing
-    /// behaviour: scroll-with-snap). When a directory is selected the
-    /// window narrows to that subtree's files — the diff acts as a
-    /// filter so the user sees only the changes inside the directory
-    /// they're focused on.
+    /// The diff pane is always filtered to whatever the sidebar is
+    /// pointing at: a directory header narrows to that subtree's
+    /// files, a file row narrows to that single file. Empty diff
+    /// (no files at all) falls through to the full slice so the
+    /// pane simply renders nothing.
     fn visible_diff_range(&self) -> std::ops::Range<usize> {
-        let Some(display_range) = self.sidebar.subtree_display_range() else {
+        let Some(display_range) = self.sidebar.selection_display_range() else {
             return 0..self.diff_lines.len();
         };
         if display_range.is_empty() || self.display_order.is_empty() {
@@ -1133,12 +1133,23 @@ mod tests {
             "gamma leaked into beta filter: {visible_text:?}"
         );
 
-        // Move to a file row — visible range must expand back to the full diff.
+        // Move to a file row — visible range narrows to that single file.
         state.sidebar.move_down(20); // file row inside beta/
         assert!(!state.sidebar.selected_is_dir());
-        let full = state.visible_diff_range();
-        assert_eq!(full.start, 0);
-        assert_eq!(full.end, state.diff_lines.len());
+        let file_range = state.visible_diff_range();
+        let file_text: String = state.diff_lines[file_range]
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            file_text.contains("beta/b.rs") && file_text.contains("new_beta"),
+            "beta file content missing from filtered range: {file_text:?}"
+        );
+        assert!(
+            !file_text.contains("alpha/a.rs") && !file_text.contains("gamma/c.rs"),
+            "siblings leaked into single-file filter: {file_text:?}"
+        );
     }
 
     #[test]
@@ -1163,10 +1174,18 @@ mod tests {
         ];
         let mut state = make_state(&resolved);
 
-        // On a file: full diff is visible.
-        let full = state.visible_diff_range();
-        assert_eq!(full.start, 0);
-        assert_eq!(full.end, state.diff_lines.len());
+        // Initial selection is on a file: visible range is exactly
+        // that file (single-element subset of the full diff).
+        let file_range = state.visible_diff_range();
+        assert!(
+            file_range.end - file_range.start < state.diff_lines.len(),
+            "file selection should narrow to a single file's slice"
+        );
+        let file_first_line = line_text(&state.diff_lines[file_range.start]);
+        assert!(
+            file_first_line == "src/a.rs" || file_first_line == "other/b.rs",
+            "expected a file header at start, got {file_first_line:?}"
+        );
 
         // Move up onto the dir header above the first file (other/ is
         // first alphabetically among the directory rows).

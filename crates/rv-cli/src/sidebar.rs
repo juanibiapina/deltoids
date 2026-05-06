@@ -839,32 +839,38 @@ impl Sidebar {
         })
     }
 
-    /// Display-order positions of every file under the selected
-    /// directory's subtree, as a half-open range.
+    /// Display-order positions of files matching the current selection.
     ///
-    /// Returns `None` when a file row is selected (no filtering
-    /// applies). When a directory is selected, the returned range
-    /// always covers a contiguous run of files — the renderer can
-    /// slice the diff lines between the first file's offset and the
-    /// last file's end without skipping anything.
-    pub fn subtree_display_range(&self) -> Option<Range<usize>> {
-        let Some(Row::Dir {
-            depth: parent_depth,
-            ..
-        }) = self.rows.get(self.selected)
-        else {
-            return None;
-        };
-        let parent_depth = *parent_depth;
+    /// - File row: a single-element range covering just that file.
+    /// - Directory row: the contiguous range of every file inside the
+    ///   subtree.
+    /// - No files at all: `None`.
+    ///
+    /// Either way, the renderer can slice the diff lines between the
+    /// range's first file offset and the line just before the next
+    /// file's separator. This is the single source of truth for the
+    /// diff pane's filter.
+    pub fn selection_display_range(&self) -> Option<Range<usize>> {
+        match self.rows.get(self.selected)? {
+            Row::Dir {
+                depth: parent_depth,
+                ..
+            } => self.subtree_range_for_dir(*parent_depth),
+            Row::File { .. } => {
+                let start = self.files_before(self.selected);
+                Some(start..start + 1)
+            }
+        }
+    }
 
-        // Files preceding the selected dir count as "before" the range.
-        let start = self.rows[..self.selected]
-            .iter()
-            .filter(|r| matches!(r, Row::File { .. }))
-            .count();
-
-        // Walk forward until we exit the subtree (any row at depth
-        // <= parent_depth ends it). Count files inside.
+    /// Display-order range covering the directory's subtree files.
+    ///
+    /// Walks rows after the directory header until it hits one at or
+    /// above the parent's depth. Returns `None` when the subtree is
+    /// empty (defensive — directories are only emitted when they
+    /// contain files).
+    fn subtree_range_for_dir(&self, parent_depth: usize) -> Option<Range<usize>> {
+        let start = self.files_before(self.selected);
         let mut count = 0usize;
         for row in &self.rows[self.selected + 1..] {
             let row_depth = match row {
@@ -878,11 +884,20 @@ impl Sidebar {
                 count += 1;
             }
         }
-
         if count == 0 {
             return None;
         }
         Some(start..start + count)
+    }
+
+    /// Count of file rows strictly before `row_idx`. Equivalent to
+    /// the file's position in display order when `row_idx` is itself
+    /// a file row.
+    fn files_before(&self, row_idx: usize) -> usize {
+        self.rows[..row_idx]
+            .iter()
+            .filter(|r| matches!(r, Row::File { .. }))
+            .count()
     }
 
     /// Move to the next row (file or directory).
@@ -1754,7 +1769,8 @@ mod tests {
     }
 
     #[test]
-    fn subtree_display_range_is_none_when_file_selected() {
+    fn selection_range_for_file_is_single_element() {
+        // src/a.rs only; initial selection is the file row.
         let a = fd("src/a.rs");
         let files = vec![SidebarFile {
             file: &a,
@@ -1762,13 +1778,13 @@ mod tests {
             deleted: 0,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
-        // Initial selection lands on the file row.
         assert!(!sidebar.selected_is_dir());
-        assert_eq!(sidebar.subtree_display_range(), None);
+        // The file's display position is 0 — the only file.
+        assert_eq!(sidebar.selection_display_range(), Some(0..1));
     }
 
     #[test]
-    fn subtree_display_range_covers_files_under_top_level_dir() {
+    fn selection_range_dir_covers_subtree_files() {
         // Layout:
         //   src/                     (dir 0)
         //     a.rs                   (file 0)
@@ -1799,18 +1815,25 @@ mod tests {
         // Land on src/.
         sidebar.top(20);
         assert!(sidebar.selected_is_dir());
-        assert_eq!(sidebar.subtree_display_range(), Some(0..2));
+        assert_eq!(sidebar.selection_display_range(), Some(0..2));
+
+        // Step onto a.rs — single-element range.
+        sidebar.move_down(20);
+        assert!(!sidebar.selected_is_dir());
+        assert_eq!(sidebar.selection_display_range(), Some(0..1));
+
+        // Step onto b.rs — single-element range with shifted start.
+        sidebar.move_down(20);
+        assert_eq!(sidebar.selection_display_range(), Some(1..2));
 
         // Land on util/ (dir 2 in row order, after src/, a.rs, b.rs).
-        sidebar.move_down(20); // a.rs
-        sidebar.move_down(20); // b.rs
         sidebar.move_down(20); // util/
         assert!(sidebar.selected_is_dir());
-        assert_eq!(sidebar.subtree_display_range(), Some(2..3));
+        assert_eq!(sidebar.selection_display_range(), Some(2..3));
     }
 
     #[test]
-    fn subtree_display_range_covers_nested_subtrees() {
+    fn selection_range_dir_covers_nested_subtrees() {
         // Layout (from earlier example, multiple subdirs under crates/):
         //   crates/                          depth 0
         //     deltoids/                      depth 1
@@ -1836,12 +1859,12 @@ mod tests {
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         // Land on crates/ (row 0). Subtree includes both files.
         sidebar.top(20);
-        assert_eq!(sidebar.subtree_display_range(), Some(0..2));
+        assert_eq!(sidebar.selection_display_range(), Some(0..2));
 
         // Move to deltoids/ (depth 1). Subtree includes only lib.rs (file 0).
         sidebar.move_down(20);
         assert!(sidebar.selected_is_dir());
-        assert_eq!(sidebar.subtree_display_range(), Some(0..1));
+        assert_eq!(sidebar.selection_display_range(), Some(0..1));
     }
 
     #[test]

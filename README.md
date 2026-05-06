@@ -20,7 +20,7 @@ Hunks expand to show the enclosing function, so you always know where you are.
 
 ## Overview
 
-The core idea of this project is to make diffs more powerful. Diffs produced by all tools have syntax highlighting and word-level highlighting within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
+The core idea of this project is to make diffs more powerful. Deltoids diffs have language-aware syntax highlighting and word-level highlighting within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
 
 The main tool is `deltoids`, a git pager inspired by `delta` and `difftastic`.
 

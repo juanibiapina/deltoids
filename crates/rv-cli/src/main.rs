@@ -48,7 +48,9 @@ use deltoids::render_tui::{
     self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
     rgb_to_color,
 };
-use deltoids::structural::{StructuralDiff, SummaryOptions, format_summary_with};
+use deltoids::structural::{
+    LineSpan, StructuralChange, StructuralDiff, SummaryOptions, format_summary_with,
+};
 use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
@@ -254,7 +256,7 @@ fn build_view(
         }
 
         match settings.mode {
-            ViewMode::Full => append_full_hunks(&mut lines, diff, width, theme),
+            ViewMode::Full => append_full_hunks(&mut lines, diff, structural, width, theme),
             ViewMode::Signatures => {
                 append_summary_block(&mut lines, structural, settings, theme, true, true);
             }
@@ -270,12 +272,117 @@ fn build_view(
     }
 }
 
-/// Render each hunk as ratatui lines (full diff view).
-fn append_full_hunks(out: &mut Vec<Line<'static>>, diff: &Diff, width: usize, theme: &Theme) {
+/// Render each hunk as ratatui lines (full diff view). When a hunk
+/// falls inside a symbol that has a structural change, an annotation
+/// line is rendered just above the hunk so reviewers see the kind of
+/// change without leaving the diff ("~ Modified method `Foo::bar`").
+fn append_full_hunks(
+    out: &mut Vec<Line<'static>>,
+    diff: &Diff,
+    structural: &StructuralDiff,
+    width: usize,
+    theme: &Theme,
+) {
+    let span_index = build_change_span_index(structural);
     for hunk in diff.hunks() {
         out.push(Line::from(""));
+        if let Some(change) = annotate_for_hunk(hunk, &span_index)
+            && let Some(line) = structural_annotation_line(change, theme)
+        {
+            out.push(line);
+        }
         out.extend(render_tui::render_hunk(hunk, diff.language(), width, theme));
     }
+}
+
+/// Index of new-side line spans → the change that covers them. Built
+/// per file so we look up O(spans) per hunk; perfectly fine for the
+/// scale of changes any one file usually has.
+fn build_change_span_index(structural: &StructuralDiff) -> Vec<(LineSpan, &StructuralChange)> {
+    structural
+        .changes()
+        .iter()
+        .filter_map(|c| {
+            // Prefer the after-side span; fall back to before when the
+            // symbol was removed (so removed-hunks still get a label).
+            let span = c
+                .after
+                .as_ref()
+                .map(|s| s.span)
+                .or_else(|| c.before.as_ref().map(|s| s.span));
+            span.map(|s| (s, c))
+        })
+        .collect()
+}
+
+/// Find the *smallest* span that overlaps the hunk's new-side range.
+/// Smallest = most specific (so a method beats its enclosing class).
+fn annotate_for_hunk<'a>(
+    hunk: &deltoids::Hunk,
+    index: &'a [(LineSpan, &'a StructuralChange)],
+) -> Option<&'a StructuralChange> {
+    let (h_start, h_end) = hunk_new_range(hunk);
+    let mut best: Option<(usize, &StructuralChange)> = None;
+    for (span, change) in index {
+        if span.end < h_start || span.start > h_end {
+            continue;
+        }
+        let width = span.end.saturating_sub(span.start);
+        if best.map(|(w, _)| width < w).unwrap_or(true) {
+            best = Some((width, change));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Compute (start, end) on the new side covered by `hunk`. End is
+/// inclusive. A pure-deletion hunk that adds zero new lines reports
+/// (new_start, new_start) so it still matches symbols at that line.
+fn hunk_new_range(hunk: &deltoids::Hunk) -> (usize, usize) {
+    let new_count = hunk
+        .lines
+        .iter()
+        .filter(|l| matches!(l.kind, LineKind::Added | LineKind::Context))
+        .count();
+    let start = hunk.new_start.max(1);
+    let end = if new_count == 0 {
+        start
+    } else {
+        start + new_count - 1
+    };
+    (start, end)
+}
+
+/// Render a one-line structural label for the given change. Returns
+/// `None` for body-only changes (the regular hunk header already shows
+/// the function name; the label would be noise).
+fn structural_annotation_line(change: &StructuralChange, theme: &Theme) -> Option<Line<'static>> {
+    use deltoids::structural::ChangeKind;
+    use ratatui::style::Color;
+
+    if matches!(change.kind, ChangeKind::BodyChanged) {
+        return None;
+    }
+    let bullet = match change.kind {
+        ChangeKind::Added => '+',
+        ChangeKind::Removed => '-',
+        ChangeKind::Renamed => '→',
+        _ => '~',
+    };
+    let color = match change.kind {
+        ChangeKind::Added => Color::Green,
+        ChangeKind::Removed => Color::Red,
+        ChangeKind::Renamed => rgb_to_color(theme.muted),
+        _ => Color::Yellow,
+    };
+    Some(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{bullet} "), Style::default().fg(color)),
+        Span::styled(
+            change.description.clone(),
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ),
+    ]))
 }
 
 /// Render the structural-change list for one file. `signatures_only`
@@ -1539,6 +1646,39 @@ mod tests {
             .join("\n");
         assert!(
             combined.contains("Added function `beta`"),
+            "got:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn full_view_annotates_added_function_above_its_hunk() {
+        // The added function `brand_new` should produce a structural
+        // annotation line above the hunk that adds it.
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn helper() {}\n".to_string(),
+            after: "fn helper() {}\n\npub fn brand_new() -> i32 { 1 }\n".to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &[0],
+            80,
+            &theme(),
+            ViewSettings::default(),
+        );
+        let combined: String = view
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("+ Added function `brand_new` (public)"),
             "got:\n{combined}"
         );
     }

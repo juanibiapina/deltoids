@@ -23,9 +23,13 @@
 mod classify;
 mod diff;
 mod pair;
+mod render;
 mod symbol;
 
 pub use classify::{ChangeKind, StructuralChange, classify, kind_word};
 pub use diff::StructuralDiff;
 pub use pair::{Pairing, pair_symbols};
+pub use render::{
+    SummaryOptions, Totals, format_summary, format_summary_compact, format_summary_with, totals,
+};
 pub use symbol::{LineSpan, Symbol, SymbolKind, SymbolPath, Visibility, extract_symbols};

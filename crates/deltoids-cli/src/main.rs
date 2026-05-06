@@ -13,6 +13,7 @@ use deltoids::Diff;
 use deltoids::Theme;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::render::{BgFill, render_file_header, render_hunk, render_rename_header};
+use deltoids::structural::{SummaryOptions, format_summary_with};
 use deltoids::{content, git};
 
 /// A blob referenced by a diff that could not be resolved locally.
@@ -59,7 +60,87 @@ impl std::error::Error for DiffError {}
 
 const DEFAULT_WIDTH: usize = 120;
 
+/// CLI flags. The default view (no flags) is the historical full-diff
+/// behaviour. Flags layer on:
+///
+/// - `--summary`: replace the diff with a structural summary.
+/// - `--summary-then-diff`: print summary first, then the full diff.
+/// - `--public`: only files / changes touching public symbols. Filters
+///   both the summary (if any) and the diff bodies.
+/// - `--signatures-only`: drop body-only changes from the summary;
+///   the diff still renders fully. Useful for API-review.
+#[derive(Debug, Clone, Default)]
+struct Args {
+    summary: bool,
+    summary_then_diff: bool,
+    public_only: bool,
+    signatures_only: bool,
+    show_help: bool,
+}
+
+impl Args {
+    fn parse(argv: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut args = Args::default();
+        for arg in argv.into_iter().skip(1) {
+            match arg.as_str() {
+                "--summary" | "-s" => args.summary = true,
+                "--summary-then-diff" | "-S" => args.summary_then_diff = true,
+                "--public" | "-p" => args.public_only = true,
+                "--signatures-only" => args.signatures_only = true,
+                "--help" | "-h" => args.show_help = true,
+                _ => return Err(format!("deltoids: unknown argument `{arg}`")),
+            }
+        }
+        Ok(args)
+    }
+
+    /// True when the structural summary should be printed.
+    fn print_summary(&self) -> bool {
+        self.summary || self.summary_then_diff
+    }
+
+    /// True when the unified diff should be printed.
+    fn print_diff(&self) -> bool {
+        !self.summary || self.summary_then_diff
+    }
+}
+
+const HELP_TEXT: &str = "\
+deltoids - syntax-aware diff filter
+
+Usage: deltoids [OPTIONS]
+
+  Reads a unified diff on stdin, enriches it with tree-sitter scope
+  context, and prints rendered output to stdout. Designed to pipe:
+
+      git diff | deltoids | less -R
+
+OPTIONS:
+  -s, --summary            Print a structural summary instead of the
+                           diff (lists added / removed / modified
+                           named declarations).
+  -S, --summary-then-diff  Print the summary first, then the full diff.
+  -p, --public             Restrict output to changes touching public
+                           symbols. Both summary and diff are filtered.
+      --signatures-only    Drop body-only changes from the summary;
+                           the diff still renders fully (use this with
+                           --summary for an API-change view).
+  -h, --help               Show this help.
+";
+
 fn main() {
+    let args = match Args::parse(std::env::args()) {
+        Ok(a) => a,
+        Err(msg) => {
+            eprintln!("{msg}\n{HELP_TEXT}");
+            std::process::exit(2);
+        }
+    };
+    if args.show_help {
+        print!("{HELP_TEXT}");
+        return;
+    }
+
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
         eprintln!("deltoids: failed to read stdin: {e}");
@@ -74,7 +155,7 @@ fn main() {
     let fill = bg_fill_mode();
     let theme = Theme::load();
 
-    let output = match process_diff(&input, width, fill, &theme) {
+    let output = match process_diff(&input, width, fill, &theme, &args) {
         Ok(out) => out,
         Err(err) => {
             eprint!("{err}");
@@ -180,7 +261,13 @@ fn resolve<'a>(
 }
 
 /// Render the resolved diff.
-fn render(resolved: &ResolvedDiff<'_>, width: usize, fill: BgFill, theme: &Theme) -> String {
+fn render(
+    resolved: &ResolvedDiff<'_>,
+    width: usize,
+    fill: BgFill,
+    theme: &Theme,
+    args: &Args,
+) -> String {
     use content::SideContent;
 
     let mut output = String::new();
@@ -239,6 +326,16 @@ fn render(resolved: &ResolvedDiff<'_>, width: usize, fill: BgFill, theme: &Theme
         let path = display_path(file);
         let diff = Diff::compute(&before_content, &after_content, path);
 
+        // Public-only filter: skip the entire file if no change touches
+        // a public symbol. Keeps the diff aligned with the summary.
+        if args.public_only {
+            let structural = diff.structural();
+            let any_public = structural.public_changes().next().is_some();
+            if !any_public {
+                continue;
+            }
+        }
+
         // Render file header (2 lines)
         for line in render_file_header(path, width, theme) {
             output.push_str(&line);
@@ -251,16 +348,14 @@ fn render(resolved: &ResolvedDiff<'_>, width: usize, fill: BgFill, theme: &Theme
             output.push('\n');
         }
 
-        // Render each hunk with breadcrumb box
-        for hunk in diff.hunks() {
-            // Blank line before each hunk
+        if args.print_summary() {
             output.push('\n');
+            append_file_summary(&mut output, &before_content, &after_content, path, args);
+        }
 
-            let hunk_lines = render_hunk(hunk, diff.language(), width, fill, theme);
-            for line in hunk_lines {
-                output.push_str(&line);
-                output.push('\n');
-            }
+        // Render each hunk with breadcrumb box
+        if args.print_diff() {
+            append_hunks(&mut output, &diff, width, fill, theme);
         }
     }
 
@@ -284,11 +379,45 @@ fn process_diff(
     width: usize,
     fill: BgFill,
     theme: &Theme,
+    args: &Args,
 ) -> Result<String, DiffError> {
     let parsed = GitDiff::parse(input);
     let repo = git::Repo::discover();
     let resolved = resolve(&parsed, repo.as_ref())?;
-    Ok(render(&resolved, width, fill, theme))
+    Ok(render(&resolved, width, fill, theme, args))
+}
+
+/// Append every hunk in `diff` to `out`. One blank line precedes each
+/// hunk — callers don't need to add their own.
+fn append_hunks(out: &mut String, diff: &Diff, width: usize, fill: BgFill, theme: &Theme) {
+    for hunk in diff.hunks() {
+        out.push('\n');
+        let hunk_lines = render_hunk(hunk, diff.language(), width, fill, theme);
+        for line in hunk_lines {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+}
+
+/// Append the structural summary for one file pair to `out`. Skips the
+/// title — we already printed a file header so the summary just lists
+/// changes.
+fn append_file_summary(out: &mut String, before: &str, after: &str, path: &str, args: &Args) {
+    let structural = deltoids::StructuralDiff::compute(before, after, path);
+    if structural.is_empty() {
+        return;
+    }
+    let opts = SummaryOptions {
+        indent: "  ",
+        title: false,
+        public_only: args.public_only,
+        signatures_only: args.signatures_only,
+    };
+    let body = format_summary_with(&structural, &opts);
+    if !body.trim().is_empty() {
+        out.push_str(&body);
+    }
 }
 
 /// Fallback rendering for files where neither side could be resolved.

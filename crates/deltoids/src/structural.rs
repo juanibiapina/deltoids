@@ -20,8 +20,10 @@
 //! Dijkstra graph search: pairing is name-driven, with similarity-based
 //! rename detection as a fallback.
 
+mod pair;
 mod symbol;
 
+pub use pair::{Pairing, pair_symbols};
 pub use symbol::{
     LineSpan, StructuralDiff, Symbol, SymbolKind, SymbolPath, Visibility, extract_symbols,
 };

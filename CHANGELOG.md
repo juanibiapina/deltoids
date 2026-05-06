@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `rv` TUI for reviewing diffs:
   - sidebar with file tree
+- Add a tree-sitter-aware **structural diff** layer in `deltoids`:
+  - `deltoids::StructuralDiff::compute(original, updated, path)` and
+    `Diff::structural()` walk both ASTs to enumerate named
+    declarations (functions, methods, classes, structs, enums,
+    traits/interfaces, types, constants, modules, macros, impls),
+    pair them by qualified path, and classify each pair as Added /
+    Removed / Modified / Renamed / SignatureChanged /
+    VisibilityChanged / BodyChanged.
+  - Per-language visibility detection: Rust `pub`/`pub(crate)`,
+    Python leading-underscore convention, TypeScript `export` +
+    `accessibility_modifier`, Go uppercase-initial, Java `modifiers`.
+  - Container-only "Modified class Foo" entries are suppressed when a
+    leaf change covers them ("Added method `Foo::bar`").
+  - Stable, parseable description format:
+    `Added function \`brand_new\` (public)`,
+    `Renamed function \`compute_total\` → \`calc_total\``,
+    `Changed signature of method \`Foo::compute\``, etc.
+- New `deltoids` CLI flags driven by the structural diff:
+  - `-s/--summary`: replace the diff with a structural summary.
+  - `-S/--summary-then-diff`: print summary, then full diff.
+  - `-p/--public`: only files / changes touching public symbols.
+  - `--signatures-only`: drop body-only changes from the summary.
+- New `rv` view-mode toggles:
+  - `v` cycles Full → Signatures → Summary. The Signatures view shows
+    actual declaration signatures (no body, no description prose).
+  - `p` toggles public-only filter.
+- New `edit-tui` toggle:
+  - `s` shows a per-entry structural summary derived from each hunk's
+    deepest breadcrumb ancestor.
+- New `structural_cases` reference test suite under
+  `crates/deltoids/tests/structural_cases/`. Same layout as
+  `diff_cases`; same `DELTOIDS_UPDATE_CASES=1` env var refreshes both.
 
 ## [0.4.0] - 2026-04-30
 

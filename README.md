@@ -1,6 +1,7 @@
 # deltoids
 
-> **Beta**: This project is under active development. APIs and behavior may change. Diff output may still be broken; verify important changes.
+> [!WARNING]
+> This project is under active development. Diff output may still be broken. In case of doubt, verify changes with another pager.
 
 Tools for reviewing code in the agentic era.
 

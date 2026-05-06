@@ -17,6 +17,14 @@ Tools for reviewing code in the agentic era.
 
 Hunks expand to show the enclosing function, so you always know where you are.
 
+## Overview
+
+The core idea of this project is to make diffs more powerful. Diffs produced by all tools have syntax highlighting and word-level highlight within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
+
+This project contains a collection of tools. The main tool is `deltoids`, a git pager inspired by `delta` and `difftastic`.
+
+Another set of tools is `edit`, `write` and `edit-tui`. `edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `edit-tui` separately from the coding agent UI.
+
 ## Installation
 
 **Homebrew:**
@@ -96,4 +104,4 @@ pi install https://github.com/juanibiapina/deltoids
 
 Requires `edit` and `write` binaries on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
 
-Then open `edit-tui` in the same directory as pi to see real time diffs with summaries.
+Then open `edit-tui` in the same directory as pi to see real-time diffs with summaries.

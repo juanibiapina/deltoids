@@ -54,6 +54,12 @@ pub enum FileStatus {
     Deleted,
     Modified,
     Renamed,
+    /// File copied from another location (`copy from`/`copy to` in the
+    /// diff preamble). Lazygit shows this as `C`.
+    Copied,
+    /// File type changed: regular ↔ symlink ↔ submodule. Detected by
+    /// comparing the leading mode digits of `old mode` / `new mode`.
+    TypeChanged,
 }
 
 impl FileStatus {
@@ -64,27 +70,161 @@ impl FileStatus {
             FileStatus::Deleted => 'D',
             FileStatus::Modified => 'M',
             FileStatus::Renamed => 'R',
+            FileStatus::Copied => 'C',
+            FileStatus::TypeChanged => 'T',
         }
     }
 }
 
-/// Classify a [`FileDiff`] as added / deleted / modified / renamed.
+/// Git file mode (`100644`, `100755`, `120000`, `160000`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMode {
+    /// Regular file (`100644`).
+    Regular,
+    /// Executable file (`100755`).
+    Executable,
+    /// Symbolic link (`120000`).
+    Symlink,
+    /// Submodule / gitlink (`160000`).
+    Submodule,
+    /// Anything else (unrecognised octal).
+    Other,
+}
+
+impl FileMode {
+    /// Parse the six-octal-digit git mode (`"100644"`, etc.).
+    pub fn parse(text: &str) -> Self {
+        match text.trim() {
+            "100644" => FileMode::Regular,
+            "100755" => FileMode::Executable,
+            "120000" => FileMode::Symlink,
+            "160000" => FileMode::Submodule,
+            _ => FileMode::Other,
+        }
+    }
+
+    /// True when the mode change corresponds to flipping the
+    /// executable bit on a regular file (rather than a real type
+    /// change).
+    fn is_regular_or_executable(self) -> bool {
+        matches!(self, FileMode::Regular | FileMode::Executable)
+    }
+}
+
+/// Mode change between the old and new versions of a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeChange {
+    /// Executable bit set (regular → executable).
+    ExecutableSet,
+    /// Executable bit cleared (executable → regular).
+    ExecutableCleared,
+    /// Different file kinds either side of the change.
+    TypeChange { old: FileMode, new: FileMode },
+}
+
+/// Extra metadata extracted from a [`FileDiff`]'s preamble: binary
+/// flag, mode change, submodule flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileMetadata {
+    pub binary: bool,
+    pub mode_change: Option<ModeChange>,
+    pub is_submodule: bool,
+}
+
+/// Classify a [`FileDiff`] as added / deleted / modified / renamed /
+/// copied / type-changed.
 ///
-/// Added: old path is `/dev/null` or old hash is the null oid.
-/// Deleted: new path is `/dev/null` or new hash is the null oid.
-/// Renamed: `rename_from` is set and the file is neither added nor
-/// deleted.
-/// Modified: everything else.
+/// - Added: old path is `/dev/null` or old hash is the null oid.
+/// - Deleted: new path is `/dev/null` or new hash is the null oid.
+/// - Copied: preamble has `copy from` / `copy to`.
+/// - Renamed: `rename_from` is set and the file is neither added nor
+///   deleted.
+/// - TypeChanged: mode digits differ in the leading three octal
+///   positions (regular ↔ symlink ↔ submodule).
+/// - Modified: everything else.
 pub fn file_status(file: &FileDiff) -> FileStatus {
     let old_absent = file.old_path == "/dev/null" || is_null_hash(file.old_hash.as_deref());
     let new_absent = file.new_path == "/dev/null" || is_null_hash(file.new_hash.as_deref());
 
-    match (old_absent, new_absent) {
-        (true, false) => FileStatus::Added,
-        (false, true) => FileStatus::Deleted,
-        _ if file.rename_from.is_some() => FileStatus::Renamed,
-        _ => FileStatus::Modified,
+    if old_absent && !new_absent {
+        return FileStatus::Added;
     }
+    if !old_absent && new_absent {
+        return FileStatus::Deleted;
+    }
+    if preamble_has_prefix(&file.preamble, "copy from ") {
+        return FileStatus::Copied;
+    }
+    if matches!(
+        file_metadata(file).mode_change,
+        Some(ModeChange::TypeChange { .. })
+    ) {
+        return FileStatus::TypeChanged;
+    }
+    if file.rename_from.is_some() {
+        return FileStatus::Renamed;
+    }
+    FileStatus::Modified
+}
+
+/// Pull binary, mode-change, and submodule flags out of the preamble.
+///
+/// The preamble is the slice of non-diff lines that preceded the
+/// `--- ` / `+++ ` markers. We look for:
+///
+/// - `Binary files ... and ... differ` → binary = true
+/// - `old mode XXXXXX` / `new mode XXXXXX` → mode_change populated
+///   (executable flip vs full type change)
+/// - any mode equal to `160000` → is_submodule = true
+pub fn file_metadata(file: &FileDiff) -> FileMetadata {
+    let mut out = FileMetadata::default();
+    let mut old_mode: Option<FileMode> = None;
+    let mut new_mode: Option<FileMode> = None;
+
+    for line in &file.preamble {
+        let line = line.trim_start();
+        if line.starts_with("Binary files ") && line.ends_with(" differ") {
+            out.binary = true;
+        } else if let Some(rest) = line.strip_prefix("old mode ") {
+            old_mode = Some(FileMode::parse(rest));
+        } else if let Some(rest) = line.strip_prefix("new mode ") {
+            new_mode = Some(FileMode::parse(rest));
+        } else if let Some(rest) = line.strip_prefix("new file mode ") {
+            new_mode = Some(FileMode::parse(rest));
+        } else if let Some(rest) = line.strip_prefix("deleted file mode ") {
+            old_mode = Some(FileMode::parse(rest));
+        }
+    }
+
+    if matches!(old_mode, Some(FileMode::Submodule))
+        || matches!(new_mode, Some(FileMode::Submodule))
+    {
+        out.is_submodule = true;
+    }
+
+    if let (Some(o), Some(n)) = (old_mode, new_mode)
+        && o != n
+    {
+        out.mode_change = Some(
+            if o.is_regular_or_executable() && n.is_regular_or_executable() {
+                match (o, n) {
+                    (FileMode::Regular, FileMode::Executable) => ModeChange::ExecutableSet,
+                    (FileMode::Executable, FileMode::Regular) => ModeChange::ExecutableCleared,
+                    _ => ModeChange::TypeChange { old: o, new: n },
+                }
+            } else {
+                ModeChange::TypeChange { old: o, new: n }
+            },
+        );
+    }
+
+    out
+}
+
+fn preamble_has_prefix(preamble: &[String], prefix: &str) -> bool {
+    preamble
+        .iter()
+        .any(|line| line.trim_start().starts_with(prefix))
 }
 
 fn is_null_hash(hash: Option<&str>) -> bool {
@@ -271,62 +411,228 @@ impl IconMode {
     }
 }
 
-/// Pick a nerd-font glyph for the given filename. Looks at exact
-/// filenames first (Cargo.toml, README.md, Dockerfile, …) then falls
-/// back to extensions, then to a generic file glyph.
+/// Pick a nerd-font glyph for the given filename.
+///
+/// Lookup order:
+///
+/// 1. Exact lowercase filename (Cargo.toml, Dockerfile, README.md,
+///    package.json, go.mod, requirements.txt, etc.).
+/// 2. Lowercase extension (rs, py, ts, kt, dart, elm, …).
+/// 3. Generic file glyph as fallback.
+///
+/// Codepoints come from the nerd-fonts patched glyph set
+/// (https://www.nerdfonts.com/cheat-sheet).
 fn file_icon(name: &str) -> &'static str {
-    // Exact filename matches (project-level files that deserve their own glyph).
     let lower = name.to_ascii_lowercase();
-    let exact: &[(&str, &str)] = &[
-        ("cargo.toml", "\u{e7a8}"), // rust crate gear
+    if let Some(icon) = exact_filename_icon(&lower) {
+        return icon;
+    }
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    extension_icon(&ext.to_ascii_lowercase())
+}
+
+/// Project-conventional filenames that get their own glyph regardless
+/// of extension (e.g. `Dockerfile` has no extension; `package.json`
+/// shouldn't get the generic JSON glyph).
+fn exact_filename_icon(lower: &str) -> Option<&'static str> {
+    const EXACT: &[(&str, &str)] = &[
+        // Rust
+        ("cargo.toml", "\u{e7a8}"),
         ("cargo.lock", "\u{e7a8}"),
-        ("readme.md", "\u{f48a}"), // markdown
+        // Docs / licence
+        ("readme", "\u{f48a}"),
+        ("readme.md", "\u{f48a}"),
+        ("readme.rst", "\u{f48a}"),
+        ("changelog", "\u{f48a}"),
+        ("changelog.md", "\u{f48a}"),
+        ("contributing", "\u{f48a}"),
+        ("contributing.md", "\u{f48a}"),
         ("license", "\u{f0fc3}"),
         ("license.md", "\u{f0fc3}"),
-        ("dockerfile", "\u{f308}"),
+        ("licence", "\u{f0fc3}"),
+        ("licence.md", "\u{f0fc3}"),
+        ("copying", "\u{f0fc3}"),
+        ("authors", "\u{f0fc3}"),
+        // Git
         (".gitignore", "\u{f1d3}"),
         (".gitattributes", "\u{f1d3}"),
+        (".gitmodules", "\u{f1d3}"),
+        (".gitkeep", "\u{f1d3}"),
+        (".mailmap", "\u{f1d3}"),
+        // Containers / orchestration
+        ("dockerfile", "\u{f308}"),
+        ("containerfile", "\u{f308}"),
+        (".dockerignore", "\u{f308}"),
+        ("docker-compose.yml", "\u{f308}"),
+        ("docker-compose.yaml", "\u{f308}"),
+        ("compose.yml", "\u{f308}"),
+        ("compose.yaml", "\u{f308}"),
+        // Build systems
         ("makefile", "\u{e779}"),
+        ("gnumakefile", "\u{e779}"),
+        ("justfile", "\u{e779}"),
+        ("build", "\u{e63a}"),
+        ("build.bazel", "\u{e63a}"),
+        ("workspace", "\u{e63a}"),
+        ("workspace.bazel", "\u{e63a}"),
+        ("cmakelists.txt", "\u{e615}"),
+        ("meson.build", "\u{e615}"),
+        // JS/TS package managers
         ("package.json", "\u{e718}"),
         ("package-lock.json", "\u{e718}"),
+        ("yarn.lock", "\u{e718}"),
+        ("pnpm-lock.yaml", "\u{e718}"),
+        ("bun.lockb", "\u{e718}"),
+        (".npmrc", "\u{e718}"),
+        (".nvmrc", "\u{e718}"),
+        // Python
+        ("requirements.txt", "\u{e606}"),
+        ("setup.py", "\u{e606}"),
+        ("setup.cfg", "\u{e606}"),
+        ("pyproject.toml", "\u{e606}"),
+        ("poetry.lock", "\u{e606}"),
+        ("pipfile", "\u{e606}"),
+        ("pipfile.lock", "\u{e606}"),
+        (".python-version", "\u{e606}"),
+        ("tox.ini", "\u{e606}"),
+        // Ruby
+        ("gemfile", "\u{e739}"),
+        ("gemfile.lock", "\u{e739}"),
+        ("rakefile", "\u{e739}"),
+        (".ruby-version", "\u{e739}"),
+        // Go
+        ("go.mod", "\u{e65e}"),
+        ("go.sum", "\u{e65e}"),
+        ("go.work", "\u{e65e}"),
+        // CI / tooling configs
+        ("jenkinsfile", "\u{e767}"),
+        (".editorconfig", "\u{e652}"),
+        (".prettierrc", "\u{e60b}"),
+        (".eslintrc", "\u{e655}"),
+        (".eslintrc.js", "\u{e655}"),
+        (".eslintrc.json", "\u{e655}"),
+        (".babelrc", "\u{e60b}"),
+        (".env", "\u{f462}"),
+        (".env.local", "\u{f462}"),
+        (".env.development", "\u{f462}"),
+        (".env.production", "\u{f462}"),
+        // Shell rcfiles
+        (".bashrc", "\u{f489}"),
+        (".zshrc", "\u{f489}"),
+        (".bash_profile", "\u{f489}"),
+        (".profile", "\u{f489}"),
     ];
-    for (k, v) in exact {
-        if lower == *k {
-            return v;
-        }
-    }
+    EXACT.iter().find(|(k, _)| *k == lower).map(|(_, v)| *v)
+}
 
-    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    match ext.to_ascii_lowercase().as_str() {
+/// Glyph for a lowercase extension (no leading dot). Falls back to a
+/// generic file glyph for unknown extensions.
+fn extension_icon(ext: &str) -> &'static str {
+    match ext {
+        // ---- Systems / native ----
         "rs" => "\u{e7a8}", // rust
-        "toml" => "\u{e6b2}",
-        "md" | "markdown" => "\u{f48a}",
-        "json" => "\u{e60b}",
-        "yaml" | "yml" => "\u{f481}",
-        "py" => "\u{e606}",
-        "js" | "mjs" | "cjs" => "\u{e74e}",
-        "ts" | "tsx" => "\u{e628}",
-        "jsx" => "\u{e7ba}",
-        "go" => "\u{e65e}",
-        "html" | "htm" => "\u{f13b}",
-        "css" => "\u{e749}",
-        "scss" | "sass" => "\u{e74b}",
-        "sh" | "bash" | "zsh" | "fish" => "\u{f489}",
-        "c" => "\u{e61e}",
-        "h" => "\u{f0fd1}",
+        "c" => "\u{e61e}",  // c
+        "h" => "\u{f0fd1}", // c header
         "cpp" | "cxx" | "cc" => "\u{e61d}",
         "hpp" | "hxx" => "\u{f0fd1}",
+        "cs" => "\u{e648}", // csharp
+        "fs" | "fsi" | "fsx" => "\u{e7a7}",
+        "go" => "\u{e65e}",
         "java" => "\u{e738}",
-        "rb" => "\u{e739}",
-        "php" => "\u{e73d}",
+        "kt" | "kts" => "\u{e634}",
+        "swift" => "\u{e755}",
+        "m" | "mm" => "\u{e711}", // objc
+        "d" => "\u{e7af}",        // dlang
+        "dart" => "\u{e798}",
+        "zig" => "\u{e6a9}",
+        "nim" => "\u{e677}",
+        "v" => "\u{e6ac}",   // vlang
+        "sol" => "\u{fcb9}", // solidity
+        "hs" | "lhs" => "\u{e777}",
+        "ml" | "mli" => "\u{e67a}",
+        "ex" | "exs" => "\u{e62d}",
+        "erl" | "hrl" => "\u{e7b1}",
+        "clj" | "cljs" | "cljc" | "edn" => "\u{e768}",
+        "scala" | "sc" => "\u{e737}",
+        "r" | "rmd" => "\u{f25d}",
+        "jl" => "\u{e624}",
         "lua" => "\u{e620}",
-        "vim" => "\u{e7c5}",
-        "txt" | "log" => "\u{f0219}",
+        "pl" | "pm" => "\u{e769}",
+        "cr" => "\u{e62f}",
+        "elm" => "\u{e62c}",
+        "nix" => "\u{f313}",
+        "vala" => "\u{e69e}",
+        "vlang" => "\u{e6ac}",
+        "tcl" => "\u{e6cf}",
+        // ---- Web / frontend ----
+        "ts" | "tsx" => "\u{e628}",
+        "js" | "mjs" | "cjs" => "\u{e74e}",
+        "jsx" => "\u{e7ba}",
+        "vue" => "\u{fd42}",
+        "svelte" => "\u{e697}",
+        "astro" => "\u{e6b3}",
+        "html" | "htm" | "xhtml" => "\u{f13b}",
+        "css" => "\u{e749}",
+        "scss" | "sass" => "\u{e74b}",
+        "less" => "\u{e758}",
+        "styl" | "stylus" => "\u{e600}",
+        "hbs" | "handlebars" => "\u{e60f}",
+        "ejs" => "\u{e618}",
+        "pug" | "jade" => "\u{e60e}",
+        "php" => "\u{e73d}",
+        // ---- Scripts ----
+        "sh" | "bash" | "zsh" | "fish" | "ksh" => "\u{f489}",
+        "ps1" | "psm1" | "psd1" => "\u{ebc7}",
+        "bat" | "cmd" => "\u{f17a}",
+        "awk" => "\u{f489}",
+        "vim" | "vimrc" => "\u{e7c5}",
+        // ---- Python ----
+        "py" | "pyi" | "pyc" | "pyo" => "\u{e606}",
+        "ipynb" => "\u{e678}",
+        // ---- Ruby ----
+        "rb" | "rake" | "erb" => "\u{e739}",
+        // ---- Markup / docs ----
+        "md" | "markdown" | "mdx" => "\u{f48a}",
+        "rst" => "\u{e6b9}",
+        "tex" | "latex" | "sty" | "cls" | "bib" => "\u{e69b}",
+        "adoc" | "asciidoc" => "\u{f718}",
+        "org" => "\u{e633}",
+        "txt" | "text" | "log" => "\u{f0219}",
+        "pdf" => "\u{f1c1}",
+        "epub" | "mobi" => "\u{e28b}",
+        // ---- Config / data ----
+        "toml" => "\u{e6b2}",
+        "json" | "json5" | "jsonc" => "\u{e60b}",
+        "yaml" | "yml" => "\u{f481}",
+        "xml" | "xsd" | "xsl" | "xslt" => "\u{f72d}",
+        "csv" | "tsv" => "\u{f1c0}",
+        "sql" => "\u{e706}",
+        "db" | "sqlite" | "sqlite3" => "\u{e706}",
+        "parquet" | "avro" => "\u{f1c0}",
+        "ini" | "cfg" | "conf" | "properties" | "plist" => "\u{e615}",
+        "env" => "\u{f462}",
+        // ---- Build systems ----
+        "gradle" | "groovy" => "\u{e660}",
+        "sbt" => "\u{e737}",
+        "cmake" => "\u{e615}",
+        "bazel" | "bzl" => "\u{e63a}",
+        "mk" => "\u{e779}",
+        // ---- Lock / archive / binary ----
         "lock" => "\u{f023}",
-        "xml" => "\u{f72d}",
+        "zip" | "tar" | "gz" | "xz" | "bz2" | "7z" | "rar" | "zst" => "\u{f1c6}",
+        "deb" | "rpm" | "pkg" | "dmg" => "\u{f1c6}",
+        "exe" | "dll" | "so" | "dylib" => "\u{f013}",
+        // ---- Images / media ----
         "svg" => "\u{f81f}",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" => "\u{f1c5}",
-        "zip" | "tar" | "gz" | "xz" | "bz2" | "7z" => "\u{f1c6}",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" | "tiff" => "\u{f1c5}",
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" => "\u{f1c7}",
+        "mp4" | "mov" | "avi" | "mkv" | "webm" => "\u{f1c8}",
+        // ---- Fonts ----
+        "ttf" | "otf" | "woff" | "woff2" | "eot" => "\u{f031}",
+        // ---- Misc ----
+        "diff" | "patch" => "\u{f440}",
+        "pem" | "crt" | "key" | "cer" | "pub" => "\u{f084}",
+        "http" => "\u{f484}",
         _ => "\u{f15b}", // generic file
     }
 }
@@ -381,9 +687,12 @@ struct FileRowMeta {
     status: Option<FileStatus>,
     /// `None` for directory rows.
     deltas: Option<(usize, usize)>,
-    /// `Some((old, new))` for renamed files; the row label shows
-    /// `old → new` instead of just `new`.
+    /// `Some((old, new))` for renamed *and* copied files; the row
+    /// label shows `old → new` instead of just `new`.
     rename: Option<(String, String)>,
+    /// Binary / mode-change / submodule flags pulled from the diff
+    /// preamble. Empty for directory rows.
+    extra: FileMetadata,
 }
 
 impl Sidebar {
@@ -403,22 +712,26 @@ impl Sidebar {
                     status: None,
                     deltas: None,
                     rename: None,
+                    extra: FileMetadata::default(),
                 },
                 Row::File { file_index, .. } => {
                     let f = &files[*file_index];
                     let status = file_status(f.file);
-                    let rename = if status == FileStatus::Renamed {
-                        f.file
+                    let rename = match status {
+                        FileStatus::Renamed => f
+                            .file
                             .rename_from
                             .as_ref()
-                            .map(|old| (rename_leaf(old), rename_leaf(&f.file.new_path)))
-                    } else {
-                        None
+                            .map(|old| (rename_leaf(old), rename_leaf(&f.file.new_path))),
+                        FileStatus::Copied => copy_origin(f.file)
+                            .map(|old| (rename_leaf(&old), rename_leaf(&f.file.new_path))),
+                        _ => None,
                     };
                     FileRowMeta {
                         status: Some(status),
                         deltas: Some((f.added, f.deleted)),
                         rename,
+                        extra: file_metadata(f.file),
                     }
                 }
             })
@@ -661,6 +974,40 @@ fn rename_leaf(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
+/// Pull the source path from a `copy from` line in the preamble.
+fn copy_origin(file: &FileDiff) -> Option<String> {
+    file.preamble.iter().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("copy from ")
+            .map(str::to_owned)
+    })
+}
+
+/// Short label describing a [`ModeChange`].
+///
+/// Executable bit toggles render as `+x` / `-x`. Real type changes
+/// render as `regular→symlink`, etc., so the user sees what the file
+/// turned into.
+fn mode_change_label(change: ModeChange) -> String {
+    match change {
+        ModeChange::ExecutableSet => "+x".to_string(),
+        ModeChange::ExecutableCleared => "-x".to_string(),
+        ModeChange::TypeChange { old, new } => {
+            format!("{}→{}", file_mode_label(old), file_mode_label(new))
+        }
+    }
+}
+
+fn file_mode_label(mode: FileMode) -> &'static str {
+    match mode {
+        FileMode::Regular => "file",
+        FileMode::Executable => "exec",
+        FileMode::Symlink => "symlink",
+        FileMode::Submodule => "submodule",
+        FileMode::Other => "?",
+    }
+}
+
 fn render_row(
     row: &Row,
     meta: &FileRowMeta,
@@ -734,6 +1081,23 @@ fn render_row(
                     spans.push(Span::styled(format!("-{deleted}"), base.fg(Color::Red)));
                 }
             }
+
+            // Trailing badges: binary, mode change, submodule. These
+            // sit at the right of the row in the muted/border colour
+            // so they don't compete with the status badge.
+            let muted = base.fg(rgb_to_color(theme.muted));
+            if meta.extra.binary {
+                spans.push(Span::styled(" (binary)".to_string(), muted));
+            }
+            if let Some(change) = meta.extra.mode_change {
+                spans.push(Span::styled(
+                    format!(" ({})", mode_change_label(change)),
+                    muted,
+                ));
+            }
+            if meta.extra.is_submodule {
+                spans.push(Span::styled(" (submodule)".to_string(), muted));
+            }
         }
     }
 
@@ -750,6 +1114,8 @@ fn status_color(status: FileStatus) -> Color {
         FileStatus::Deleted => Color::Red,
         FileStatus::Modified => Color::Yellow,
         FileStatus::Renamed => Color::Cyan,
+        FileStatus::Copied => Color::Cyan,
+        FileStatus::TypeChanged => Color::Magenta,
     }
 }
 
@@ -843,6 +1209,193 @@ mod tests {
             file_status(&fd_renamed("old.rs", "new.rs")),
             FileStatus::Renamed
         );
+    }
+
+    fn fd_with_preamble(path: &str, preamble: &[&str]) -> FileDiff {
+        let mut f = fd(path);
+        f.preamble = preamble.iter().map(|s| s.to_string()).collect();
+        f.old_hash = Some("a".repeat(40));
+        f.new_hash = Some("b".repeat(40));
+        f
+    }
+
+    #[test]
+    fn file_status_classifies_copied_file() {
+        let f = fd_with_preamble(
+            "new.rs",
+            &[
+                "diff --git a/old.rs b/new.rs",
+                "similarity index 100%",
+                "copy from old.rs",
+                "copy to new.rs",
+            ],
+        );
+        assert_eq!(file_status(&f), FileStatus::Copied);
+    }
+
+    #[test]
+    fn file_status_classifies_type_changed_file() {
+        // Old mode 100644 (regular) -> new mode 120000 (symlink).
+        let f = fd_with_preamble(
+            "link.txt",
+            &[
+                "diff --git a/link.txt b/link.txt",
+                "old mode 100644",
+                "new mode 120000",
+            ],
+        );
+        assert_eq!(file_status(&f), FileStatus::TypeChanged);
+    }
+
+    #[test]
+    fn file_metadata_detects_binary_marker() {
+        let f = fd_with_preamble(
+            "image.png",
+            &[
+                "diff --git a/image.png b/image.png",
+                "index 9be8cca..cfe6e77 100644",
+                "Binary files a/image.png and b/image.png differ",
+            ],
+        );
+        let meta = file_metadata(&f);
+        assert!(meta.binary, "expected binary flag, got {meta:?}");
+    }
+
+    #[test]
+    fn file_metadata_detects_executable_set() {
+        let f = fd_with_preamble(
+            "script.sh",
+            &[
+                "diff --git a/script.sh b/script.sh",
+                "old mode 100644",
+                "new mode 100755",
+            ],
+        );
+        let meta = file_metadata(&f);
+        assert_eq!(meta.mode_change, Some(ModeChange::ExecutableSet));
+    }
+
+    #[test]
+    fn file_metadata_detects_executable_cleared() {
+        let f = fd_with_preamble("script.sh", &["old mode 100755", "new mode 100644"]);
+        let meta = file_metadata(&f);
+        assert_eq!(meta.mode_change, Some(ModeChange::ExecutableCleared));
+    }
+
+    #[test]
+    fn file_metadata_detects_type_change() {
+        let f = fd_with_preamble("link.txt", &["old mode 100644", "new mode 120000"]);
+        let meta = file_metadata(&f);
+        assert_eq!(
+            meta.mode_change,
+            Some(ModeChange::TypeChange {
+                old: FileMode::Regular,
+                new: FileMode::Symlink,
+            })
+        );
+    }
+
+    #[test]
+    fn file_metadata_detects_submodule() {
+        let f = fd_with_preamble(
+            "vendor/lib",
+            &[
+                "diff --git a/vendor/lib b/vendor/lib",
+                "index abc..def 160000",
+                "new file mode 160000",
+            ],
+        );
+        let meta = file_metadata(&f);
+        assert!(meta.is_submodule);
+    }
+
+    #[test]
+    fn rendered_binary_file_row_has_binary_badge() {
+        let f = fd_with_preamble(
+            "image.png",
+            &["Binary files a/image.png and b/image.png differ"],
+        );
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let combined = sidebar
+            .rows()
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            combined.contains("(binary)"),
+            "missing binary badge: {combined}"
+        );
+    }
+
+    #[test]
+    fn rendered_mode_change_row_has_executable_badge() {
+        let f = fd_with_preamble("script.sh", &["old mode 100644", "new mode 100755"]);
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let combined = sidebar
+            .rows()
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined.contains("(+x)"), "missing +x badge: {combined}");
+    }
+
+    #[test]
+    fn rendered_copied_file_shows_old_arrow_new_and_c_status() {
+        let mut f = fd("new.rs");
+        f.preamble = vec![
+            "diff --git a/old.rs b/new.rs".to_string(),
+            "similarity index 100%".to_string(),
+            "copy from old.rs".to_string(),
+            "copy to new.rs".to_string(),
+        ];
+        f.old_hash = Some("a".repeat(40));
+        f.new_hash = Some("b".repeat(40));
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let combined = sidebar
+            .rows()
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined.contains('C'), "missing C status: {combined}");
+        assert!(
+            combined.contains("old.rs \u{2192} new.rs"),
+            "missing copy arrow: {combined}"
+        );
+    }
+
+    #[test]
+    fn file_icon_covers_more_languages() {
+        // Spot-check a handful of newly-added mappings.
+        assert_eq!(file_icon("main.kt"), "\u{e634}");
+        assert_eq!(file_icon("App.swift"), "\u{e755}");
+        assert_eq!(file_icon("comp.vue"), "\u{fd42}");
+        assert_eq!(file_icon("comp.svelte"), "\u{e697}");
+        assert_eq!(file_icon("data.csv"), "\u{f1c0}");
+        assert_eq!(file_icon("go.mod"), "\u{e65e}");
+        assert_eq!(file_icon("requirements.txt"), "\u{e606}");
+        assert_eq!(file_icon("docker-compose.yml"), "\u{f308}");
+        assert_eq!(file_icon("Jenkinsfile"), "\u{e767}");
+        assert_eq!(file_icon(".editorconfig"), "\u{e652}");
+        assert_eq!(file_icon("flake.nix"), "\u{f313}");
+        assert_eq!(file_icon("build.zig"), "\u{e6a9}");
     }
 
     // --- tree shape --------------------------------------------------

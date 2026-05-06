@@ -121,6 +121,11 @@ struct ParseState {
     pending_old_hash: Option<String>,
     pending_new_hash: Option<String>,
     pending_preamble: Vec<String>,
+    /// Old/new paths captured from the last `diff --git a/X b/Y` header.
+    /// Used as a fallback for diffs that never produce `--- a/X` /
+    /// `+++ b/Y` lines (binary diffs, mode-only changes, pure renames
+    /// or copies).
+    pending_diff_paths: Option<(String, String)>,
 }
 
 impl ParseState {
@@ -135,6 +140,7 @@ impl ParseState {
             pending_old_hash: None,
             pending_new_hash: None,
             pending_preamble: Vec::new(),
+            pending_diff_paths: None,
         }
     }
 
@@ -153,26 +159,51 @@ impl ParseState {
         }
     }
 
-    /// Create FileDiff for pure renames (100% similarity, no content changes).
-    /// These have no --- / +++ lines, so we must create the file from rename info.
+    /// Create FileDiff for diffs that never produced `--- a/X` /
+    /// `+++ b/Y` lines. Covers:
+    ///
+    /// - 100% rename / copy: `rename from`/`rename to` (or
+    ///   `copy from`/`copy to`) without any hunks.
+    /// - Binary diffs: `Binary files a/X and b/X differ` with no body.
+    /// - Mode-only changes: `old mode`/`new mode` with no body.
+    ///
+    /// In all cases the path is recovered from the most recent
+    /// `diff --git a/X b/Y` line.
     fn finish_pending_rename(&mut self) {
-        if let (Some(old_path), Some(new_path)) =
+        if self.current_file.is_some() {
+            // The +++ /--- branch already created a FileDiff for the
+            // current diff; just clear the per-diff state.
+            self.rename_from = None;
+            self.pending_rename_to = None;
+            self.pending_diff_paths = None;
+            return;
+        }
+
+        // Prefer rename info; fall back to diff --git paths.
+        let (old_path, new_path, rename_from) = if let (Some(old), Some(new)) =
             (self.rename_from.take(), self.pending_rename_to.take())
         {
-            // Only create if we don't already have a current_file
-            // (renames with content changes will have --- / +++ lines)
-            if self.current_file.is_none() {
-                self.files.push(FileDiff {
-                    preamble: std::mem::take(&mut self.pending_preamble),
-                    old_path: old_path.clone(),
-                    new_path,
-                    rename_from: Some(old_path),
-                    old_hash: self.pending_old_hash.take(),
-                    new_hash: self.pending_new_hash.take(),
-                    hunks: Vec::new(),
-                });
-            }
-        }
+            (old.clone(), new, Some(old))
+        } else if let Some((old, new)) = self.pending_diff_paths.take()
+            && (!self.pending_preamble.is_empty()
+                || self.pending_old_hash.is_some()
+                || self.pending_new_hash.is_some())
+        {
+            (old, new, None)
+        } else {
+            return;
+        };
+
+        self.files.push(FileDiff {
+            preamble: std::mem::take(&mut self.pending_preamble),
+            old_path,
+            new_path,
+            rename_from,
+            old_hash: self.pending_old_hash.take(),
+            new_hash: self.pending_new_hash.take(),
+            hunks: Vec::new(),
+        });
+        self.pending_diff_paths = None;
     }
 
     fn push_raw_line(&mut self, raw_line: RawLine) {
@@ -233,9 +264,11 @@ impl GitDiff {
 
             // "diff --git" starts a new file entry
             if stripped.starts_with("diff --git ") {
-                // Finish any pending pure rename before starting new file
+                // Finish any pending pure rename / binary / mode-only
+                // diff before starting the new file.
                 state.finish_pending_rename();
                 state.finish_file();
+                state.pending_diff_paths = parse_diff_git_paths(&stripped);
                 continue;
             }
 
@@ -267,6 +300,7 @@ impl GitDiff {
                     new_hash: state.pending_new_hash.take(),
                     hunks: Vec::new(),
                 });
+                state.pending_diff_paths = None;
             } else if let Some(caps) = hunk_header_re().captures(&stripped) {
                 state.finish_hunk();
 
@@ -308,6 +342,24 @@ fn strip_prefix_ab(path: &str) -> String {
         .or_else(|| path.strip_prefix("b/"))
         .unwrap_or(path)
         .to_string()
+}
+
+/// Pull `(old_path, new_path)` out of a `diff --git a/X b/Y` header.
+///
+/// Git uses the same path for both sides on simple modifications and
+/// distinct paths for renames/copies. Quoted paths (when the filename
+/// contains spaces) are not supported here — those are rare in
+/// practice and the fallback is fine for our use (binary/mode-only
+/// diffs almost never carry quoted paths).
+fn parse_diff_git_paths(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("diff --git ")?;
+    // Git's default format is `a/path b/path`. Find the split point
+    // by looking for ` b/` (preserves filenames containing spaces in
+    // either side, as long as neither path itself starts with `b/`).
+    let split = rest.find(" b/")?;
+    let (a, b) = rest.split_at(split);
+    let new_path = &b[1..]; // drop the leading space
+    Some((strip_prefix_ab(a), strip_prefix_ab(new_path)))
 }
 
 #[cfg(test)]
@@ -639,6 +691,85 @@ rename to new.txt
         assert_eq!(parsed.files[0].new_path, "new.txt");
         assert_eq!(parsed.files[0].rename_from, Some("old.txt".to_string()));
         assert!(parsed.files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn parse_binary_only_diff_creates_a_file() {
+        // Binary-only diff: no --- / +++ lines.
+        let diff = r#"diff --git a/img/logo.png b/img/logo.png
+index b30b7fe..9dce35a 100644
+Binary files a/img/logo.png and b/img/logo.png differ
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].new_path, "img/logo.png");
+        assert_eq!(parsed.files[0].old_path, "img/logo.png");
+        assert!(parsed.files[0].hunks.is_empty());
+        assert!(
+            parsed.files[0]
+                .preamble
+                .iter()
+                .any(|line| line.contains("Binary files"))
+        );
+    }
+
+    #[test]
+    fn parse_mode_only_diff_creates_a_file() {
+        // Permission-bit toggle: no body, no --- / +++.
+        let diff = r#"diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].new_path, "script.sh");
+        assert!(
+            parsed.files[0]
+                .preamble
+                .iter()
+                .any(|line| line.starts_with("new mode"))
+        );
+    }
+
+    #[test]
+    fn parse_binary_then_text_does_not_leak_preamble() {
+        // Earlier bug: the binary diff's preamble (in particular the
+        // `Binary files` marker) leaked into the next text file when
+        // the binary file produced no FileDiff of its own.
+        let diff = r#"diff --git a/img/logo.png b/img/logo.png
+index b30b7fe..9dce35a 100644
+Binary files a/img/logo.png and b/img/logo.png differ
+diff --git a/lib/index.js b/lib/index.js
+index 8609d07..b851861 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -1 +1 @@
+-console.log('a');
++console.log('a');console.log('b');
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 2, "both files must be parsed");
+
+        let png = parsed
+            .files
+            .iter()
+            .find(|f| f.new_path == "img/logo.png")
+            .expect("png file should be present");
+        let js = parsed
+            .files
+            .iter()
+            .find(|f| f.new_path == "lib/index.js")
+            .expect("js file should be present");
+
+        assert!(
+            png.preamble.iter().any(|l| l.contains("Binary files")),
+            "png should own the binary marker"
+        );
+        assert!(
+            !js.preamble.iter().any(|l| l.contains("Binary files")),
+            "binary marker must not leak into js, got: {:?}",
+            js.preamble
+        );
     }
 
     #[test]

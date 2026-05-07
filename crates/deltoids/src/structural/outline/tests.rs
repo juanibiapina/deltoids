@@ -158,6 +158,53 @@ fn outline_is_sorted_by_new_line_for_added_and_unchanged() {
 }
 
 #[test]
+fn description_added_says_added() {
+    let o = outline_at("a.rs", "", "fn x() {}\n");
+    assert_eq!(o.len(), 1);
+    assert_eq!(o[0].description(), "added");
+}
+
+#[test]
+fn description_unchanged_is_empty() {
+    let o = outline_at("a.rs", "fn x() {}\n", "fn x() {}\n");
+    assert_eq!(o[0].description(), "");
+}
+
+#[test]
+fn description_body_changed_specific() {
+    let old = "fn x() {\n    1\n}\n";
+    let new = "fn x() {\n    1 + 2\n}\n";
+    let o = outline_at("a.rs", old, new);
+    assert_eq!(o[0].description(), "body changed");
+}
+
+#[test]
+fn description_signature_changed_specific() {
+    let old = "pub fn x(a: i32) -> i32 { a }\n";
+    let new = "pub fn x(a: i32, b: i32) -> i32 { a }\n";
+    let o = outline_at("a.rs", old, new);
+    assert!(
+        o[0].description() == "signature changed" || o[0].description() == "modified",
+        "got {:?}",
+        o[0].description()
+    );
+}
+
+#[test]
+fn description_visibility_now_public() {
+    let o = outline_at("a.rs", "fn x() {}\n", "pub fn x() {}\n");
+    assert_eq!(o[0].description(), "private → public");
+}
+
+#[test]
+fn description_renamed_includes_old_path() {
+    let old = "pub fn compute_total(x: i32, y: i32) -> i32 { x + y }\n";
+    let new = "pub fn calc_total(x: i32, y: i32) -> i32 { x + y }\n";
+    let o = outline_at("a.rs", old, new);
+    assert_eq!(o[0].description(), "renamed (was compute_total)");
+}
+
+#[test]
 fn is_change_returns_false_for_unchanged_only() {
     assert!(!OutlineStatus::Unchanged.is_change());
     for s in [

@@ -40,9 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     const, `•` field), tree branches (`│ ├ └`) showing nesting,
     and an italic-toned signature suffix. No source code, no comments,
     no line numbers — just the structure.
-  - Each row shows a status glyph (`·`/`+`/`-`/`→`/`~`) and a row-wide
-    background tint (Added green, Removed red, Modified yellow,
-    Unchanged none) so what moved jumps out at a glance.
+  - Each row carries a row-wide diff-coloured background tint (Added
+    green, Removed red, Modified yellow, Unchanged none) and a
+    right-aligned, italic, muted description of the change kind:
+    "added", "removed", "body changed", "signature changed", "private
+    → public", "renamed (was old::path)", or "modified" — so the
+    label says exactly what moved without needing the full diff.
+  - Long signatures truncate with `…` so the description always fits;
+    multi-line signatures collapse cleanly (no ", )" or stray spaces
+    inside parens).
   - `p` toggles public-only filter; in Outline mode it hides rows
     whose visibility isn't public, so the file shrinks to just the
     public surface.

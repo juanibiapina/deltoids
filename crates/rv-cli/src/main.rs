@@ -571,15 +571,13 @@ fn render_outline_row(
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
-    use ratatui::style::Color;
-
     let bg = status_background(entry.status, theme);
     let base = match bg {
         Some(c) => Style::default().bg(c),
         None => Style::default(),
     };
+    let muted_fg = rgb_to_color(theme.muted);
     let (icon_glyph, icon_color) = kind_icon(&entry.kind);
-    let status_color = status_fg(entry.status, theme);
     let name = entry
         .path
         .last()
@@ -604,71 +602,107 @@ fn render_outline_row(
         });
     }
 
-    // ── Compose the row ────────────────────────────────────────────
-    // Layout: <prefix><icon> <name>  <signature suffix>
-    // The name is bolded/coloured by status; the signature suffix is
-    // a muted, italic-feeling tone sourced from theme.muted.
-    let name_color = match entry.status {
-        OutlineStatus::Removed => Color::Red,
-        OutlineStatus::Added => Color::Green,
-        OutlineStatus::Renamed
-        | OutlineStatus::SignatureChanged
-        | OutlineStatus::VisibilityChanged
-        | OutlineStatus::Modified
-        | OutlineStatus::BodyChanged => Color::Yellow,
-        OutlineStatus::Unchanged => Color::Reset,
-    };
-
+    // ── Compose ────────────────────────────────────────────────────
+    // Layout: <prefix><icon> <name><visibility-dot>  <signature>
+    //         …padding…   <muted description>
+    //
+    // The name keeps its default foreground colour (no status tint).
+    // All status information lives in the muted right-aligned
+    // description and the row-wide background tint.
     let visibility_dot = match entry.visibility {
         Visibility::Public => " ●",
         _ => "",
     };
-    let renamed_suffix = match (&entry.renamed_from, entry.status) {
-        (Some(old), OutlineStatus::Renamed) => format!("   ← {}", old.join("::")),
-        _ => String::new(),
-    };
     let signature_suffix = signature_for_outline(&entry.signature, &name);
+    let description = entry.description();
+
+    // ── Width budget ───────────────────────────────────────────────
+    // Reserve one column for the scrollbar (drawn over the rightmost
+    // inner column by ratatui). Reserve N columns for the muted
+    // description and a 2-space gutter before it. Whatever's left is
+    // for the prefix + icon + name + signature.
+    let scrollbar_col: usize = 1;
+    let desc_col_width = if description.is_empty() {
+        0
+    } else {
+        description.width() + 2
+    };
+    let content_budget = width.saturating_sub(scrollbar_col + desc_col_width);
+
+    // Build the prefix + icon + name parts first, count their width
+    // so we know how much budget remains for the signature.
+    let prefix_w = prefix.width();
+    let icon_w = format!("{icon_glyph} ").width();
+    let name_w = name.width();
+    let vis_w = visibility_dot.width();
+    let header_w = prefix_w + icon_w + name_w + vis_w;
+    let sig_budget = content_budget.saturating_sub(header_w + 2); // 2 = sig gap
+
+    // Truncate signature to fit. If it doesn't fit at all, drop it.
+    let trimmed_signature = if signature_suffix.is_empty() || sig_budget < 4 {
+        String::new()
+    } else {
+        truncate_with_ellipsis(&signature_suffix, sig_budget)
+    };
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(prefix, base));
-    let status_char = status_glyph(entry.status);
-    spans.push(Span::styled(
-        format!("{status_char} "),
-        base.fg(status_color),
-    ));
     spans.push(Span::styled(format!("{icon_glyph} "), base.fg(icon_color)));
     spans.push(Span::styled(
         name.clone(),
-        base.fg(name_color)
-            .add_modifier(ratatui::style::Modifier::BOLD),
+        base.add_modifier(ratatui::style::Modifier::BOLD),
     ));
     if !visibility_dot.is_empty() {
-        spans.push(Span::styled(
-            visibility_dot.to_string(),
-            base.fg(rgb_to_color(theme.muted)),
-        ));
+        spans.push(Span::styled(visibility_dot.to_string(), base.fg(muted_fg)));
     }
-    if !signature_suffix.is_empty() {
+    if !trimmed_signature.is_empty() {
         spans.push(Span::styled("  ".to_string(), base));
         spans.push(Span::styled(
-            signature_suffix.clone(),
-            base.fg(rgb_to_color(theme.muted))
+            trimmed_signature.clone(),
+            base.fg(muted_fg)
                 .add_modifier(ratatui::style::Modifier::ITALIC),
         ));
     }
-    if !renamed_suffix.is_empty() {
-        spans.push(Span::styled(renamed_suffix.clone(), base.fg(status_color)));
-    }
 
-    // Pad with spaces (same background) so the status tint extends
-    // across the whole row.
+    // Pad to the description column (leaving room for scrollbar).
     let used: usize = spans.iter().map(|s| s.content.width()).sum();
-    let pad = width.saturating_sub(used);
+    let pad = content_budget.saturating_sub(used);
     if pad > 0 {
         spans.push(Span::styled(" ".repeat(pad), base));
     }
+    if !description.is_empty() {
+        spans.push(Span::styled(
+            format!("  {description}"),
+            base.fg(muted_fg)
+                .add_modifier(ratatui::style::Modifier::ITALIC),
+        ));
+    }
 
     Line::from(spans)
+}
+
+/// Truncate `s` to display width `max`, appending `…` when something
+/// was cut. Returns `s` unchanged if it already fits.
+fn truncate_with_ellipsis(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = ch.to_string().width();
+        if w + cw + 1 > max {
+            // +1 leaves room for the trailing ellipsis.
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
 }
 
 /// Pick the part of the signature that's useful as a one-line summary.
@@ -749,51 +783,61 @@ fn status_background(status: OutlineStatus, theme: &Theme) -> Option<ratatui::st
     }
 }
 
-/// Foreground tint for status-coloured glyphs / suffixes.
-fn status_fg(status: OutlineStatus, theme: &Theme) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    match status {
-        OutlineStatus::Added => Color::Green,
-        OutlineStatus::Removed => Color::Red,
-        OutlineStatus::Renamed | OutlineStatus::Unchanged => rgb_to_color(theme.muted),
-        _ => Color::Yellow,
-    }
-}
-
-/// Single-character status glyph rendered to the left of the kind
-/// icon. Plain-text fallback when the row's background tint can't be
-/// seen (low-color terminal, plain-text capture).
-fn status_glyph(status: OutlineStatus) -> char {
-    match status {
-        OutlineStatus::Unchanged => '·',
-        OutlineStatus::Added => '+',
-        OutlineStatus::Removed => '-',
-        OutlineStatus::Renamed => '→',
-        OutlineStatus::BodyChanged
-        | OutlineStatus::SignatureChanged
-        | OutlineStatus::VisibilityChanged
-        | OutlineStatus::Modified => '~',
-    }
-}
-
 /// Compact a multi-line signature down to a single line for the
-/// outline (e.g. fn signatures with where-clauses spanning lines).
+/// outline. Collapses all whitespace runs to a single space, then
+/// applies pretty-printer cleanups so multi-line declarations read
+/// naturally on one line:
+///
+/// - `( foo` → `(foo` (drop space after openers)
+/// - `foo )` → `foo)` (drop space before closers)
+/// - `, )` → `)` (drop trailing comma before close paren / bracket)
+/// - ` ,` → `,` (drop space before comma)
 fn display_signature(s: &str) -> String {
-    let collapsed: String = s.lines().collect::<Vec<_>>().join(" ");
-    let mut out = String::with_capacity(collapsed.len());
+    // Step 1: collapse whitespace runs to one space.
+    let mut collapsed = String::with_capacity(s.len());
     let mut prev_space = false;
-    for ch in collapsed.chars() {
+    for ch in s.chars() {
         if ch.is_whitespace() {
-            if !prev_space && !out.is_empty() {
-                out.push(' ');
+            if !prev_space && !collapsed.is_empty() {
+                collapsed.push(' ');
             }
             prev_space = true;
         } else {
-            out.push(ch);
+            collapsed.push(ch);
             prev_space = false;
         }
     }
-    out.trim_end().to_string()
+    let s = collapsed.trim_end().to_string();
+
+    // Step 2: drop trailing-comma noise: `, )` → `)`, `, ]` → `]`, etc.
+    let mut s = s;
+    for pat in [", )", ", ]", ", >", ",)", ",]", ",>"] {
+        let close = pat.chars().last().unwrap();
+        let close_str = close.to_string();
+        s = s.replace(pat, &close_str);
+    }
+
+    // Step 3: drop space after openers / before closers.
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch == ' ' {
+            // Drop space immediately after `(`, `[`, `<`.
+            if let Some(&prev) = chars.get(i.wrapping_sub(1))
+                && matches!(prev, '(' | '[' | '<')
+            {
+                continue;
+            }
+            // Drop space immediately before `)`, `]`, `>`, `,`, `;`.
+            if let Some(&next) = chars.get(i + 1)
+                && matches!(next, ')' | ']' | '>' | ',' | ';')
+            {
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Style a single structural-summary line with colours that reflect
@@ -2112,6 +2156,60 @@ mod tests {
     }
 
     #[test]
+    fn display_signature_collapses_multiline_and_drops_trailing_comma() {
+        let s =
+            "fn resolve<'a>(\n    parsed: &'a GitDiff,\n    repo: Option<&Repo>,\n) -> Result<()>";
+        let out = display_signature(s);
+        assert_eq!(
+            out, "fn resolve<'a>(parsed: &'a GitDiff, repo: Option<&Repo>) -> Result<()>",
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn display_signature_drops_space_inside_parens() {
+        assert_eq!(display_signature("fn x( a: i32 )"), "fn x(a: i32)");
+    }
+
+    #[test]
+    fn outline_row_shows_added_description_in_muted_color() {
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn helper() {}\n".to_string(),
+            after: "fn helper() {}\nfn brand_new() {}\n".to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
+        let settings = ViewSettings {
+            mode: ViewMode::Outline,
+            public_only: false,
+        };
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &outlines,
+            &[0],
+            120,
+            &theme(),
+            settings,
+        );
+        let combined: String = view
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(combined.contains("brand_new"), "got:\n{combined}");
+        assert!(
+            combined.contains("added"),
+            "description `added` missing: {combined}"
+        );
+    }
+
+    #[test]
     fn outline_view_lists_every_symbol_with_diff_status() {
         // Old has `helper` and `legacy`. New keeps `helper`, drops
         // `legacy`, and adds `brand_new`. The outline should list all
@@ -2149,14 +2247,14 @@ mod tests {
         assert!(combined.contains("helper"), "missing unchanged: {combined}");
         assert!(combined.contains("brand_new"), "missing added: {combined}");
         assert!(combined.contains("legacy"), "missing removed: {combined}");
-        // Status glyphs should appear at row starts.
+        // Status descriptions should appear, in muted text.
         assert!(
-            combined.contains("+ "),
-            "no `+` glyph for added: {combined}"
+            combined.contains("added"),
+            "no `added` description: {combined}"
         );
         assert!(
-            combined.contains("- "),
-            "no `-` glyph for removed: {combined}"
+            combined.contains("removed"),
+            "no `removed` description: {combined}"
         );
     }
 

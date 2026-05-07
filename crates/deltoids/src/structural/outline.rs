@@ -87,12 +87,69 @@ pub struct OutlineEntry {
     pub old_line: Option<usize>,
     /// For `Renamed` rows, the symbol's old qualified name.
     pub renamed_from: Option<SymbolPath>,
+    /// Pre-change visibility, when the symbol existed pre-change.
+    /// Used to describe visibility transitions specifically ("now
+    /// public", "now private", etc.).
+    pub prev_visibility: Option<Visibility>,
 }
 
 impl OutlineEntry {
     /// Convenience for renderers: the qualified name to display.
     pub fn qualified_name(&self) -> String {
         self.path.join("::")
+    }
+
+    /// Short, specific phrase describing what changed about this
+    /// symbol. Empty for unchanged entries. Used by UI surfaces as a
+    /// muted suffix label on the row.
+    ///
+    /// Examples:
+    /// - "added" / "removed"
+    /// - "body changed" / "signature changed"
+    /// - "now public" / "now private" / "now crate"
+    /// - "renamed (was old::path)"
+    /// - "modified"
+    pub fn description(&self) -> String {
+        match self.status {
+            OutlineStatus::Unchanged => String::new(),
+            OutlineStatus::Added => "added".to_string(),
+            OutlineStatus::Removed => "removed".to_string(),
+            OutlineStatus::BodyChanged => "body changed".to_string(),
+            OutlineStatus::SignatureChanged => "signature changed".to_string(),
+            OutlineStatus::VisibilityChanged => {
+                visibility_change_phrase(self.prev_visibility.as_ref(), &self.visibility)
+            }
+            OutlineStatus::Modified => "modified".to_string(),
+            OutlineStatus::Renamed => match &self.renamed_from {
+                Some(old) => format!("renamed (was {})", old.join("::")),
+                None => "renamed".to_string(),
+            },
+        }
+    }
+}
+
+/// Pretty-print a visibility transition.
+fn visibility_change_phrase(prev: Option<&Visibility>, now: &Visibility) -> String {
+    let now_label = visibility_label(now);
+    match prev {
+        Some(prev) => {
+            let prev_label = visibility_label(prev);
+            if prev_label == now_label {
+                format!("now {now_label}")
+            } else {
+                format!("{prev_label} → {now_label}")
+            }
+        }
+        None => format!("now {now_label}"),
+    }
+}
+
+fn visibility_label(v: &Visibility) -> String {
+    match v {
+        Visibility::Public => "public".to_string(),
+        Visibility::Private => "private".to_string(),
+        Visibility::Crate => "crate".to_string(),
+        Visibility::Restricted(s) => format!("restricted ({s})"),
     }
 }
 
@@ -266,6 +323,7 @@ fn entry_from_match(old: Symbol, new: Symbol, status: OutlineStatus) -> OutlineE
         new_body_span: new.body_span,
         old_line: Some(old.span.start),
         renamed_from: None,
+        prev_visibility: Some(old.visibility),
     }
 }
 
@@ -282,6 +340,7 @@ fn entry_from_rename(old: Symbol, new: Symbol) -> OutlineEntry {
         new_body_span: new.body_span,
         old_line: Some(old.span.start),
         renamed_from: Some(old.path),
+        prev_visibility: Some(old.visibility),
     }
 }
 
@@ -298,6 +357,7 @@ fn entry_from_added(s: Symbol) -> OutlineEntry {
         new_body_span: s.body_span,
         old_line: None,
         renamed_from: None,
+        prev_visibility: None,
     }
 }
 
@@ -306,14 +366,15 @@ fn entry_from_removed(s: Symbol) -> OutlineEntry {
         depth: s.path.len().saturating_sub(1),
         kind: s.kind.clone(),
         path: s.path.clone(),
-        signature: s.signature,
-        visibility: s.visibility,
+        signature: s.signature.clone(),
+        visibility: s.visibility.clone(),
         status: OutlineStatus::Removed,
         new_line: None,
         new_span: None,
         new_body_span: None,
         old_line: Some(s.span.start),
         renamed_from: None,
+        prev_visibility: Some(s.visibility),
     }
 }
 

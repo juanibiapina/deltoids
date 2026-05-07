@@ -522,7 +522,10 @@ fn plain_text_spans(
     (spans, width)
 }
 
-fn highlighted_spans(
+/// Produce syntax-highlighted ratatui spans for `line` in `language`.
+/// Truncates output to `max_width` columns. Used by hunk rendering and
+/// by the outline view in rv.
+pub fn highlighted_spans(
     theme_ignored: &Theme,
     language: Option<Language>,
     line: &str,

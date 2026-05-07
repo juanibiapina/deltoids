@@ -76,6 +76,13 @@ pub struct OutlineEntry {
     pub depth: usize,
     /// Line on the new side, when the symbol exists post-change.
     pub new_line: Option<usize>,
+    /// Full new-side span (declaration + body + closing brace) when
+    /// the symbol exists post-change. Used by the outline renderer to
+    /// elide function bodies.
+    pub new_span: Option<crate::structural::symbol::LineSpan>,
+    /// New-side body interior span when present. Excludes opening /
+    /// closing delimiters.
+    pub new_body_span: Option<crate::structural::symbol::LineSpan>,
     /// Line on the old side, when the symbol existed pre-change.
     pub old_line: Option<usize>,
     /// For `Renamed` rows, the symbol's old qualified name.
@@ -255,6 +262,8 @@ fn entry_from_match(old: Symbol, new: Symbol, status: OutlineStatus) -> OutlineE
         visibility: new.visibility,
         status,
         new_line: Some(new.span.start),
+        new_span: Some(new.span),
+        new_body_span: new.body_span,
         old_line: Some(old.span.start),
         renamed_from: None,
     }
@@ -269,6 +278,8 @@ fn entry_from_rename(old: Symbol, new: Symbol) -> OutlineEntry {
         visibility: new.visibility,
         status: OutlineStatus::Renamed,
         new_line: Some(new.span.start),
+        new_span: Some(new.span),
+        new_body_span: new.body_span,
         old_line: Some(old.span.start),
         renamed_from: Some(old.path),
     }
@@ -283,6 +294,8 @@ fn entry_from_added(s: Symbol) -> OutlineEntry {
         visibility: s.visibility,
         status: OutlineStatus::Added,
         new_line: Some(s.span.start),
+        new_span: Some(s.span),
+        new_body_span: s.body_span,
         old_line: None,
         renamed_from: None,
     }
@@ -297,6 +310,8 @@ fn entry_from_removed(s: Symbol) -> OutlineEntry {
         visibility: s.visibility,
         status: OutlineStatus::Removed,
         new_line: None,
+        new_span: None,
+        new_body_span: None,
         old_line: Some(s.span.start),
         renamed_from: None,
     }

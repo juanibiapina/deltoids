@@ -42,7 +42,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
-use deltoids::SymbolKind;
+use deltoids::Language;
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::render_tui::{
@@ -278,7 +278,15 @@ fn build_view(
         match settings.mode {
             ViewMode::Full => append_full_hunks(&mut lines, diff, structural, width, theme),
             ViewMode::Outline => {
-                append_outline_block(&mut lines, outline, settings, width, theme);
+                append_outline_block(
+                    &mut lines,
+                    &resolved.after,
+                    diff.language(),
+                    outline,
+                    settings,
+                    width,
+                    theme,
+                );
             }
             ViewMode::Summary => {
                 append_summary_block(&mut lines, structural, settings, theme, false, false);
@@ -438,26 +446,31 @@ fn append_summary_block(
     }
 }
 
-/// Render the **outline** view for one file: every symbol, indented
-/// by depth, with a diff-style background colour reflecting its
-/// status (Added=green, Removed=red, Modified=yellow, Renamed=blue,
-/// Unchanged=plain). Public-only filtering still applies, dropping
-/// rows whose visibility isn't `Public`.
+/// Render the **outline** view: real new-side source code with
+/// function/method bodies elided to `{ … }`, syntax-highlighted, with
+/// a status gutter and per-line diff-coloured backgrounds reflecting
+/// the status of each line's enclosing symbol.
+///
+/// Reads as code, not as a synthetic tree.  Removed symbols (which
+/// have no new-side position) are appended in a trailing `// removed:`
+/// block so they remain visible.
 fn append_outline_block(
     out: &mut Vec<Line<'static>>,
+    new_source: &str,
+    language: Option<Language>,
     outline: &[OutlineEntry],
     settings: ViewSettings,
     width: usize,
     theme: &Theme,
 ) {
-    let filtered: Vec<&OutlineEntry> = outline
+    out.push(Line::from(""));
+
+    let kept_entries: Vec<&OutlineEntry> = outline
         .iter()
         .filter(|e| !settings.public_only || matches!(e.visibility, Visibility::Public))
         .collect();
 
-    out.push(Line::from(""));
-
-    if filtered.is_empty() {
+    if kept_entries.is_empty() && new_source.trim().is_empty() {
         let label = if settings.public_only {
             "  (no public symbols)"
         } else {
@@ -470,58 +483,250 @@ fn append_outline_block(
         return;
     }
 
-    for entry in filtered {
-        out.push(outline_entry_line(entry, width, theme));
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    let total_lines = new_lines.len();
+
+    // Compute body elisions for function-like entries.
+    let (placeholder_at, elided) = compute_body_elisions(&kept_entries);
+
+    // When public_only is on, drop lines that fall inside a
+    // non-public entry (the `kept_entries` filter applies row-wise).
+    // We compute this by checking the *deepest* entry covering the
+    // line; if it exists in the unfiltered outline but not in the
+    // kept set, the line is hidden.
+    let all_entries: Vec<&OutlineEntry> = outline.iter().collect();
+
+    for line_idx in 1..=total_lines {
+        if elided.contains(&line_idx) {
+            continue;
+        }
+        if settings.public_only {
+            let deepest = most_specific_entry_for_line(line_idx, &all_entries);
+            if let Some(deepest) = deepest
+                && !matches!(deepest.visibility, Visibility::Public)
+            {
+                continue;
+            }
+        }
+        let raw = new_lines[line_idx - 1];
+        let containing = most_specific_entry_for_line(line_idx, &kept_entries);
+        let placeholder_owner = placeholder_at.get(&line_idx).copied();
+        out.push(render_outline_source_line(
+            raw,
+            line_idx,
+            language,
+            containing,
+            placeholder_owner,
+            width,
+            theme,
+        ));
+    }
+
+    append_removed_block(out, outline, language, settings, width, theme);
+}
+
+/// Map each function/method's body to a single placeholder line +
+/// the set of new-side lines to skip entirely.  Nested function
+/// bodies are handled by sorting by span size and skipping any
+/// placeholder that lands on an already-elided line.
+fn compute_body_elisions<'a>(
+    entries: &[&'a OutlineEntry],
+) -> (
+    std::collections::HashMap<usize, &'a OutlineEntry>,
+    std::collections::HashSet<usize>,
+) {
+    use std::collections::{HashMap, HashSet};
+    let mut elisions: Vec<&'a OutlineEntry> = entries
+        .iter()
+        .copied()
+        .filter(|e| e.kind.is_function_like())
+        .filter(|e| e.new_span.is_some() && e.new_body_span.is_some())
+        .collect();
+    elisions.sort_by_key(|e| {
+        let span = e.new_span.unwrap();
+        span.end.saturating_sub(span.start)
+    });
+
+    let mut elided: HashSet<usize> = HashSet::new();
+    let mut placeholder_at: HashMap<usize, &'a OutlineEntry> = HashMap::new();
+    for entry in &elisions {
+        let span = entry.new_span.unwrap();
+        let body = entry.new_body_span.unwrap();
+        // Placeholder line: the line carrying the body's opener.
+        // For multi-line signatures (`fn x(\n  a,\n) {`) that's
+        // body.start - 1; for single-line bodies it's body.start.
+        let placeholder_line = if body.start > span.start {
+            body.start - 1
+        } else {
+            body.start
+        }
+        .max(span.start);
+        if elided.contains(&placeholder_line) {
+            continue;
+        }
+        placeholder_at.insert(placeholder_line, *entry);
+        // Elide body interior past the placeholder, up to and
+        // including the closing brace at span.end.
+        for line in (placeholder_line + 1)..=span.end {
+            elided.insert(line);
+        }
+    }
+    (placeholder_at, elided)
+}
+
+/// Append a trailing block listing every removed symbol with the old
+/// signature painted red.  Skipped when there are no removed entries
+/// or when public-only is on and the removed entries weren't public.
+fn append_removed_block(
+    out: &mut Vec<Line<'static>>,
+    outline: &[OutlineEntry],
+    language: Option<Language>,
+    settings: ViewSettings,
+    width: usize,
+    theme: &Theme,
+) {
+    let removed: Vec<&OutlineEntry> = outline
+        .iter()
+        .filter(|e| matches!(e.status, OutlineStatus::Removed))
+        .filter(|e| !settings.public_only || matches!(e.visibility, Visibility::Public))
+        .collect();
+    if removed.is_empty() {
+        return;
+    }
+    out.push(Line::from(""));
+    out.push(Line::styled(
+        "  // removed:".to_string(),
+        Style::default().fg(rgb_to_color(theme.muted)),
+    ));
+    for entry in removed {
+        let raw = display_signature(&entry.signature);
+        let synthetic = format!("{}{raw}", "    ".repeat(entry.depth + 1));
+        out.push(render_outline_source_line(
+            &synthetic,
+            0,
+            language,
+            Some(entry),
+            None,
+            width,
+            theme,
+        ));
     }
 }
 
-/// Render a single outline entry as one line. Layout:
-///
-///   <indent><status-glyph> <kind-tag>  <signature>      [old-path →]
-///
-/// The whole row gets the status background. Indent is two spaces per
-/// depth level, plus a leading two-space margin so the row sits inside
-/// the pane like other content.
-fn outline_entry_line(entry: &OutlineEntry, width: usize, theme: &Theme) -> Line<'static> {
-    use ratatui::style::Color;
-
-    let glyph = status_glyph(entry.status);
-    let bg = status_background(entry.status, theme);
-    let fg = match entry.status {
-        OutlineStatus::Removed => Color::Reset,
-        _ => Color::Reset,
-    };
-    let kind_tag = kind_tag(&entry.kind);
-    let visibility_marker = match entry.visibility {
-        Visibility::Public => " ●",
-        _ => "  ",
-    };
-    let renamed_suffix = match (&entry.renamed_from, entry.status) {
-        (Some(old), OutlineStatus::Renamed) => format!("   (was {})", old.join("::")),
-        _ => String::new(),
-    };
-
-    let indent = "  ".repeat(entry.depth + 1);
-    let signature_text = display_signature(&entry.signature);
-    let body = format!(
-        "{indent}{glyph} {kind_tag:<8}{visibility_marker} {signature_text}{renamed_suffix}",
-    );
-
-    // Pad with spaces so the background extends across the pane.
-    let body_width = unicode_width::UnicodeWidthStr::width(body.as_str());
-    let pad_width = width.saturating_sub(body_width);
-    let padded = format!("{body}{}", " ".repeat(pad_width));
-
-    let style = if let Some(bg) = bg {
-        Style::default().fg(fg).bg(bg)
-    } else {
-        Style::default().fg(rgb_to_color(theme.muted))
-    };
-    Line::from(Span::styled(padded, style))
+/// Pick the smallest-spanning entry whose new-side span contains
+/// `line`.  Smallest = most specific (a method beats its enclosing
+/// impl).
+fn most_specific_entry_for_line<'a>(
+    line: usize,
+    entries: &[&'a OutlineEntry],
+) -> Option<&'a OutlineEntry> {
+    let mut best: Option<(usize, &OutlineEntry)> = None;
+    for e in entries {
+        let span = match e.new_span {
+            Some(s) => s,
+            None => continue,
+        };
+        if !span.contains(line) {
+            continue;
+        }
+        let w = span.end.saturating_sub(span.start);
+        if best.map(|(prev, _)| w < prev).unwrap_or(true) {
+            best = Some((w, e));
+        }
+    }
+    best.map(|(_, e)| e)
 }
 
-/// Background colour per status. `None` = no background (Unchanged
-/// renders in muted foreground only).
+/// Render one source line as a styled outline line. Layout:
+///
+///   <gutter glyph> <line-num> <syntax-highlighted code>   (padded)
+///
+/// `placeholder_owner` is `Some` when this line should be replaced
+/// with `<signature> { … }` because we're eliding a function body.
+fn render_outline_source_line(
+    raw: &str,
+    line_idx: usize,
+    language: Option<Language>,
+    containing: Option<&OutlineEntry>,
+    placeholder_owner: Option<&OutlineEntry>,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    use ratatui::style::Color;
+
+    let status = containing
+        .map(|e| e.status)
+        .unwrap_or(OutlineStatus::Unchanged);
+    let bg = status_background(status, theme);
+    let glyph = status_glyph(status);
+    let glyph_color = match status {
+        OutlineStatus::Added => Color::Green,
+        OutlineStatus::Removed => Color::Red,
+        OutlineStatus::Renamed | OutlineStatus::Unchanged => rgb_to_color(theme.muted),
+        _ => Color::Yellow,
+    };
+
+    let source_text = match placeholder_owner {
+        Some(_) => collapse_to_placeholder(raw),
+        None => raw.to_string(),
+    };
+
+    let line_num_text = if line_idx == 0 {
+        "     ".to_string()
+    } else {
+        format!("{:>4} ", line_idx)
+    };
+
+    let gutter = format!("{glyph} ");
+    let prefix_width =
+        UnicodeWidthStr::width(gutter.as_str()) + UnicodeWidthStr::width(line_num_text.as_str());
+    let body_max = width.saturating_sub(prefix_width);
+
+    let base_style = match bg {
+        Some(c) => Style::default().bg(c),
+        None => Style::default(),
+    };
+
+    let (mut highlighted, body_width) =
+        render_tui::highlighted_spans(theme, language, &source_text, base_style, body_max);
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(highlighted.len() + 3);
+    spans.push(Span::styled(
+        gutter,
+        Style::default()
+            .fg(glyph_color)
+            .bg(bg.unwrap_or(Color::Reset)),
+    ));
+    spans.push(Span::styled(
+        line_num_text,
+        Style::default()
+            .fg(rgb_to_color(theme.line_number))
+            .bg(bg.unwrap_or(Color::Reset)),
+    ));
+    spans.append(&mut highlighted);
+
+    let used = prefix_width + body_width;
+    let pad = width.saturating_sub(used);
+    if pad > 0 {
+        spans.push(Span::styled(" ".repeat(pad), base_style));
+    }
+
+    Line::from(spans)
+}
+
+/// For a function-body placeholder, take the original signature line
+/// and replace its trailing `{` with `{ … }`. Languages without `{`
+/// (Python `def f():`) get ` { … }` appended.
+fn collapse_to_placeholder(raw: &str) -> String {
+    let trimmed = raw.trim_end();
+    if let Some(stripped) = trimmed.strip_suffix('{') {
+        format!("{}{{ … }}", stripped)
+    } else {
+        format!("{trimmed} {{ … }}")
+    }
+}
+
+/// Background colour per status. `None` = no background.
 fn status_background(status: OutlineStatus, theme: &Theme) -> Option<ratatui::style::Color> {
     match status {
         OutlineStatus::Unchanged => None,
@@ -531,11 +736,7 @@ fn status_background(status: OutlineStatus, theme: &Theme) -> Option<ratatui::st
         | OutlineStatus::SignatureChanged
         | OutlineStatus::VisibilityChanged
         | OutlineStatus::Modified
-        | OutlineStatus::Renamed => {
-            // Reuse the emphasized-added bg as a generic "changed" tone
-            // (it's a more saturated tint of the same family).
-            Some(rgb_to_color(theme.diff_added_emph_bg))
-        }
+        | OutlineStatus::Renamed => Some(rgb_to_color(theme.diff_added_emph_bg)),
     }
 }
 
@@ -549,24 +750,6 @@ fn status_glyph(status: OutlineStatus) -> char {
         | OutlineStatus::SignatureChanged
         | OutlineStatus::VisibilityChanged
         | OutlineStatus::Modified => '~',
-    }
-}
-
-fn kind_tag(kind: &SymbolKind) -> &'static str {
-    match kind {
-        SymbolKind::Function => "fn",
-        SymbolKind::Method => "method",
-        SymbolKind::Class => "class",
-        SymbolKind::Struct => "struct",
-        SymbolKind::Enum => "enum",
-        SymbolKind::Trait => "trait",
-        SymbolKind::Type => "type",
-        SymbolKind::Const => "const",
-        SymbolKind::Module => "mod",
-        SymbolKind::Field => "field",
-        SymbolKind::Macro => "macro",
-        SymbolKind::Impl => "impl",
-        SymbolKind::Other(_) => "item",
     }
 }
 
@@ -1982,25 +2165,24 @@ class Foo:\n    def one(self):\n        pass\n    def two(self):\n        pass\n
             &theme(),
             settings,
         );
-        // Find the `Foo::two` row; its indent should be deeper than
-        // `Foo`'s.
-        let foo_indent = view
+        // Source-shaped outline preserves real indentation, so
+        // `def two` should appear at a higher column than
+        // `class Foo` after the gutter / line-number prefix.
+        let foo_col = view
             .lines
             .iter()
             .map(line_text)
-            .find(|t| t.contains("class") && t.contains("Foo"))
-            .map(|t| t.len() - t.trim_start().len())
-            .expect("Foo row");
-        let two_indent = view
+            .find_map(|t| t.find("class Foo"))
+            .expect("class Foo row");
+        let two_col = view
             .lines
             .iter()
             .map(line_text)
-            .find(|t| t.contains("two"))
-            .map(|t| t.len() - t.trim_start().len())
-            .expect("two row");
+            .find_map(|t| t.find("def two"))
+            .expect("def two row");
         assert!(
-            two_indent > foo_indent,
-            "two indent {two_indent} <= foo indent {foo_indent}"
+            two_col > foo_col,
+            "def two col {two_col} <= class Foo col {foo_col}",
         );
     }
 

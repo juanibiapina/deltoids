@@ -54,6 +54,16 @@ pub enum SymbolKind {
     Other(String),
 }
 
+impl SymbolKind {
+    /// True for kinds that have an executable body (functions and
+    /// methods). The outline view elides bodies of these kinds; other
+    /// kinds (struct/class/trait/impl/module) are kept so their
+    /// members remain visible.
+    pub fn is_function_like(&self) -> bool {
+        matches!(self, SymbolKind::Function | SymbolKind::Method)
+    }
+}
+
 /// Visibility of a declaration. We're conservative: when unsure, mark
 /// `Public` so changes don't get hidden in public-only views.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

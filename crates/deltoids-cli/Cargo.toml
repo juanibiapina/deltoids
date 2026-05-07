@@ -7,13 +7,49 @@ homepage.workspace = true
 description.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "deltoids"
-path = "src/main.rs"
+path = "src/bin/deltoids.rs"
+
+[[bin]]
+name = "edit"
+path = "src/bin/edit.rs"
+
+[[bin]]
+name = "write"
+path = "src/bin/write.rs"
+
+[[bin]]
+name = "edit-tui"
+path = "src/bin/edit-tui.rs"
+
+[[bin]]
+name = "rv"
+# `use-dev-tty` (in crossterm features) swaps the input source for a
+# `filedescriptor`/poll(2) one. Required on macOS: mio's kqueue
+# `EVFILT_READ` registration on a fresh `/dev/tty` fd returns EINVAL,
+# crossterm swallows the error, and every later `event::poll` surfaces
+# a generic "Failed to initialize input reader".
+path = "src/bin/rv.rs"
 
 [dependencies]
-deltoids = { path = "../deltoids", features = ["blob-resolve"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
+deltoids = { path = "../deltoids", features = ["blob-resolve", "ratatui"] }
+dirs = "6"
+fs2 = "0.4"
+notify = "7"
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 terminal_size = "0.4"
+toml = "0.8"
+ulid = "1"
+unicode-width = "0.2"
 
 [dev-dependencies]
 git2 = "0.20"
@@ -21,3 +57,10 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+# Override the homebrew formula name produced by cargo-dist so users
+# install with `brew install juanibiapina/taps/deltoids` instead of
+# `deltoids-cli`. The cargo package name must stay unique within the
+# workspace (the library crate already owns `deltoids`).
+[package.metadata.dist]
+formula = "deltoids"

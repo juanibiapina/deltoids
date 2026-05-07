@@ -1,6 +1,6 @@
 ---
 import { Image } from "astro:assets";
-import { PAGER_TOOLS } from "../data/site";
+import { PAGER_TOOLS, SITE } from "../data/site";
 import lazygitShot from "../assets/screenshots/lazygit.png";
 ---
 
@@ -16,7 +16,7 @@ import lazygitShot from "../assets/screenshots/lazygit.png";
 
     <div class="section-install">
       <div class="cmd-line" aria-label="Install command">
-        <span>brew install juanibiapina/taps/deltoids-cli</span>
+        <span>brew install {SITE.brewTap}/deltoids</span>
       </div>
     </div>
 

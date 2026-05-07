@@ -9,7 +9,7 @@ This directory contains the pi extension for deltoids.
 Install them with:
 
 ```bash
-cargo install --path crates/edit-cli
+cargo install --path crates/deltoids-cli
 ```
 
 ## Install

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `rv` TUI for reviewing diffs:
   - sidebar with file tree
+- Ship every binary (`deltoids`, `rv`, `edit`, `write`, `edit-tui`) from a single `deltoids-cli` crate. Installation collapses to one homebrew formula (`brew install juanibiapina/taps/deltoids`) and one shell installer. **Breaking install change:** the previous `juanibiapina/taps/edit-cli` and `juanibiapina/taps/rv-cli` formulas are gone; uninstall them and reinstall via the new formula.
 
 ## [0.4.0] - 2026-04-30
 

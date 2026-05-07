@@ -50,9 +50,7 @@ use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
-mod sidebar;
-
-use sidebar::{Sidebar, SidebarFile};
+use deltoids_cli::sidebar::{Sidebar, SidebarFile};
 
 const SCROLL_STEP_SMALL: usize = 1;
 const SCROLL_STEP_LARGE: usize = 3;
@@ -147,7 +145,7 @@ fn missing_blob_message(hash: &str, path: &str) -> String {
     )
 }
 
-use sidebar::display_path;
+use deltoids_cli::sidebar::display_path;
 
 /// Compute one [`Diff`] per resolved file. Done once at startup so the
 /// diff pane and the sidebar share the same line-count totals.
@@ -831,7 +829,11 @@ mod tests {
                 }
             })
             .collect();
-        let sidebar = Sidebar::build_with_icons(&sidebar_files, &theme(), sidebar::IconMode::Off);
+        let sidebar = Sidebar::build_with_icons(
+            &sidebar_files,
+            &theme(),
+            deltoids_cli::sidebar::IconMode::Off,
+        );
         let display_order = sidebar.display_order();
         let view = build_view(files, &diffs, &display_order, 80, &theme());
         ViewState::new(view, sidebar, display_order, 80)

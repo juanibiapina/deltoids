@@ -1,6 +1,6 @@
 ---
 import { Image } from "astro:assets";
-import { AGENT_TOOLS } from "../data/site";
+import { AGENT_TOOLS, SITE } from "../data/site";
 import editTuiShot from "../assets/screenshots/edit-tui.png";
 ---
 
@@ -16,7 +16,7 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
 
     <div class="section-install">
       <div class="cmd-line" aria-label="Install command">
-        <span>brew install juanibiapina/taps/edit-cli</span>
+        <span>brew install {SITE.brewTap}/deltoids</span>
       </div>
     </div>
 

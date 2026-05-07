@@ -28,29 +28,29 @@ The project also includes `edit`, `write`, and `edit-tui`. `edit` and `write` ar
 
 ## Installation
 
+All binaries ship in a single package.
+
 **Homebrew:**
 
 ```bash
-brew install juanibiapina/taps/deltoids-cli
-brew install juanibiapina/taps/edit-cli
+brew install juanibiapina/taps/deltoids
 ```
 
 **Prebuilt binaries (shell installer):**
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/juanibiapina/deltoids/releases/latest/download/deltoids-cli-installer.sh | sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/juanibiapina/deltoids/releases/latest/download/edit-cli-installer.sh | sh
 ```
 
 **From source (cargo):**
 
 ```bash
 cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
-cargo install --git https://github.com/juanibiapina/deltoids edit-cli
 ```
 
 This installs:
 - `deltoids`: git pager with scope context
+- `rv`: interactive TUI for scrolling diffs
 - `edit`: file edit tool (used by coding agents)
 - `write`: file write tool (used by coding agents)
 - `edit-tui`: trace browser to follow agents in real-time

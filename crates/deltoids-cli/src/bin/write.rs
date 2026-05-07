@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit_cli::{
+use deltoids_cli::{
     ErrorResponse, WriteRequest, execute_write_request_with_trace, trace_store::TraceStore,
 };
 

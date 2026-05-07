@@ -122,8 +122,7 @@ export const INSTALL_CARDS: InstallCard[] = [
   {
     id: "homebrew",
     label: "homebrew",
-    code: `brew install juanibiapina/taps/deltoids-cli
-brew install juanibiapina/taps/edit-cli`,
+    code: `brew install juanibiapina/taps/deltoids`,
   },
   {
     id: "shell",
@@ -133,8 +132,7 @@ brew install juanibiapina/taps/edit-cli`,
   {
     id: "cargo",
     label: "cargo (from source)",
-    code: `cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
-cargo install --git https://github.com/juanibiapina/deltoids edit-cli`,
+    code: `cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli`,
   },
 ];
 

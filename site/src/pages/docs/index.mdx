@@ -1,17 +1,18 @@
 ---
 layout: "../../layouts/DocsLayout.astro"
 title: "Install"
-description: "Install deltoids — the pager binary, and the plugin for pi and coding agents."
+description: "Install deltoids — one package, every binary."
 ---
 
 import { SITE } from "../../data/site";
 
 # Install
 
-## Pager
+All binaries (`deltoids`, `rv`, `edit`, `write`, `edit-tui`) ship in a
+single package.
 
 ```bash
-brew install juanibiapina/taps/deltoids-cli
+brew install juanibiapina/taps/deltoids
 ```
 
 From source:
@@ -23,14 +24,16 @@ cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
 A shell installer is also published on each
 <a href={`${SITE.repo.url}/releases`}>GitHub release</a>.
 
-## Plugin
+## Pager
 
-```bash
-brew install juanibiapina/taps/edit-cli
-```
+`deltoids` reads a unified diff on stdin and renders it. Set it as your
+git pager (`git config --global core.pager 'deltoids | less -R'`) or
+pipe `git diff`/`git show` through it directly.
 
-Provides the `edit`, `write`, and `edit-tui` commands. Then wire them
-into your agent.
+## Agents
+
+`edit`, `write`, and `edit-tui` are the agent edit tools and trace
+browser. Wire them into your agent:
 
 ### pi
 

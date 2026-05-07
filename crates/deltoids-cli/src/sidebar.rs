@@ -1482,10 +1482,10 @@ mod tests {
 
     #[test]
     fn build_rows_does_not_collapse_when_dir_has_multiple_children() {
-        // crates/{deltoids/src/lib.rs, deltoids-cli/src/main.rs} —
+        // crates/{deltoids/src/lib.rs, deltoids-cli/src/lib.rs} —
         // `crates/` has two children, must stay on its own row.
         let a = fd("crates/deltoids/src/lib.rs");
-        let b = fd("crates/deltoids-cli/src/main.rs");
+        let b = fd("crates/deltoids-cli/src/lib.rs");
         let files = vec![
             SidebarFile {
                 file: &a,
@@ -1499,7 +1499,7 @@ mod tests {
             },
         ];
         let rows = build_rows(&files);
-        // crates/ + deltoids/src/ + lib.rs + deltoids-cli/src/ + main.rs
+        // crates/ + deltoids/src/ + lib.rs + deltoids-cli/src/ + lib.rs
         assert_eq!(rows.len(), 5);
         match &rows[0] {
             Row::Dir { label, .. } => assert_eq!(label, "crates/"),
@@ -1610,9 +1610,9 @@ mod tests {
         //     deltoids/src/              row 1 dir
         //       lib.rs                   row 2 file
         //     deltoids-cli/src/          row 3 dir
-        //       main.rs                  row 4 file
+        //       lib.rs                   row 4 file
         let a = fd("crates/deltoids/src/lib.rs");
-        let b = fd("crates/deltoids-cli/src/main.rs");
+        let b = fd("crates/deltoids-cli/src/lib.rs");
         let files = vec![
             SidebarFile {
                 file: &a,
@@ -1841,9 +1841,9 @@ mod tests {
         //         lib.rs                     depth 3 (file 0 in display)
         //     deltoids-cli/                  depth 1
         //       src/                         depth 2
-        //         main.rs                    depth 3 (file 1 in display)
+        //         lib.rs                     depth 3 (file 1 in display)
         let a = fd("crates/deltoids/src/lib.rs");
-        let b = fd("crates/deltoids-cli/src/main.rs");
+        let b = fd("crates/deltoids-cli/src/lib.rs");
         let files = vec![
             SidebarFile {
                 file: &a,

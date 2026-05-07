@@ -1,3 +1,4 @@
+pub mod sidebar;
 pub mod trace_store;
 pub mod tui;
 

@@ -5,12 +5,10 @@
 This is a Rust workspace with CLI tools that trace file edits, plus a TUI to browse traces.
 
 **Crates:**
-- `edit-cli` — `edit`, `write`, and `edit-tui` CLI commands, plus core trace management library
 - `deltoids` — diff library with tree-sitter scope context. Optional features:
-  - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by `deltoids` and `rv` bins).
+  - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by the `deltoids` and `rv` bins).
   - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by `edit-tui` and `rv`).
-- `deltoids-cli` — `deltoids` ANSI diff filter CLI
-- `rv-cli` — `rv` interactive TUI for scrolling diffs (same input pipeline as `deltoids`, ratatui rendering)
+- `deltoids-cli` — every binary ships from this crate: `deltoids` (ANSI diff filter), `rv` (scrolling TUI), `edit`/`write`/`edit-tui` (agent edit tools and trace browser). Also holds the trace-management library used by the edit bins. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
 - `tests` — cross-crate integration tests
 
 ## Build & Test
@@ -22,25 +20,15 @@ cargo clippy --workspace --all-targets
 cargo fmt --all -- --check
 ```
 
-Install binaries locally:
+Install all binaries locally:
 ```bash
-cargo install --path crates/edit-cli     # edit, write, edit-tui
-cargo install --path crates/deltoids-cli  # deltoids
-cargo install --path crates/rv-cli        # rv
+cargo install --path crates/deltoids-cli  # deltoids, rv, edit, write, edit-tui
 ```
 
 ## Code Structure
 
 ```
 crates/
-  edit-cli/
-    src/lib.rs              # Library entry: request types, edit/write execution
-    src/trace_store.rs      # TraceStore: trace dir layout, append/read/list
-    src/tui.rs              # edit-tui chrome (panes, lists, HistoryEntry header) — diff lines come from `deltoids::render_tui::render_hunk`
-    src/bin/edit.rs         # Edit CLI binary
-    src/bin/write.rs        # Write CLI binary
-    src/bin/edit-tui.rs     # TUI binary
-
   deltoids/
     src/lib.rs              # Library exports
     src/engine.rs           # Line-level diff engine: Snapshot, DiffOp, align_old_to_new
@@ -61,11 +49,15 @@ crates/
       cases/<NNN-slug>/       # 1-case.md, 2-original.<EXT>, 3-updated.<EXT>, 4-expected.diff
 
   deltoids-cli/
-    src/main.rs         # Standalone ANSI diff filter CLI (uses deltoids::{git, content})
-
-  rv-cli/
-    src/main.rs         # Interactive scrolling TUI (uses deltoids::{git, content, render_tui})
-    src/sidebar.rs      # Lazygit-style file tree sidebar (status badges, icons, deltas)
+    src/lib.rs              # Library entry: request types and edit/write execution shared by the edit bins
+    src/trace_store.rs      # TraceStore: trace dir layout, append/read/list
+    src/tui.rs              # edit-tui chrome (panes, lists, HistoryEntry header) — diff lines come from `deltoids::render_tui::render_hunk`
+    src/sidebar.rs          # Lazygit-style file tree sidebar for `rv` (status badges, icons, deltas)
+    src/bin/deltoids.rs     # ANSI diff filter CLI (uses deltoids::{git, content})
+    src/bin/rv.rs           # Interactive scrolling TUI (uses deltoids::{git, content, render_tui})
+    src/bin/edit.rs         # `edit` CLI binary
+    src/bin/write.rs        # `write` CLI binary
+    src/bin/edit-tui.rs     # `edit-tui` binary
 
   tests/
     tests/tui_cli.rs    # Integration tests for edit + write + edit-tui interaction

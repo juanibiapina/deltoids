@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use edit_cli::ErrorResponse;
-use edit_cli::tui;
+use deltoids_cli::ErrorResponse;
+use deltoids_cli::tui;
 
 const OVERVIEW: &str = r#"TUI for browsing edit/write traces for the current directory.
 

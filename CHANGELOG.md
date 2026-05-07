@@ -33,17 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--signatures-only`: drop body-only changes from the summary.
 - New `rv` view-mode toggles:
   - `v` cycles Full → Outline → Summary.
-  - The **Outline** view renders real new-side source code with
-    function and method bodies elided to `{ … }`. Lines are
-    syntax-highlighted, prefixed with a status gutter (`·` unchanged /
-    `+` added / `-` removed / `→` renamed / `~` modified) and a line
-    number, and painted with a diff-coloured background reflecting the
-    diff status of each line's enclosing symbol. Reads as code, not
-    as a synthetic tree, while still surfacing every symbol's diff
-    status. Removed symbols appear in a trailing `// removed:` block.
-  - `p` toggles public-only filter; in Outline mode it hides every
-    line whose enclosing symbol isn't public, so the file shrinks to
-    just the public surface.
+  - The **Outline** view is a clean document-symbols panel
+    (VS Code / Helix style): every class / struct / trait / function /
+    method / type / etc. on its own row, with kind icons (`Ʀ` fn,
+    `◇` struct, `◆` trait, `≡` enum, `▣` module, `τ` type, `●`
+    const, `•` field), tree branches (`│ ├ └`) showing nesting,
+    and an italic-toned signature suffix. No source code, no comments,
+    no line numbers — just the structure.
+  - Each row shows a status glyph (`·`/`+`/`-`/`→`/`~`) and a row-wide
+    background tint (Added green, Removed red, Modified yellow,
+    Unchanged none) so what moved jumps out at a glance.
+  - `p` toggles public-only filter; in Outline mode it hides rows
+    whose visibility isn't public, so the file shrinks to just the
+    public surface.
 - New `edit-tui` toggle:
   - `s` shows a per-entry structural summary derived from each hunk's
     deepest breadcrumb ancestor.

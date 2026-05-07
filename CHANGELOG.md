@@ -32,9 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `-p/--public`: only files / changes touching public symbols.
   - `--signatures-only`: drop body-only changes from the summary.
 - New `rv` view-mode toggles:
-  - `v` cycles Full → Signatures → Summary. The Signatures view shows
-    actual declaration signatures (no body, no description prose).
-  - `p` toggles public-only filter.
+  - `v` cycles Full → Outline → Summary.
+  - The **Outline** view shows the entire file's structure (every
+    class / struct / trait / function / method / type / etc.) as an
+    indented tree, with each row painted with a diff-coloured
+    background reflecting its status (Unchanged · muted, Added +
+    green, Removed - red, Modified / Signature / Visibility /
+    Renamed ~ yellow). Public symbols carry a leading bullet (●).
+    This is the difference between "here are the changes" (Summary)
+    and "here is the file, and here is what moved within it".
+  - `p` toggles public-only filter; in Outline mode it filters
+    individual rows so the unchanged public surface is still visible.
 - New `edit-tui` toggle:
   - `s` shows a per-entry structural summary derived from each hunk's
     deepest breadcrumb ancestor.

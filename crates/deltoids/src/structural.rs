@@ -22,12 +22,14 @@
 
 mod classify;
 mod diff;
+mod outline;
 mod pair;
 mod render;
 mod symbol;
 
 pub use classify::{ChangeKind, StructuralChange, classify, kind_word};
 pub use diff::StructuralDiff;
+pub use outline::{OutlineEntry, OutlineStatus, outline};
 pub use pair::{Pairing, pair_symbols};
 pub use render::{
     SummaryOptions, Totals, format_summary, format_summary_compact, format_summary_with, totals,

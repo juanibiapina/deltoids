@@ -42,6 +42,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
+use deltoids::SymbolKind;
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::render_tui::{
@@ -49,7 +50,8 @@ use deltoids::render_tui::{
     rgb_to_color,
 };
 use deltoids::structural::{
-    LineSpan, StructuralChange, StructuralDiff, SummaryOptions, format_summary_with,
+    LineSpan, OutlineEntry, OutlineStatus, StructuralChange, StructuralDiff, SummaryOptions,
+    Visibility, format_summary_with, outline,
 };
 use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
@@ -100,8 +102,9 @@ fn run() -> Result<(), String> {
     let resolved = resolve(&parsed, repo.as_ref())?;
     let diffs = precompute_diffs(&resolved);
     let structurals = precompute_structurals(&resolved);
+    let outlines = precompute_outlines(&resolved);
 
-    run_tui(&resolved, &diffs, &structurals, &theme)
+    run_tui(&resolved, &diffs, &structurals, &outlines, &theme)
 }
 
 /// One file's resolved content, ready for rendering.
@@ -173,6 +176,15 @@ fn precompute_structurals(files: &[ResolvedFile<'_>]) -> Vec<StructuralDiff> {
         .collect()
 }
 
+/// Compute one outline per resolved file. Cached for the same reason
+/// as `precompute_structurals`.
+fn precompute_outlines(files: &[ResolvedFile<'_>]) -> Vec<Vec<OutlineEntry>> {
+    files
+        .iter()
+        .map(|f| outline(&f.before, &f.after, display_path(f.file)))
+        .collect()
+}
+
 /// True when the file's structural diff has at least one change
 /// touching a public symbol. Used by the public-only filter to drop
 /// files entirely.
@@ -213,10 +225,12 @@ struct DiffView {
 /// current view settings. `display_order` is the order the sidebar
 /// would render files in; `file_offsets` is keyed by *input* index so
 /// callers always look up `file_offsets[input_index]`.
+#[allow(clippy::too_many_arguments)]
 fn build_view(
     files: &[ResolvedFile<'_>],
     diffs: &[Diff],
     structurals: &[StructuralDiff],
+    outlines: &[Vec<OutlineEntry>],
     display_order: &[usize],
     width: usize,
     theme: &Theme,
@@ -245,8 +259,14 @@ fn build_view(
 
         let diff = &diffs[input_idx];
         let structural = &structurals[input_idx];
+        let outline = &outlines[input_idx];
 
-        if settings.public_only && !file_has_public_change(structural) {
+        // Outline filters per-row, so the file-level placeholder gate
+        // would prematurely hide files whose public symbols were
+        // unchanged. Restrict the gate to Full / Summary, where we
+        // really do want to drop the whole file.
+        let file_level_gate = !matches!(settings.mode, ViewMode::Outline);
+        if file_level_gate && settings.public_only && !file_has_public_change(structural) {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 "  (no changes to public symbols)".to_string(),
@@ -257,8 +277,8 @@ fn build_view(
 
         match settings.mode {
             ViewMode::Full => append_full_hunks(&mut lines, diff, structural, width, theme),
-            ViewMode::Signatures => {
-                append_summary_block(&mut lines, structural, settings, theme, true, true);
+            ViewMode::Outline => {
+                append_outline_block(&mut lines, outline, settings, width, theme);
             }
             ViewMode::Summary => {
                 append_summary_block(&mut lines, structural, settings, theme, false, false);
@@ -386,8 +406,8 @@ fn structural_annotation_line(change: &StructuralChange, theme: &Theme) -> Optio
 }
 
 /// Render the structural-change list for one file. `signatures_only`
-/// drops body-only changes (used by [`ViewMode::Signatures`]);
-/// `show_signatures` switches the line text to the raw declaration.
+/// drops body-only changes; `show_signatures` switches the line text
+/// to the raw declaration.
 fn append_summary_block(
     out: &mut Vec<Line<'static>>,
     structural: &StructuralDiff,
@@ -416,6 +436,159 @@ fn append_summary_block(
     for line in body.lines() {
         out.push(structural_line(line, theme));
     }
+}
+
+/// Render the **outline** view for one file: every symbol, indented
+/// by depth, with a diff-style background colour reflecting its
+/// status (Added=green, Removed=red, Modified=yellow, Renamed=blue,
+/// Unchanged=plain). Public-only filtering still applies, dropping
+/// rows whose visibility isn't `Public`.
+fn append_outline_block(
+    out: &mut Vec<Line<'static>>,
+    outline: &[OutlineEntry],
+    settings: ViewSettings,
+    width: usize,
+    theme: &Theme,
+) {
+    let filtered: Vec<&OutlineEntry> = outline
+        .iter()
+        .filter(|e| !settings.public_only || matches!(e.visibility, Visibility::Public))
+        .collect();
+
+    out.push(Line::from(""));
+
+    if filtered.is_empty() {
+        let label = if settings.public_only {
+            "  (no public symbols)"
+        } else {
+            "  (no symbols extracted)"
+        };
+        out.push(Line::styled(
+            label.to_string(),
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ));
+        return;
+    }
+
+    for entry in filtered {
+        out.push(outline_entry_line(entry, width, theme));
+    }
+}
+
+/// Render a single outline entry as one line. Layout:
+///
+///   <indent><status-glyph> <kind-tag>  <signature>      [old-path →]
+///
+/// The whole row gets the status background. Indent is two spaces per
+/// depth level, plus a leading two-space margin so the row sits inside
+/// the pane like other content.
+fn outline_entry_line(entry: &OutlineEntry, width: usize, theme: &Theme) -> Line<'static> {
+    use ratatui::style::Color;
+
+    let glyph = status_glyph(entry.status);
+    let bg = status_background(entry.status, theme);
+    let fg = match entry.status {
+        OutlineStatus::Removed => Color::Reset,
+        _ => Color::Reset,
+    };
+    let kind_tag = kind_tag(&entry.kind);
+    let visibility_marker = match entry.visibility {
+        Visibility::Public => " ●",
+        _ => "  ",
+    };
+    let renamed_suffix = match (&entry.renamed_from, entry.status) {
+        (Some(old), OutlineStatus::Renamed) => format!("   (was {})", old.join("::")),
+        _ => String::new(),
+    };
+
+    let indent = "  ".repeat(entry.depth + 1);
+    let signature_text = display_signature(&entry.signature);
+    let body = format!(
+        "{indent}{glyph} {kind_tag:<8}{visibility_marker} {signature_text}{renamed_suffix}",
+    );
+
+    // Pad with spaces so the background extends across the pane.
+    let body_width = unicode_width::UnicodeWidthStr::width(body.as_str());
+    let pad_width = width.saturating_sub(body_width);
+    let padded = format!("{body}{}", " ".repeat(pad_width));
+
+    let style = if let Some(bg) = bg {
+        Style::default().fg(fg).bg(bg)
+    } else {
+        Style::default().fg(rgb_to_color(theme.muted))
+    };
+    Line::from(Span::styled(padded, style))
+}
+
+/// Background colour per status. `None` = no background (Unchanged
+/// renders in muted foreground only).
+fn status_background(status: OutlineStatus, theme: &Theme) -> Option<ratatui::style::Color> {
+    match status {
+        OutlineStatus::Unchanged => None,
+        OutlineStatus::Added => Some(rgb_to_color(theme.diff_added_bg)),
+        OutlineStatus::Removed => Some(rgb_to_color(theme.diff_deleted_bg)),
+        OutlineStatus::BodyChanged
+        | OutlineStatus::SignatureChanged
+        | OutlineStatus::VisibilityChanged
+        | OutlineStatus::Modified
+        | OutlineStatus::Renamed => {
+            // Reuse the emphasized-added bg as a generic "changed" tone
+            // (it's a more saturated tint of the same family).
+            Some(rgb_to_color(theme.diff_added_emph_bg))
+        }
+    }
+}
+
+fn status_glyph(status: OutlineStatus) -> char {
+    match status {
+        OutlineStatus::Unchanged => '·',
+        OutlineStatus::Added => '+',
+        OutlineStatus::Removed => '-',
+        OutlineStatus::Renamed => '→',
+        OutlineStatus::BodyChanged
+        | OutlineStatus::SignatureChanged
+        | OutlineStatus::VisibilityChanged
+        | OutlineStatus::Modified => '~',
+    }
+}
+
+fn kind_tag(kind: &SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Function => "fn",
+        SymbolKind::Method => "method",
+        SymbolKind::Class => "class",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Type => "type",
+        SymbolKind::Const => "const",
+        SymbolKind::Module => "mod",
+        SymbolKind::Field => "field",
+        SymbolKind::Macro => "macro",
+        SymbolKind::Impl => "impl",
+        SymbolKind::Other(_) => "item",
+    }
+}
+
+/// Compact a multi-line signature down to a single line for the
+/// outline (e.g. fn signatures with where-clauses spanning lines).
+fn display_signature(s: &str) -> String {
+    let collapsed: String = s.lines().collect::<Vec<_>>().join(" ");
+    // Squash runs of whitespace.
+    let mut out = String::with_capacity(collapsed.len());
+    let mut prev_space = false;
+    for ch in collapsed.chars() {
+        if ch.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out.trim_end().to_string()
 }
 
 /// Style a single structural-summary line with colours that reflect
@@ -457,19 +630,19 @@ enum Focus {
 enum ViewMode {
     /// Full unified diff with deltoids breadcrumb context.
     Full,
-    /// Only signature-affecting changes; body-only deltas are dropped
-    /// from the structural list, and hunks whose only change is a
-    /// function body are also collapsed.
-    Signatures,
-    /// Structural change summary only (no diff bodies).
+    /// File outline: every class / function / method / type with a
+    /// diff-coloured background indicating its status (Unchanged /
+    /// Added / Removed / Modified / etc.).
+    Outline,
+    /// Compact change summary (one line per moved symbol).
     Summary,
 }
 
 impl ViewMode {
     fn cycle(self) -> Self {
         match self {
-            ViewMode::Full => ViewMode::Signatures,
-            ViewMode::Signatures => ViewMode::Summary,
+            ViewMode::Full => ViewMode::Outline,
+            ViewMode::Outline => ViewMode::Summary,
             ViewMode::Summary => ViewMode::Full,
         }
     }
@@ -477,7 +650,7 @@ impl ViewMode {
     fn label(self) -> &'static str {
         match self {
             ViewMode::Full => "full",
-            ViewMode::Signatures => "signatures",
+            ViewMode::Outline => "outline",
             ViewMode::Summary => "summary",
         }
     }
@@ -485,7 +658,7 @@ impl ViewMode {
     fn pane_title(self) -> &'static str {
         match self {
             ViewMode::Full => " [2] Diff ",
-            ViewMode::Signatures => " [2] Diff (signatures) ",
+            ViewMode::Outline => " [2] Outline ",
             ViewMode::Summary => " [2] Summary ",
         }
     }
@@ -775,6 +948,7 @@ fn run_tui(
     files: &[ResolvedFile<'_>],
     diffs: &[Diff],
     structurals: &[StructuralDiff],
+    outlines: &[Vec<OutlineEntry>],
     theme: &Theme,
 ) -> Result<(), String> {
     let stdout = io::stdout();
@@ -809,6 +983,7 @@ fn run_tui(
         files,
         diffs,
         structurals,
+        outlines,
         &display_order,
         initial_diff_width,
         theme,
@@ -849,6 +1024,7 @@ fn run_tui(
                 files,
                 diffs,
                 structurals,
+                outlines,
                 &state.display_order,
                 diff_width,
                 theme,
@@ -1155,10 +1331,12 @@ mod tests {
         let sidebar = Sidebar::build_with_icons(&sidebar_files, &theme(), sidebar::IconMode::Off);
         let display_order = sidebar.display_order();
         let settings = ViewSettings::default();
+        let outlines = precompute_outlines(files);
         let view = build_view(
             files,
             &diffs,
             &structurals,
+            &outlines,
             &display_order,
             80,
             &theme(),
@@ -1180,6 +1358,7 @@ mod tests {
             &resolved,
             &diffs,
             &precompute_structurals(&resolved),
+            &precompute_outlines(&resolved),
             &[0],
             80,
             &theme(),
@@ -1222,6 +1401,7 @@ mod tests {
             &resolved,
             &diffs,
             &precompute_structurals(&resolved),
+            &precompute_outlines(&resolved),
             &[0, 1],
             80,
             &theme(),
@@ -1260,6 +1440,7 @@ mod tests {
             &resolved,
             &diffs,
             &precompute_structurals(&resolved),
+            &precompute_outlines(&resolved),
             &[1, 0],
             80,
             &theme(),
@@ -1285,6 +1466,7 @@ mod tests {
             &resolved,
             &diffs,
             &precompute_structurals(&resolved),
+            &precompute_outlines(&resolved),
             &[0],
             80,
             &theme(),
@@ -1575,9 +1757,9 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn view_mode_cycle_full_signatures_summary() {
-        assert_eq!(ViewMode::Full.cycle(), ViewMode::Signatures);
-        assert_eq!(ViewMode::Signatures.cycle(), ViewMode::Summary);
+    fn view_mode_cycle_full_outline_summary() {
+        assert_eq!(ViewMode::Full.cycle(), ViewMode::Outline);
+        assert_eq!(ViewMode::Outline.cycle(), ViewMode::Summary);
         assert_eq!(ViewMode::Summary.cycle(), ViewMode::Full);
     }
 
@@ -1592,7 +1774,7 @@ mod tests {
         let mut state = make_state(&resolved);
         assert_eq!(state.settings.mode, ViewMode::Full);
         handle_key(&mut state, KeyCode::Char('v'), 4, 4);
-        assert_eq!(state.settings.mode, ViewMode::Signatures);
+        assert_eq!(state.settings.mode, ViewMode::Outline);
         handle_key(&mut state, KeyCode::Char('v'), 4, 4);
         assert_eq!(state.settings.mode, ViewMode::Summary);
         handle_key(&mut state, KeyCode::Char('v'), 4, 4);
@@ -1625,6 +1807,7 @@ mod tests {
         }];
         let diffs = precompute_diffs(&resolved);
         let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
         let settings = ViewSettings {
             mode: ViewMode::Summary,
             public_only: false,
@@ -1633,6 +1816,7 @@ mod tests {
             &resolved,
             &diffs,
             &structurals,
+            &outlines,
             &[0],
             80,
             &theme(),
@@ -1662,10 +1846,12 @@ mod tests {
         }];
         let diffs = precompute_diffs(&resolved);
         let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
         let view = build_view(
             &resolved,
             &diffs,
             &structurals,
+            &outlines,
             &[0],
             80,
             &theme(),
@@ -1693,6 +1879,7 @@ mod tests {
         }];
         let diffs = precompute_diffs(&resolved);
         let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
         let settings = ViewSettings {
             mode: ViewMode::Summary,
             public_only: true,
@@ -1701,6 +1888,7 @@ mod tests {
             &resolved,
             &diffs,
             &structurals,
+            &outlines,
             &[0],
             80,
             &theme(),
@@ -1716,5 +1904,141 @@ mod tests {
             combined.contains("no changes to public symbols"),
             "got:\n{combined}"
         );
+    }
+
+    #[test]
+    fn outline_view_lists_every_symbol_with_diff_status() {
+        // Old has `helper` and `legacy`. New keeps `helper`, drops
+        // `legacy`, and adds `brand_new`. The outline should list all
+        // three with their statuses.
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn helper() {}\nfn legacy() {}\n".to_string(),
+            after: "fn helper() {}\npub fn brand_new() -> i32 { 1 }\n".to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
+        let settings = ViewSettings {
+            mode: ViewMode::Outline,
+            public_only: false,
+        };
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &outlines,
+            &[0],
+            80,
+            &theme(),
+            settings,
+        );
+        let combined: String = view
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(combined.contains("helper"), "missing unchanged: {combined}");
+        assert!(combined.contains("brand_new"), "missing added: {combined}");
+        assert!(combined.contains("legacy"), "missing removed: {combined}");
+        // Status glyphs should appear at row starts.
+        assert!(
+            combined.contains("+ "),
+            "no `+` glyph for added: {combined}"
+        );
+        assert!(
+            combined.contains("- "),
+            "no `-` glyph for removed: {combined}"
+        );
+    }
+
+    #[test]
+    fn outline_view_indents_methods_under_their_class() {
+        let f = file_diff("a.py");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "class Foo:\n    def one(self):\n        pass\n".to_string(),
+            after: "\
+class Foo:\n    def one(self):\n        pass\n    def two(self):\n        pass\n"
+                .to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
+        let settings = ViewSettings {
+            mode: ViewMode::Outline,
+            public_only: false,
+        };
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &outlines,
+            &[0],
+            80,
+            &theme(),
+            settings,
+        );
+        // Find the `Foo::two` row; its indent should be deeper than
+        // `Foo`'s.
+        let foo_indent = view
+            .lines
+            .iter()
+            .map(line_text)
+            .find(|t| t.contains("class") && t.contains("Foo"))
+            .map(|t| t.len() - t.trim_start().len())
+            .expect("Foo row");
+        let two_indent = view
+            .lines
+            .iter()
+            .map(line_text)
+            .find(|t| t.contains("two"))
+            .map(|t| t.len() - t.trim_start().len())
+            .expect("two row");
+        assert!(
+            two_indent > foo_indent,
+            "two indent {two_indent} <= foo indent {foo_indent}"
+        );
+    }
+
+    #[test]
+    fn outline_view_filters_to_public_when_p_is_on() {
+        let f = file_diff("a.rs");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "fn priv_only() {}\npub fn keep() {}\n".to_string(),
+            after: "fn priv_only() { let x = 1; }\npub fn keep() {}\n".to_string(),
+        }];
+        let diffs = precompute_diffs(&resolved);
+        let structurals = precompute_structurals(&resolved);
+        let outlines = precompute_outlines(&resolved);
+        let settings = ViewSettings {
+            mode: ViewMode::Outline,
+            public_only: true,
+        };
+        let view = build_view(
+            &resolved,
+            &diffs,
+            &structurals,
+            &outlines,
+            &[0],
+            80,
+            &theme(),
+            settings,
+        );
+        let combined: String = view
+            .lines
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !combined.contains("priv_only"),
+            "private symbol leaked: {combined}"
+        );
+        assert!(combined.contains("keep"), "missing public: {combined}");
     }
 }

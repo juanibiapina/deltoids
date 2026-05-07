@@ -613,37 +613,11 @@ fn render_outline_row(
         Visibility::Public => " ●",
         _ => "",
     };
-    let signature_suffix = signature_for_outline(&entry.signature, &name);
     let description = entry.description();
 
-    // ── Width budget ───────────────────────────────────────────────
     // Reserve one column for the scrollbar (drawn over the rightmost
-    // inner column by ratatui). Reserve N columns for the muted
-    // description and a 2-space gutter before it. Whatever's left is
-    // for the prefix + icon + name + signature.
+    // inner column by ratatui).
     let scrollbar_col: usize = 1;
-    let desc_col_width = if description.is_empty() {
-        0
-    } else {
-        description.width() + 2
-    };
-    let content_budget = width.saturating_sub(scrollbar_col + desc_col_width);
-
-    // Build the prefix + icon + name parts first, count their width
-    // so we know how much budget remains for the signature.
-    let prefix_w = prefix.width();
-    let icon_w = format!("{icon_glyph} ").width();
-    let name_w = name.width();
-    let vis_w = visibility_dot.width();
-    let header_w = prefix_w + icon_w + name_w + vis_w;
-    let sig_budget = content_budget.saturating_sub(header_w + 2); // 2 = sig gap
-
-    // Truncate signature to fit. If it doesn't fit at all, drop it.
-    let trimmed_signature = if signature_suffix.is_empty() || sig_budget < 4 {
-        String::new()
-    } else {
-        truncate_with_ellipsis(&signature_suffix, sig_budget)
-    };
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(prefix, base));
@@ -655,18 +629,18 @@ fn render_outline_row(
     if !visibility_dot.is_empty() {
         spans.push(Span::styled(visibility_dot.to_string(), base.fg(muted_fg)));
     }
-    if !trimmed_signature.is_empty() {
-        spans.push(Span::styled("  ".to_string(), base));
-        spans.push(Span::styled(
-            trimmed_signature.clone(),
-            base.fg(muted_fg)
-                .add_modifier(ratatui::style::Modifier::ITALIC),
-        ));
-    }
 
-    // Pad to the description column (leaving room for scrollbar).
+    // Pad to the right edge (minus scrollbar) and append the muted
+    // description there, so every description aligns visually.
     let used: usize = spans.iter().map(|s| s.content.width()).sum();
-    let pad = content_budget.saturating_sub(used);
+    let desc_with_gap = if description.is_empty() {
+        0
+    } else {
+        description.width() + 2 // 2-space gutter before the description
+    };
+    let pad = width
+        .saturating_sub(scrollbar_col)
+        .saturating_sub(used + desc_with_gap);
     if pad > 0 {
         spans.push(Span::styled(" ".repeat(pad), base));
     }
@@ -679,72 +653,6 @@ fn render_outline_row(
     }
 
     Line::from(spans)
-}
-
-/// Truncate `s` to display width `max`, appending `…` when something
-/// was cut. Returns `s` unchanged if it already fits.
-fn truncate_with_ellipsis(s: &str, max: usize) -> String {
-    if s.width() <= max {
-        return s.to_string();
-    }
-    if max <= 1 {
-        return "…".to_string();
-    }
-    let mut out = String::new();
-    let mut w = 0usize;
-    for ch in s.chars() {
-        let cw = ch.to_string().width();
-        if w + cw + 1 > max {
-            // +1 leaves room for the trailing ellipsis.
-            break;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out.push('…');
-    out
-}
-
-/// Pick the part of the signature that's useful as a one-line summary.
-/// We strip the leading kind keyword + name (already shown) so we end
-/// up with just the parameter list / return type / type alias rhs.
-fn signature_for_outline(signature: &str, name: &str) -> String {
-    let collapsed = display_signature(signature);
-    // Try to skip past the symbol's name in the signature so we don't
-    // repeat it. Prefer the first occurrence at a word boundary.
-    if let Some(idx) = find_word(&collapsed, name) {
-        let after = &collapsed[idx + name.len()..];
-        return after.trim_start().to_string();
-    }
-    collapsed
-}
-
-fn find_word(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return None;
-    }
-    let mut start = 0;
-    while let Some(rel) = haystack[start..].find(needle) {
-        let abs = start + rel;
-        let before_ok = abs == 0
-            || !haystack[..abs]
-                .chars()
-                .next_back()
-                .map(|c| c.is_alphanumeric() || c == '_')
-                .unwrap_or(false);
-        let after_pos = abs + needle.len();
-        let after_ok = after_pos >= haystack.len()
-            || !haystack[after_pos..]
-                .chars()
-                .next()
-                .map(|c| c.is_alphanumeric() || c == '_')
-                .unwrap_or(false);
-        if before_ok && after_ok {
-            return Some(abs);
-        }
-        start = abs + needle.len();
-    }
-    None
 }
 
 /// Pick a glyph + colour for a symbol kind. Stays terminal-safe with
@@ -781,63 +689,6 @@ fn status_background(status: OutlineStatus, theme: &Theme) -> Option<ratatui::st
         | OutlineStatus::Modified
         | OutlineStatus::Renamed => Some(rgb_to_color(theme.diff_added_emph_bg)),
     }
-}
-
-/// Compact a multi-line signature down to a single line for the
-/// outline. Collapses all whitespace runs to a single space, then
-/// applies pretty-printer cleanups so multi-line declarations read
-/// naturally on one line:
-///
-/// - `( foo` → `(foo` (drop space after openers)
-/// - `foo )` → `foo)` (drop space before closers)
-/// - `, )` → `)` (drop trailing comma before close paren / bracket)
-/// - ` ,` → `,` (drop space before comma)
-fn display_signature(s: &str) -> String {
-    // Step 1: collapse whitespace runs to one space.
-    let mut collapsed = String::with_capacity(s.len());
-    let mut prev_space = false;
-    for ch in s.chars() {
-        if ch.is_whitespace() {
-            if !prev_space && !collapsed.is_empty() {
-                collapsed.push(' ');
-            }
-            prev_space = true;
-        } else {
-            collapsed.push(ch);
-            prev_space = false;
-        }
-    }
-    let s = collapsed.trim_end().to_string();
-
-    // Step 2: drop trailing-comma noise: `, )` → `)`, `, ]` → `]`, etc.
-    let mut s = s;
-    for pat in [", )", ", ]", ", >", ",)", ",]", ",>"] {
-        let close = pat.chars().last().unwrap();
-        let close_str = close.to_string();
-        s = s.replace(pat, &close_str);
-    }
-
-    // Step 3: drop space after openers / before closers.
-    let mut out = String::with_capacity(s.len());
-    let chars: Vec<char> = s.chars().collect();
-    for (i, &ch) in chars.iter().enumerate() {
-        if ch == ' ' {
-            // Drop space immediately after `(`, `[`, `<`.
-            if let Some(&prev) = chars.get(i.wrapping_sub(1))
-                && matches!(prev, '(' | '[' | '<')
-            {
-                continue;
-            }
-            // Drop space immediately before `)`, `]`, `>`, `,`, `;`.
-            if let Some(&next) = chars.get(i + 1)
-                && matches!(next, ')' | ']' | '>' | ',' | ';')
-            {
-                continue;
-            }
-        }
-        out.push(ch);
-    }
-    out
 }
 
 /// Style a single structural-summary line with colours that reflect
@@ -2153,22 +2004,6 @@ mod tests {
             combined.contains("no changes to public symbols"),
             "got:\n{combined}"
         );
-    }
-
-    #[test]
-    fn display_signature_collapses_multiline_and_drops_trailing_comma() {
-        let s =
-            "fn resolve<'a>(\n    parsed: &'a GitDiff,\n    repo: Option<&Repo>,\n) -> Result<()>";
-        let out = display_signature(s);
-        assert_eq!(
-            out, "fn resolve<'a>(parsed: &'a GitDiff, repo: Option<&Repo>) -> Result<()>",
-            "got: {out}"
-        );
-    }
-
-    #[test]
-    fn display_signature_drops_space_inside_parens() {
-        assert_eq!(display_signature("fn x( a: i32 )"), "fn x(a: i32)");
     }
 
     #[test]

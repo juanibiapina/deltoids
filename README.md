@@ -20,15 +20,19 @@ Hunks expand to show the enclosing function, so you always know where you are.
 
 ## Overview
 
-The core idea of this project is to make diffs more powerful. Deltoids diffs have language-aware syntax highlighting and word-level highlighting within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
+Deltoids diffs have language-aware syntax highlighting and word-level highlighting within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
 
-The main tool is `deltoids`, a git pager inspired by `delta` and `difftastic`.
+Tools:
 
-The project also includes `edit`, `write`, and `edit-tui`. `edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `edit-tui` separately from the coding agent UI.
+- `deltoids pager`: ANSI diff filter for `less` / `core.pager`
+- `deltoids review`: review tool
+- `deltoids edit`: file edit tool (used by coding agents)
+- `deltoids write`: file write tool (used by coding agents)
+- `deltoids traces`: trace browser to follow agents in real-time
+
+`edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `deltoids traces` separately from the coding agent UI.
 
 ## Installation
-
-All binaries ship in a single package.
 
 **Homebrew:**
 
@@ -47,13 +51,6 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/juanibiapina/deltoids/r
 ```bash
 cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
 ```
-
-This installs:
-- `deltoids`: git pager with scope context
-- `rv`: interactive TUI for scrolling diffs
-- `edit`: file edit tool (used by coding agents)
-- `write`: file write tool (used by coding agents)
-- `edit-tui`: trace browser to follow agents in real-time
 
 ## Usage
 
@@ -103,6 +100,6 @@ Install the deltoids plugin for pi to override built-in `edit` and `write` tools
 pi install https://github.com/juanibiapina/deltoids
 ```
 
-Requires `edit` and `write` binaries on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
+Requires the `deltoids` binary on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
 
-Then open `edit-tui` in the same directory as pi to see real-time diffs with summaries.
+Then run `deltoids traces` in the same directory as pi to see real-time diffs with summaries.

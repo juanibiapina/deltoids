@@ -4,22 +4,19 @@ use std::process::{Command, Output, Stdio};
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn edit_binary() -> &'static str {
-    env!("CARGO_BIN_EXE_edit")
-}
-
-fn write_binary() -> &'static str {
-    env!("CARGO_BIN_EXE_write")
+fn deltoids_binary() -> &'static str {
+    env!("CARGO_BIN_EXE_deltoids")
 }
 
 fn run_command(
-    binary: &str,
+    subcommand: &str,
     args: &[&str],
     envs: &[(&str, &std::path::Path)],
     input: &[u8],
 ) -> Output {
-    let mut command = Command::new(binary);
+    let mut command = Command::new(deltoids_binary());
     command
+        .arg(subcommand)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -60,7 +57,7 @@ fn rejects_a_nonexistent_explicit_trace_id_for_edit() {
 
     let trace_id = "01JTESTTRACE00000000000000";
     let output = run_command(
-        edit_binary(),
+        "edit",
         &[trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         request.to_string().as_bytes(),
@@ -92,7 +89,7 @@ fn rejects_a_nonexistent_explicit_trace_id_for_write() {
 
     let trace_id = "01JTESTTRACE00000000000000";
     let output = run_command(
-        write_binary(),
+        "write",
         &[trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         request.to_string().as_bytes(),
@@ -130,7 +127,7 @@ fn rejects_an_invalid_explicit_trace_id_for_edit() {
 
     let trace_id = "bad-trace-id";
     let output = run_command(
-        edit_binary(),
+        "edit",
         &[trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         request.to_string().as_bytes(),
@@ -163,7 +160,7 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
         ]
     });
     let first_output = run_command(
-        edit_binary(),
+        "edit",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         first_request.to_string().as_bytes(),
@@ -184,7 +181,7 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
         ]
     });
     let second_output = run_command(
-        edit_binary(),
+        "edit",
         &[&trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         second_request.to_string().as_bytes(),
@@ -237,7 +234,7 @@ fn reuses_an_explicit_trace_id_across_edit_and_write() {
         ]
     });
     let edit_output = run_command(
-        edit_binary(),
+        "edit",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         edit_request.to_string().as_bytes(),
@@ -252,7 +249,7 @@ fn reuses_an_explicit_trace_id_across_edit_and_write() {
         "content": "{\n  \"version\": 2\n}\n"
     });
     let write_output = run_command(
-        write_binary(),
+        "write",
         &[&trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         write_request.to_string().as_bytes(),

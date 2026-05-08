@@ -1,15 +1,15 @@
-//! rv: render a git diff with the deltoids look in a scrollable TUI.
+//! `deltoids review` — render a unified diff in a scrollable TUI.
 //!
-//! Mirrors the input pipeline of the `deltoids` CLI exactly: read a
-//! unified diff from stdin, parse it, resolve before/after blob content
-//! against the local repo, and compute per-file [`Diff`]s. Instead of
-//! emitting ANSI text for `less`, render hunks as ratatui
-//! [`Line<'static>`] values and scroll them in an alternate screen.
+//! Mirrors the input pipeline of the pager exactly: read a unified diff
+//! from stdin, parse it, resolve before/after blob content against the
+//! local repo, and compute per-file [`Diff`]s. Instead of emitting ANSI
+//! text for `less`, render hunks as ratatui [`Line<'static>`] values
+//! and scroll them in an alternate screen.
 //!
 //! Usage:
 //!
 //! ```sh
-//! git diff | rv
+//! git diff | deltoids review
 //! ```
 //!
 //! Layout:
@@ -31,7 +31,9 @@
 //! Set `RV_NO_ICONS=1` to disable nerd-font glyphs in the sidebar.
 
 use std::io::{self, IsTerminal, Read, Write};
+use std::process::ExitCode;
 
+use clap::Args as ClapArgs;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -50,7 +52,20 @@ use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
-use deltoids_cli::sidebar::{Sidebar, SidebarFile};
+use crate::sidebar::{Sidebar, SidebarFile, display_path};
+
+const OVERVIEW: &str = r#"Read a unified diff on stdin and open it in a scrollable TUI.
+
+Examples:
+  git diff | deltoids review
+  git show HEAD~1 | deltoids review
+
+Set RV_NO_ICONS=1 to disable nerd-font glyphs in the sidebar.
+"#;
+
+#[derive(Debug, Default, ClapArgs)]
+#[command(after_help = OVERVIEW)]
+pub struct Args {}
 
 const SCROLL_STEP_SMALL: usize = 1;
 const SCROLL_STEP_LARGE: usize = 3;
@@ -63,14 +78,17 @@ const DEFAULT_SIDEBAR_WIDTH: u16 = 38;
 /// Below this terminal width the sidebar is hidden entirely.
 const MIN_TERMINAL_WIDTH_FOR_SIDEBAR: u16 = 80;
 
-fn main() {
-    if let Err(err) = run() {
-        eprintln!("rv: {err}");
-        std::process::exit(1);
+pub fn run(_args: Args) -> ExitCode {
+    match run_inner() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("rv: {err}");
+            ExitCode::from(1)
+        }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run_inner() -> Result<(), String> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
@@ -144,8 +162,6 @@ fn missing_blob_message(hash: &str, path: &str) -> String {
          hint: fetch the source ref (e.g. `git fetch <remote> <ref>`) and try again"
     )
 }
-
-use deltoids_cli::sidebar::display_path;
 
 /// Compute one [`Diff`] per resolved file. Done once at startup so the
 /// diff pane and the sidebar share the same line-count totals.
@@ -829,11 +845,8 @@ mod tests {
                 }
             })
             .collect();
-        let sidebar = Sidebar::build_with_icons(
-            &sidebar_files,
-            &theme(),
-            deltoids_cli::sidebar::IconMode::Off,
-        );
+        let sidebar =
+            Sidebar::build_with_icons(&sidebar_files, &theme(), crate::sidebar::IconMode::Off);
         let display_order = sidebar.display_order();
         let view = build_view(files, &diffs, &display_order, 80, &theme());
         ViewState::new(view, sidebar, display_order, 80)

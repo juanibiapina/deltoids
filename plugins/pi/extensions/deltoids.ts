@@ -236,8 +236,8 @@ async function runExternalCli(
   signal?: AbortSignal,
 ): Promise<ExternalEditSuccess | undefined> {
   return new Promise<ExternalEditSuccess | undefined>((resolvePromise, rejectPromise) => {
-    const args = traceId ? [traceId] : [];
-    const child: ChildProcessWithoutNullStreams = spawn(command, args, {
+    const args = traceId ? [command, traceId] : [command];
+    const child: ChildProcessWithoutNullStreams = spawn("deltoids", args, {
       stdio: ["pipe", "pipe", "pipe"],
     });
 

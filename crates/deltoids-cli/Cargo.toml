@@ -10,30 +10,15 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+# `use-dev-tty` (in the crossterm dependency below) swaps the input
+# source for a `filedescriptor`/poll(2) one. Required on macOS: mio's
+# kqueue `EVFILT_READ` registration on a fresh `/dev/tty` fd returns
+# EINVAL, crossterm swallows the error, and every later `event::poll`
+# surfaces a generic "Failed to initialize input reader". The flag
+# matters for the `deltoids review` and `deltoids traces` subcommands.
 [[bin]]
 name = "deltoids"
 path = "src/bin/deltoids.rs"
-
-[[bin]]
-name = "edit"
-path = "src/bin/edit.rs"
-
-[[bin]]
-name = "write"
-path = "src/bin/write.rs"
-
-[[bin]]
-name = "edit-tui"
-path = "src/bin/edit-tui.rs"
-
-[[bin]]
-name = "rv"
-# `use-dev-tty` (in crossterm features) swaps the input source for a
-# `filedescriptor`/poll(2) one. Required on macOS: mio's kqueue
-# `EVFILT_READ` registration on a fresh `/dev/tty` fd returns EINVAL,
-# crossterm swallows the error, and every later `event::poll` surfaces
-# a generic "Failed to initialize input reader".
-path = "src/bin/rv.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

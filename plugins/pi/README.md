@@ -4,9 +4,9 @@ This directory contains the pi extension for deltoids.
 
 ## Requirements
 
-- `edit` and `write` binaries must be installed and available on PATH
+- The `deltoids` binary must be installed and available on PATH
 
-Install them with:
+Install it with:
 
 ```bash
 cargo install --path crates/deltoids-cli
@@ -24,11 +24,11 @@ The extension overrides pi's built-in `edit` and `write` tools to use the extern
 
 - **Trace tracking**: All edits are recorded in traces at `$XDG_DATA_HOME/edit/traces/`
 - **Trace continuity**: Trace IDs persist across tool calls within a session
-- **TUI browser**: Review traces with `edit-tui`
+- **TUI browser**: Review traces with `deltoids traces`
 
 ## How It Works
 
-1. When the agent calls `edit` or `write`, the extension spawns the external binary
+1. When the agent calls `edit` or `write`, the extension spawns `deltoids edit` or `deltoids write`
 2. The request is piped as JSON to stdin
 3. The response (including trace ID and diff) is captured from stdout
 4. Trace IDs are stored in session state and reused for subsequent calls

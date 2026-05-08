@@ -1,8 +1,11 @@
+//! `deltoids edit` — agent edit tool, appends to a trace.
+
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
-use clap::Parser;
-use deltoids_cli::{
+use clap::Args as ClapArgs;
+
+use crate::{
     EditRequest, ErrorResponse, TextEdit, execute_request_with_trace, trace_store::TraceStore,
 };
 
@@ -41,37 +44,33 @@ printf '%s' '{
       "newText": "const count = 1;"
     }
   ]
-}' | edit
+}' | deltoids edit
 
-edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"
+deltoids edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"
 
-To review traces, run the `edit-tui` binary.
+To review traces, run `deltoids traces`.
 
 Output:
 - Success goes to stdout as JSON.
 - Failure goes to stderr as JSON and exits non-zero.
 "#;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "edit",
-    about = "CLI for agents to edit files.",
-    after_help = OVERVIEW
-)]
-struct Cli {
-    trace_id: Option<String>,
+#[derive(Debug, Default, ClapArgs)]
+#[command(after_help = OVERVIEW)]
+pub struct Args {
+    pub trace_id: Option<String>,
     #[arg(long)]
-    path: Option<String>,
+    pub path: Option<String>,
     #[arg(long)]
-    summary: Option<String>,
+    pub summary: Option<String>,
     #[arg(long = "old")]
-    old_text: Option<String>,
+    pub old_text: Option<String>,
     #[arg(long = "new")]
-    new_text: Option<String>,
+    pub new_text: Option<String>,
 }
 
-fn main() -> ExitCode {
-    match run() {
+pub fn run(args: Args) -> ExitCode {
+    match run_inner(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(response) => {
             eprintln!(
@@ -83,11 +82,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), ErrorResponse> {
-    let cli = Cli::parse();
-
-    let request = if uses_shorthand(&cli) {
-        edit_request_from_shorthand(&cli).map_err(simple_error)?
+fn run_inner(args: Args) -> Result<(), ErrorResponse> {
+    let request = if uses_shorthand(&args) {
+        edit_request_from_shorthand(&args).map_err(simple_error)?
     } else {
         let mut stdin = io::stdin();
         if stdin.is_terminal() {
@@ -111,7 +108,7 @@ fn run() -> Result<(), ErrorResponse> {
 
     let store = TraceStore::from_env().map_err(simple_error)?;
     let response =
-        execute_request_with_trace(&store, request, cli.trace_id.as_deref()).map_err(|error| {
+        execute_request_with_trace(&store, request, args.trace_id.as_deref()).map_err(|error| {
             ErrorResponse {
                 ok: false,
                 error: error.error,
@@ -135,24 +132,27 @@ fn simple_error(error: String) -> ErrorResponse {
     }
 }
 
-fn uses_shorthand(cli: &Cli) -> bool {
-    cli.path.is_some() || cli.summary.is_some() || cli.old_text.is_some() || cli.new_text.is_some()
+fn uses_shorthand(args: &Args) -> bool {
+    args.path.is_some()
+        || args.summary.is_some()
+        || args.old_text.is_some()
+        || args.new_text.is_some()
 }
 
-fn edit_request_from_shorthand(cli: &Cli) -> Result<EditRequest, String> {
-    let path = cli
+fn edit_request_from_shorthand(args: &Args) -> Result<EditRequest, String> {
+    let path = args
         .path
         .clone()
         .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
-    let summary = cli
+    let summary = args
         .summary
         .clone()
         .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
-    let old_text = cli
+    let old_text = args
         .old_text
         .clone()
         .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
-    let new_text = cli
+    let new_text = args
         .new_text
         .clone()
         .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;

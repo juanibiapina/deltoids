@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `rv` TUI for reviewing diffs:
   - sidebar with file tree
-- Ship every binary (`deltoids`, `rv`, `edit`, `write`, `edit-tui`) from a single `deltoids-cli` crate. Installation collapses to one homebrew formula (`brew install juanibiapina/taps/deltoids`) and one shell installer. **Breaking install change:** the previous `juanibiapina/taps/edit-cli` and `juanibiapina/taps/rv-cli` formulas are gone; uninstall them and reinstall via the new formula.
+- Ship every binary (`deltoids`, `rv`, `edit`, `write`, `edit-tui`) from a single `deltoids-cli` crate. Installation collapses to one homebrew formula (`brew install juanibiapina/taps/deltoids`) and one shell installer.
+- Collapse the toolkit into a single `deltoids` binary with subcommands: `pager`, `review`, `edit`, `write`, `traces`. Plain `deltoids` (no subcommand) still runs the pager when stdin is piped, so existing `git config core.pager 'deltoids | less -R'` setups keep working unchanged.
+
+**Breaking install change:** the previous `juanibiapina/taps/edit-cli` and `juanibiapina/taps/rv-cli` formulas are gone; uninstall them and reinstall via the new formula.
+
+**Breaking CLI change:** the standalone `rv`, `edit`, `write`, and `edit-tui` binaries are gone. Use `deltoids review`, `deltoids edit`, `deltoids write`, and `deltoids traces`.
 
 ## [0.4.0] - 2026-04-30
 

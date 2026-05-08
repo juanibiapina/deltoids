@@ -4,8 +4,8 @@ use std::process::{Command, Output, Stdio};
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn write_binary() -> &'static str {
-    env!("CARGO_BIN_EXE_write")
+fn deltoids_binary() -> &'static str {
+    env!("CARGO_BIN_EXE_deltoids")
 }
 
 fn run_write(input: &[u8]) -> Output {
@@ -13,8 +13,9 @@ fn run_write(input: &[u8]) -> Output {
 }
 
 fn run_write_with_env(envs: &[(&str, &std::path::Path)], input: &[u8]) -> Output {
-    let mut command = Command::new(write_binary());
+    let mut command = Command::new(deltoids_binary());
     command
+        .arg("write")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -49,8 +50,9 @@ fn rewrites_a_file_with_shorthand_flags() {
     let file_path = dir.path().join("shorthand.json");
     fs::write(&file_path, "{\n  \"version\": 1\n}\n").unwrap();
 
-    let output = Command::new(write_binary())
+    let output = Command::new(deltoids_binary())
         .args([
+            "write",
             "--path",
             file_path.to_string_lossy().as_ref(),
             "--summary",

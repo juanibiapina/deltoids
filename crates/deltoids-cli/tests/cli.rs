@@ -4,8 +4,8 @@ use std::process::{Command, Output, Stdio};
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn edit_binary() -> &'static str {
-    env!("CARGO_BIN_EXE_edit")
+fn deltoids_binary() -> &'static str {
+    env!("CARGO_BIN_EXE_deltoids")
 }
 
 fn run_edit(input: &[u8]) -> Output {
@@ -21,8 +21,9 @@ fn run_edit_with_args_and_env(
     envs: &[(&str, &std::path::Path)],
     input: &[u8],
 ) -> Output {
-    let mut command = Command::new(edit_binary());
+    let mut command = Command::new(deltoids_binary());
     command
+        .arg("edit")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -303,7 +304,7 @@ fn shows_agent_friendly_help_with_help_flag() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Usage: edit"));
+    assert!(stdout.contains("Usage: deltoids edit"));
     assert!(stdout.contains("CLI for agents to edit files."));
     assert!(stdout.contains("oldText"));
     assert!(stdout.contains("newText"));

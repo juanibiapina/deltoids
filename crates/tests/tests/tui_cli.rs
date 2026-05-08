@@ -17,27 +17,20 @@ fn target_dir() -> PathBuf {
         .join("debug")
 }
 
-fn edit_binary() -> PathBuf {
-    target_dir().join("edit")
-}
-
-fn write_binary() -> PathBuf {
-    target_dir().join("write")
-}
-
-fn tui_binary() -> PathBuf {
-    target_dir().join("edit-tui")
+fn deltoids_binary() -> PathBuf {
+    target_dir().join("deltoids")
 }
 
 fn run_command_in_dir(
-    binary: &std::path::Path,
+    subcommand: &str,
     args: &[&str],
     envs: &[(&str, &std::path::Path)],
     input: &[u8],
     current_dir: Option<&std::path::Path>,
 ) -> Output {
-    let mut command = Command::new(binary);
+    let mut command = Command::new(deltoids_binary());
     command
+        .arg(subcommand)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -61,22 +54,13 @@ fn run_command_in_dir(
         .unwrap()
 }
 
-fn run_command(
-    binary: &std::path::Path,
-    args: &[&str],
-    envs: &[(&str, &std::path::Path)],
-    input: &[u8],
-) -> Output {
-    run_command_in_dir(binary, args, envs, input, None)
-}
-
 #[test]
 fn renders_empty_state_for_directory_with_no_traces() {
     let dir = tempdir().unwrap();
     let data_home = tempdir().unwrap();
 
     let output = run_command_in_dir(
-        &tui_binary(),
+        "traces",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",
@@ -109,7 +93,7 @@ fn renders_traces_and_entries_for_current_directory() {
         ]
     });
     let edit_output = run_command_in_dir(
-        &edit_binary(),
+        "edit",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         edit_request.to_string().as_bytes(),
@@ -125,7 +109,7 @@ fn renders_traces_and_entries_for_current_directory() {
         "content": "{\n  \"version\": 2\n}\n"
     });
     let write_output = run_command_in_dir(
-        &write_binary(),
+        "write",
         &[&trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         write_request.to_string().as_bytes(),
@@ -134,7 +118,7 @@ fn renders_traces_and_entries_for_current_directory() {
     assert!(write_output.status.success());
 
     let tui_output = run_command_in_dir(
-        &tui_binary(),
+        "traces",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",
@@ -174,7 +158,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
         ]
     });
     let edit_output = run_command_in_dir(
-        &edit_binary(),
+        "edit",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         edit_request.to_string().as_bytes(),
@@ -190,7 +174,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
         "content": "{\n  \"version\": 2\n}\n"
     });
     let write_output = run_command_in_dir(
-        &write_binary(),
+        "write",
         &[&trace_id],
         &[("XDG_DATA_HOME", data_home.path())],
         write_request.to_string().as_bytes(),
@@ -202,7 +186,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     // straight to the second entry (write). `\t` then proves Tab switches
     // focus to the traces pane.
     let tui_output = run_command_in_dir(
-        &tui_binary(),
+        "traces",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"j\t",
@@ -238,7 +222,7 @@ fn shows_only_traces_for_the_current_directory() {
         ]
     });
     let first_output = run_command_in_dir(
-        &edit_binary(),
+        "edit",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         first_request.to_string().as_bytes(),
@@ -264,7 +248,7 @@ fn shows_only_traces_for_the_current_directory() {
         ]
     });
     let second_output = run_command_in_dir(
-        &edit_binary(),
+        "edit",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         second_request.to_string().as_bytes(),
@@ -278,7 +262,7 @@ fn shows_only_traces_for_the_current_directory() {
             .to_string();
 
     let tui_output = run_command_in_dir(
-        &tui_binary(),
+        "traces",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",
@@ -289,18 +273,4 @@ fn shows_only_traces_for_the_current_directory() {
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
     assert!(stdout.contains(&first_trace_id[..10]));
     assert!(!stdout.contains(&second_trace_id[..10]));
-}
-
-#[test]
-fn edit_no_longer_has_trace_subcommands() {
-    let data_home = tempdir().unwrap();
-
-    let output = run_command(
-        &edit_binary(),
-        &["traces", "list"],
-        &[("XDG_DATA_HOME", data_home.path())],
-        b"",
-    );
-
-    assert!(!output.status.success());
 }

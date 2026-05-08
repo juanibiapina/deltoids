@@ -8,8 +8,7 @@ import { SITE } from "../../data/site";
 
 # Install
 
-All binaries (`deltoids`, `rv`, `edit`, `write`, `edit-tui`) ship in a
-single package.
+## CLI
 
 ```bash
 brew install juanibiapina/taps/deltoids
@@ -24,16 +23,10 @@ cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
 A shell installer is also published on each
 <a href={`${SITE.repo.url}/releases`}>GitHub release</a>.
 
-## Pager
-
-`deltoids` reads a unified diff on stdin and renders it. Set it as your
-git pager (`git config --global core.pager 'deltoids | less -R'`) or
-pipe `git diff`/`git show` through it directly.
-
 ## Agents
 
-`edit`, `write`, and `edit-tui` are the agent edit tools and trace
-browser. Wire them into your agent:
+`deltoids edit`, `deltoids write`, and `deltoids traces` are the agent
+edit tools and trace browser. Wire them into your agent:
 
 ### pi
 

@@ -1,0 +1,6 @@
+@@ -5,4 +5,4 @@ [function_item bar]
+-/* Old docs */
++/* New docs */
+ fn bar() -> i32 {
+     2
+ }

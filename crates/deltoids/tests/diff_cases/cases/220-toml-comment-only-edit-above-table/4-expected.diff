@@ -1,0 +1,7 @@
+@@ -5,5 +5,5 @@ [table ]
+-# Old docs
++# New docs
+ [bar]
+ host = "b"
+ port = 2
+ 

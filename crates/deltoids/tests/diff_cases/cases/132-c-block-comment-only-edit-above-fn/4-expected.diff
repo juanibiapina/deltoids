@@ -1,0 +1,6 @@
+@@ -5,4 +5,4 @@ [function_definition int]
+-/* Old docs */
++/* New docs */
+ int bar(void) {
+     return 2;
+ }

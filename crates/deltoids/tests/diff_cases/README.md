@@ -122,6 +122,10 @@ Cases are organised loosely by theme via their numeric prefix:
 * `140-149` — C++ scope behaviour
 * `150-159` — Lua scope behaviour
 * `160-169` — HCL / Terraform scope behaviour
+* `170-179` — Java scope behaviour
+* `180-189` — Bash scope behaviour
+* `190-199` — CSS scope behaviour
+* `220-229` — TOML scope behaviour
 
 Current cases:
 
@@ -155,3 +159,19 @@ Current cases:
 | `140-cpp-initializer-list-context`                  | Multi-line C++ `{ … }` initializer expands hunk to cover the whole literal|
 | `150-lua-table-constructor-context`                 | Multi-line Lua table constructor expands hunk to cover the whole literal  |
 | `160-terraform-resource-block-context`              | Terraform `resource` block edit → `[block resource "…" "…"]` breadcrumb, with multi-line `tuple`/`object` literals inside the block kept as context |
+| `061-rust-comment-only-edit-above-method`           | Rust `///` doc-comment-only edit above an impl method anchors on the method, not the impl |
+| `062-rust-attribute-only-edit-above-fn`             | Rust `#[…]` attribute-only edit above a fn anchors on the fn |
+| `063-rust-block-comment-only-edit-above-fn`         | Rust `/* … */` block-comment-only edit above a fn anchors on the fn |
+| `081-typescript-jsdoc-only-edit-above-method`       | TS `/** */` JSDoc-only edit above a class method anchors on the method |
+| `091-javascript-comment-only-edit-above-fn`         | JS `//` line-comment-only edit above a top-level fn anchors on the fn |
+| `102-python-comment-only-edit-above-method`         | Python `#` comment-only edit above a class method anchors on the method |
+| `112-go-doc-comment-only-edit-above-fn`             | Go `//` doc-comment-only edit above a fn anchors on the fn |
+| `122-ruby-comment-only-edit-above-method`           | Ruby `#` comment-only edit above a class method anchors on the method |
+| `132-c-block-comment-only-edit-above-fn`            | C `/* … */` comment-only edit above a fn anchors on the fn |
+| `142-cpp-line-comment-only-edit-above-fn`           | C++ `//` comment-only edit above a fn anchors on the fn |
+| `152-lua-comment-only-edit-above-fn`                | Lua `--` comment-only edit above a fn anchors on the fn |
+| `162-hcl-comment-only-edit-above-block`             | HCL `#` comment-only edit above a block anchors on the block |
+| `170-java-javadoc-only-edit-above-method`           | Java `/** */` Javadoc-only edit above a class method anchors on the method |
+| `180-bash-comment-only-edit-above-fn`               | Bash `#` comment-only edit above a function anchors on the function |
+| `190-css-comment-only-edit-above-rule`              | CSS `/* … */` comment-only edit above a rule_set anchors on the rule |
+| `220-toml-comment-only-edit-above-table`            | TOML `#` comment-only edit above a table anchors on the table |

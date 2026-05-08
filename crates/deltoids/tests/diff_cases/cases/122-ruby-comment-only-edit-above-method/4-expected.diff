@@ -1,0 +1,6 @@
+@@ -6,4 +6,4 @@ [class Foo] [method bar]
+-  # Old docs
++  # New docs
+   def bar
+     2
+   end

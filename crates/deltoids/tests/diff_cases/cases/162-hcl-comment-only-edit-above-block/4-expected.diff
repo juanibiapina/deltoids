@@ -1,0 +1,6 @@
+@@ -5,4 +5,4 @@ [block resource "aws_s3_bucket" "logs"]
+-# Old docs
++# New docs
+ resource "aws_s3_bucket" "logs" {
+   bucket = "logs"
+ }

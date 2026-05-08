@@ -1,0 +1,6 @@
+@@ -8,4 +8,4 @@ [impl_item Foo] [function_item bar]
+-    /// Old docs
++    /// New docs
+     fn bar(&self) -> i32 {
+         2
+     }

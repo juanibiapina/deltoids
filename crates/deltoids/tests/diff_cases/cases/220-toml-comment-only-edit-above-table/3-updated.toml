@@ -1,0 +1,12 @@
+[other]
+host = "a"
+port = 1
+
+# New docs
+[bar]
+host = "b"
+port = 2
+
+[another]
+host = "c"
+port = 3

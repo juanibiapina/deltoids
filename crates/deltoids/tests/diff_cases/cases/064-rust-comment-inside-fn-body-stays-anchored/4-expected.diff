@@ -1,0 +1,7 @@
+@@ -1,5 +1,5 @@ [function_item outer]
+ fn outer() {
+     let x = 1;
+-    // body docs
++    // updated body docs
+     let y = 2;
+ }

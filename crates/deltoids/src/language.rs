@@ -72,6 +72,11 @@ pub(crate) struct TreeSitterConfig {
     /// `identifier (string_lit | identifier)* { body }` with no fields,
     /// so the breadcrumb reads e.g. `resource "aws_s3_bucket" "logs"`.
     pub(crate) positional_name_kinds: &'static [&'static str],
+    /// Node kinds that, when they appear as siblings above a structure,
+    /// attach to that structure for scope queries. Typically `comment`
+    /// plus the language's attribute kinds (Rust `attribute_item`).
+    /// Mirrors the role `decorator` plays for `skip_decorators`.
+    pub(crate) leading_comment_kinds: &'static [&'static str],
 }
 
 impl Language {
@@ -184,6 +189,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["line_comment", "block_comment", "attribute_item"],
             },
             Language::Python => TreeSitterConfig {
                 language: tree_sitter_python::LANGUAGE,
@@ -198,6 +204,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::JavaScript => TreeSitterConfig {
                 language: tree_sitter_javascript::LANGUAGE,
@@ -239,6 +246,7 @@ impl Language {
                 // string-literal arg).
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::TypeScript => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -270,6 +278,7 @@ impl Language {
                 ],
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Tsx => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -299,6 +308,7 @@ impl Language {
                 ],
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Go => TreeSitterConfig {
                 language: tree_sitter_go::LANGUAGE,
@@ -324,6 +334,7 @@ impl Language {
                 anchor_only_kinds: &["func_literal"],
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Ruby => TreeSitterConfig {
                 language: tree_sitter_ruby::LANGUAGE,
@@ -342,6 +353,7 @@ impl Language {
                 anchor_only_kinds: &["block", "do_block", "lambda"],
                 call_promoted_kinds: &["call"],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Java => TreeSitterConfig {
                 language: tree_sitter_java::LANGUAGE,
@@ -361,6 +373,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["line_comment", "block_comment"],
             },
             Language::C => TreeSitterConfig {
                 language: tree_sitter_c::LANGUAGE,
@@ -375,6 +388,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Cpp => TreeSitterConfig {
                 language: tree_sitter_cpp::LANGUAGE,
@@ -391,6 +405,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Bash => TreeSitterConfig {
                 language: tree_sitter_bash::LANGUAGE,
@@ -401,6 +416,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Lua => TreeSitterConfig {
                 language: tree_sitter_lua::LANGUAGE,
@@ -419,6 +435,7 @@ impl Language {
                 anchor_only_kinds: &["function_definition"],
                 call_promoted_kinds: &["function_call"],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Css => TreeSitterConfig {
                 language: tree_sitter_css::LANGUAGE,
@@ -429,6 +446,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Hcl => TreeSitterConfig {
                 language: tree_sitter_hcl::LANGUAGE,
@@ -449,6 +467,7 @@ impl Language {
                 // `variable "region"`, `module "vpc"`). Build the
                 // breadcrumb name from those positional children.
                 positional_name_kinds: &["block"],
+                leading_comment_kinds: &["comment"],
             },
             Language::Markdown => TreeSitterConfig {
                 language: tree_sitter_md::LANGUAGE,
@@ -459,6 +478,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &[],
             },
             Language::Toml => TreeSitterConfig {
                 language: tree_sitter_toml_ng::LANGUAGE,
@@ -469,6 +489,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &["comment"],
             },
             Language::Json => TreeSitterConfig {
                 language: tree_sitter_json::LANGUAGE,
@@ -479,6 +500,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &[],
             },
             Language::Yaml => TreeSitterConfig {
                 language: tree_sitter_yaml::LANGUAGE,
@@ -489,6 +511,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                leading_comment_kinds: &[],
             },
         }
     }

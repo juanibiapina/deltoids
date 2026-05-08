@@ -1,0 +1,6 @@
+@@ -6,4 +6,4 @@ [class_declaration Foo] [method_declaration bar]
+-    /** Old docs */
++    /** New docs */
+     int bar() {
+         return 2;
+     }

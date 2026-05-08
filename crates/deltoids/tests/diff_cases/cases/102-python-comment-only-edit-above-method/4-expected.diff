@@ -1,0 +1,5 @@
+@@ -5,3 +5,3 @@ [class_definition Foo] [function_definition bar]
+-    # Old docs
++    # New docs
+     def bar(self):
+         return 2

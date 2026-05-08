@@ -1,0 +1,6 @@
+@@ -6,4 +6,4 @@ [class_declaration Foo] [method_definition bar]
+-    /** Old docs */
++    /** New docs */
+     bar(): number {
+         return 2;
+     }

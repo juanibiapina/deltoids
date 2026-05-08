@@ -37,6 +37,10 @@ pub struct ParsedFile {
     /// positional `identifier` / `string_lit` children rather than a
     /// `name` field. See [`crate::language::TreeSitterConfig`].
     positional_name_kinds: &'static [&'static str],
+    /// Node kinds that, when they appear as siblings above a structure,
+    /// attach to that structure for scope queries. See
+    /// [`crate::language::TreeSitterConfig`].
+    leading_comment_kinds: &'static [&'static str],
 }
 
 impl ParsedFile {
@@ -63,6 +67,7 @@ impl ParsedFile {
             anchor_only_kinds: entry.anchor_only_kinds,
             call_promoted_kinds: entry.call_promoted_kinds,
             positional_name_kinds: entry.positional_name_kinds,
+            leading_comment_kinds: entry.leading_comment_kinds,
         })
     }
 
@@ -87,6 +92,13 @@ impl ParsedFile {
         // siblings of the decorated node, not as children. A query at a
         // decorator line would otherwise walk up through `class_body` straight
         // to the class, skipping the method the decorator belongs to.
+        //
+        // Doc comments (`///`, JSDoc, `# …` above a `def`, …) and Rust
+        // attributes (`#[derive(…)]`) sit in the same shape: a sibling above
+        // the structure they document, not a child. `skip_leading_comments`
+        // walks past such siblings to the structure they precede so the
+        // breadcrumb resolves to the documented item, not its parent.
+        let node = skip_leading_comments(node, self.leading_comment_kinds);
         let node = skip_decorators(node);
 
         let mut ancestors = Vec::new();
@@ -116,7 +128,7 @@ impl ParsedFile {
                     && self.is_nested_in_function(n));
             if include {
                 let start_line = n.start_position().row + 1;
-                let end_line = n.end_position().row + 1;
+                let end_line = node_end_line(n);
                 let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
                 let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
                 let text = self
@@ -365,6 +377,21 @@ impl ParsedFile {
     }
 }
 
+/// 1-indexed last source line covered by `node`.
+///
+/// tree-sitter ranges are end-exclusive: when a node ends at column 0 of a
+/// row (e.g. a TOML `[bar]` table that ends at the `[` of the following
+/// `[another]`), that row is not part of the node. Without this adjustment
+/// `end_line` over-counts by one and hunks bleed into the next sibling.
+fn node_end_line(node: Node<'_>) -> usize {
+    let end = node.end_position();
+    if end.column == 0 && end.row > 0 {
+        end.row
+    } else {
+        end.row + 1
+    }
+}
+
 /// True for tree-sitter node kinds that represent a string literal
 /// across the languages we support (JS/TS, Go, Lua, Ruby). Used to pick
 /// the breadcrumb label for a labeled call: the first positional
@@ -374,6 +401,48 @@ fn is_string_literal_kind(kind: &str) -> bool {
         kind,
         "string" | "template_string" | "interpreted_string_literal" | "raw_string_literal"
     )
+}
+
+/// If `node` (or any of its ancestors) is one of `kinds`, walk forward
+/// through subsequent named siblings of the same kinds until landing on
+/// a non-matching node. That node is the structure the leading
+/// comments / attributes document; `enclosing_scopes` then walks *its*
+/// ancestors for the breadcrumb.
+///
+/// Mirrors [`skip_decorators`] for `decorator` nodes. Returns `node`
+/// unchanged when `kinds` is empty or `node` is not inside a leading
+/// comment / attribute.
+fn skip_leading_comments<'a>(node: Node<'a>, kinds: &[&str]) -> Node<'a> {
+    if kinds.is_empty() {
+        return node;
+    }
+    let mut leading: Option<Node<'a>> = None;
+    let mut cur = Some(node);
+    while let Some(c) = cur {
+        if kinds.contains(&c.kind()) {
+            leading = Some(c);
+        }
+        cur = c.parent();
+    }
+    let Some(mut l) = leading else {
+        return node;
+    };
+    while kinds.contains(&l.kind()) {
+        if let Some(sib) = l.next_named_sibling() {
+            l = sib;
+            continue;
+        }
+        // No more siblings inside this parent. If the parent itself has a
+        // following sibling, attach to it: covers languages where a comment
+        // between two structures is parsed as a trailing child of the
+        // previous one (TOML tables, where `# leading for [bar]` lands
+        // inside `[other]`).
+        match l.parent().and_then(|p| p.next_named_sibling()) {
+            Some(parent_next) => l = parent_next,
+            None => return l,
+        }
+    }
+    l
 }
 
 /// If `node` (or any of its ancestors) is a `decorator`, jump forward to

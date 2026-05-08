@@ -1,0 +1,6 @@
+@@ -5,4 +5,4 @@ [function_declaration bar]
+-// Old docs
++// New docs
+ function bar() {
+     return 2;
+ }

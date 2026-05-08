@@ -1,0 +1,6 @@
+@@ -5,4 +5,4 @@ [function_definition bar]
+-# Old docs
++# New docs
+ bar() {
+     echo 2
+ }

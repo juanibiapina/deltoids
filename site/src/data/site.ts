@@ -96,7 +96,13 @@ git:
 ];
 
 /** edit-tui install snippets per coding agent. */
-export const AGENT_TOOLS: { id: string; label: string; code?: string; coming?: boolean }[] = [
+export const AGENT_TOOLS: {
+  id: string;
+  label: string;
+  code?: string;
+  coming?: boolean;
+  note?: string;
+}[] = [
   {
     id: "pi",
     label: "pi",
@@ -107,6 +113,7 @@ export const AGENT_TOOLS: { id: string; label: string; code?: string; coming?: b
     label: "Claude Code",
     code: `claude plugin marketplace add juanibiapina/deltoids
 claude plugin install deltoids@deltoids`,
+    note: "Edits are recorded without per-edit summaries. Claude's PostToolUse hook does not expose one.",
   },
 ];
 

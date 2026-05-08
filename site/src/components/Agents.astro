@@ -24,6 +24,7 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
             ) : (
               <pre><code>{a.code}</code></pre>
             )}
+            {a.note && <p class="install-card-note">{a.note}</p>}
           </div>
         ))
       }
@@ -46,6 +47,12 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
   .agents-snippets {
     max-width: 720px;
     margin: 0 auto;
+  }
+
+  .install-card-note {
+    margin: 8px 0 0;
+    font-size: 0.875rem;
+    color: var(--fg-muted);
   }
 
   .proof {

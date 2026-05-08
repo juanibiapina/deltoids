@@ -12,7 +12,7 @@ interface Props {
 const { title, description = SITE.description } = Astro.props;
 const fullTitle = title
   ? `${title} · ${SITE.name}`
-  : `${SITE.name} — ${SITE.tagline}`;
+  : `${SITE.name}: ${SITE.tagline}`;
 const canonical = new URL(Astro.url.pathname, SITE.url).toString();
 
 const jsonLd = {

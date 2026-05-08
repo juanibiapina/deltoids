@@ -1,5 +1,5 @@
 /**
- * Docs sidebar. Single source of truth — same convention as `site.ts`.
+ * Docs sidebar. Single source of truth. Same convention as `site.ts`.
  *
  * Each item's `href` is the URL the entry links to. Active state is
  * decided by exact match on `Astro.url.pathname` (trailing slash

@@ -1,4 +1,4 @@
-/* === deltoids site — terminal precision aesthetic === */
+/* === deltoids site: terminal precision aesthetic === */
 
 @font-face {
   font-family: "IBM Plex Sans";
@@ -765,7 +765,7 @@ pre code {
 /* Page title + lede.
    In MDX docs the first <h1> + first <p> after it form a header band
    separated from the body by a hairline rule. No wrapper element
-   needed — plain Markdown gets it for free. */
+   needed. Plain Markdown gets it for free. */
 .docs-content > h1:first-child {
   font-size: clamp(1.625rem, 3vw, 2.125rem);
   padding-bottom: 20px;

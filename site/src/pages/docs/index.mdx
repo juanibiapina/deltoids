@@ -1,10 +1,11 @@
 ---
 layout: "../../layouts/DocsLayout.astro"
 title: "Install"
-description: "Install deltoids — one package, every binary."
+description: "Install deltoids: one package, every binary."
 ---
 
 import { SITE } from "../../data/site";
+import Note from "../../components/docs/Note.astro";
 
 # Install
 
@@ -40,3 +41,9 @@ pi install https://github.com/juanibiapina/deltoids
 claude plugin marketplace add juanibiapina/deltoids
 claude plugin install deltoids@deltoids
 ```
+
+<Note>
+  Unlike the pi integration, Claude Code edits are recorded without
+  per-edit summaries. Claude's `PostToolUse` hook does not expose
+  one.
+</Note>

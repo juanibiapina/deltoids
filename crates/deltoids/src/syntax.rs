@@ -25,6 +25,14 @@ pub struct ParsedFile {
     promoted_kinds: &'static [&'static str],
     /// Node kinds that introduce a function body.
     function_body_kinds: &'static [&'static str],
+    /// Anonymous function-body kinds that act as anchors but never appear
+    /// in the breadcrumb. See [`crate::language::TreeSitterConfig`].
+    anchor_only_kinds: &'static [&'static str],
+    /// Wrapper kinds (e.g. `call_expression`) promoted to a named
+    /// structure when one of their arguments is a function body. Their
+    /// breadcrumb name is derived from the callee plus the first
+    /// string-literal argument when present.
+    call_promoted_kinds: &'static [&'static str],
 }
 
 impl ParsedFile {
@@ -48,6 +56,8 @@ impl ParsedFile {
             data_kinds: entry.data_kinds,
             promoted_kinds: entry.promoted_kinds,
             function_body_kinds: entry.function_body_kinds,
+            anchor_only_kinds: entry.anchor_only_kinds,
+            call_promoted_kinds: entry.call_promoted_kinds,
         })
     }
 
@@ -80,27 +90,29 @@ impl ParsedFile {
             let kind_is_structure = self.structure_kinds.contains(&n.kind());
             let kind_is_data = self.data_kinds.contains(&n.kind());
             let kind_is_promoted = self.promoted_kinds.contains(&n.kind());
+            let kind_is_anchor_only = self.anchor_only_kinds.contains(&n.kind());
+            let kind_is_call_promoted = self.call_promoted_kinds.contains(&n.kind());
             let include = kind_is_structure
                 || kind_is_data
-                || (kind_is_promoted && self.has_function_value(&n));
-            // Demote structures and promoted scopes that live inside another
-            // function body. They're local helpers, not anchors. Data scopes
-            // (objects/arrays) are unaffected; their existing
-            // outermost-fit logic already handles nesting sensibly.
+                || kind_is_anchor_only
+                || (kind_is_promoted && self.has_function_value(&n))
+                || (kind_is_call_promoted && self.has_function_argument(n));
+            // Demote structures, promoted, anchor-only, and call-promoted
+            // scopes when they live inside another function body. Anchor-only
+            // function bodies (`arrow_function`) don't demote: a labeled
+            // callback inside another labeled callback (e.g. `it(…)` inside
+            // `describe(…)`) is a sibling unit, not a local helper.
+            // Data scopes (objects/arrays) are unaffected.
             let include = include
-                && !((kind_is_structure || kind_is_promoted) && self.is_nested_in_function(n));
+                && !((kind_is_structure
+                    || kind_is_promoted
+                    || kind_is_anchor_only
+                    || kind_is_call_promoted)
+                    && self.is_nested_in_function(n));
             if include {
                 let start_line = n.start_position().row + 1;
                 let end_line = n.end_position().row + 1;
-                // `property` covers JS `field_definition`'s name field name.
-                let name = n
-                    .child_by_field_name("name")
-                    .or_else(|| n.child_by_field_name("property"))
-                    .or_else(|| n.child_by_field_name("type"))
-                    .or_else(|| n.child_by_field_name("key"))
-                    .and_then(|name_node| name_node.utf8_text(&self.source).ok())
-                    .unwrap_or("")
-                    .to_string();
+                let name = self.scope_name(n, kind_is_call_promoted);
                 let text = self
                     .source_line_raw(n.start_position().row)
                     .unwrap_or_default();
@@ -127,7 +139,19 @@ impl ParsedFile {
     /// kind alone is enough to decide.
     pub fn is_structure(&self, scope: &ScopeNode) -> bool {
         let kind = scope.kind.as_str();
-        self.structure_kinds.contains(&kind) || self.promoted_kinds.contains(&kind)
+        self.structure_kinds.contains(&kind)
+            || self.promoted_kinds.contains(&kind)
+            || self.anchor_only_kinds.contains(&kind)
+            || self.call_promoted_kinds.contains(&kind)
+    }
+
+    /// True when `scope`'s kind is anchor-only — a hunk-anchor that must
+    /// not appear in the breadcrumb. Anonymous callbacks (arrow functions,
+    /// function expressions passed inline) carry their identity in the
+    /// call signature on the opening line of the hunk, so a synthesised
+    /// `[KIND name]` entry would just add noise.
+    pub fn is_anchor_only(&self, scope: &ScopeNode) -> bool {
+        self.anchor_only_kinds.contains(&scope.kind.as_str())
     }
 
     /// True when `scope`'s kind belongs to this language's data tier
@@ -147,6 +171,99 @@ impl ParsedFile {
         self.function_body_kinds.contains(&value.kind())
     }
 
+    /// Resolve the breadcrumb name for a scope node. Call-promoted nodes
+    /// (e.g. `call_expression` in JS/TS) build their name from the callee
+    /// plus the first string-literal argument; everything else looks up
+    /// the conventional `name` / `property` / `type` / `key` field.
+    fn scope_name(&self, node: Node, is_call_promoted: bool) -> String {
+        if is_call_promoted {
+            return self.call_expression_name(node);
+        }
+        // `property` covers JS `field_definition`'s name field.
+        node.child_by_field_name("name")
+            .or_else(|| node.child_by_field_name("property"))
+            .or_else(|| node.child_by_field_name("type"))
+            .or_else(|| node.child_by_field_name("key"))
+            .and_then(|name_node| name_node.utf8_text(&self.source).ok())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// True when the call node has a function-body kind in its arguments
+    /// or in its `block` field (Ruby's `do_block` / brace `block` /
+    /// `lambda` sit on the call directly, not inside `arguments`).
+    /// Gates promotion of a call to a named structure: a labeled
+    /// callback like `it("…", () => {})` or `it "…" do … end` is
+    /// promoted; a plain `xs.length` / `1.to_s` call is not.
+    fn has_function_argument(&self, node: Node) -> bool {
+        self.field_contains_function_body(node, "arguments")
+            || self.field_contains_function_body(node, "block")
+    }
+
+    /// True when `field` on `node` either *is* a function-body kind, or
+    /// wraps one as a direct named child. Handles both shapes:
+    /// JS/Go/Lua put the function inside an `argument_list`/`arguments`
+    /// wrapper; Ruby's `block` field is the function body itself.
+    fn field_contains_function_body(&self, node: Node, field: &str) -> bool {
+        let Some(target) = node.child_by_field_name(field) else {
+            return false;
+        };
+        if self.function_body_kinds.contains(&target.kind()) {
+            return true;
+        }
+        let mut cursor = target.walk();
+        target
+            .named_children(&mut cursor)
+            .any(|c| self.function_body_kinds.contains(&c.kind()))
+    }
+
+    /// Synthesise a breadcrumb name for a labeled call:
+    /// `<callee>("<label>")` when the first positional argument is a
+    /// string literal, just `<callee>` otherwise. Field conventions vary:
+    /// JS/Go use `function`, Lua uses `name`, Ruby uses `method` (with an
+    /// optional `receiver` to form `Receiver.method`). The callee text is
+    /// taken verbatim from the source.
+    fn call_expression_name(&self, node: Node) -> String {
+        let callee = self.call_callee_text(node);
+        let label = self.call_first_string_label(node);
+        match label {
+            Some(text) => format!("{callee}({text})"),
+            None => callee,
+        }
+    }
+
+    fn call_callee_text(&self, node: Node) -> String {
+        // Ruby: optional `receiver` plus required `method`.
+        if let Some(method) = node.child_by_field_name("method") {
+            let method_text = method.utf8_text(&self.source).unwrap_or("");
+            if let Some(receiver) = node.child_by_field_name("receiver") {
+                let receiver_text = receiver.utf8_text(&self.source).unwrap_or("");
+                return format!("{receiver_text}.{method_text}");
+            }
+            return method_text.to_string();
+        }
+        // JS / TS / Go.
+        if let Some(func) = node.child_by_field_name("function") {
+            return func.utf8_text(&self.source).unwrap_or("").to_string();
+        }
+        // Lua.
+        if let Some(name) = node.child_by_field_name("name") {
+            return name.utf8_text(&self.source).unwrap_or("").to_string();
+        }
+        String::new()
+    }
+
+    fn call_first_string_label(&self, node: Node) -> Option<String> {
+        let args = node.child_by_field_name("arguments")?;
+        let mut cursor = args.walk();
+        let first = args.named_children(&mut cursor).next()?;
+        if is_string_literal_kind(first.kind()) {
+            first.utf8_text(&self.source).ok().map(String::from)
+        } else {
+            None
+        }
+    }
+
     /// True when any ancestor of `node` introduces a function body, per
     /// `function_body_kinds`. Demotes local helpers (`fn inner` inside
     /// `fn outer`, `const inner = () => {}` inside a method body) so they
@@ -154,14 +271,48 @@ impl ParsedFile {
     /// Class members like `method_definition` directly under `class_body`
     /// are not nested in a function body and remain anchors.
     fn is_nested_in_function(&self, node: Node) -> bool {
+        // A labeled call-promoted scope (e.g. `t.Run("…", …)`,
+        // `it("…", …)`, `app.get("/…", …)`) is itself a
+        // unit-of-behaviour anchor, never a local helper of any
+        // enclosing named function. Skip the walk for these.
+        if self.is_labeled_call_promoted(node) {
+            return false;
+        }
         let mut cur = node.parent();
         while let Some(p) = cur {
-            if self.function_body_kinds.contains(&p.kind()) {
+            // Anchor-only function bodies (`arrow_function`, Lua
+            // `function_definition`, Ruby `do_block`/`block`/`lambda`)
+            // do not demote anything: nested labeled callbacks are
+            // siblings, not local helpers.
+            let pkind = p.kind();
+            let parent_is_function_body = self.function_body_kinds.contains(&pkind);
+            let parent_is_anchor_only = self.anchor_only_kinds.contains(&pkind);
+            if parent_is_function_body && !parent_is_anchor_only {
                 return true;
+            }
+            // A labeled call-promoted ancestor shields anything inside
+            // it from being demoted by a *further-out* named function
+            // (e.g. `t.Run(…, func() {…})` inside
+            // `func TestX(t *testing.T) {…}` — the inner func_literal
+            // and its descendants are not helpers of `TestX`).
+            if self.is_labeled_call_promoted(p) {
+                return false;
             }
             cur = p.parent();
         }
         false
+    }
+
+    /// True when `node` is a call kind that has been promoted to a
+    /// structure (it has a function-body argument) *and* carries a
+    /// string-literal label as its first positional argument. The label
+    /// is what marks the call as a unit of behaviour rather than a
+    /// transient computation (`xs.map(x => …)` is unlabeled and stays
+    /// subject to demotion).
+    fn is_labeled_call_promoted(&self, node: Node) -> bool {
+        self.call_promoted_kinds.contains(&node.kind())
+            && self.has_function_argument(node)
+            && self.call_first_string_label(node).is_some()
     }
 
     fn point_at_first_non_whitespace(&self, line: usize) -> Point {
@@ -180,6 +331,17 @@ impl ParsedFile {
         let text = std::str::from_utf8(&self.source).ok()?;
         text.lines().nth(line).map(|l| l.to_string())
     }
+}
+
+/// True for tree-sitter node kinds that represent a string literal
+/// across the languages we support (JS/TS, Go, Lua, Ruby). Used to pick
+/// the breadcrumb label for a labeled call: the first positional
+/// argument is treated as a label only when its kind matches one here.
+fn is_string_literal_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "string" | "template_string" | "interpreted_string_literal" | "raw_string_literal"
+    )
 }
 
 /// If `node` (or any of its ancestors) is a `decorator`, jump forward to

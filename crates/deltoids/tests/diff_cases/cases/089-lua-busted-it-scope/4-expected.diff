@@ -1,0 +1,11 @@
+@@ -2,9 +2,9 @@ [function_call describe("UserService")] [function_call it("creates a user")]
+   it("creates a user", function()
+     local scope = {
+       tenant_id = "tenant-1",
+       region = "eu",
+-      role = "admin",
++      role = "user",
+       locale = "en",
+     }
+     assert.is_not_nil(scope)
+   end)

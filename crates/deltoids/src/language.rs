@@ -52,6 +52,20 @@ pub(crate) struct TreeSitterConfig {
     /// Node kinds that introduce a function body. Used for promotion checks
     /// and for demoting local helpers nested inside another function body.
     pub(crate) function_body_kinds: &'static [&'static str],
+    /// Anonymous function-body kinds that act as hunk anchors but never
+    /// appear in the breadcrumb. Use for callbacks like `arrow_function`
+    /// in JS/TS where the call signature on the opening line carries the
+    /// label (e.g. `it("name", () => {`) and a synthetic `[KIND name]`
+    /// breadcrumb entry would just be noise.
+    pub(crate) anchor_only_kinds: &'static [&'static str],
+    /// Wrapper kinds promoted to a *named* structure when one of their
+    /// arguments is a function body. Use for `call_expression` in JS/TS
+    /// so labeled callbacks (`describe("…", () => {})`,
+    /// `it("…", () => {})`, `app.get("/…", (req, res) => {})`) appear
+    /// in the breadcrumb with a real name (callee + first string-literal
+    /// arg) even when the inner arrow function is too large to size the
+    /// hunk.
+    pub(crate) call_promoted_kinds: &'static [&'static str],
 }
 
 impl Language {
@@ -161,6 +175,8 @@ impl Language {
                 data_kinds: &["array_expression", "struct_expression"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_item", "closure_expression"],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Python => TreeSitterConfig {
                 language: tree_sitter_python::LANGUAGE,
@@ -172,6 +188,8 @@ impl Language {
                 data_kinds: &["dictionary", "list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda"],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::JavaScript => TreeSitterConfig {
                 language: tree_sitter_javascript::LANGUAGE,
@@ -194,6 +212,24 @@ impl Language {
                     "generator_function",
                     "generator_function_declaration",
                 ],
+                // Anonymous callbacks (`xs.map(x => …)`, `it("…", () =>
+                // {…})`, `app.get("/…", (req, res) => {…})`) are the
+                // relevant unit of behaviour but have no syntactic name.
+                // Treat them as hunk anchors; the call-site label on the
+                // opening line speaks for itself.
+                anchor_only_kinds: &[
+                    "arrow_function",
+                    "function_expression",
+                    "function",
+                    "generator_function",
+                ],
+                // Labeled callbacks (`describe("…", () => {})`,
+                // `it("…", () => {})`, `app.get("/…", () => {})`) carry
+                // their identity on the call site, not the inner arrow.
+                // Promote the call to a named structure so it appears in
+                // the breadcrumb with a real name (callee + first
+                // string-literal arg).
+                call_promoted_kinds: &["call_expression"],
             },
             Language::TypeScript => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -217,6 +253,13 @@ impl Language {
                     "generator_function",
                     "generator_function_declaration",
                 ],
+                anchor_only_kinds: &[
+                    "arrow_function",
+                    "function_expression",
+                    "function",
+                    "generator_function",
+                ],
+                call_promoted_kinds: &["call_expression"],
             },
             Language::Tsx => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -238,6 +281,13 @@ impl Language {
                     "generator_function",
                     "generator_function_declaration",
                 ],
+                anchor_only_kinds: &[
+                    "arrow_function",
+                    "function_expression",
+                    "function",
+                    "generator_function",
+                ],
+                call_promoted_kinds: &["call_expression"],
             },
             Language::Go => TreeSitterConfig {
                 language: tree_sitter_go::LANGUAGE,
@@ -256,6 +306,12 @@ impl Language {
                     "method_declaration",
                     "func_literal",
                 ],
+                // Anonymous Go function literals (`func(…) { … }`)
+                // anchor labeled callbacks like `t.Run("…", func(…) {})`
+                // and `http.HandleFunc("/…", func(w, r) {})`. Their
+                // identity sits on the surrounding call.
+                anchor_only_kinds: &["func_literal"],
+                call_promoted_kinds: &["call_expression"],
             },
             Language::Ruby => TreeSitterConfig {
                 language: tree_sitter_ruby::LANGUAGE,
@@ -267,6 +323,12 @@ impl Language {
                 data_kinds: &["hash", "array"],
                 promoted_kinds: &[],
                 function_body_kinds: &["method", "singleton_method", "block", "do_block", "lambda"],
+                // Ruby blocks (`do … end`, `{ … }`) and lambdas are
+                // anonymous; their identity sits on the surrounding
+                // labeled call (RSpec `it "…" do … end`, Sinatra
+                // `get "/…" do … end`, Rails `routes.draw do … end`).
+                anchor_only_kinds: &["block", "do_block", "lambda"],
+                call_promoted_kinds: &["call"],
             },
             Language::Java => TreeSitterConfig {
                 language: tree_sitter_java::LANGUAGE,
@@ -283,6 +345,8 @@ impl Language {
                     "constructor_declaration",
                     "lambda_expression",
                 ],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::C => TreeSitterConfig {
                 language: tree_sitter_c::LANGUAGE,
@@ -294,6 +358,8 @@ impl Language {
                 data_kinds: &["initializer_list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Cpp => TreeSitterConfig {
                 language: tree_sitter_cpp::LANGUAGE,
@@ -307,6 +373,8 @@ impl Language {
                 data_kinds: &["initializer_list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda_expression"],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Bash => TreeSitterConfig {
                 language: tree_sitter_bash::LANGUAGE,
@@ -314,6 +382,8 @@ impl Language {
                 data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Lua => TreeSitterConfig {
                 language: tree_sitter_lua::LANGUAGE,
@@ -324,6 +394,13 @@ impl Language {
                 data_kinds: &["table_constructor"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_declaration", "function_definition"],
+                // Anonymous Lua functions (`function() … end`) are
+                // anchors but have no syntactic name; their identity
+                // sits on the surrounding labeled call (busted's
+                // `describe(“…”, function() … end)`, Neovim
+                // `vim.keymap.set(“…”, function() … end)`).
+                anchor_only_kinds: &["function_definition"],
+                call_promoted_kinds: &["function_call"],
             },
             Language::Css => TreeSitterConfig {
                 language: tree_sitter_css::LANGUAGE,
@@ -331,6 +408,8 @@ impl Language {
                 data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Hcl => TreeSitterConfig {
                 language: tree_sitter_hcl::LANGUAGE,
@@ -338,6 +417,8 @@ impl Language {
                 data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Markdown => TreeSitterConfig {
                 language: tree_sitter_md::LANGUAGE,
@@ -345,6 +426,8 @@ impl Language {
                 data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Toml => TreeSitterConfig {
                 language: tree_sitter_toml_ng::LANGUAGE,
@@ -352,6 +435,8 @@ impl Language {
                 data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Json => TreeSitterConfig {
                 language: tree_sitter_json::LANGUAGE,
@@ -359,6 +444,8 @@ impl Language {
                 data_kinds: &["object", "array"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
             Language::Yaml => TreeSitterConfig {
                 language: tree_sitter_yaml::LANGUAGE,
@@ -366,6 +453,8 @@ impl Language {
                 data_kinds: &["block_mapping", "block_sequence"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
             },
         }
     }

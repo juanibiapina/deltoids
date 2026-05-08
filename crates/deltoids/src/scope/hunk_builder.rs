@@ -479,10 +479,13 @@ fn ancestors_at_line(
     };
     // Hunk breadcrumbs show named code structures only. Data containers
     // (JSON/TS objects and arrays, YAML mappings) have no name and would
-    // just add noise.
+    // just add noise. Anchor-only callbacks (anonymous arrow functions /
+    // function expressions) are anchors but have no name to display —
+    // their call signature is already visible as the first context line
+    // of the hunk.
     scopes
         .into_iter()
-        .filter(|s| parsed.is_structure(s))
+        .filter(|s| parsed.is_structure(s) && !parsed.is_anchor_only(s))
         .collect()
 }
 

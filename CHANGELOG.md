@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Collapse the toolkit into a single `deltoids` binary with subcommands `pager`, `review`, `edit`, `write`, `traces`, shipped as one homebrew formula (`brew install juanibiapina/taps/deltoids`) and one shell installer. Plain `deltoids` (no subcommand) still runs the pager when stdin is piped, so existing `git config core.pager 'deltoids | less -R'` setups keep working.
 - diff: Expand hunk context for multi-line literals so the binding line stays visible, matching the existing JSON/TS-config/YAML behaviour.
+- diff: Anchor hunks on callbacks where the first argument is a string (`describe("…", () => {})`, `it "…" do … end`, `t.Run("…", func(…) {})`, `app.get("/…", () => {})`, `it("…", function() … end)`, …) and show the call in the breadcrumb so changes inside test cases, subtests, and route handlers locate themselves by suite/route even when the surrounding callback body is too large to fit in the hunk. Unlabeled callbacks (`xs.map(x => …)`, `Promise.then(…)`) still anchor on their enclosing named function as before.
 - review: Remove the `Space` page-down shortcut (use `PgDn`).
 
 ## [0.4.0] - 2026-04-30

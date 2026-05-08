@@ -1,0 +1,9 @@
+@@ -1,7 +1,7 @@ [function_declaration compute]
+ function compute(items: Item[]) {
+   const prefix = "x";
+   const labels = items.map((item) => {
+-    return prefix + item.id;
++    return prefix + "-" + item.id;
+   });
+   return labels;
+ }

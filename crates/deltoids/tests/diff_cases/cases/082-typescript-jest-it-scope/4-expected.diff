@@ -1,0 +1,11 @@
+@@ -2,9 +2,9 @@ [call_expression describe("UserService")] [call_expression it("creates a user")]
+   it("creates a user", () => {
+     const scope = {
+       tenantId: "tenant-1",
+       region: "eu",
+-      role: "admin",
++      role: "user",
+       locale: "en",
+     };
+     expect(scope).toBeDefined();
+   });

@@ -1,0 +1,11 @@
+@@ -6,9 +6,9 @@ [function_declaration TestUserService] [call_expression t.Run("creates a user")]
+ 	t.Run("creates a user", func(t *testing.T) {
+ 		scope := map[string]string{
+ 			"tenantID": "tenant-1",
+ 			"region":   "eu",
+-			"role":     "admin",
++			"role":     "user",
+ 			"locale":   "en",
+ 		}
+ 		_ = scope
+ 	})

@@ -1,0 +1,8 @@
+@@ -2,6 +2,6 @@ [call_expression describe("BigService")]
+   const scope = {
+     tenantId: "tenant-1",
+     region: "eu",
+-    role: "admin",
++    role: "user",
+     locale: "en",
+   };

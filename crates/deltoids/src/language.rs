@@ -153,14 +153,23 @@ impl Language {
                     "trait_item",
                     "mod_item",
                 ],
-                data_kinds: &[],
+                // Multi-line array and struct literals (e.g. `const FOO:
+                // &[...] = &[ ... ];` or `const CFG: Settings = Settings {
+                // ... };`) act as data containers so a change inside them
+                // expands the hunk to cover the whole literal, mirroring
+                // the JSON/TS-config/YAML pattern.
+                data_kinds: &["array_expression", "struct_expression"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_item", "closure_expression"],
             },
             Language::Python => TreeSitterConfig {
                 language: tree_sitter_python::LANGUAGE,
                 structure_kinds: &["function_definition", "class_definition"],
-                data_kinds: &[],
+                // Multi-line dict and list literals (module-level config
+                // dicts, route tables, …) act as data containers so a
+                // change inside them expands the hunk to cover the whole
+                // literal.
+                data_kinds: &["dictionary", "list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda"],
             },
@@ -237,7 +246,10 @@ impl Language {
                     "method_declaration",
                     "type_declaration",
                 ],
-                data_kinds: &[],
+                // Composite literals (`[]T{ … }`, `map[K]V{ … }`,
+                // `T{ … }`) act as data containers so a change inside a
+                // multi-line literal expands the hunk to cover it.
+                data_kinds: &["composite_literal"],
                 promoted_kinds: &[],
                 function_body_kinds: &[
                     "function_declaration",
@@ -248,7 +260,11 @@ impl Language {
             Language::Ruby => TreeSitterConfig {
                 language: tree_sitter_ruby::LANGUAGE,
                 structure_kinds: &["method", "singleton_method", "class", "module"],
-                data_kinds: &[],
+                // Multi-line hash and array literals (top-level constants,
+                // routes.rb-style tables) act as data containers so a
+                // change inside them expands the hunk to cover the whole
+                // literal.
+                data_kinds: &["hash", "array"],
                 promoted_kinds: &[],
                 function_body_kinds: &["method", "singleton_method", "block", "do_block", "lambda"],
             },
@@ -271,7 +287,11 @@ impl Language {
             Language::C => TreeSitterConfig {
                 language: tree_sitter_c::LANGUAGE,
                 structure_kinds: &["function_definition", "struct_specifier"],
-                data_kinds: &[],
+                // Aggregate initializers (`{ … }` for arrays/structs of
+                // tables, device descriptors, command tables) act as data
+                // containers so a change inside a multi-line initializer
+                // expands the hunk to cover it.
+                data_kinds: &["initializer_list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
             },
@@ -282,7 +302,9 @@ impl Language {
                     "class_specifier",
                     "namespace_definition",
                 ],
-                data_kinds: &[],
+                // Same rationale as C: multi-line `{ … }` aggregate
+                // initializers expand the hunk to cover the literal.
+                data_kinds: &["initializer_list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda_expression"],
             },
@@ -296,7 +318,10 @@ impl Language {
             Language::Lua => TreeSitterConfig {
                 language: tree_sitter_lua::LANGUAGE,
                 structure_kinds: &["function_declaration"],
-                data_kinds: &[],
+                // Multi-line table constructors (Neovim configs, settings
+                // tables, keymaps) act as data containers so a change
+                // inside them expands the hunk to cover the whole table.
+                data_kinds: &["table_constructor"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_declaration", "function_definition"],
             },

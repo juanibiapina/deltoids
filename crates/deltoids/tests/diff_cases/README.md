@@ -115,6 +115,12 @@ Cases are organised loosely by theme via their numeric prefix:
 * `070-079` — language-as-data files (JSON, TS configs)
 * `080-089` — TypeScript / JavaScript class & method scopes
 * `090-099` — YAML and other config-shaped languages
+* `100-109` — Python scope behaviour
+* `110-119` — Go scope behaviour
+* `120-129` — Ruby scope behaviour
+* `130-139` — C scope behaviour
+* `140-149` — C++ scope behaviour
+* `150-159` — Lua scope behaviour
 
 Current cases:
 
@@ -133,9 +139,17 @@ Current cases:
 | `048-rust-large-function-falls-back-to-default-context` | Bodies > `MAX_SCOPE_LINES` use 3-line context with full breadcrumb    |
 | `050-rust-top-level-statement`                      | Top-level statement → no breadcrumb                                       |
 | `055-rust-add-helper-no-duplication`                | New helper appears in exactly one hunk, not duplicated as context         |
+| `056-rust-const-multiline-array-context`            | Multi-line `const &[…]` literal expands hunk to cover the whole array     |
+| `057-rust-multiline-struct-literal-context`         | Multi-line `Foo { … }` literal expands hunk to cover the whole literal    |
 | `060-rust-comment-anchor-inside-fn`                 | Doc-comment edit above a fn keeps the fn as ancestor                      |
 | `070-json-property-change`                          | JSON change → no breadcrumb (data-only language)                          |
 | `075-typescript-config-property-change`             | TS config object literal → no breadcrumb                                  |
 | `080-typescript-method-modification`                | Class method change → `[class_declaration X] [method_definition Y]`       |
 | `085-typescript-multi-pair-replace`                 | Multi-pair `Replace` stays in a single hunk                               |
 | `090-yaml-property-change`                          | YAML change → no breadcrumb, scope-expanded context                       |
+| `100-python-multiline-dict-context`                 | Multi-line Python dict literal expands hunk to cover the whole literal    |
+| `110-go-composite-literal-context`                  | Multi-line Go composite literal expands hunk to cover the whole literal   |
+| `120-ruby-multiline-hash-context`                   | Multi-line Ruby hash literal expands hunk to cover the whole literal      |
+| `130-c-initializer-list-context`                    | Multi-line C `{ … }` initializer expands hunk to cover the whole literal  |
+| `140-cpp-initializer-list-context`                  | Multi-line C++ `{ … }` initializer expands hunk to cover the whole literal|
+| `150-lua-table-constructor-context`                 | Multi-line Lua table constructor expands hunk to cover the whole literal  |

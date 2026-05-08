@@ -1,0 +1,8 @@
+@@ -1,6 +1,6 @@
+ const CONFIG: Settings = Settings {
+-    name: "old",
++    name: "new",
+     version: 1,
+     enabled: true,
+     timeout: 30,
+ };

@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Add `deltoids review` TUI for reviewing diffs:
+### Added
+
+- Add `deltoids review` TUI for reviewing diffs.
+
+### Changed
 
 - Collapse the toolkit into a single `deltoids` binary with subcommands `pager`, `review`, `edit`, `write`, `traces`, shipped as one homebrew formula (`brew install juanibiapina/taps/deltoids`) and one shell installer. Plain `deltoids` (no subcommand) still runs the pager when stdin is piped, so existing `git config core.pager 'deltoids | less -R'` setups keep working.
+- diff: Expand hunk context for multi-line literals so the binding line stays visible, matching the existing JSON/TS-config/YAML behaviour.
+- review: Remove the `Space` page-down shortcut (use `PgDn`).
 
 ## [0.4.0] - 2026-04-30
 

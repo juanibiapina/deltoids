@@ -24,7 +24,7 @@
 //! - `Tab` / `1` / `2` — focus sidebar / diff.
 //! - `j`/`k` — move selection (sidebar) or scroll one line (diff).
 //! - `Shift+J`/`Shift+K` — scroll diff three lines, regardless of focus.
-//! - `PgDn`/`PgUp` / `Space` — page (current focus).
+//! - `PgDn`/`PgUp` — page (current focus).
 //! - `g`/`G` / `Home`/`End` — jump to top/bottom (current focus).
 //! - `q`/`Esc` — quit.
 //! - `?` — toggle the help popup (lists every binding).
@@ -85,7 +85,6 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("j / k", "move (sidebar) or scroll one line (diff)"),
     ("Shift+J / K", "scroll diff three lines (any focus)"),
     ("PgDn / PgUp", "page in current pane"),
-    ("Space", "page down"),
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),
     ("q / Esc", "quit (or close this popup)"),
@@ -467,7 +466,7 @@ fn handle_key(
                 AppCommand::Continue
             }
         },
-        KeyCode::PageDown | KeyCode::Char(' ') => match state.focus {
+        KeyCode::PageDown => match state.focus {
             Focus::Sidebar => {
                 state.sidebar.page_down(sidebar_viewport);
                 state.snap_diff_to_selected_file(diff_viewport);

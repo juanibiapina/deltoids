@@ -27,8 +27,14 @@
 //! - `PgDn`/`PgUp` / `Space` — page (current focus).
 //! - `g`/`G` / `Home`/`End` — jump to top/bottom (current focus).
 //! - `q`/`Esc` — quit.
+//! - `?` — toggle the help popup (lists every binding).
 //!
 //! Set `RV_NO_ICONS=1` to disable nerd-font glyphs in the sidebar.
+//!
+//! There is no always-on help bar at the bottom of the screen; the
+//! diff pane's footer carries a small `? help` hint instead. The
+//! popup itself is the source of truth for key bindings (see
+//! [`HELP_KEYS`]).
 
 use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
@@ -40,13 +46,13 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::render_tui::{
-    self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
-    rgb_to_color,
+    self, pane_block, pane_block_with_footer, pane_border_color, pane_inner_height,
+    render_pane_scrollbar, rgb_to_color,
 };
 use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
@@ -69,6 +75,21 @@ pub struct Args {}
 
 const SCROLL_STEP_SMALL: usize = 1;
 const SCROLL_STEP_LARGE: usize = 3;
+
+/// Single source of truth for the help popup. Each entry is
+/// `(keys, description)` and renders as one row of a two-column
+/// table inside the popup.
+const HELP_KEYS: &[(&str, &str)] = &[
+    ("?", "toggle this help"),
+    ("Tab / 1 / 2", "focus sidebar / diff"),
+    ("j / k", "move (sidebar) or scroll one line (diff)"),
+    ("Shift+J / K", "scroll diff three lines (any focus)"),
+    ("PgDn / PgUp", "page in current pane"),
+    ("Space", "page down"),
+    ("g / G", "top / bottom of current pane"),
+    ("Home / End", "top / bottom of current pane"),
+    ("q / Esc", "quit (or close this popup)"),
+];
 
 /// Default sidebar width in columns, *including the two border
 /// columns* (clamped against the terminal width at draw time). Picked
@@ -276,6 +297,9 @@ struct ViewState {
     sidebar: Sidebar,
     /// Currently-focused pane. Determines where j/k/g/G/PgUp/PgDn go.
     focus: Focus,
+    /// Whether the help popup is currently shown. While true, key
+    /// dispatch is intercepted by the popup's own handler.
+    help_visible: bool,
 }
 
 impl ViewState {
@@ -288,6 +312,7 @@ impl ViewState {
             diff_scroll: 0,
             sidebar,
             focus: Focus::Sidebar,
+            help_visible: false,
         }
     }
 
@@ -377,7 +402,14 @@ fn handle_key(
     diff_viewport: usize,
     sidebar_viewport: usize,
 ) -> AppCommand {
+    if state.help_visible {
+        return handle_key_help(state, key);
+    }
     match key {
+        KeyCode::Char('?') => {
+            state.help_visible = true;
+            AppCommand::Continue
+        }
         KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
         KeyCode::Tab => {
             state.focus = match state.focus {
@@ -483,6 +515,20 @@ fn handle_key(
     }
 }
 
+/// Key dispatch while the help popup is shown. `?`, `Esc`, and `q`
+/// all close the popup; everything else is swallowed. `q`/`Esc` do
+/// **not** quit the app while the popup is open — closing the modal
+/// first matches lazygit/k9s/vim convention.
+fn handle_key_help(state: &mut ViewState, key: KeyCode) -> AppCommand {
+    match key {
+        KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
+            state.help_visible = false;
+        }
+        _ => {}
+    }
+    AppCommand::Continue
+}
+
 // ---------------------------------------------------------------------------
 // TUI loop
 // ---------------------------------------------------------------------------
@@ -544,10 +590,11 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         let total_width = metrics.area.width;
         let total_height = metrics.area.height;
         let diff_width = diff_pane_width(total_width);
-        // -1 for the help bar at the bottom, -2 for the pane's top and
-        // bottom borders. The result is the number of content rows the
-        // pane shows, i.e. the scroll viewport.
-        let pane_viewport = total_height.saturating_sub(3) as usize;
+        // -2 for the pane's top and bottom borders. The result is
+        // the number of content rows the pane shows, i.e. the scroll
+        // viewport. (No bottom help bar; help is a `?`-triggered
+        // popup overlay that doesn't consume layout space.)
+        let pane_viewport = total_height.saturating_sub(2) as usize;
         let diff_viewport = pane_viewport;
         let sidebar_viewport = pane_viewport;
 
@@ -606,27 +653,21 @@ fn read_event(
 fn draw(frame: &mut ratatui::Frame<'_>, state: &mut ViewState, theme: &Theme) {
     let area = frame.area();
 
-    // Vertical: body | help bar.
-    let root = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
-    let body = root[0];
-    let help_area = root[1];
-
-    let sw = sidebar_width(body.width);
+    let sw = sidebar_width(area.width);
     if sw > 0 {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(sw), Constraint::Min(10)])
-            .split(body);
+            .split(area);
         draw_sidebar(frame, cols[0], state, theme);
         draw_diff(frame, cols[1], state, theme);
     } else {
-        draw_diff(frame, body, state, theme);
+        draw_diff(frame, area, state, theme);
     }
 
-    draw_help(frame, help_area, state, theme);
+    if state.help_visible {
+        draw_help_popup(frame, area, theme);
+    }
 }
 
 fn draw_sidebar(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, theme: &Theme) {
@@ -706,10 +747,66 @@ fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, 
     render_pane_scrollbar(frame, area, span, position, pane_inner_height(area), theme);
 }
 
-fn draw_help(frame: &mut ratatui::Frame<'_>, area: Rect, _state: &ViewState, theme: &Theme) {
-    let text = "Tab/1/2 focus  j/k move  Shift+J/K scroll diff  g/G top/bottom  q quit";
-    let p = Paragraph::new(text).style(Style::default().fg(rgb_to_color(theme.muted)));
-    frame.render_widget(p, area);
+/// Render the help popup as a centered, bordered overlay. Sized to
+/// content (capped at 80% of the terminal in each axis), cleared
+/// underneath so the panes don't bleed through. Pane chrome reuses
+/// [`pane_block`] for visual consistency with the rest of the UI.
+fn draw_help_popup(frame: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
+    let rows = build_help_lines(theme);
+    let content_width = HELP_KEYS
+        .iter()
+        .map(|(_k, d)| help_key_column_width().saturating_add(d.width()) + 2)
+        .max()
+        .unwrap_or(40);
+    let want_w = (content_width as u16).saturating_add(4); // 2 borders + 2 padding
+    let want_h = (rows.len() as u16).saturating_add(2); // 2 borders
+    let max_w = (area.width * 8 / 10).max(20);
+    let max_h = (area.height * 8 / 10).max(5);
+    let w = want_w.min(max_w).min(area.width);
+    let h = want_h.min(max_h).min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let popup = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+
+    frame.render_widget(Clear, popup);
+    let block = pane_block(" Help ", pane_border_color(true, theme));
+    let inner = block.inner(popup).inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(rows), inner);
+}
+
+/// Width reserved for the key column in the help popup so the
+/// description column lines up.
+fn help_key_column_width() -> usize {
+    HELP_KEYS.iter().map(|(k, _)| k.width()).max().unwrap_or(0)
+}
+
+/// Build the help popup's body as ratatui [`Line`]s. Two columns:
+/// keys (theme-accent) and description (default).
+fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
+    let key_w = help_key_column_width();
+    let key_style = Style::default().fg(rgb_to_color(theme.border_active));
+    let desc_style = Style::default().fg(rgb_to_color(theme.muted));
+    HELP_KEYS
+        .iter()
+        .map(|(k, d)| {
+            let pad = key_w.saturating_sub(k.width());
+            Line::from(vec![
+                Span::styled((*k).to_string(), key_style),
+                Span::raw(" ".repeat(pad)),
+                Span::raw("  "),
+                Span::styled((*d).to_string(), desc_style),
+            ])
+        })
+        .collect()
 }
 
 /// Build the sidebar pane's bottom-right footer: file/dir position
@@ -765,7 +862,7 @@ fn diff_footer(state: &ViewState) -> Option<String> {
         .saturating_sub(range.start)
         .min(span.saturating_sub(1))
         + 1;
-    Some(format!(" line {pos} of {span} "))
+    Some(format!(" line {pos} of {span}  \u{00b7}  ? help "))
 }
 
 struct TerminalSession;
@@ -1191,6 +1288,97 @@ mod tests {
         assert_eq!(state.focus, Focus::Sidebar);
         handle_key(&mut state, KeyCode::Char('J'), 4, 4);
         assert_eq!(state.diff_scroll, SCROLL_STEP_LARGE);
+    }
+
+    #[test]
+    fn handle_key_question_mark_opens_help() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        assert!(!state.help_visible);
+        handle_key(&mut state, KeyCode::Char('?'), 4, 4);
+        assert!(state.help_visible);
+    }
+
+    #[test]
+    fn handle_key_question_mark_toggles_help_closed() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        state.help_visible = true;
+        handle_key(&mut state, KeyCode::Char('?'), 4, 4);
+        assert!(!state.help_visible);
+    }
+
+    #[test]
+    fn handle_key_esc_in_help_closes_popup_does_not_quit() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        state.help_visible = true;
+        let cmd = handle_key(&mut state, KeyCode::Esc, 4, 4);
+        assert_eq!(cmd, AppCommand::Continue);
+        assert!(!state.help_visible);
+    }
+
+    #[test]
+    fn handle_key_q_in_help_closes_popup_does_not_quit() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        state.help_visible = true;
+        let cmd = handle_key(&mut state, KeyCode::Char('q'), 4, 4);
+        assert_eq!(cmd, AppCommand::Continue);
+        assert!(!state.help_visible);
+    }
+
+    #[test]
+    fn handle_key_navigation_swallowed_while_help_visible() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
+            after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
+        }];
+        let mut state = make_state(&resolved);
+        state.focus = Focus::Diff;
+        state.help_visible = true;
+        let scroll_before = state.diff_scroll;
+        handle_key(&mut state, KeyCode::Char('j'), 4, 4);
+        assert_eq!(state.diff_scroll, scroll_before);
+        assert!(state.help_visible, "unrelated keys must not close popup");
+    }
+
+    #[test]
+    fn diff_footer_includes_help_hint() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let state = make_state(&resolved);
+        let footer = diff_footer(&state).expect("footer present");
+        assert!(
+            footer.contains("? help"),
+            "expected '? help' hint in footer, got {footer:?}"
+        );
     }
 
     #[test]

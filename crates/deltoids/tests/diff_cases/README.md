@@ -121,6 +121,7 @@ Cases are organised loosely by theme via their numeric prefix:
 * `130-139` — C scope behaviour
 * `140-149` — C++ scope behaviour
 * `150-159` — Lua scope behaviour
+* `160-169` — HCL / Terraform scope behaviour
 
 Current cases:
 
@@ -153,3 +154,4 @@ Current cases:
 | `130-c-initializer-list-context`                    | Multi-line C `{ … }` initializer expands hunk to cover the whole literal  |
 | `140-cpp-initializer-list-context`                  | Multi-line C++ `{ … }` initializer expands hunk to cover the whole literal|
 | `150-lua-table-constructor-context`                 | Multi-line Lua table constructor expands hunk to cover the whole literal  |
+| `160-terraform-resource-block-context`              | Terraform `resource` block edit → `[block resource "…" "…"]` breadcrumb   |

@@ -33,6 +33,10 @@ pub struct ParsedFile {
     /// breadcrumb name is derived from the callee plus the first
     /// string-literal argument when present.
     call_promoted_kinds: &'static [&'static str],
+    /// Node kinds whose breadcrumb name is built from concatenated
+    /// positional `identifier` / `string_lit` children rather than a
+    /// `name` field. See [`crate::language::TreeSitterConfig`].
+    positional_name_kinds: &'static [&'static str],
 }
 
 impl ParsedFile {
@@ -58,6 +62,7 @@ impl ParsedFile {
             function_body_kinds: entry.function_body_kinds,
             anchor_only_kinds: entry.anchor_only_kinds,
             call_promoted_kinds: entry.call_promoted_kinds,
+            positional_name_kinds: entry.positional_name_kinds,
         })
     }
 
@@ -112,7 +117,8 @@ impl ParsedFile {
             if include {
                 let start_line = n.start_position().row + 1;
                 let end_line = n.end_position().row + 1;
-                let name = self.scope_name(n, kind_is_call_promoted);
+                let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
+                let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
                 let text = self
                     .source_line_raw(n.start_position().row)
                     .unwrap_or_default();
@@ -173,11 +179,16 @@ impl ParsedFile {
 
     /// Resolve the breadcrumb name for a scope node. Call-promoted nodes
     /// (e.g. `call_expression` in JS/TS) build their name from the callee
-    /// plus the first string-literal argument; everything else looks up
-    /// the conventional `name` / `property` / `type` / `key` field.
-    fn scope_name(&self, node: Node, is_call_promoted: bool) -> String {
+    /// plus the first string-literal argument. Positional-name nodes
+    /// (HCL `block`) build their name from concatenated `identifier` /
+    /// `string_lit` children. Everything else looks up the conventional
+    /// `name` / `property` / `type` / `key` field.
+    fn scope_name(&self, node: Node, is_call_promoted: bool, is_positional: bool) -> String {
         if is_call_promoted {
             return self.call_expression_name(node);
+        }
+        if is_positional {
+            return self.positional_name(node);
         }
         // `property` covers JS `field_definition`'s name field.
         node.child_by_field_name("name")
@@ -187,6 +198,27 @@ impl ParsedFile {
             .and_then(|name_node| name_node.utf8_text(&self.source).ok())
             .unwrap_or("")
             .to_string()
+    }
+
+    /// Build a breadcrumb name from a node's leading positional children.
+    /// Walks direct named children in source order, collects those whose
+    /// kind is `identifier` or `string_lit`, and joins their source text
+    /// with single spaces. Stops at the first child of any other kind so
+    /// the body (`{ … }`) doesn't leak into the name. Used for HCL
+    /// `block` nodes (`resource "aws_s3_bucket" "logs"`,
+    /// `variable "region"`, `module "vpc"`).
+    fn positional_name(&self, node: Node) -> String {
+        let mut cursor = node.walk();
+        let mut parts: Vec<&str> = Vec::new();
+        for child in node.named_children(&mut cursor) {
+            if !matches!(child.kind(), "identifier" | "string_lit") {
+                break;
+            }
+            if let Ok(text) = child.utf8_text(&self.source) {
+                parts.push(text);
+            }
+        }
+        parts.join(" ")
     }
 
     /// True when the call node has a function-body kind in its arguments

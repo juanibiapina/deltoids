@@ -1,0 +1,10 @@
+@@ -6,8 +6,8 @@ [block resource "aws_s3_bucket" "logs"]
+ resource "aws_s3_bucket" "logs" {
+   bucket = "my-app-logs"
+-  acl    = "private"
++  acl    = "log-delivery-write"
+ 
+   versioning {
+     enabled = true
+   }
+ }

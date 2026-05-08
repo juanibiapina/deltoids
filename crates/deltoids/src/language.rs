@@ -66,6 +66,12 @@ pub(crate) struct TreeSitterConfig {
     /// arg) even when the inner arrow function is too large to size the
     /// hunk.
     pub(crate) call_promoted_kinds: &'static [&'static str],
+    /// Node kinds whose breadcrumb name is built from concatenated
+    /// positional `identifier` / `string_lit` children rather than from
+    /// a `name` field. Use for HCL `block`, where the syntax is
+    /// `identifier (string_lit | identifier)* { body }` with no fields,
+    /// so the breadcrumb reads e.g. `resource "aws_s3_bucket" "logs"`.
+    pub(crate) positional_name_kinds: &'static [&'static str],
 }
 
 impl Language {
@@ -177,6 +183,7 @@ impl Language {
                 function_body_kinds: &["function_item", "closure_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Python => TreeSitterConfig {
                 language: tree_sitter_python::LANGUAGE,
@@ -190,6 +197,7 @@ impl Language {
                 function_body_kinds: &["function_definition", "lambda"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::JavaScript => TreeSitterConfig {
                 language: tree_sitter_javascript::LANGUAGE,
@@ -230,6 +238,7 @@ impl Language {
                 // the breadcrumb with a real name (callee + first
                 // string-literal arg).
                 call_promoted_kinds: &["call_expression"],
+                positional_name_kinds: &[],
             },
             Language::TypeScript => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -260,6 +269,7 @@ impl Language {
                     "generator_function",
                 ],
                 call_promoted_kinds: &["call_expression"],
+                positional_name_kinds: &[],
             },
             Language::Tsx => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -288,6 +298,7 @@ impl Language {
                     "generator_function",
                 ],
                 call_promoted_kinds: &["call_expression"],
+                positional_name_kinds: &[],
             },
             Language::Go => TreeSitterConfig {
                 language: tree_sitter_go::LANGUAGE,
@@ -312,6 +323,7 @@ impl Language {
                 // identity sits on the surrounding call.
                 anchor_only_kinds: &["func_literal"],
                 call_promoted_kinds: &["call_expression"],
+                positional_name_kinds: &[],
             },
             Language::Ruby => TreeSitterConfig {
                 language: tree_sitter_ruby::LANGUAGE,
@@ -329,6 +341,7 @@ impl Language {
                 // `get "/…" do … end`, Rails `routes.draw do … end`).
                 anchor_only_kinds: &["block", "do_block", "lambda"],
                 call_promoted_kinds: &["call"],
+                positional_name_kinds: &[],
             },
             Language::Java => TreeSitterConfig {
                 language: tree_sitter_java::LANGUAGE,
@@ -347,6 +360,7 @@ impl Language {
                 ],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::C => TreeSitterConfig {
                 language: tree_sitter_c::LANGUAGE,
@@ -360,6 +374,7 @@ impl Language {
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Cpp => TreeSitterConfig {
                 language: tree_sitter_cpp::LANGUAGE,
@@ -375,6 +390,7 @@ impl Language {
                 function_body_kinds: &["function_definition", "lambda_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Bash => TreeSitterConfig {
                 language: tree_sitter_bash::LANGUAGE,
@@ -384,6 +400,7 @@ impl Language {
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Lua => TreeSitterConfig {
                 language: tree_sitter_lua::LANGUAGE,
@@ -401,6 +418,7 @@ impl Language {
                 // `vim.keymap.set(“…”, function() … end)`).
                 anchor_only_kinds: &["function_definition"],
                 call_promoted_kinds: &["function_call"],
+                positional_name_kinds: &[],
             },
             Language::Css => TreeSitterConfig {
                 language: tree_sitter_css::LANGUAGE,
@@ -410,6 +428,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Hcl => TreeSitterConfig {
                 language: tree_sitter_hcl::LANGUAGE,
@@ -419,6 +438,12 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                // Terraform / HCL blocks carry their identity in the
+                // opening tokens — the block type plus zero or more
+                // string labels (`resource "aws_s3_bucket" "logs"`,
+                // `variable "region"`, `module "vpc"`). Build the
+                // breadcrumb name from those positional children.
+                positional_name_kinds: &["block"],
             },
             Language::Markdown => TreeSitterConfig {
                 language: tree_sitter_md::LANGUAGE,
@@ -428,6 +453,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Toml => TreeSitterConfig {
                 language: tree_sitter_toml_ng::LANGUAGE,
@@ -437,6 +463,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Json => TreeSitterConfig {
                 language: tree_sitter_json::LANGUAGE,
@@ -446,6 +473,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
             Language::Yaml => TreeSitterConfig {
                 language: tree_sitter_yaml::LANGUAGE,
@@ -455,6 +483,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
+                positional_name_kinds: &[],
             },
         }
     }

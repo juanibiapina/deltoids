@@ -1,6 +1,6 @@
 ---
 import { Image } from "astro:assets";
-import { PAGER_TOOLS, SITE } from "../data/site";
+import { PAGER_TOOLS } from "../data/site";
 import lazygitShot from "../assets/screenshots/lazygit.png";
 ---
 
@@ -12,12 +12,6 @@ import lazygitShot from "../assets/screenshots/lazygit.png";
         Pipe a single diff, or set <code>deltoids</code> as the default in
         your tools.
       </p>
-    </div>
-
-    <div class="section-install">
-      <div class="cmd-line" aria-label="Install command">
-        <span>brew install {SITE.brewTap}/deltoids</span>
-      </div>
     </div>
 
     <div class="pager-grid">
@@ -117,11 +111,6 @@ import lazygitShot from "../assets/screenshots/lazygit.png";
     font-size: 0.8125rem;
     white-space: pre-wrap;
     word-break: break-all;
-  }
-
-  .section-install {
-    text-align: center;
-    margin: 0 auto 28px;
   }
 
   .proof {

@@ -1,6 +1,6 @@
 ---
 import { Image } from "astro:assets";
-import { AGENT_TOOLS, SITE } from "../data/site";
+import { AGENT_TOOLS } from "../data/site";
 import editTuiShot from "../assets/screenshots/edit-tui.png";
 ---
 
@@ -12,12 +12,6 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
         <code>edit-tui</code> browses every edit, with its reason and
         semantic context.
       </p>
-    </div>
-
-    <div class="section-install">
-      <div class="cmd-line" aria-label="Install command">
-        <span>brew install {SITE.brewTap}/deltoids</span>
-      </div>
     </div>
 
     <div class="install-grid agents-snippets">
@@ -52,11 +46,6 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
   .agents-snippets {
     max-width: 720px;
     margin: 0 auto;
-  }
-
-  .section-install {
-    text-align: center;
-    margin: 0 auto 28px;
   }
 
   .proof {

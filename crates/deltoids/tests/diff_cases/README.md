@@ -154,4 +154,4 @@ Current cases:
 | `130-c-initializer-list-context`                    | Multi-line C `{ … }` initializer expands hunk to cover the whole literal  |
 | `140-cpp-initializer-list-context`                  | Multi-line C++ `{ … }` initializer expands hunk to cover the whole literal|
 | `150-lua-table-constructor-context`                 | Multi-line Lua table constructor expands hunk to cover the whole literal  |
-| `160-terraform-resource-block-context`              | Terraform `resource` block edit → `[block resource "…" "…"]` breadcrumb   |
+| `160-terraform-resource-block-context`              | Terraform `resource` block edit → `[block resource "…" "…"]` breadcrumb, with multi-line `tuple`/`object` literals inside the block kept as context |

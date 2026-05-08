@@ -1,10 +1,18 @@
-@@ -6,8 +6,8 @@ [block resource "aws_s3_bucket" "logs"]
+@@ -6,15 +6,15 @@ [block resource "aws_s3_bucket" "logs"]
  resource "aws_s3_bucket" "logs" {
    bucket = "my-app-logs"
 -  acl    = "private"
 +  acl    = "log-delivery-write"
  
-   versioning {
-     enabled = true
-   }
+   routes = [
+     {
+       name  = "datadog"
+-      value = "old"
++      value = "new"
+     },
+     {
+       name  = "grafana"
+       value = "two"
+     },
+   ]
  }

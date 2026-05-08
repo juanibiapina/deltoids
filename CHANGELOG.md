@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- diff: Add Terraform scope support. Edits inside a `block` (`resource "aws_s3_bucket" "logs"`, `variable "region"`, `module "vpc"`, …) anchor the hunk on the block and produce a breadcrumb naming the block by its type plus its string labels.
+- diff: Add Terraform scope support. Edits inside a `block` (`resource "aws_s3_bucket" "logs"`, `variable "region"`, `module "vpc"`, …) anchor the hunk on the block and produce a breadcrumb naming the block by its type plus its string labels. Multi-line `tuple` (`[ … ]`) and `object` (`{ k = v … }`) literals act as data-tier scopes so the binding line and surrounding entries stay visible when an edit lands inside one of them — including the common case where the edit sits in a tuple/object inside a block too large to expand on its own.
 
 ## [0.5.0] - 2026-05-08
 

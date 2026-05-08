@@ -7,9 +7,16 @@ resource "aws_s3_bucket" "logs" {
   bucket = "my-app-logs"
   acl    = "log-delivery-write"
 
-  versioning {
-    enabled = true
-  }
+  routes = [
+    {
+      name  = "datadog"
+      value = "new"
+    },
+    {
+      name  = "grafana"
+      value = "two"
+    },
+  ]
 }
 
 module "vpc" {

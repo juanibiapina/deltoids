@@ -433,7 +433,12 @@ impl Language {
             Language::Hcl => TreeSitterConfig {
                 language: tree_sitter_hcl::LANGUAGE,
                 structure_kinds: &["block"],
-                data_kinds: &[],
+                // Multi-line `tuple` (`[ … ]`) and `object` (`{ k = v … }`)
+                // literals act as a data-tier fallback when the enclosing
+                // block is too big to expand: a change inside one of
+                // them grows the hunk to cover the literal so the
+                // binding line and surrounding entries stay visible.
+                data_kinds: &["tuple", "object"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],

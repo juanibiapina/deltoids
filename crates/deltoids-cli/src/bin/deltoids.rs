@@ -7,6 +7,7 @@
 //! - `edit`    agent edit tool, appends to a trace
 //! - `write`   agent write tool, appends to a trace
 //! - `traces`  browse edit/write traces for the current dir
+//! - `hook`    coding-agent lifecycle adapters (Claude Code, …)
 //!
 //! Default (no subcommand): if stdin is a pipe, run `pager` (so
 //! `git config core.pager 'deltoids | less -R'` keeps working). If
@@ -17,7 +18,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use deltoids_cli::cli::{edit, pager, review, traces, write};
+use deltoids_cli::cli::{edit, hook, pager, review, traces, write};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,6 +46,9 @@ enum Command {
     Write(write::Args),
     /// Browse edit/write traces for the current directory.
     Traces(traces::Args),
+    /// Coding-agent lifecycle adapters (e.g. Claude Code PostToolUse).
+    #[command(hide = true)]
+    Hook(hook::Args),
 }
 
 fn main() -> ExitCode {
@@ -55,6 +59,7 @@ fn main() -> ExitCode {
         Some(Command::Edit(args)) => edit::run(args),
         Some(Command::Write(args)) => write::run(args),
         Some(Command::Traces(args)) => traces::run(args),
+        Some(Command::Hook(args)) => hook::run(args),
         None => {
             // No subcommand: pipe → pager (preserve `core.pager` use),
             // TTY → help.

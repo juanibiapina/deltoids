@@ -27,7 +27,7 @@ Rules:
 - All edits are matched against the original file, not after earlier edits are applied.
 - Edit regions must not overlap.
 - Unknown JSON fields are rejected.
-- If you pass a trace id, it must be an existing ULID trace id.
+- If you pass a trace id, it must reference an existing trace.
 - Omit the trace id to start a new trace.
 - If the path does not exist, the error is: Path does not exist: <path>
 - If the path is not a file, the error is: Path is not a file: <path>

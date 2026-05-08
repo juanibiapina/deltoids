@@ -2,8 +2,13 @@
 //!
 //! A "trace" is an append-only jsonl log under
 //! `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`. This module owns
-//! the directory layout, ULID-based trace ids, and (later) the read/write
+//! the directory layout, trace id validation, and the read/write
 //! primitives consumed by `execute_*_with_trace` and the TUI.
+//!
+//! New traces minted by the store get fresh ULIDs. Caller-supplied ids
+//! (e.g. a Claude Code `session_id`) are accepted as long as they look
+//! like a safe directory name (`[A-Za-z0-9_-]{1,128}`). This lets
+//! external integrations key traces on their own session identifiers.
 
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -24,8 +29,9 @@ pub struct TraceStore {
 }
 
 /// Result of resolving an optional caller-supplied trace id against the
-/// store. `reused` is true when the caller supplied an id that already
-/// existed; false when a fresh ULID was minted.
+/// store. `reused` is true when the caller supplied an id whose
+/// `entries.jsonl` already exists; false when a fresh ULID was minted
+/// or a caller-supplied id is being seen for the first time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedTrace {
     pub(crate) trace_id: String,
@@ -178,8 +184,12 @@ impl TraceStore {
 
     /// Resolve a caller-supplied optional trace id.
     ///
-    /// `Some(id)`: validate as ULID, confirm it exists in this store.
+    /// `Some(id)`: validate the id, confirm it exists in this store.
     /// `None`: mint a fresh ULID for a new trace.
+    ///
+    /// Use this for tools that should fail loudly when the caller
+    /// passes an id for a trace that has not yet been started
+    /// (`deltoids edit`/`deltoids write`).
     pub(crate) fn resolve(&self, trace_id: Option<&str>) -> Result<ResolvedTrace, String> {
         match trace_id {
             Some(trace_id) => {
@@ -190,6 +200,30 @@ impl TraceStore {
                 Ok(ResolvedTrace {
                     trace_id: trace_id.to_string(),
                     reused: true,
+                })
+            }
+            None => Ok(ResolvedTrace {
+                trace_id: Ulid::new().to_string(),
+                reused: false,
+            }),
+        }
+    }
+
+    /// Like [`resolve`], but accepts a caller-supplied id that does not
+    /// yet exist. Used by integrations (e.g. the Claude Code hook) that
+    /// key traces on an external session identifier and want to create
+    /// the trace on first use.
+    pub(crate) fn resolve_or_create(
+        &self,
+        trace_id: Option<&str>,
+    ) -> Result<ResolvedTrace, String> {
+        match trace_id {
+            Some(trace_id) => {
+                validate_trace_id(trace_id)?;
+                let reused = self.exists(trace_id);
+                Ok(ResolvedTrace {
+                    trace_id: trace_id.to_string(),
+                    reused,
                 })
             }
             None => Ok(ResolvedTrace {
@@ -222,11 +256,23 @@ pub(crate) fn data_home_directory() -> Result<PathBuf, String> {
     Err("Could not determine data home directory".to_string())
 }
 
-/// True when `trace_id` parses as a ULID.
+/// True when `trace_id` is a safe directory name we are willing to use
+/// for a trace folder. Accepts ULIDs minted by the store as well as
+/// external session ids like Claude Code's UUID `session_id`.
 pub(crate) fn validate_trace_id(trace_id: &str) -> Result<(), String> {
-    Ulid::from_string(trace_id)
-        .map(|_| ())
-        .map_err(|_| format!("Invalid trace id: {trace_id}"))
+    if trace_id.is_empty() {
+        return Err("Invalid trace id: ".to_string());
+    }
+    if trace_id.len() > 128 {
+        return Err(format!("Invalid trace id: {trace_id}"));
+    }
+    if !trace_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(format!("Invalid trace id: {trace_id}"));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -401,12 +447,58 @@ mod tests {
     }
 
     #[test]
-    fn resolve_rejects_non_ulid_id() {
+    fn resolve_rejects_unsafe_trace_id() {
         let tmp = tempfile::tempdir().unwrap();
         let store = TraceStore::with_root(tmp.path().to_path_buf());
 
-        let err = store.resolve(Some("not-a-ulid")).unwrap_err();
+        let err = store.resolve(Some("bad/trace/id")).unwrap_err();
 
         assert!(err.contains("Invalid trace id"));
+    }
+
+    #[test]
+    fn resolve_accepts_a_uuid_style_external_trace_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+
+        // Caller-supplied UUID-style id (e.g. a Claude Code session_id).
+        // `resolve` still requires it to exist; it should validate as
+        // a safe id and only fail with "Trace does not exist".
+        let session_id = "40cc627a-e96a-41bb-8259-ae81589f5599";
+        let err = store.resolve(Some(session_id)).unwrap_err();
+
+        assert!(err.contains("Trace does not exist"));
+    }
+
+    #[test]
+    fn resolve_or_create_accepts_a_new_external_trace_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+
+        let session_id = "40cc627a-e96a-41bb-8259-ae81589f5599";
+        let resolved = store.resolve_or_create(Some(session_id)).unwrap();
+
+        assert_eq!(resolved.trace_id, session_id);
+        assert!(!resolved.reused);
+    }
+
+    #[test]
+    fn resolve_or_create_marks_reused_when_trace_already_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+
+        let session_id = "40cc627a-e96a-41bb-8259-ae81589f5599";
+        // Create the trace by appending a placeholder entry.
+        store
+            .append(
+                session_id,
+                &serde_json::json!({"v": 1, "placeholder": true}),
+            )
+            .unwrap();
+
+        let resolved = store.resolve_or_create(Some(session_id)).unwrap();
+
+        assert_eq!(resolved.trace_id, session_id);
+        assert!(resolved.reused);
     }
 }

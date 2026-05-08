@@ -59,10 +59,20 @@ crates/
     src/cli/edit.rs         # `deltoids edit` subcommand
     src/cli/write.rs        # `deltoids write` subcommand
     src/cli/traces.rs       # `deltoids traces` subcommand (delegates to `tui::run`)
+    src/cli/hook.rs         # `deltoids hook <adapter>` subcommand; today only `claude-code` (PostToolUse)
     src/bin/deltoids.rs     # Single binary; clap dispatcher for all subcommands
 
   tests/
-    tests/tui_cli.rs    # Integration tests for `deltoids edit`/`write`/`traces` interaction
+    tests/tui_cli.rs            # Integration tests for `deltoids edit`/`write`/`traces` interaction
+    tests/claude_code_hook.rs   # Integration tests for `deltoids hook claude-code`
+    fixtures/claude-code/       # Real Claude Code PostToolUse JSON envelopes used by the hook tests
+
+plugins/
+  pi/             # Pi extension that overrides edit/write to spawn `deltoids edit`/`deltoids write`
+  claude-code/    # Claude Code plugin: registers a PostToolUse hook on Write|Edit
+
+.claude-plugin/
+  marketplace.json # Repo doubles as a Claude Code plugin marketplace; installs `claude-code/` as plugin `deltoids`
 ```
 
 ## Site

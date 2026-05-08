@@ -125,7 +125,10 @@ fn rejects_an_invalid_explicit_trace_id_for_edit() {
         ]
     });
 
-    let trace_id = "bad-trace-id";
+    // Trace ids must be safe directory names. A slash is rejected
+    // both because it would escape the trace root and because it is
+    // not in the allowed `[A-Za-z0-9_-]` alphabet.
+    let trace_id = "bad/trace/id";
     let output = run_command(
         "edit",
         &[trace_id],

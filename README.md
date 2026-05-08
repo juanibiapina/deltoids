@@ -103,3 +103,16 @@ pi install https://github.com/juanibiapina/deltoids
 Requires the `deltoids` binary on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
 
 Then run `deltoids traces` in the same directory as pi to see real-time diffs with summaries.
+
+### Claude Code
+
+Install the deltoids plugin to record every `Write` and `Edit` call as a trace, grouped by Claude session:
+
+```bash
+claude plugin marketplace add juanibiapina/deltoids
+claude plugin install deltoids@deltoids
+```
+
+Or, from inside an interactive session, run `/plugin marketplace add juanibiapina/deltoids` then `/plugin install deltoids@deltoids`.
+
+The Claude `session_id` is used directly as the deltoids trace id, so continuing a session (`claude --continue`) keeps appending to the same trace. Requires the `deltoids` binary on PATH. See [plugins/claude-code/README.md](plugins/claude-code/README.md) for details, including a `~/.claude/settings.json` snippet that bypasses the known [plugin hook delivery bug](https://github.com/anthropics/claude-code/issues/34573).

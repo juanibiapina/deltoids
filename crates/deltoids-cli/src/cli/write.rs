@@ -18,7 +18,7 @@ Input:
 
 Rules:
 - Unknown JSON fields are rejected.
-- If you pass a trace id, it must be an existing ULID trace id.
+- If you pass a trace id, it must reference an existing trace.
 - Omit the trace id to start a new trace.
 - If the path exists, it must be a file.
 - Parent directories are created as needed.

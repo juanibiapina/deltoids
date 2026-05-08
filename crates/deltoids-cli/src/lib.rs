@@ -348,11 +348,11 @@ fn tool_error(
     }
 }
 
-fn current_timestamp() -> String {
+pub(crate) fn current_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-fn current_working_directory() -> Result<String, String> {
+pub(crate) fn current_working_directory() -> Result<String, String> {
     env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|err| format!("Failed to read current directory: {err}"))

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "deltoids",
+  "version": "0.1.0",
+  "description": "deltoids plugin for Claude Code: record every Write/Edit call as a trace, grouped by Claude session.",
+  "owner": {
+    "name": "Juan Ibiapina",
+    "url": "https://github.com/juanibiapina"
+  },
+  "plugins": [
+    {
+      "name": "deltoids",
+      "description": "PostToolUse hook on Write|Edit that records each call into a deltoids trace keyed on the Claude session_id.",
+      "source": "./plugins/claude-code",
+      "category": "productivity"
+    }
+  ]
+}

@@ -102,7 +102,12 @@ export const AGENT_TOOLS: { id: string; label: string; code?: string; coming?: b
     label: "pi",
     code: `pi install https://github.com/juanibiapina/deltoids`,
   },
-  { id: "claude", label: "Claude Code", coming: true },
+  {
+    id: "claude",
+    label: "Claude Code",
+    code: `claude plugin marketplace add juanibiapina/deltoids
+claude plugin install deltoids@deltoids`,
+  },
 ];
 
 export type InstallCard = {

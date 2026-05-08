@@ -82,11 +82,11 @@ fn renders_traces_and_entries_for_current_directory() {
     fs::write(&config_path, "{\n  \"version\": 1\n}\n").unwrap();
 
     let edit_request = serde_json::json!({
-        "summary": "Update x constant",
+        "reason": "Update x constant",
         "path": file_path,
         "edits": [
             {
-                "summary": "Edit change",
+                "reason": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -104,7 +104,7 @@ fn renders_traces_and_entries_for_current_directory() {
     let trace_id = edit_json["traceId"].as_str().unwrap().to_string();
 
     let write_request = serde_json::json!({
-        "summary": "Rewrite config",
+        "reason": "Rewrite config",
         "path": config_path,
         "content": "{\n  \"version\": 2\n}\n"
     });
@@ -147,11 +147,11 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     fs::write(&config_path, "{\n  \"version\": 1\n}\n").unwrap();
 
     let edit_request = serde_json::json!({
-        "summary": "Update x constant",
+        "reason": "Update x constant",
         "path": file_path,
         "edits": [
             {
-                "summary": "Edit change",
+                "reason": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -169,7 +169,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     let trace_id = edit_json["traceId"].as_str().unwrap().to_string();
 
     let write_request = serde_json::json!({
-        "summary": "Rewrite config",
+        "reason": "Rewrite config",
         "path": config_path,
         "content": "{\n  \"version\": 2\n}\n"
     });
@@ -211,11 +211,11 @@ fn shows_only_traces_for_the_current_directory() {
     let first_file = first_dir.path().join("app.txt");
     fs::write(&first_file, "const x = 1;\n").unwrap();
     let first_request = serde_json::json!({
-        "summary": "Update first app",
+        "reason": "Update first app",
         "path": first_file,
         "edits": [
             {
-                "summary": "Edit first app",
+                "reason": "Edit first app",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -237,11 +237,11 @@ fn shows_only_traces_for_the_current_directory() {
     let second_file = second_dir.path().join("app.txt");
     fs::write(&second_file, "const y = 1;\n").unwrap();
     let second_request = serde_json::json!({
-        "summary": "Update second app",
+        "reason": "Update second app",
         "path": second_file,
         "edits": [
             {
-                "summary": "Edit second app",
+                "reason": "Edit second app",
                 "oldText": "const y = 1;",
                 "newText": "const y = 2;"
             }

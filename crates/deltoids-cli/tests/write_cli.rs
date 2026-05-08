@@ -55,7 +55,7 @@ fn rewrites_a_file_with_shorthand_flags() {
             "write",
             "--path",
             file_path.to_string_lossy().as_ref(),
-            "--summary",
+            "--reason",
             "Rewrite config",
         ])
         .env("XDG_DATA_HOME", data_home.path())
@@ -91,7 +91,7 @@ fn rewrites_a_file_from_stdin_json() {
     fs::write(&file_path, "{\n  \"version\": 1\n}\n").unwrap();
 
     let request = serde_json::json!({
-        "summary": "Rewrite config",
+        "reason": "Rewrite config",
         "path": file_path,
         "content": "{\n  \"version\": 2\n}\n"
     });
@@ -120,7 +120,7 @@ fn logs_failed_writes_and_returns_trace_id() {
     let data_home = tempdir().unwrap();
 
     let request = serde_json::json!({
-        "summary": "Reject directory target",
+        "reason": "Reject directory target",
         "path": dir.path(),
         "content": "hello\n"
     });
@@ -155,7 +155,7 @@ fn logs_failed_writes_and_returns_trace_id() {
     assert_eq!(entry["traceId"], trace_id);
     assert_eq!(entry["ok"], false);
     assert_eq!(entry["path"], dir.path().to_string_lossy().as_ref());
-    assert_eq!(entry["summary"], "Reject directory target");
+    assert_eq!(entry["reason"], "Reject directory target");
     assert_eq!(entry["content"], "hello\n");
     assert!(
         entry["error"]
@@ -173,7 +173,7 @@ fn starts_a_trace_and_logs_successful_writes() {
     fs::write(&file_path, "{\n  \"version\": 1\n}\n").unwrap();
 
     let request = serde_json::json!({
-        "summary": "Rewrite config",
+        "reason": "Rewrite config",
         "path": file_path,
         "content": "{\n  \"version\": 2\n}\n"
     });
@@ -199,7 +199,7 @@ fn starts_a_trace_and_logs_successful_writes() {
     assert_eq!(entry["traceId"], trace_id);
     assert_eq!(entry["ok"], true);
     assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
-    assert_eq!(entry["summary"], "Rewrite config");
+    assert_eq!(entry["reason"], "Rewrite config");
     assert_eq!(entry["content"], "{\n  \"version\": 2\n}\n");
     assert!(
         entry["diff"]

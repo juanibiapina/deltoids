@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - diff: Add Terraform scope support. Edits inside a `block` (`resource "aws_s3_bucket" "logs"`, `variable "region"`, `module "vpc"`, …) anchor the hunk on the block and produce a breadcrumb naming the block by its type plus its string labels. Multi-line `tuple` (`[ … ]`) and `object` (`{ k = v … }`) literals act as data-tier scopes so the binding line and surrounding entries stay visible when an edit lands inside one of them — including the common case where the edit sits in a tuple/object inside a block too large to expand on its own.
 
+### Changed
+
+- edit/write/traces: Rename the `summary` field to `reason` on edit/write requests, individual `edits[]`, and stored trace entries (CLI flag is now `--reason`). Old traces still load via a `summary` alias.
+
 ## [0.5.0] - 2026-05-08
 
 ### Added

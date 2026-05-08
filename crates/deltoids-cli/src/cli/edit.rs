@@ -12,12 +12,12 @@ use crate::{
 const OVERVIEW: &str = r#"CLI for agents to edit files.
 
 Input:
-- summary: short description of the change. Required. Must not be empty.
+- reason: why this change is being made. Required. Must not be empty.
 - path: UTF-8 text file to edit. Must exist and be a file.
 - edits: one or more replacements.
 
 Each edit must use:
-- summary: short description of that edit. Required. Must not be empty.
+- reason: why this specific edit is being made. Required. Must not be empty.
 - oldText
 - newText
 
@@ -35,18 +35,18 @@ Rules:
 
 Examples:
 printf '%s' '{
-  "summary": "Rename variable",
+  "reason": "Rename variable for clarity",
   "path": "src/app.ts",
   "edits": [
     {
-      "summary": "Rename x to count",
+      "reason": "Rename x to count to reflect what it tracks",
       "oldText": "const x = 1;",
       "newText": "const count = 1;"
     }
   ]
 }' | deltoids edit
 
-deltoids edit [trace-id] --path src/app.ts --summary "Rename x" --old "const x = 1;" --new "const count = 1;"
+deltoids edit [trace-id] --path src/app.ts --reason "Rename x" --old "const x = 1;" --new "const count = 1;"
 
 To review traces, run `deltoids traces`.
 
@@ -62,7 +62,7 @@ pub struct Args {
     #[arg(long)]
     pub path: Option<String>,
     #[arg(long)]
-    pub summary: Option<String>,
+    pub reason: Option<String>,
     #[arg(long = "old")]
     pub old_text: Option<String>,
     #[arg(long = "new")]
@@ -134,7 +134,7 @@ fn simple_error(error: String) -> ErrorResponse {
 
 fn uses_shorthand(args: &Args) -> bool {
     args.path.is_some()
-        || args.summary.is_some()
+        || args.reason.is_some()
         || args.old_text.is_some()
         || args.new_text.is_some()
 }
@@ -143,25 +143,25 @@ fn edit_request_from_shorthand(args: &Args) -> Result<EditRequest, String> {
     let path = args
         .path
         .clone()
-        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
-    let summary = args
-        .summary
+        .ok_or_else(|| "--path, --reason, --old, and --new are required together".to_string())?;
+    let reason = args
+        .reason
         .clone()
-        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+        .ok_or_else(|| "--path, --reason, --old, and --new are required together".to_string())?;
     let old_text = args
         .old_text
         .clone()
-        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+        .ok_or_else(|| "--path, --reason, --old, and --new are required together".to_string())?;
     let new_text = args
         .new_text
         .clone()
-        .ok_or_else(|| "--path, --summary, --old, and --new are required together".to_string())?;
+        .ok_or_else(|| "--path, --reason, --old, and --new are required together".to_string())?;
 
     Ok(EditRequest {
-        summary: summary.clone(),
+        reason: reason.clone(),
         path,
         edits: vec![TextEdit {
-            summary,
+            reason,
             old_text,
             new_text,
         }],
@@ -190,6 +190,6 @@ mod tests {
 
     #[test]
     fn does_not_show_overview_for_non_empty_piped_input() {
-        assert!(!super::should_show_overview(false, "{\"summary\":\"x\"}"));
+        assert!(!super::should_show_overview(false, "{\"reason\":\"x\"}"));
     }
 }

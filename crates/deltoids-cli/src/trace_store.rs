@@ -157,7 +157,7 @@ impl TraceStore {
                 last_timestamp: last_entry.timestamp.clone(),
                 last_tool: last_entry.tool.clone(),
                 last_path: last_entry.path.clone(),
-                last_summary: last_entry.summary.clone(),
+                last_reason: last_entry.reason.clone(),
             });
         }
 
@@ -248,7 +248,7 @@ pub(crate) struct EditHistoryEntry {
     pub timestamp: String,
     pub cwd: String,
     pub path: String,
-    pub summary: String,
+    pub reason: String,
     pub ok: bool,
     pub edits: Vec<TextEdit>,
     pub diff: String,
@@ -266,7 +266,7 @@ pub(crate) struct EditFailureHistoryEntry {
     pub timestamp: String,
     pub cwd: String,
     pub path: String,
-    pub summary: String,
+    pub reason: String,
     pub ok: bool,
     pub edits: Vec<TextEdit>,
     pub error: String,
@@ -281,7 +281,7 @@ pub(crate) struct WriteHistoryEntry {
     pub timestamp: String,
     pub cwd: String,
     pub path: String,
-    pub summary: String,
+    pub reason: String,
     pub ok: bool,
     pub content: String,
     pub diff: String,
@@ -299,7 +299,7 @@ pub(crate) struct WriteFailureHistoryEntry {
     pub timestamp: String,
     pub cwd: String,
     pub path: String,
-    pub summary: String,
+    pub reason: String,
     pub ok: bool,
     pub content: String,
     pub error: String,
@@ -319,7 +319,8 @@ pub struct HistoryEntry {
     pub timestamp: String,
     pub cwd: String,
     pub path: String,
-    pub summary: String,
+    #[serde(alias = "summary")]
+    pub reason: String,
     pub ok: bool,
     #[serde(default)]
     pub edits: Vec<TextEdit>,
@@ -369,7 +370,7 @@ pub struct TraceSummary {
     pub last_timestamp: String,
     pub last_tool: String,
     pub last_path: String,
-    pub last_summary: String,
+    pub last_reason: String,
 }
 
 #[cfg(test)]

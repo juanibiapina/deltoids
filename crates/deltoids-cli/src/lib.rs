@@ -19,7 +19,7 @@ pub use trace_store::{HistoryEntry, TraceSummary, trace_root_directory};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditRequest {
-    pub summary: String,
+    pub reason: String,
     pub path: String,
     pub edits: Vec<TextEdit>,
 }
@@ -27,7 +27,8 @@ pub struct EditRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextEdit {
-    pub summary: String,
+    #[serde(alias = "summary")] // back-compat with v1/v2 trace entries that used `summary`
+    pub reason: String,
     #[serde(rename = "oldText")]
     pub old_text: String,
     #[serde(rename = "newText")]
@@ -37,7 +38,7 @@ pub struct TextEdit {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WriteRequest {
-    pub summary: String,
+    pub reason: String,
     pub path: String,
     pub content: String,
 }
@@ -182,7 +183,7 @@ fn try_execute_edit(
             timestamp: current_timestamp(),
             cwd: current_working_directory()?,
             path: request.path.clone(),
-            summary: request.summary.clone(),
+            reason: request.reason.clone(),
             ok: true,
             edits: request.edits.clone(),
             diff: diff.clone(),
@@ -245,7 +246,7 @@ fn try_execute_write(
             timestamp: current_timestamp(),
             cwd: current_working_directory()?,
             path: request.path.clone(),
-            summary: request.summary.clone(),
+            reason: request.reason.clone(),
             ok: true,
             content: request.content.clone(),
             diff: diff.clone(),
@@ -290,7 +291,7 @@ fn log_edit_failure(
                 timestamp: current_timestamp(),
                 cwd: current_working_directory().unwrap_or_else(|_| String::new()),
                 path: request.path,
-                summary: request.summary,
+                reason: request.reason,
                 ok: false,
                 edits: request.edits,
                 error: error.clone(),
@@ -318,7 +319,7 @@ fn log_write_failure(
                 timestamp: current_timestamp(),
                 cwd: current_working_directory().unwrap_or_else(|_| String::new()),
                 path: request.path,
-                summary: request.summary,
+                reason: request.reason,
                 ok: false,
                 content: request.content,
                 error: error.clone(),
@@ -367,8 +368,8 @@ pub fn list_traces_for_current_directory() -> Result<Vec<TraceSummary>, String> 
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), String> {
-    if request.summary.trim().is_empty() {
-        return Err("summary must not be empty".to_string());
+    if request.reason.trim().is_empty() {
+        return Err("reason must not be empty".to_string());
     }
 
     if request.edits.is_empty() {
@@ -376,8 +377,8 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
     }
 
     for (index, edit) in request.edits.iter().enumerate() {
-        if edit.summary.trim().is_empty() {
-            return Err(format!("edits[{index}].summary must not be empty"));
+        if edit.reason.trim().is_empty() {
+            return Err(format!("edits[{index}].reason must not be empty"));
         }
 
         if edit.old_text.is_empty() {
@@ -389,8 +390,8 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
 }
 
 fn validate_write_request(request: &WriteRequest) -> Result<(), String> {
-    if request.summary.trim().is_empty() {
-        return Err("summary must not be empty".to_string());
+    if request.reason.trim().is_empty() {
+        return Err("reason must not be empty".to_string());
     }
 
     Ok(())
@@ -490,7 +491,7 @@ mod tests {
         let result = apply_edits(
             "Hello, world!",
             &[TextEdit {
-                summary: "Replace world".to_string(),
+                reason: "Replace world".to_string(),
                 old_text: "world".to_string(),
                 new_text: "pi".to_string(),
             }],
@@ -507,12 +508,12 @@ mod tests {
             "foo\nbar\nbaz\n",
             &[
                 TextEdit {
-                    summary: "Expand foo".to_string(),
+                    reason: "Expand foo".to_string(),
                     old_text: "foo\n".to_string(),
                     new_text: "foo bar\n".to_string(),
                 },
                 TextEdit {
-                    summary: "Uppercase bar".to_string(),
+                    reason: "Uppercase bar".to_string(),
                     old_text: "bar\n".to_string(),
                     new_text: "BAR\n".to_string(),
                 },
@@ -529,7 +530,7 @@ mod tests {
         let error = apply_edits(
             "hello\n",
             &[TextEdit {
-                summary: "Replace missing".to_string(),
+                reason: "Replace missing".to_string(),
                 old_text: "missing".to_string(),
                 new_text: "x".to_string(),
             }],
@@ -545,7 +546,7 @@ mod tests {
         let error = apply_edits(
             "foo foo foo",
             &[TextEdit {
-                summary: "Replace foo".to_string(),
+                reason: "Replace foo".to_string(),
                 old_text: "foo".to_string(),
                 new_text: "bar".to_string(),
             }],
@@ -562,12 +563,12 @@ mod tests {
             "one\ntwo\nthree\n",
             &[
                 TextEdit {
-                    summary: "Uppercase first block".to_string(),
+                    reason: "Uppercase first block".to_string(),
                     old_text: "one\ntwo\n".to_string(),
                     new_text: "ONE\nTWO\n".to_string(),
                 },
                 TextEdit {
-                    summary: "Uppercase second block".to_string(),
+                    reason: "Uppercase second block".to_string(),
                     old_text: "two\nthree\n".to_string(),
                     new_text: "TWO\nTHREE\n".to_string(),
                 },
@@ -584,7 +585,7 @@ mod tests {
         let error = apply_edits(
             "same",
             &[TextEdit {
-                summary: "No-op replace".to_string(),
+                reason: "No-op replace".to_string(),
                 old_text: "same".to_string(),
                 new_text: "same".to_string(),
             }],
@@ -598,7 +599,7 @@ mod tests {
     #[test]
     fn rejects_empty_edits_request() {
         let request = EditRequest {
-            summary: "Test edit".to_string(),
+            reason: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: Vec::new(),
         };
@@ -608,44 +609,44 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_edit_summary() {
+    fn rejects_empty_edit_reason() {
         let request = EditRequest {
-            summary: "Test edit".to_string(),
+            reason: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
-                summary: String::new(),
+                reason: String::new(),
                 old_text: "before".to_string(),
                 new_text: "after".to_string(),
             }],
         };
 
         let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("edits[0].summary must not be empty"));
+        assert!(error.contains("edits[0].reason must not be empty"));
     }
 
     #[test]
-    fn rejects_whitespace_only_edit_summary() {
+    fn rejects_whitespace_only_edit_reason() {
         let request = EditRequest {
-            summary: "Test edit".to_string(),
+            reason: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
-                summary: " \n\t ".to_string(),
+                reason: " \n\t ".to_string(),
                 old_text: "before".to_string(),
                 new_text: "after".to_string(),
             }],
         };
 
         let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("edits[0].summary must not be empty"));
+        assert!(error.contains("edits[0].reason must not be empty"));
     }
 
     #[test]
     fn rejects_empty_old_text() {
         let request = EditRequest {
-            summary: "Test edit".to_string(),
+            reason: "Test edit".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
-                summary: "Replace text".to_string(),
+                reason: "Replace text".to_string(),
                 old_text: String::new(),
                 new_text: "replacement".to_string(),
             }],
@@ -656,35 +657,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_summary() {
+    fn rejects_empty_reason() {
         let request = EditRequest {
-            summary: String::new(),
+            reason: String::new(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
-                summary: "Replace before".to_string(),
+                reason: "Replace before".to_string(),
                 old_text: "before".to_string(),
                 new_text: "after".to_string(),
             }],
         };
 
         let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("summary must not be empty"));
+        assert!(error.contains("reason must not be empty"));
     }
 
     #[test]
-    fn rejects_whitespace_only_summary() {
+    fn rejects_whitespace_only_reason() {
         let request = EditRequest {
-            summary: " \n\t ".to_string(),
+            reason: " \n\t ".to_string(),
             path: "test.txt".to_string(),
             edits: vec![TextEdit {
-                summary: "Replace before".to_string(),
+                reason: "Replace before".to_string(),
                 old_text: "before".to_string(),
                 new_text: "after".to_string(),
             }],
         };
 
         let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("summary must not be empty"));
+        assert!(error.contains("reason must not be empty"));
     }
 
     #[test]
@@ -699,7 +700,7 @@ mod tests {
         let response = execute_write_request_with_trace(
             &store,
             WriteRequest {
-                summary: "Rewrite config".to_string(),
+                reason: "Rewrite config".to_string(),
                 path: path.to_string_lossy().into_owned(),
                 content: "{\n  \"version\": 2\n}\n".to_string(),
             },
@@ -718,14 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_write_summary() {
+    fn rejects_empty_write_reason() {
         let trace_root = tempfile::tempdir().unwrap();
         let store = TraceStore::with_root(trace_root.path().to_path_buf());
 
         let error = execute_write_request_with_trace(
             &store,
             WriteRequest {
-                summary: String::new(),
+                reason: String::new(),
                 path: "test.txt".to_string(),
                 content: "hello\n".to_string(),
             },
@@ -733,7 +734,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.error.contains("summary must not be empty"));
+        assert!(error.error.contains("reason must not be empty"));
     }
 
     #[test]
@@ -743,12 +744,12 @@ mod tests {
             original,
             &[
                 TextEdit {
-                    summary: "Uppercase alpha".to_string(),
+                    reason: "Uppercase alpha".to_string(),
                     old_text: "alpha\n".to_string(),
                     new_text: "ALPHA\n".to_string(),
                 },
                 TextEdit {
-                    summary: "Try missing line".to_string(),
+                    reason: "Try missing line".to_string(),
                     old_text: "missing\n".to_string(),
                     new_text: "MISSING\n".to_string(),
                 },

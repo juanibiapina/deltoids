@@ -730,20 +730,20 @@ fn entry_label_line(entry: &HistoryEntry) -> Line<'static> {
     let (icon, color) = entry_icon(entry.ok);
     Line::from(vec![
         Span::styled(icon.to_string(), Style::default().fg(color)),
-        Span::raw(format!(" {}", entry.summary)),
+        Span::raw(format!(" {}", entry.reason)),
     ])
 }
 
 fn entry_label_plain(entry: &HistoryEntry) -> String {
     let (icon, _) = entry_icon(entry.ok);
-    format!("{icon} {}", entry.summary)
+    format!("{icon} {}", entry.reason)
 }
 
 fn trace_label(summary: &TraceSummary) -> String {
     let short_id = short_trace_id(&summary.trace_id);
     format!(
         "{}  {} entries  {}  {}",
-        short_id, summary.entry_count, summary.last_timestamp, summary.last_summary
+        short_id, summary.entry_count, summary.last_timestamp, summary.last_reason
     )
 }
 
@@ -767,7 +767,7 @@ enum DetailItem<'a> {
     OldFormatNotice,
     /// Failure entry's error message.
     ErrorLine(&'a str),
-    /// Edit-tool summaries to render before the next hunk.
+    /// Edit-tool reasons to render before the next hunk.
     EditBlock(Vec<&'a str>),
     /// Blank line between hunks.
     HunkSpacer,
@@ -778,7 +778,7 @@ enum DetailItem<'a> {
 
 /// Build the structured detail view for a history entry.
 ///
-/// Walks `entry.hunks` directly; emits edit summaries, hunk headers,
+/// Walks `entry.hunks` directly; emits edit reasons, hunk headers,
 /// context, and subhunks in the order the renderer needs them.
 fn detail_items(entry: &HistoryEntry) -> Vec<DetailItem<'_>> {
     if !entry.ok {
@@ -814,12 +814,12 @@ fn detail_items(entry: &HistoryEntry) -> Vec<DetailItem<'_>> {
                 remaining_edits - (remaining_hunks - 1)
             };
             if edits_for_this_hunk > 0 {
-                let summaries: Vec<&str> = entry.edits
+                let reasons: Vec<&str> = entry.edits
                     [next_edit_index..next_edit_index + edits_for_this_hunk]
                     .iter()
-                    .map(|edit| edit.summary.as_str())
+                    .map(|edit| edit.reason.as_str())
                     .collect();
-                items.push(DetailItem::EditBlock(summaries));
+                items.push(DetailItem::EditBlock(reasons));
                 next_edit_index += edits_for_this_hunk;
             }
         }
@@ -886,8 +886,8 @@ fn render_detail_for(
             DetailItem::ErrorLine(err) => {
                 rendered.push(labeled_line("error", err, Color::Red));
             }
-            DetailItem::EditBlock(summaries) => {
-                rendered.extend(render_edit_block(&summaries, width, theme));
+            DetailItem::EditBlock(reasons) => {
+                rendered.extend(render_edit_block(&reasons, width, theme));
             }
             DetailItem::HunkSpacer => {
                 rendered.push(Line::from(""));
@@ -904,7 +904,7 @@ fn render_detail_for(
 fn render_detail_header(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let path = collapse_home(&entry.path);
     let metadata = header_metadata_line(entry);
-    render_header_block(&entry.summary, &path, &metadata, width, theme)
+    render_header_block(&entry.reason, &path, &metadata, width, theme)
 }
 
 fn header_metadata_line(entry: &HistoryEntry) -> String {
@@ -1028,20 +1028,20 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 }
 
 fn render_header_block(
-    summary: &str,
+    reason: &str,
     path: &str,
     metadata: &str,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let summary_style = Style::default()
+    let reason_style = Style::default()
         .fg(rgb_to_color(theme.border_active))
         .add_modifier(Modifier::BOLD);
 
     if width < 4 {
         return vec![Line::from(Span::styled(
-            fit_line(summary, width),
-            summary_style,
+            fit_line(reason, width),
+            reason_style,
         ))];
     }
 
@@ -1051,8 +1051,8 @@ fn render_header_block(
     let bot = format!("─{}", "─".repeat(width.saturating_sub(1)));
 
     let mut lines = Vec::new();
-    for wrapped in wrap_text(summary, width) {
-        lines.push(Line::from(Span::styled(wrapped, summary_style)));
+    for wrapped in wrap_text(reason, width) {
+        lines.push(Line::from(Span::styled(wrapped, reason_style)));
     }
     lines.push(Line::from(Span::styled(fit_line(path, width), path_style)));
     lines.push(Line::from(Span::styled(
@@ -1267,10 +1267,10 @@ mod tests {
             timestamp: "2026-04-16T12:00:00Z".to_string(),
             cwd: "/tmp/project".to_string(),
             path: "/tmp/project/app.txt".to_string(),
-            summary: "Update x constant".to_string(),
+            reason: "Update x constant".to_string(),
             ok: true,
             edits: vec![TextEdit {
-                summary: "Edit change".to_string(),
+                reason: "Edit change".to_string(),
                 old_text: "const x = 1;".to_string(),
                 new_text: "const x = 2;".to_string(),
             }],
@@ -1293,7 +1293,7 @@ mod tests {
             timestamp: "2026-04-16T12:01:00Z".to_string(),
             cwd: "/tmp/project".to_string(),
             path: "/tmp/project/config.json".to_string(),
-            summary: "Rewrite config".to_string(),
+            reason: "Rewrite config".to_string(),
             ok: true,
             edits: Vec::new(),
             content: "{\n  \"version\": 2\n}\n".to_string(),
@@ -1307,14 +1307,14 @@ mod tests {
         }
     }
 
-    fn trace_summary(trace_id: &str, entry_count: usize, last_summary: &str) -> TraceSummary {
+    fn trace_summary(trace_id: &str, entry_count: usize, last_reason: &str) -> TraceSummary {
         TraceSummary {
             trace_id: trace_id.to_string(),
             entry_count,
             last_timestamp: "2026-04-16T12:00:00Z".to_string(),
             last_tool: "edit".to_string(),
             last_path: "/tmp/project/app.txt".to_string(),
-            last_summary: last_summary.to_string(),
+            last_reason: last_reason.to_string(),
         }
     }
 
@@ -1987,7 +1987,7 @@ mod tests {
     }
 
     #[test]
-    fn render_detail_header_uses_summary_path_metadata_and_rule() {
+    fn render_detail_header_uses_reason_path_metadata_and_rule() {
         let theme = test_theme();
         let lines = render_detail_header(&edit_entry(), 80, &theme);
         assert_eq!(lines.len(), 4);
@@ -2011,18 +2011,18 @@ mod tests {
     }
 
     #[test]
-    fn render_detail_header_wraps_long_summary() {
+    fn render_detail_header_wraps_long_reason() {
         let theme = test_theme();
         let mut entry = edit_entry();
-        entry.summary = "This is a long summary that should wrap onto multiple lines".to_string();
+        entry.reason = "This is a long reason that should wrap onto multiple lines".to_string();
         let lines = render_detail_header(&entry, 30, &theme);
-        // Summary wraps into multiple lines, then path, metadata, rule.
+        // Reason wraps into multiple lines, then path, metadata, rule.
         assert!(
             lines.len() > 4,
-            "long summary should produce more than 4 lines, got {}",
+            "long reason should produce more than 4 lines, got {}",
             lines.len()
         );
-        // All summary lines are border_active (orange) bold.
+        // All reason lines are border_active (orange) bold.
         let rule_index = lines
             .iter()
             .position(|l| l.to_string().starts_with('─'))
@@ -2031,7 +2031,7 @@ mod tests {
             assert_eq!(
                 line.spans[0].style.fg,
                 Some(rgb_to_color(theme.border_active)),
-                "wrapped summary line should be border_active color"
+                "wrapped reason line should be border_active color"
             );
         }
         // No right border on any line.

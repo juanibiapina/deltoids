@@ -44,11 +44,11 @@ fn rejects_a_nonexistent_explicit_trace_id_for_edit() {
     fs::write(&file_path, "const x = 1;\n").unwrap();
 
     let request = serde_json::json!({
-        "summary": "Update x constant",
+        "reason": "Update x constant",
         "path": file_path,
         "edits": [
             {
-                "summary": "Edit change",
+                "reason": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -82,7 +82,7 @@ fn rejects_a_nonexistent_explicit_trace_id_for_write() {
     fs::write(&config_path, "{\n  \"version\": 1\n}\n").unwrap();
 
     let request = serde_json::json!({
-        "summary": "Rewrite config",
+        "reason": "Rewrite config",
         "path": config_path,
         "content": "{\n  \"version\": 2\n}\n"
     });
@@ -114,11 +114,11 @@ fn rejects_an_invalid_explicit_trace_id_for_edit() {
     fs::write(&file_path, "const x = 1;\n").unwrap();
 
     let request = serde_json::json!({
-        "summary": "Update x constant",
+        "reason": "Update x constant",
         "path": file_path,
         "edits": [
             {
-                "summary": "Edit change",
+                "reason": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -149,11 +149,11 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     fs::write(&file_path, "const x = 1;\n").unwrap();
 
     let first_request = serde_json::json!({
-        "summary": "Update x constant",
+        "reason": "Update x constant",
         "path": file_path,
         "edits": [
             {
-                "summary": "Edit change",
+                "reason": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -170,11 +170,11 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     let trace_id = first_json["traceId"].as_str().unwrap().to_string();
 
     let second_request = serde_json::json!({
-        "summary": "Try a missing edit",
+        "reason": "Try a missing edit",
         "path": file_path,
         "edits": [
             {
-                "summary": "Missing change",
+                "reason": "Missing change",
                 "oldText": "nope",
                 "newText": "yep"
             }
@@ -208,8 +208,8 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     let second: Value = serde_json::from_str(entries[1]).unwrap();
     assert_eq!(second["tool"], "edit");
     assert_eq!(second["ok"], false);
-    assert_eq!(second["summary"], "Try a missing edit");
-    assert_eq!(second["edits"][0]["summary"], "Missing change");
+    assert_eq!(second["reason"], "Try a missing edit");
+    assert_eq!(second["edits"][0]["reason"], "Missing change");
     assert!(second["error"].as_str().unwrap().contains("Could not find"));
 }
 
@@ -223,11 +223,11 @@ fn reuses_an_explicit_trace_id_across_edit_and_write() {
     fs::write(&config_path, "{\n  \"version\": 1\n}\n").unwrap();
 
     let edit_request = serde_json::json!({
-        "summary": "Update x constant",
+        "reason": "Update x constant",
         "path": file_path,
         "edits": [
             {
-                "summary": "Edit change",
+                "reason": "Edit change",
                 "oldText": "const x = 1;",
                 "newText": "const x = 2;"
             }
@@ -244,7 +244,7 @@ fn reuses_an_explicit_trace_id_across_edit_and_write() {
     let trace_id = edit_json["traceId"].as_str().unwrap().to_string();
 
     let write_request = serde_json::json!({
-        "summary": "Rewrite config",
+        "reason": "Rewrite config",
         "path": config_path,
         "content": "{\n  \"version\": 2\n}\n"
     });
@@ -278,5 +278,5 @@ fn reuses_an_explicit_trace_id_across_edit_and_write() {
     assert_eq!(first["tool"], "edit");
     assert_eq!(second["tool"], "write");
     assert_eq!(second["traceId"], trace_id);
-    assert_eq!(second["summary"], "Rewrite config");
+    assert_eq!(second["reason"], "Rewrite config");
 }

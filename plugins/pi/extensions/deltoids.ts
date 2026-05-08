@@ -15,10 +15,10 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 
 interface ExternalEditInput {
-  summary: string;
+  reason: string;
   path: string;
   edits: Array<{
-    summary: string;
+    reason: string;
     oldText: string;
     newText: string;
   }>;
@@ -33,7 +33,7 @@ interface ExternalEditSuccess {
 }
 
 interface ExternalWriteInput {
-  summary: string;
+  reason: string;
   path: string;
   content: string;
 }
@@ -44,12 +44,16 @@ interface TraceState {
 
 const externalEditSchema = Type.Object(
   {
-    summary: Type.String({ description: "Short summary of the overall change." }),
+    reason: Type.String({
+      description: "Why this change is being made. One short sentence explaining the intent behind the overall edit.",
+    }),
     path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
     edits: Type.Array(
       Type.Object(
         {
-          summary: Type.String({ description: "Short summary of this edit block." }),
+          reason: Type.String({
+            description: "Why this specific replacement is being made. One short sentence explaining the intent behind this edit block.",
+          }),
           oldText: Type.String({
             description:
               "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
@@ -69,7 +73,9 @@ const externalEditSchema = Type.Object(
 
 const externalWriteSchema = Type.Object(
   {
-    summary: Type.String({ description: "Short summary of the overall change." }),
+    reason: Type.String({
+      description: "Why this file is being written. One short sentence explaining the intent behind the write.",
+    }),
     path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
     content: Type.String({ description: "Content to write to the file" }),
   },
@@ -83,15 +89,15 @@ function resolveToolPath(cwd: string, filePath: string): string {
   return isAbsolute(normalized) ? normalized : resolve(cwd, normalized);
 }
 
-function fallbackSummary(_path: string): string {
+function fallbackReason(_path: string): string {
   return "Edit file";
 }
 
-function fallbackEditSummary(_path: string): string {
+function fallbackEditReason(_path: string): string {
   return "Edit block";
 }
 
-function fallbackWriteSummary(_path: string): string {
+function fallbackWriteReason(_path: string): string {
   return "Write file";
 }
 
@@ -99,14 +105,14 @@ function prepareArguments(input: unknown): ExternalEditInput {
   if (!input || typeof input !== "object") return input as ExternalEditInput;
 
   const args = input as {
-    summary?: unknown;
+    reason?: unknown;
     path?: unknown;
     edits?: unknown;
     oldText?: unknown;
     newText?: unknown;
   };
   const path = typeof args.path === "string" ? args.path : "file";
-  const summary = typeof args.summary === "string" && args.summary.trim() ? args.summary : fallbackSummary(path);
+  const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason : fallbackReason(path);
 
   let edits = Array.isArray(args.edits) ? args.edits : [];
   if (typeof args.oldText === "string" && typeof args.newText === "string") {
@@ -115,15 +121,15 @@ function prepareArguments(input: unknown): ExternalEditInput {
 
   return {
     ...(args as object),
-    summary,
+    reason,
     edits: edits.map((edit) => {
       const record = (edit && typeof edit === "object" ? edit : {}) as Record<string, unknown>;
       return {
         ...record,
-        summary:
-          typeof record.summary === "string" && record.summary.trim()
-            ? record.summary
-            : fallbackEditSummary(path),
+        reason:
+          typeof record.reason === "string" && record.reason.trim()
+            ? record.reason
+            : fallbackEditReason(path),
       };
     }),
   } as ExternalEditInput;
@@ -133,16 +139,16 @@ function prepareWriteArguments(input: unknown): ExternalWriteInput {
   if (!input || typeof input !== "object") return input as ExternalWriteInput;
 
   const args = input as {
-    summary?: unknown;
+    reason?: unknown;
     path?: unknown;
     content?: unknown;
   };
   const path = typeof args.path === "string" ? args.path : "file";
-  const summary = typeof args.summary === "string" && args.summary.trim() ? args.summary : fallbackWriteSummary(path);
+  const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason : fallbackWriteReason(path);
 
   return {
     ...(args as object),
-    summary,
+    reason,
   } as ExternalWriteInput;
 }
 
@@ -331,11 +337,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...builtinEdit,
     description:
-      "Edit a single file using exact text replacement. Provide a short summary for the overall change and for each edit block.",
+      "Edit a single file using exact text replacement. Provide a reason for the overall change and for each edit block, explaining why the change is being made.",
     promptGuidelines: [
       ...(builtinEdit.promptGuidelines ?? []),
-      "Include summary: a short description of the overall file change.",
-      "Include edits[].summary: a short description of each replacement block.",
+      "Include reason: why the overall file change is being made.",
+      "Include edits[].reason: why each replacement block is being made.",
     ],
     parameters: externalEditSchema,
     prepareArguments,
@@ -344,7 +350,7 @@ export default function (pi: ExtensionAPI) {
 
       return withFileMutationQueue(resolvedPath, async () => {
         const payload = {
-          summary: params.summary,
+          reason: params.reason,
           path: resolvedPath,
           edits: params.edits,
         };
@@ -378,10 +384,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...builtinWrite,
     description:
-      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+      "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories. Provide a reason explaining why the file is being written.",
     promptGuidelines: [
       ...(builtinWrite.promptGuidelines ?? []),
-      "Include summary: a short description of the file change.",
+      "Include reason: why the file is being written.",
     ],
     parameters: externalWriteSchema,
     prepareArguments: prepareWriteArguments,
@@ -390,7 +396,7 @@ export default function (pi: ExtensionAPI) {
 
       return withFileMutationQueue(resolvedPath, async () => {
         const payload = {
-          summary: params.summary,
+          reason: params.reason,
           path: resolvedPath,
           content: params.content,
         };

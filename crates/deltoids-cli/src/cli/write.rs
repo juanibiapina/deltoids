@@ -12,7 +12,7 @@ use crate::{
 const OVERVIEW: &str = r#"CLI for agents to rewrite files.
 
 Input:
-- summary: short description of the change. Required. Must not be empty.
+- reason: why this file is being written. Required. Must not be empty.
 - path: UTF-8 text file to write.
 - content: full file contents to write.
 
@@ -25,12 +25,12 @@ Rules:
 
 Examples:
 printf '%s' '{
-  "summary": "Rewrite config",
+  "reason": "Bump config to v2",
   "path": "config.json",
   "content": "{\n  \"version\": 2\n}\n"
 }' | deltoids write
 
-deltoids write [trace-id] --path config.json --summary "Rewrite config" < config.json.new
+deltoids write [trace-id] --path config.json --reason "Bump config to v2" < config.json.new
 
 Output:
 - Success goes to stdout as JSON.
@@ -44,7 +44,7 @@ pub struct Args {
     #[arg(long)]
     pub path: Option<String>,
     #[arg(long)]
-    pub summary: Option<String>,
+    pub reason: Option<String>,
 }
 
 pub fn run(args: Args) -> ExitCode {
@@ -109,18 +109,18 @@ fn simple_error(error: String) -> ErrorResponse {
 }
 
 fn uses_shorthand(args: &Args) -> bool {
-    args.path.is_some() || args.summary.is_some()
+    args.path.is_some() || args.reason.is_some()
 }
 
 fn write_request_from_shorthand(args: &Args) -> Result<WriteRequest, String> {
     let path = args
         .path
         .clone()
-        .ok_or_else(|| "--path and --summary are required together".to_string())?;
-    let summary = args
-        .summary
+        .ok_or_else(|| "--path and --reason are required together".to_string())?;
+    let reason = args
+        .reason
         .clone()
-        .ok_or_else(|| "--path and --summary are required together".to_string())?;
+        .ok_or_else(|| "--path and --reason are required together".to_string())?;
 
     let mut content = String::new();
     io::stdin()
@@ -128,7 +128,7 @@ fn write_request_from_shorthand(args: &Args) -> Result<WriteRequest, String> {
         .map_err(|err| format!("Failed to read stdin: {err}"))?;
 
     Ok(WriteRequest {
-        summary,
+        reason,
         path,
         content,
     })
@@ -156,6 +156,6 @@ mod tests {
 
     #[test]
     fn does_not_show_overview_for_non_empty_piped_input() {
-        assert!(!super::should_show_overview(false, "{\"summary\":\"x\"}"));
+        assert!(!super::should_show_overview(false, "{\"reason\":\"x\"}"));
     }
 }

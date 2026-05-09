@@ -23,6 +23,8 @@ use deltoids_cli::cli::{edit, hook, pager, review, traces, write};
 #[derive(Debug, Parser)]
 #[command(
     name = "deltoids",
+    version,
+    disable_version_flag = true,
     about = "Diff renderer, scrolling TUI, agent edit tools, and trace browser.",
     long_about = "\
 The deltoids toolkit. Run `deltoids <subcommand> --help` for details on \
@@ -30,6 +32,10 @@ each subcommand. With no subcommand and a unified diff piped in, \
 `deltoids` runs the pager (preserving `git config core.pager 'deltoids | less -R'`)."
 )]
 struct Cli {
+    /// Print version and exit.
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: (),
+
     #[command(subcommand)]
     command: Option<Command>,
 }

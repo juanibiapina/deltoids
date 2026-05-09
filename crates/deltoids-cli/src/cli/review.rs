@@ -694,7 +694,7 @@ fn draw_sidebar(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewStat
 
     let color = pane_border_color(state.focus == Focus::Sidebar, theme);
     let footer = sidebar_footer(state);
-    let block = pane_block_with_footer(" [1] Files ", color, footer);
+    let block = pane_block_with_footer("─[1]─Files─", color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
 
     render_pane_scrollbar(
@@ -735,7 +735,7 @@ fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, 
 
     let color = pane_border_color(state.focus == Focus::Diff, theme);
     let footer = diff_footer(state);
-    let block = pane_block_with_footer(" [2] Diff ", color, footer);
+    let block = pane_block_with_footer("─[2]─Diff─", color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
 
     // Vertical scrollbar reflects the *visible range*, not the full
@@ -773,7 +773,7 @@ fn draw_help_popup(frame: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
     };
 
     frame.render_widget(Clear, popup);
-    let block = pane_block(" Help ", pane_border_color(true, theme));
+    let block = pane_block("─Help─", pane_border_color(true, theme));
     let inner = block.inner(popup).inner(Margin {
         vertical: 0,
         horizontal: 1,

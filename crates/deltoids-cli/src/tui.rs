@@ -516,21 +516,21 @@ fn render_empty_draw_state(
     let message = Paragraph::new("No traces found for this directory.")
         .style(Style::default().fg(rgb_to_color(theme.muted)))
         .block(pane_block_with_footer(
-            " [1] Entries ",
+            "─[1]─Entries─",
             rgb_to_color(theme.border),
             Some(position_footer(0, 0)),
         ));
     frame.render_widget(message, sidebar[0]);
     frame.render_widget(
         pane_block_with_footer(
-            " [2] Traces ",
+            "─[2]─Traces─",
             rgb_to_color(theme.border),
             Some(position_footer(0, 0)),
         ),
         sidebar[1],
     );
     frame.render_widget(
-        pane_block(" [3] Diff ", rgb_to_color(theme.border)),
+        pane_block("─[3]─Diff─", rgb_to_color(theme.border)),
         body[1],
     );
     frame.render_widget(help_bar(theme), root[1]);
@@ -556,7 +556,7 @@ fn render_entries_pane(
     };
     let entries_list = List::new(entry_items)
         .block(pane_block_with_footer(
-            " [1] Entries ",
+            "─[1]─Entries─",
             pane_border_color(state.focus == Focus::Entries, theme),
             Some(position_footer(entries_position, entries_count)),
         ))
@@ -596,7 +596,7 @@ fn render_traces_pane(
     };
     let traces_list = List::new(trace_items)
         .block(pane_block_with_footer(
-            " [2] Traces ",
+            "─[2]─Traces─",
             pane_border_color(state.focus == Focus::Traces, theme),
             Some(position_footer(traces_position, traces_count)),
         ))
@@ -664,7 +664,7 @@ fn render_diff_pane(
         .map(|cache| cache.lines[start..end].to_vec())
         .unwrap_or_default();
     let diff = Paragraph::new(visible_lines).block(pane_block(
-        " [3] Diff ",
+        "─[3]─Diff─",
         pane_border_color(state.focus == Focus::Diff, theme),
     ));
     frame.render_widget(diff, area);

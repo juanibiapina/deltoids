@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cli: `deltoids -v` / `deltoids --version` print the version.
 
+### Changed
+
+- tui: Pane titles in `deltoids review` and `deltoids traces` now use lazygit-style dash padding (e.g. `─[1]─Entries─`) so the title blends into the rounded border instead of leaving gaps.
+
 ## [0.6.0] - 2026-05-09
 
 ### Added

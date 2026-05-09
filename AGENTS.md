@@ -131,6 +131,26 @@ For brand-new behaviour, add the case **before** the implementation:
 the failing case becomes the spec, and the diff between expected (what
 you wrote) and actual (what the engine does) drives the change.
 
+## Releasing
+
+All workspace crates and the Claude Code plugin track the same
+version. To prep a release, bump the version in **every** file below
+in a single `release: X.Y.Z` commit:
+
+- `Cargo.toml` (`workspace.package.version`)
+- `Cargo.lock` (run `cargo update -p deltoids -p deltoids-cli -p tests` after editing `Cargo.toml`)
+- `site/src/data/site.ts` (`SITE.version`)
+- `plugins/claude-code/.claude-plugin/plugin.json` (`version`)
+- `.claude-plugin/marketplace.json` (`version`)
+- `CHANGELOG.md` (cut a new dated section under `[Unreleased]`)
+
+Then push `main` and push a `vX.Y.Z` tag. The `release.yml` workflow
+is triggered by the tag and runs cargo-dist, which builds the shell
+installer and macOS/Linux archives and publishes the homebrew formula
+to `juanibiapina/homebrew-taps`. The Claude Code plugin marketplace is
+served straight from `main`, so the plugin bump must land before any
+user re-runs `claude plugin install`.
+
 ## Conventions
 
 - Run `cargo fmt --all` before committing.

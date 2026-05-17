@@ -26,14 +26,24 @@ A shell installer is also published on each
 
 ## Agents
 
-`deltoids edit`, `deltoids write`, and `deltoids traces` are the agent
-edit tools and trace browser. Wire them into your agent:
+`deltoids edit`, `deltoids write`, `deltoids hashread`,
+`deltoids hashedit`, and `deltoids traces` are the agent edit tools
+and trace browser. Wire them into your agent:
 
 ### pi
 
 ```bash
 pi install https://github.com/juanibiapina/deltoids
 ```
+
+<Note>
+  Set `DELTOIDS_EDIT_MODE=hash` before launching pi to swap the `edit`
+  tool to a line-anchored backend (`deltoids hashedit`) and add a
+  `hashread` tool for text-file reads. The default (`text` mode)
+  keeps the classic `oldText`/`newText` `edit` schema. Mode is fixed
+  for the lifetime of the pi session — changing it requires
+  restarting pi.
+</Note>
 
 ### Claude Code
 

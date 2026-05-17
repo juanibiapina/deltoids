@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - cli: `deltoids -v` / `deltoids --version` print the version.
+- Add support for [hashedit](https://blog.can.ac/2026/02/12/the-harness-problem/) (line+hash anchored edits). Enable in the pi extension by setting `DELTOIDS_EDIT_MODE=hash`.
 
 ### Changed
 

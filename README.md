@@ -28,6 +28,8 @@ Tools:
 - `deltoids review`: review tool
 - `deltoids edit`: file edit tool (used by coding agents)
 - `deltoids write`: file write tool (used by coding agents)
+- `deltoids hashread`: file read tool with `LINEhh` line-content anchors (used by coding agents)
+- `deltoids hashedit`: line-anchored edit tool that validates by hash before splicing (used by coding agents)
 - `deltoids traces`: trace browser to follow agents in real-time
 
 `edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `deltoids traces` separately from the coding agent UI.
@@ -101,6 +103,8 @@ pi install https://github.com/juanibiapina/deltoids
 ```
 
 Requires the `deltoids` binary on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
+
+Set `DELTOIDS_EDIT_MODE=hash` before launching pi to swap the `edit` tool to the line-anchored hashedit backend and add a `hashread` tool for text-file reads. The default (`text` mode) keeps the classic `oldText`/`newText` shape on `edit`. The mode is fixed for the lifetime of the pi session — changing it requires restarting pi.
 
 Then run `deltoids traces` in the same directory as pi to see real-time diffs with summaries.
 

@@ -2,12 +2,14 @@
 //!
 //! Subcommands:
 //!
-//! - `pager`   ANSI diff filter for `less` / `core.pager`
-//! - `review`  scrolling TUI viewer for a unified diff
-//! - `edit`    agent edit tool, appends to a trace
-//! - `write`   agent write tool, appends to a trace
-//! - `traces`  browse edit/write traces for the current dir
-//! - `hook`    coding-agent lifecycle adapters (Claude Code, …)
+//! - `pager`     ANSI diff filter for `less` / `core.pager`
+//! - `review`    scrolling TUI viewer for a unified diff
+//! - `edit`      agent edit tool, appends to a trace
+//! - `write`     agent write tool, appends to a trace
+//! - `hashread`  agent read tool that emits hashline anchors
+//! - `hashedit`  agent edit tool using hashline anchors
+//! - `traces`    browse edit/write traces for the current dir
+//! - `hook`      coding-agent lifecycle adapters (Claude Code, …)
 //!
 //! Default (no subcommand): if stdin is a pipe, run `pager` (so
 //! `git config core.pager 'deltoids | less -R'` keeps working). If
@@ -18,7 +20,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use deltoids_cli::cli::{edit, hook, pager, review, traces, write};
+use deltoids_cli::cli::{edit, hash_edit, hash_read, hook, pager, review, traces, write};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -50,6 +52,10 @@ enum Command {
     Edit(edit::Args),
     /// Agent write tool — appends to a trace.
     Write(write::Args),
+    /// Agent read tool that emits hashline anchors.
+    Hashread(hash_read::Args),
+    /// Agent edit tool using hashline anchors.
+    Hashedit(hash_edit::Args),
     /// Browse edit/write traces for the current directory.
     Traces(traces::Args),
     /// Coding-agent lifecycle adapters (e.g. Claude Code PostToolUse).
@@ -64,6 +70,8 @@ fn main() -> ExitCode {
         Some(Command::Review(args)) => review::run(args),
         Some(Command::Edit(args)) => edit::run(args),
         Some(Command::Write(args)) => write::run(args),
+        Some(Command::Hashread(args)) => hash_read::run(args),
+        Some(Command::Hashedit(args)) => hash_edit::run(args),
         Some(Command::Traces(args)) => traces::run(args),
         Some(Command::Hook(args)) => hook::run(args),
         None => {

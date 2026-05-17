@@ -49,26 +49,30 @@ crates/
       cases/<NNN-slug>/       # 1-case.md, 2-original.<EXT>, 3-updated.<EXT>, 4-expected.diff
 
   deltoids-cli/
-    src/lib.rs              # Library entry: request types and edit/write execution shared by the edit subcommands
+    src/lib.rs              # Library entry: request types and edit/write/hashedit/hashread execution shared by the subcommands
     src/trace_store.rs      # TraceStore: trace dir layout, append/read/list
+    src/hashline.rs         # Hashline engine (pure): line-content hash, anchor parsing, apply_hash_edits. 647 BPE-friendly bigrams (ported from oh-my-pi, MIT).
     src/tui.rs              # `traces` subcommand chrome (panes, lists, HistoryEntry header) — diff lines come from `deltoids::render_tui::render_hunk`
     src/sidebar.rs          # Lazygit-style file tree sidebar for `review` (status badges, icons, deltas)
     src/cli.rs              # Subcommand module declarations
     src/cli/pager.rs        # `deltoids pager` (ANSI diff filter; uses deltoids::{git, content})
     src/cli/review.rs       # `deltoids review` (scrolling TUI; uses deltoids::{git, content, render_tui})
-    src/cli/edit.rs         # `deltoids edit` subcommand
-    src/cli/write.rs        # `deltoids write` subcommand
+    src/cli/edit.rs         # `deltoids edit` subcommand (oldText/newText replacement)
+    src/cli/write.rs        # `deltoids write` subcommand (full-file rewrite)
+    src/cli/hash_read.rs    # `deltoids hashread` subcommand (emits `LINEhh|TEXT` anchors)
+    src/cli/hash_edit.rs    # `deltoids hashedit` subcommand (line+hash-anchored edits)
     src/cli/traces.rs       # `deltoids traces` subcommand (delegates to `tui::run`)
     src/cli/hook.rs         # `deltoids hook <adapter>` subcommand; today only `claude-code` (PostToolUse)
     src/bin/deltoids.rs     # Single binary; clap dispatcher for all subcommands
 
   tests/
     tests/tui_cli.rs            # Integration tests for `deltoids edit`/`write`/`traces` interaction
+    tests/hash_cli.rs           # Integration tests for `deltoids hashread`/`hashedit` and trace round-trip
     tests/claude_code_hook.rs   # Integration tests for `deltoids hook claude-code`
     fixtures/claude-code/       # Real Claude Code PostToolUse JSON envelopes used by the hook tests
 
 plugins/
-  pi/             # Pi extension that overrides edit/write to spawn `deltoids edit`/`deltoids write`
+  pi/             # Pi extension. `DELTOIDS_EDIT_MODE` (read once at load) picks the `edit` tool's schema and backend: `text` spawns `deltoids edit` (oldText/newText), `hash` spawns `deltoids hashedit` (LINEhh anchors). Hash mode also adds a `hashread` tool. `write` is always overridden.
   claude-code/    # Claude Code plugin: registers a PostToolUse hook on Write|Edit
 
 .claude-plugin/
@@ -95,7 +99,8 @@ checklist.
 - **Hunk iteration**: Consumers walk hunks via `Hunk::runs()` -> `HunkRun` (`Header` / `Subhunk` / `Context`) instead of regrouping lines themselves. Both `render::render_hunk` and the TUI's `detail_items` share this iterator; reach for it before adding new line-grouping code.
 - **TUI layout**: Three-pane lazygit-inspired layout (entries, traces, diff). Both `deltoids review` and `deltoids traces` use shared pane chrome from `deltoids::render_tui`.
 - **Default behavior**: Plain `deltoids` (no subcommand) runs `pager` when stdin is piped (preserving `git config core.pager 'deltoids | less -R'`) and prints help when stdin is a TTY.
-- **Traces**: Stored in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`.
+- **Traces**: Stored in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`. `hashedit` records as `EditHistoryEntry { tool: "hashedit" }` with synthesised `TextEdit`s (one per op, preserving per-op `reason`) so the existing trace TUI and pager work unchanged.
+- **Hashline edit mode**: Selected once at extension load by `DELTOIDS_EDIT_MODE=hash` (defaults to `text`); changing modes requires restarting pi. This keeps the system prompt static so pi's prompt caching stays warm. In both modes the extension overrides pi's built-in `edit` and `write`; the mode only changes which `deltoids` subcommand `edit` spawns (`edit` vs `hashedit`) and its schema. Hash mode additionally registers `hashread` for text-file reads with anchors (pi's built-in `read` is not overridden — it stays the right choice for images, dirs, URLs, archives, SQLite, etc.). The hash is a validation token — the model addresses lines by number; the hash detects "the file changed since you last read it" at apply time. Engine: `crates/deltoids-cli/src/hashline.rs`.
 
 ## Diff cases (start here when changing the diff engine)
 

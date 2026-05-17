@@ -16,19 +16,19 @@
  *   - `hash`: overrides pi's built-in `edit` with a `deltoids hashedit`
  *     pass-through that takes line+hash anchors. The tool the model sees
  *     is still called `edit`, but its schema is the line-anchored shape.
- *     Adds `hashread` as a new tool for reading text files with anchors.
- *     The built-in `read` is not overridden — it remains the right choice
- *     for images, directories, URLs, archives, SQLite, and other non-text
- *     content `hashread` cannot handle, and the prompt guidelines steer
- *     the model toward `hashread` over the built-in `read` for text-file
- *     reads. `write` is overridden as in text mode.
+ *     Adds `hashread` as a new tool for reading text files with anchors,
+ *     and **overrides the built-in `read` tool's description** so the
+ *     model is told that text-file reads should go through `hashread`.
+ *     The `read` execute path is unchanged — it still handles images,
+ *     directories, URLs, archives, SQLite, and other non-text content
+ *     `hashread` cannot handle. `write` is overridden as in text mode.
  *
  * Requirements:
  *   - `deltoids` must be installed and available on PATH.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { createEditToolDefinition, createWriteToolDefinition, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -93,10 +93,13 @@ type EditMode = "text" | "hash";
  * - `hash`: override pi's built-in `edit` with a `deltoids hashedit`
  *   pass-through (line+hash anchors). The model still sees the tool as
  *   `edit`; only the schema and backend differ. Also register `hashread`
- *   so the model can obtain the `LINEhh` anchors `edit` requires.
- *   Pi's built-in `read` remains active for images, directories, URLs,
- *   archives, SQLite, and other non-text content `hashread` cannot handle;
- *   guidelines steer the model to prefer `hashread` for text-file reads.
+ *   so the model can obtain the `LINEhh` anchors `edit` requires, and
+ *   override the built-in `read` tool's description (execute path
+ *   unchanged) so the model is steered away from `read` for text files
+ *   — reading text with `read` would force a re-read through `hashread`
+ *   before editing, wasting a turn. `read` remains the right choice for
+ *   images, directories, URLs, archives, SQLite, and other non-text
+ *   content `hashread` cannot handle.
  */
 function resolveEditMode(): EditMode {
   const raw = (process.env.DELTOIDS_EDIT_MODE ?? "").trim().toLowerCase();
@@ -535,6 +538,7 @@ async function runExternalHashRead(
 export default function (pi: ExtensionAPI) {
   const builtinEdit = createEditToolDefinition(process.cwd());
   const builtinWrite = createWriteToolDefinition(process.cwd());
+  const builtinRead = createReadToolDefinition(process.cwd());
   const traceState: TraceState = {};
 
   const mode = resolveEditMode();
@@ -605,7 +609,7 @@ export default function (pi: ExtensionAPI) {
       description:
         "Read a text file with hashline anchors. **Use this in place of the built-in `read` tool when reading text files** — the `edit` tool in this session requires the `LINEhh` anchors that only `hashread` produces. The built-in `read` is still the right choice for images, directories, URLs, archives, SQLite, and other non-text content. Each line is returned as `LINEhh|TEXT` where `LINEhh` is the anchor token (1-indexed line number plus a 2-character content hash). Copy the `LINEhh` token verbatim into `pos`/`end` fields of `edit` ops. Never include the `|TEXT` body in those fields.",
       promptGuidelines: [
-        "Use `hashread` instead of the built-in `read` tool when reading text files you plan to edit.",
+        "Use `hashread`, not the built-in `read`, for any text file — even one-off inspection reads. Reading text with `read` first wastes a turn because the `edit` tool needs `LINEhh` anchors only `hashread` produces.",
         "The built-in `read` tool remains appropriate for images, directories, URLs, archives, SQLite, and other non-text content `hashread` cannot handle.",
       ],
       parameters: hashReadSchema,
@@ -622,6 +626,15 @@ export default function (pi: ExtensionAPI) {
           details: { path: params.path },
         };
       },
+    });
+
+    pi.registerTool({
+      ...builtinRead,
+      description:
+        "Read a file. **In this session, use `hashread` instead for any text file** — even one-off inspection reads. The `edit` tool requires `LINEhh` anchors only `hashread` produces, so reading text with `read` first forces a re-read through `hashread` before you can edit, wasting a turn. Use this `read` tool only when `hashread` cannot handle the content: images (jpg, png, gif, webp), directories, URLs, archives, SQLite, and other non-text content. Images are sent as attachments.",
+      promptGuidelines: [
+        "Prefer `hashread` over `read` for every text file, including quick peeks. `read` is reserved for non-text content (images, directories, archives, SQLite, etc.).",
+      ],
     });
 
     pi.registerTool({

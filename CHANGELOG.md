@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- diff: Large functions no longer cliff from full context to 3-line context at 200 lines. Changes within 100 lines of each other merge into a single hunk, with up to 100 lines of context before and after. A 500-line function with changes spread every 80 lines now shows the entire function in one hunk instead of fragmenting into tiny disconnected pieces.
 - tui: Pane titles in `deltoids review` and `deltoids traces` now use lazygit-style dash padding (e.g. `─[1]─Entries─`) so the title blends into the rounded border instead of leaving gaps.
 - pi: Clear inherited renderers (`renderCall`, `renderResult`, `renderShell`) from `edit`, `write`, and `read` overrides so Pi's `ToolExecutionComponent` falls back to the built-in renderers by name. Previously the spread copied stale closures; now Pi resolves the renderer fresh from the built-in tool definition, showing the standard colored boxes with diff previews and syntax-highlighted content.
 - pi: Migrate extension imports from deprecated `@mariozechner/pi-coding-agent` / `@mariozechner/pi-tui` to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui`.

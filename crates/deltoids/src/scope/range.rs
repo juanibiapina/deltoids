@@ -13,6 +13,11 @@ use crate::syntax::ParsedFile;
 
 const MAX_SCOPE_LINES: usize = 200;
 const DEFAULT_CONTEXT: usize = 3;
+/// When the innermost structure exceeds `MAX_SCOPE_LINES`, context expands
+/// up to this many lines before and after the change, clamped at the
+/// structure's boundaries. This replaces the 3-line fallback for changes
+/// inside large functions.
+const STRUCTURE_CONTEXT: usize = 100;
 
 /// Compute and merge context ranges for the given diff.
 ///
@@ -47,6 +52,30 @@ fn default_context_range(
         scope_line,
         prevent_merge: false,
         scope_id: None,
+    }
+}
+
+/// Compute a context range for a change inside a large structure.
+/// Expands up to `STRUCTURE_CONTEXT` lines before and after the change,
+/// clamped to the structure's boundaries. The `scope_id` is the
+/// structure's bounds so nearby changes within the same structure merge.
+fn structure_context_range(
+    old_start: usize,
+    old_end: usize,
+    structure: &ScopeNode,
+    ancestor_source: AncestorSource,
+    scope_line: usize,
+) -> ContextRange {
+    let (s_start, s_end, _) = scope_bounds(structure);
+    let start = old_start.saturating_sub(STRUCTURE_CONTEXT).max(s_start);
+    let end = (old_end + STRUCTURE_CONTEXT).min(s_end);
+    ContextRange {
+        start,
+        end,
+        ancestor_source,
+        scope_line,
+        prevent_merge: false,
+        scope_id: Some((s_start, s_end)),
     }
 }
 
@@ -224,32 +253,42 @@ fn context_ranges_for_insert(
 
     let scope_line = query_old_line(old_index, ctx.total_old);
     let inner = innermost_structure_at(ctx.old_parsed, scope_line);
-    let inner_id = inner.as_ref().map(|s| {
-        let (st, en, _) = scope_bounds(s);
-        (st, en)
-    });
-    if let Some(scope) = scope_at(ctx.old_parsed, scope_line) {
-        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
-        if scope_lines <= MAX_SCOPE_LINES {
-            return vec![ContextRange {
-                start: scope_start,
-                end: scope_end,
-                ancestor_source: AncestorSource::Old,
-                scope_line,
-                prevent_merge: false,
-                scope_id: Some((scope_start, scope_end)),
-            }];
-        }
+    let inner_too_large = inner
+        .as_ref()
+        .is_some_and(|s| scope_bounds(s).2 > MAX_SCOPE_LINES);
+
+    if !inner_too_large
+        && let Some(scope) = scope_at(ctx.old_parsed, scope_line)
+        && scope_bounds(&scope).2 <= MAX_SCOPE_LINES
+    {
+        let (scope_start, scope_end, _) = scope_bounds(&scope);
+        return vec![ContextRange {
+            start: scope_start,
+            end: scope_end,
+            ancestor_source: AncestorSource::Old,
+            scope_line,
+            prevent_merge: false,
+            scope_id: Some((scope_start, scope_end)),
+        }];
     }
 
-    let mut range = default_context_range(
+    if let Some(ref structure) = inner {
+        return vec![structure_context_range(
+            old_index,
+            old_index,
+            structure,
+            AncestorSource::Old,
+            scope_line,
+        )];
+    }
+
+    let range = default_context_range(
         old_index,
         old_index,
         ctx.total_old,
         AncestorSource::Old,
         old_index,
     );
-    range.scope_id = inner_id;
     vec![range]
 }
 
@@ -262,15 +301,16 @@ fn context_ranges_for_delete(
     let old_end = old_index + old_len;
 
     let inner = innermost_structure_at(ctx.old_parsed, old_start);
-    let inner_id = inner.as_ref().map(|s| {
-        let (st, en, _) = scope_bounds(s);
-        (st, en)
-    });
+    let inner_too_large = inner
+        .as_ref()
+        .is_some_and(|s| scope_bounds(s).2 > MAX_SCOPE_LINES);
 
     let mut ranges = Vec::new();
     let mut cursor = old_start;
     let mut last_pushed_end: Option<usize> = None;
-    while cursor < old_end.min(ctx.total_old) {
+    // When inside a too-large structure, skip the scope walk — data
+    // containers would fragment the hunk. Fall through to structure_context_range.
+    while !inner_too_large && cursor < old_end.min(ctx.total_old) {
         let Some(scope) = scope_at(ctx.old_parsed, cursor) else {
             cursor += 1;
             continue;
@@ -318,15 +358,23 @@ fn context_ranges_for_delete(
     }
 
     if ranges.is_empty() {
-        let mut range = default_context_range(
-            old_start,
-            old_end.saturating_sub(1),
-            ctx.total_old,
-            AncestorSource::Old,
-            old_start,
-        );
-        range.scope_id = inner_id;
-        ranges.push(range);
+        if let Some(ref structure) = inner {
+            ranges.push(structure_context_range(
+                old_start,
+                old_end.saturating_sub(1),
+                structure,
+                AncestorSource::Old,
+                old_start,
+            ));
+        } else {
+            ranges.push(default_context_range(
+                old_start,
+                old_end.saturating_sub(1),
+                ctx.total_old,
+                AncestorSource::Old,
+                old_start,
+            ));
+        }
     }
 
     ranges
@@ -346,40 +394,52 @@ fn old_replace_context_range(
     // their own merged hunk and prevents accidental merges with
     // neighbouring methods.
     let inner = innermost_structure_at(ctx.old_parsed, old_start);
-    let inner_id = inner.as_ref().map(|s| {
-        let (st, en, _) = scope_bounds(s);
-        (st, en)
-    });
+    // When the innermost structure is too large, skip scope_for_range:
+    // step 1 would fail (too big) and step 2 would return a data container
+    // whose scope_id would prevent merging with nearby changes in the same
+    // structure.  Use structure_context_range instead (below).
+    let inner_too_large = inner
+        .as_ref()
+        .is_some_and(|s| scope_bounds(s).2 > MAX_SCOPE_LINES);
 
-    if let Some(scope) = scope_for_range(ctx.old_parsed, old_start, old_end) {
-        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
-        if scope_lines <= MAX_SCOPE_LINES {
-            // Extend the range to cover the change itself when it sits
-            // outside the tree-sitter scope bounds. A method-level
-            // decorator is a sibling of `method_definition`, so a change
-            // on the decorator line is BEFORE `scope.start`. Without this
-            // extension the hunk would have no removed/added lines and
-            // get dropped entirely.
-            return ContextRange {
-                start: scope_start.min(old_start),
-                end: scope_end.max(old_end.saturating_sub(1)),
-                ancestor_source: AncestorSource::Old,
-                scope_line: old_start,
-                prevent_merge: false,
-                scope_id: Some((scope_start, scope_end)),
-            };
-        }
+    if !inner_too_large
+        && let Some(scope) = scope_for_range(ctx.old_parsed, old_start, old_end)
+        && scope_bounds(&scope).2 <= MAX_SCOPE_LINES
+    {
+        let (scope_start, scope_end, _) = scope_bounds(&scope);
+        // Extend the range to cover the change itself when it sits
+        // outside the tree-sitter scope bounds. A method-level
+        // decorator is a sibling of `method_definition`, so a change
+        // on the decorator line is BEFORE `scope.start`. Without this
+        // extension the hunk would have no removed/added lines and
+        // get dropped entirely.
+        return ContextRange {
+            start: scope_start.min(old_start),
+            end: scope_end.max(old_end.saturating_sub(1)),
+            ancestor_source: AncestorSource::Old,
+            scope_line: old_start,
+            prevent_merge: false,
+            scope_id: Some((scope_start, scope_end)),
+        };
     }
 
-    let mut range = default_context_range(
+    if let Some(ref structure) = inner {
+        return structure_context_range(
+            old_start,
+            old_end.saturating_sub(1),
+            structure,
+            AncestorSource::Old,
+            old_start,
+        );
+    }
+
+    default_context_range(
         old_start,
         old_end.saturating_sub(1),
         ctx.total_old,
         AncestorSource::Old,
         old_start,
-    );
-    range.scope_id = inner_id;
-    range
+    )
 }
 
 /// True when an OLD scope and a NEW scope occupy the same logical slot in

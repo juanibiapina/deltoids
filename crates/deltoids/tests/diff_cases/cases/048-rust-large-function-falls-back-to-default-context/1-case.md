@@ -1,23 +1,23 @@
-# Large function falls back to 3-line default context
+# Large function uses bounded context instead of full expansion
 
 ## Why this case exists
 
 Scope expansion would dump too much code on screen if every change
 inside a 1000-line function expanded to the whole function. The engine
-caps scope expansion at `MAX_SCOPE_LINES` (currently 200). Beyond that,
-the hunk falls back to standard 3-line context, even though the
-ancestor breadcrumb still names the enclosing function.
+caps full-scope expansion at `MAX_SCOPE_LINES` (currently 200). Beyond
+that, the hunk uses a `STRUCTURE_CONTEXT` budget (100 lines before and
+100 lines after the change), clamped to the structure's boundaries.
+The ancestor breadcrumb still names the enclosing function.
 
 ## Behaviours pinned
 
 - A change inside a function with > `MAX_SCOPE_LINES` body uses
-  default 3-line context (not full-function expansion).
-- The breadcrumb still names the enclosing function — the cap only
-  affects how much surrounding code we include, not where we anchor
-  the hunk.
+  100-line context per side (not full-function expansion).
+- The breadcrumb still names the enclosing function.
+- The hunk does not extend past the function boundaries.
 
 ## Notes
 
 The `2-original.rs` / `3-updated.rs` files are deliberately long (over
-200 body lines). Skim the start/end to confirm the scope; the change
-itself is a single line near the middle.
+200 body lines). The change is a single line near the middle; context
+expands ~100 lines in each direction.

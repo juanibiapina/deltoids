@@ -175,3 +175,5 @@ Current cases:
 | `180-bash-comment-only-edit-above-fn`               | Bash `#` comment-only edit above a function anchors on the function |
 | `190-css-comment-only-edit-above-rule`              | CSS `/* … */` comment-only edit above a rule_set anchors on the rule |
 | `220-toml-comment-only-edit-above-table`            | TOML `#` comment-only edit above a table anchors on the table |
+| `095-typescript-large-fn-no-hunk-overlap`          | Insert beside object literal in 200+ line fn → no overlapping hunks       |
+| `096-typescript-large-fn-nearby-changes-merge`     | Three replaces in adjacent objects in 200+ line fn → one merged hunk      |

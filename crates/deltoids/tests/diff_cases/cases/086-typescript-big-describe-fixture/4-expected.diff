@@ -1,4 +1,5 @@
-@@ -2,6 +2,6 @@ [call_expression describe("BigService")]
+@@ -1,105 +1,105 @@ [call_expression describe("BigService")]
+ describe("BigService", () => {
    const scope = {
      tenantId: "tenant-1",
      region: "eu",
@@ -6,3 +7,101 @@
 +    role: "user",
      locale: "en",
    };
+ 
+   it("test number 1", () => {
+     expect(1).toBe(1);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 2", () => {
+     expect(2).toBe(2);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 3", () => {
+     expect(3).toBe(3);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 4", () => {
+     expect(4).toBe(4);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 5", () => {
+     expect(5).toBe(5);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 6", () => {
+     expect(6).toBe(6);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 7", () => {
+     expect(7).toBe(7);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 8", () => {
+     expect(8).toBe(8);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 9", () => {
+     expect(9).toBe(9);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 10", () => {
+     expect(10).toBe(10);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 11", () => {
+     expect(11).toBe(11);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 12", () => {
+     expect(12).toBe(12);
+     expect("a").toBe("a");
+     expect("b").toBe("b");
+     expect("c").toBe("c");
+     expect("d").toBe("d");
+   });
+ 
+   it("test number 13", () => {

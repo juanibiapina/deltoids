@@ -945,8 +945,9 @@ fn small() {
     }
 
     #[test]
-    fn expanded_large_scope_uses_default() {
-        // A function > 200 lines should fall back to 3-line context
+    fn expanded_large_scope_uses_structure_context() {
+        // A function > 200 lines should use 100-line context per side,
+        // not the full function.
         let mut lines = vec!["fn big() {".to_string()];
         for i in 1..=205 {
             lines.push(format!("    let x{} = {};", i, i));
@@ -957,22 +958,27 @@ fn small() {
         let diff = Diff::compute(&original, &updated, "test.rs");
         let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
-        // Should NOT start at line 1 (function start), should be close to change
+        // Should NOT start at line 1 (function start is line 1,
+        // change is at line 101, 100 before = line 1 — so it does start at 1
+        // for a 207-line function with the change in the middle).
+        // But it should NOT include the entire function.
+        let total = hunks[0].lines.len();
         assert!(
-            hunks[0].old_start > 1,
-            "large scope should use default context"
+            total < 207,
+            "should not include entire function, got {} lines",
+            total
         );
-        // Should have <= 6 context lines (3 before + 3 after)
-        let context_count = hunks[0]
-            .lines
-            .iter()
-            .filter(|l| l.kind == LineKind::Context)
-            .count();
+        // With 100-line budget: ~100 before + 1 removed + 1 added + ~100 after
+        // = ~202 lines. The function starts at line 1 and the change is at
+        // line 101, so the 100-line-before reaches the function start.
         assert!(
-            context_count <= 6,
-            "large scope should use ~3-line context, got {}",
-            context_count
+            total >= 100,
+            "should use ~100-line context, got {} lines",
+            total
         );
+        // Breadcrumb should still name the function.
+        assert_eq!(hunks[0].ancestors.len(), 1);
+        assert_eq!(hunks[0].ancestors[0].name, "big");
     }
 
     #[test]
@@ -2329,10 +2335,10 @@ export class S {
     }
 
     #[test]
-    fn change_in_huge_method_falls_back_to_default_context() {
+    fn change_in_huge_method_uses_structure_context() {
         // When the innermost method exceeds MAX_SCOPE_LINES, the algorithm
-        // must NOT climb to the enclosing class. It uses default context
-        // with the method as the breadcrumb anchor instead.
+        // must NOT climb to the enclosing class. It uses 100-line context
+        // clamped to the method boundaries.
         let mut src = String::from("export class S {\n  huge() {\n");
         for i in 1..=210 {
             src.push_str(&format!("    const a{} = {};\n", i, i));
@@ -2355,11 +2361,13 @@ export class S {
             "hunk leaked sibling/class header for huge method:\n{}",
             body
         );
-        // Default context: about 8 lines around the change.
+        // 100-line budget: ~100 before + 1 rm + 1 add + ~100 after ≈ 202 lines.
+        // Must not include the full method (212 lines) or the class.
+        let total = hunks[0].lines.len();
         assert!(
-            hunks[0].lines.len() <= 8,
-            "too-big method should use default context, got {} lines",
-            hunks[0].lines.len()
+            (100..=210).contains(&total),
+            "huge method should use ~100-line context, got {} lines",
+            total
         );
     }
 

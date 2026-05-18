@@ -21,9 +21,9 @@ the inner arrow body is too big to anchor on.
 
 ## Behaviours pinned
 
-- The hunk anchors on the inner `const scope = { ... }` data scope
-  (the describe arrow function exceeds `MAX_SCOPE_LINES`).
+- When the describe block exceeds `MAX_SCOPE_LINES`, the hunk uses
+  100-line context per side (clamped to the describe block boundaries)
+  instead of falling back to the small data-scope object literal.
 - The hunk's breadcrumb is
   `[call_expression describe("BigService")]`, naming the suite
-  even though the arrow body that contains it doesn't fit in the
-  hunk.
+  even though the body that contains the change doesn't fit in full.

@@ -11,10 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cli: `deltoids -v` / `deltoids --version` print the version.
 - Add support for [hashedit](https://blog.can.ac/2026/02/12/the-harness-problem/) (line+hash anchored edits). Enable in the pi extension by setting `DELTOIDS_EDIT_MODE=hash`.
+- pi: Add custom `renderCall`/`renderResult` for the `hashread` tool so it shows a collapsible box (first 10 lines, expandable) matching Pi's built-in tool chrome.
 
 ### Changed
 
 - tui: Pane titles in `deltoids review` and `deltoids traces` now use lazygit-style dash padding (e.g. `─[1]─Entries─`) so the title blends into the rounded border instead of leaving gaps.
+- pi: Clear inherited renderers (`renderCall`, `renderResult`, `renderShell`) from `edit`, `write`, and `read` overrides so Pi's `ToolExecutionComponent` falls back to the built-in renderers by name. Previously the spread copied stale closures; now Pi resolves the renderer fresh from the built-in tool definition, showing the standard colored boxes with diff previews and syntax-highlighted content.
+- pi: Migrate extension imports from deprecated `@mariozechner/pi-coding-agent` / `@mariozechner/pi-tui` to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui`.
 
 ## [0.6.0] - 2026-05-09
 

@@ -27,8 +27,9 @@
  *   - `deltoids` must be installed and available on PATH.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, keyHint, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
@@ -559,6 +560,9 @@ export default function (pi: ExtensionAPI) {
   if (mode === "text") {
     pi.registerTool({
       ...builtinEdit,
+      renderCall: undefined,
+      renderResult: undefined,
+      renderShell: undefined,
       description:
         "Edit a single file using exact text replacement. Provide a reason for the overall change and for each edit block, explaining why the change is being made.",
       promptGuidelines: [
@@ -612,6 +616,7 @@ export default function (pi: ExtensionAPI) {
         "Use `hashread`, not the built-in `read`, for any text file — even one-off inspection reads. Reading text with `read` first wastes a turn because the `edit` tool needs `LINEhh` anchors only `hashread` produces.",
         "The built-in `read` tool remains appropriate for images, directories, URLs, archives, SQLite, and other non-text content `hashread` cannot handle.",
       ],
+      label: "hashread",
       parameters: hashReadSchema,
       async execute(_toolCallId, params: ExternalHashReadInput, signal, _onUpdate, ctx) {
         const resolvedPath = resolveToolPath(ctx.cwd, params.path);
@@ -626,10 +631,48 @@ export default function (pi: ExtensionAPI) {
           details: { path: params.path },
         };
       },
+      renderCall(args: ExternalHashReadInput | undefined, theme: any, _context: any) {
+        const path = args?.path;
+        let text = theme.fg("toolTitle", theme.bold("hashread "));
+        text += path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
+        if (args?.offset || args?.limit) {
+          const parts: string[] = [];
+          if (args.offset) parts.push(`offset=${args.offset}`);
+          if (args.limit) parts.push(`limit=${args.limit}`);
+          text += theme.fg("dim", ` (${parts.join(", ")})`);
+        }
+        return new Text(text, 0, 0);
+      },
+      renderResult(result: any, _options: any, theme: any, context: any) {
+        const content = result?.content?.[0];
+        if (!content || content.type !== "text" || !content.text) {
+          return new Text("", 0, 0);
+        }
+        const allLines = content.text.trimEnd().split("\n");
+        const totalLines = allLines.length;
+        const maxLines = context.expanded ? totalLines : 10;
+        const displayLines = allLines.slice(0, maxLines);
+        const remaining = totalLines - maxLines;
+        let text = displayLines
+          .map((line: string) => {
+            const sep = line.indexOf("|");
+            if (sep > 0) {
+              return theme.fg("dim", line.slice(0, sep + 1)) + theme.fg("toolOutput", line.slice(sep + 1));
+            }
+            return theme.fg("toolOutput", line);
+          })
+          .join("\n");
+        if (remaining > 0) {
+          text += theme.fg("muted", `\n... (${remaining} more lines, ${totalLines} total, `) + keyHint("app.tools.expand", "to expand") + ")";
+        }
+        return new Text(text, 0, 0);
+      },
     });
 
     pi.registerTool({
       ...builtinRead,
+      renderCall: undefined,
+      renderResult: undefined,
       description:
         "Read a file. **In this session, use `hashread` instead for any text file** — even one-off inspection reads. The `edit` tool requires `LINEhh` anchors only `hashread` produces, so reading text with `read` first forces a re-read through `hashread` before you can edit, wasting a turn. Use this `read` tool only when `hashread` cannot handle the content: images (jpg, png, gif, webp), directories, URLs, archives, SQLite, and other non-text content. Images are sent as attachments.",
       promptGuidelines: [
@@ -639,6 +682,9 @@ export default function (pi: ExtensionAPI) {
 
     pi.registerTool({
       ...builtinEdit,
+      renderCall: undefined,
+      renderResult: undefined,
+      renderShell: undefined,
       description:
         "Edit a text file via line+hash anchors obtained from `hashread`. First call `hashread` to obtain `LINEhh` anchors, then issue ops referencing those anchors. Ops: `replace`, `insert_before`, `insert_after`, `delete`. Anchors are validated against the current file before any change; one stale anchor rejects the whole batch and the file is untouched. On stale anchor, the error reprints the affected region with fresh anchors so you can retry without re-reading.",
       promptGuidelines: [
@@ -688,6 +734,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerTool({
     ...builtinWrite,
+    renderCall: undefined,
+    renderResult: undefined,
     description:
       "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories. Provide a reason explaining why the file is being written.",
     promptGuidelines: [

@@ -6,7 +6,7 @@ export const SITE = {
   name: "deltoids",
   domain: "deltoids.dev",
   url: "https://deltoids.dev",
-  version: "0.6.0",
+  version: "0.7.0",
   license: "MIT",
   tagline: "Diffs for the agentic era.",
   description:

@@ -12,18 +12,21 @@ use std::io::{self, IsTerminal, Read};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+};
 use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, ListState, Paragraph},
 };
 use unicode_width::UnicodeWidthChar;
 
+use crate::terminal::TerminalSession;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::render_tui::{
     self, pane_block, pane_block_with_footer, pane_border_color, pane_inner_height,
@@ -99,6 +102,10 @@ struct AppState {
     diff_cache: Option<DiffCache>,
     entries_list_state: ListState,
     traces_list_state: ListState,
+    /// Last-drawn pane rects, used for mouse hit-testing.
+    entries_rect: Rect,
+    traces_rect: Rect,
+    diff_rect: Rect,
 }
 
 impl AppState {
@@ -111,6 +118,9 @@ impl AppState {
             diff_cache: None,
             entries_list_state: ListState::default().with_selected(Some(0)),
             traces_list_state: ListState::default().with_selected(Some(0)),
+            entries_rect: Rect::default(),
+            traces_rect: Rect::default(),
+            diff_rect: Rect::default(),
         }
     }
 
@@ -217,52 +227,166 @@ fn handle_key(
     }
 }
 
+fn move_entry_down(state: &mut AppState, traces: &[LoadedTrace]) {
+    let entry_count = traces
+        .get(state.trace_index)
+        .map(|trace| trace.entries.len())
+        .unwrap_or(0);
+    let current = state.entry_index();
+    if current + 1 < entry_count {
+        state.set_entry_index(current + 1);
+        state.diff_scroll = 0;
+    }
+}
+
+fn move_entry_up(state: &mut AppState) {
+    let current = state.entry_index();
+    if current > 0 {
+        state.set_entry_index(current - 1);
+        state.diff_scroll = 0;
+    }
+}
+
+fn move_trace_down(state: &mut AppState, traces: &[LoadedTrace]) {
+    if state.trace_index + 1 < traces.len() {
+        state.trace_index += 1;
+        state.traces_list_state.select(Some(state.trace_index));
+        state.diff_scroll = 0;
+    }
+}
+
+fn move_trace_up(state: &mut AppState) {
+    if state.trace_index > 0 {
+        state.trace_index -= 1;
+        state.traces_list_state.select(Some(state.trace_index));
+        state.diff_scroll = 0;
+    }
+}
+
 fn move_down(state: &mut AppState, traces: &[LoadedTrace]) {
     match state.focus {
-        Focus::Traces => {
-            if state.trace_index + 1 < traces.len() {
-                state.trace_index += 1;
-                state.traces_list_state.select(Some(state.trace_index));
-                state.diff_scroll = 0;
-            }
-        }
-        Focus::Entries => {
-            let entry_count = traces
-                .get(state.trace_index)
-                .map(|trace| trace.entries.len())
-                .unwrap_or(0);
-            let current = state.entry_index();
-            if current + 1 < entry_count {
-                state.set_entry_index(current + 1);
-                state.diff_scroll = 0;
-            }
-        }
+        Focus::Traces => move_trace_down(state, traces),
+        Focus::Entries => move_entry_down(state, traces),
         Focus::Diff => {}
     }
 }
 
 fn move_up(state: &mut AppState, _traces: &[LoadedTrace]) {
     match state.focus {
-        Focus::Traces => {
-            if state.trace_index > 0 {
-                state.trace_index -= 1;
-                state.traces_list_state.select(Some(state.trace_index));
-                state.diff_scroll = 0;
-            }
-        }
-        Focus::Entries => {
-            let current = state.entry_index();
-            if current > 0 {
-                state.set_entry_index(current - 1);
-                state.diff_scroll = 0;
-            }
-        }
+        Focus::Traces => move_trace_up(state),
+        Focus::Entries => move_entry_up(state),
         Focus::Diff => {}
     }
 }
 
 fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -> usize {
     detail_row_count.saturating_sub(detail_height.max(1))
+}
+
+fn pane_at(state: &AppState, col: u16, row: u16) -> Option<Focus> {
+    let pos = Position::new(col, row);
+    if state.entries_rect.contains(pos) {
+        Some(Focus::Entries)
+    } else if state.traces_rect.contains(pos) {
+        Some(Focus::Traces)
+    } else if state.diff_rect.contains(pos) {
+        Some(Focus::Diff)
+    } else {
+        None
+    }
+}
+
+fn handle_mouse(
+    state: &mut AppState,
+    traces: &[LoadedTrace],
+    mouse: MouseEvent,
+    detail_row_count: usize,
+    detail_height: usize,
+) -> AppCommand {
+    let target = match pane_at(state, mouse.column, mouse.row) {
+        Some(pane) => pane,
+        None => return AppCommand::Continue,
+    };
+
+    match mouse.kind {
+        MouseEventKind::ScrollDown => {
+            handle_mouse_scroll_down(state, traces, target, detail_row_count, detail_height)
+        }
+        MouseEventKind::ScrollUp => handle_mouse_scroll_up(state, target),
+        MouseEventKind::Down(MouseButton::Left) => {
+            handle_mouse_click(state, traces, target, mouse.row)
+        }
+        _ => AppCommand::Continue,
+    }
+}
+
+fn handle_mouse_scroll_down(
+    state: &mut AppState,
+    traces: &[LoadedTrace],
+    target: Focus,
+    detail_row_count: usize,
+    detail_height: usize,
+) -> AppCommand {
+    match target {
+        Focus::Entries => move_entry_down(state, traces),
+        Focus::Traces => move_trace_down(state, traces),
+        Focus::Diff => {
+            let max_scroll = max_detail_scroll(detail_row_count, detail_height);
+            state.diff_scroll = (state.diff_scroll + DIFF_SCROLL_STEP).min(max_scroll);
+        }
+    }
+    AppCommand::Continue
+}
+
+fn handle_mouse_scroll_up(state: &mut AppState, target: Focus) -> AppCommand {
+    match target {
+        Focus::Entries => move_entry_up(state),
+        Focus::Traces => move_trace_up(state),
+        Focus::Diff => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP);
+        }
+    }
+    AppCommand::Continue
+}
+
+fn handle_mouse_click(
+    state: &mut AppState,
+    traces: &[LoadedTrace],
+    target: Focus,
+    row: u16,
+) -> AppCommand {
+    state.focus = target;
+
+    match target {
+        Focus::Entries => {
+            let rect = state.entries_rect;
+            let content_y = row.saturating_sub(rect.y).saturating_sub(1) as usize;
+            let scroll_offset = state.entries_list_state.offset();
+            let clicked = scroll_offset + content_y;
+            let entry_count = traces
+                .get(state.trace_index)
+                .map(|t| t.entries.len())
+                .unwrap_or(0);
+            if clicked < entry_count {
+                state.set_entry_index(clicked);
+                state.diff_scroll = 0;
+            }
+        }
+        Focus::Traces => {
+            let rect = state.traces_rect;
+            let content_y = row.saturating_sub(rect.y).saturating_sub(1) as usize;
+            let scroll_offset = state.traces_list_state.offset();
+            let clicked = scroll_offset + content_y;
+            if clicked < traces.len() {
+                state.trace_index = clicked;
+                state.traces_list_state.select(Some(clicked));
+                state.diff_scroll = 0;
+            }
+        }
+        Focus::Diff => {}
+    }
+
+    AppCommand::Continue
 }
 
 fn app_command_for_event(
@@ -276,6 +400,7 @@ fn app_command_for_event(
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             handle_key(state, traces, key.code, detail_row_count, detail_height)
         }
+        Event::Mouse(mouse) => handle_mouse(state, traces, mouse, detail_row_count, detail_height),
         _ => AppCommand::Continue,
     }
 }
@@ -465,36 +590,6 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str, theme: &Theme) -> Result<(),
     }
 
     Ok(())
-}
-
-struct TerminalSession;
-
-impl TerminalSession {
-    fn enter<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<Self, String> {
-        crossterm::terminal::enable_raw_mode()
-            .map_err(|err| format!("Failed to enable raw mode: {err}"))?;
-        crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::cursor::Hide
-        )
-        .map_err(|err| format!("Failed to enter screen: {err}"))?;
-        terminal
-            .clear()
-            .map_err(|err| format!("Failed to clear screen: {err}"))?;
-        Ok(Self)
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::cursor::Show
-        );
-    }
 }
 
 fn diff_cache_matches_selection_and_width(
@@ -705,6 +800,10 @@ fn draw(
         return;
     }
 
+    state.entries_rect = sidebar[0];
+    state.traces_rect = sidebar[1];
+    state.diff_rect = body[1];
+
     let active_trace = &traces[state.trace_index];
 
     render_entries_pane(frame, sidebar[0], active_trace, state, theme);
@@ -715,7 +814,7 @@ fn draw(
 
 fn help_bar(theme: &Theme) -> Paragraph<'static> {
     Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
-        .style(Style::default().fg(rgb_to_color(theme.muted)))
+    .style(Style::default().fg(rgb_to_color(theme.muted)))
 }
 
 fn entry_icon(ok: bool) -> (&'static str, Color) {
@@ -2109,5 +2208,198 @@ mod tests {
             Some(rgb_to_color(theme.border_active))
         );
         assert!(lines[2].to_string().ends_with('╯'));
+    }
+
+    fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    fn state_with_rects(traces: &[LoadedTrace]) -> AppState {
+        let mut state = AppState::new(traces.len());
+        state.entries_rect = Rect::new(0, 0, 30, 10);
+        state.traces_rect = Rect::new(0, 10, 30, 10);
+        state.diff_rect = Rect::new(30, 0, 90, 20);
+        state
+    }
+
+    #[test]
+    fn pane_at_returns_correct_focus() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let state = state_with_rects(&traces);
+
+        assert_eq!(pane_at(&state, 5, 3), Some(Focus::Entries));
+        assert_eq!(pane_at(&state, 5, 15), Some(Focus::Traces));
+        assert_eq!(pane_at(&state, 50, 5), Some(Focus::Diff));
+        assert_eq!(pane_at(&state, 200, 200), None);
+    }
+
+    #[test]
+    fn scroll_down_on_entries_pane_moves_entry_selection() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 3, "a"),
+            entries: vec![edit_entry(), edit_entry(), edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.focus = Focus::Diff;
+        assert_eq!(state.entry_index(), 0);
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 3);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.entry_index(), 1);
+        assert_eq!(state.focus, Focus::Diff);
+    }
+
+    #[test]
+    fn scroll_up_on_entries_pane_moves_entry_selection() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 3, "a"),
+            entries: vec![edit_entry(), edit_entry(), edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.set_entry_index(2);
+
+        let mouse = make_mouse(MouseEventKind::ScrollUp, 5, 3);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.entry_index(), 1);
+    }
+
+    #[test]
+    fn scroll_down_on_traces_pane_moves_trace_selection() {
+        let traces = vec![
+            LoadedTrace {
+                trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+                entries: vec![edit_entry()],
+            },
+            LoadedTrace {
+                trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
+                entries: vec![edit_entry()],
+            },
+        ];
+        let mut state = state_with_rects(&traces);
+        assert_eq!(state.trace_index, 0);
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 15);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.trace_index, 1);
+    }
+
+    #[test]
+    fn scroll_on_diff_pane_scrolls_diff() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.diff_scroll = 0;
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 50, 5);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.diff_scroll, DIFF_SCROLL_STEP);
+
+        let mouse = make_mouse(MouseEventKind::ScrollUp, 50, 5);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.diff_scroll, 0);
+    }
+
+    #[test]
+    fn scroll_at_bounds_is_noop() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        assert_eq!(state.entry_index(), 0);
+
+        let mouse = make_mouse(MouseEventKind::ScrollUp, 5, 3);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.entry_index(), 0);
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 3);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.entry_index(), 0);
+    }
+
+    #[test]
+    fn click_focuses_pane() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.focus = Focus::Entries;
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 5);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.focus, Focus::Diff);
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 15);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.focus, Focus::Traces);
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 3);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.focus, Focus::Entries);
+    }
+
+    #[test]
+    fn click_on_entry_selects_it() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 3, "a"),
+            entries: vec![edit_entry(), edit_entry(), edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        assert_eq!(state.entry_index(), 0);
+
+        // Click on row 2 inside entries pane (rect starts at y=0, +1 border = row 1 is first item).
+        // Row 3 = content_y 2 = item index 2.
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 3);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.entry_index(), 2);
+        assert_eq!(state.focus, Focus::Entries);
+    }
+
+    #[test]
+    fn click_on_trace_selects_it() {
+        let traces = vec![
+            LoadedTrace {
+                trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+                entries: vec![edit_entry()],
+            },
+            LoadedTrace {
+                trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
+                entries: vec![edit_entry()],
+            },
+        ];
+        let mut state = state_with_rects(&traces);
+        assert_eq!(state.trace_index, 0);
+
+        // Click on row 12 inside traces pane (rect starts at y=10, +1 border = row 11 is first item).
+        // Row 12 = content_y 1 = item index 1.
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 12);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.trace_index, 1);
+        assert_eq!(state.focus, Focus::Traces);
+    }
+
+    #[test]
+    fn click_outside_panes_is_noop() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.focus = Focus::Entries;
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+        assert_eq!(state.focus, Focus::Entries);
     }
 }

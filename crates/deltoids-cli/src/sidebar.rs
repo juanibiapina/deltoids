@@ -943,7 +943,7 @@ impl Sidebar {
         self.set_selected(target, viewport);
     }
 
-    fn set_selected(&mut self, target: usize, viewport: usize) {
+    pub fn set_selected(&mut self, target: usize, viewport: usize) {
         if target == self.selected {
             return;
         }

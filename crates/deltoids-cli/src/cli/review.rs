@@ -36,14 +36,16 @@
 //! popup itself is the source of truth for key bindings (see
 //! [`HELP_KEYS`]).
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 use clap::Args as ClapArgs;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Clear, Paragraph};
@@ -59,6 +61,7 @@ use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
+use crate::terminal::TerminalSession;
 
 const OVERVIEW: &str = r#"Read a unified diff on stdin and open it in a scrollable TUI.
 
@@ -299,6 +302,9 @@ struct ViewState {
     /// Whether the help popup is currently shown. While true, key
     /// dispatch is intercepted by the popup's own handler.
     help_visible: bool,
+    /// Last-drawn pane rects, used for mouse hit-testing.
+    sidebar_rect: Rect,
+    diff_rect: Rect,
 }
 
 impl ViewState {
@@ -312,6 +318,8 @@ impl ViewState {
             sidebar,
             focus: Focus::Sidebar,
             help_visible: false,
+            sidebar_rect: Rect::default(),
+            diff_rect: Rect::default(),
         }
     }
 
@@ -528,6 +536,72 @@ fn handle_key_help(state: &mut ViewState, key: KeyCode) -> AppCommand {
     AppCommand::Continue
 }
 
+fn pane_at(state: &ViewState, col: u16, row: u16) -> Option<Focus> {
+    let pos = Position::new(col, row);
+    if state.sidebar_rect.contains(pos) {
+        Some(Focus::Sidebar)
+    } else if state.diff_rect.contains(pos) {
+        Some(Focus::Diff)
+    } else {
+        None
+    }
+}
+
+fn handle_mouse(
+    state: &mut ViewState,
+    mouse: MouseEvent,
+    diff_viewport: usize,
+    sidebar_viewport: usize,
+) -> AppCommand {
+    if state.help_visible {
+        return AppCommand::Continue;
+    }
+
+    let target = match pane_at(state, mouse.column, mouse.row) {
+        Some(pane) => pane,
+        None => return AppCommand::Continue,
+    };
+
+    match mouse.kind {
+        MouseEventKind::ScrollDown => match target {
+            Focus::Sidebar => {
+                state.sidebar.move_down(sidebar_viewport);
+                state.snap_diff_to_selected_file(diff_viewport);
+                AppCommand::Continue
+            }
+            Focus::Diff => {
+                state.scroll_diff_by(SCROLL_STEP_SMALL as isize, diff_viewport);
+                AppCommand::Continue
+            }
+        },
+        MouseEventKind::ScrollUp => match target {
+            Focus::Sidebar => {
+                state.sidebar.move_up(sidebar_viewport);
+                state.snap_diff_to_selected_file(diff_viewport);
+                AppCommand::Continue
+            }
+            Focus::Diff => {
+                state.scroll_diff_by(-(SCROLL_STEP_SMALL as isize), diff_viewport);
+                AppCommand::Continue
+            }
+        },
+        MouseEventKind::Down(MouseButton::Left) => {
+            state.focus = target;
+            if target == Focus::Sidebar {
+                let rect = state.sidebar_rect;
+                let content_y = mouse.row.saturating_sub(rect.y).saturating_sub(1) as usize;
+                let clicked = state.sidebar.scroll() + content_y;
+                if clicked < state.sidebar.row_count() {
+                    state.sidebar.set_selected(clicked, sidebar_viewport);
+                    state.snap_diff_to_selected_file(diff_viewport);
+                }
+            }
+            AppCommand::Continue
+        }
+        _ => AppCommand::Continue,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TUI loop
 // ---------------------------------------------------------------------------
@@ -644,6 +718,7 @@ fn read_event(
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             Ok(handle_key(state, key.code, diff_viewport, sidebar_viewport))
         }
+        Event::Mouse(mouse) => Ok(handle_mouse(state, mouse, diff_viewport, sidebar_viewport)),
         Event::Resize(_, _) => Ok(AppCommand::Continue),
         _ => Ok(AppCommand::Continue),
     }
@@ -658,9 +733,13 @@ fn draw(frame: &mut ratatui::Frame<'_>, state: &mut ViewState, theme: &Theme) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(sw), Constraint::Min(10)])
             .split(area);
+        state.sidebar_rect = cols[0];
+        state.diff_rect = cols[1];
         draw_sidebar(frame, cols[0], state, theme);
         draw_diff(frame, cols[1], state, theme);
     } else {
+        state.sidebar_rect = Rect::default();
+        state.diff_rect = area;
         draw_diff(frame, area, state, theme);
     }
 
@@ -863,38 +942,6 @@ fn diff_footer(state: &ViewState) -> Option<String> {
         + 1;
     Some(format!(" line {pos} of {span}  \u{00b7}  ? help "))
 }
-
-struct TerminalSession;
-
-impl TerminalSession {
-    fn enter<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<Self, String> {
-        crossterm::terminal::enable_raw_mode()
-            .map_err(|err| format!("failed to enable raw mode: {err}"))?;
-        crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::cursor::Hide
-        )
-        .map_err(|err| format!("failed to enter screen: {err}"))?;
-        terminal
-            .clear()
-            .map_err(|err| format!("failed to clear screen: {err}"))?;
-        Ok(Self)
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::cursor::Show
-        );
-        let _ = io::stdout().flush();
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1408,5 +1455,175 @@ mod tests {
         assert_eq!(sidebar_width(200), DEFAULT_SIDEBAR_WIDTH);
         // Narrower terminal → capped at third.
         assert_eq!(sidebar_width(90), 30);
+    }
+
+    fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    fn make_state_with_rects(files: &[ResolvedFile<'_>]) -> ViewState {
+        let mut state = make_state(files);
+        state.sidebar_rect = Rect::new(0, 0, 38, 20);
+        state.diff_rect = Rect::new(38, 0, 82, 20);
+        state
+    }
+
+    #[test]
+    fn pane_at_returns_correct_focus_review() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let state = make_state_with_rects(&resolved);
+
+        assert_eq!(pane_at(&state, 5, 5), Some(Focus::Sidebar));
+        assert_eq!(pane_at(&state, 50, 5), Some(Focus::Diff));
+        assert_eq!(pane_at(&state, 200, 200), None);
+    }
+
+    #[test]
+    fn scroll_down_on_sidebar_moves_selection() {
+        let a = file_diff("a.txt");
+        let b = file_diff("b.txt");
+        let resolved = vec![
+            ResolvedFile {
+                file: &a,
+                before: "a1\n".to_string(),
+                after: "a2\n".to_string(),
+            },
+            ResolvedFile {
+                file: &b,
+                before: "b1\n".to_string(),
+                after: "b2\n".to_string(),
+            },
+        ];
+        let mut state = make_state_with_rects(&resolved);
+        let initial = state.sidebar.selected();
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert!(state.sidebar.selected() > initial);
+    }
+
+    #[test]
+    fn scroll_on_diff_scrolls_content() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
+            after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
+        }];
+        let mut state = make_state_with_rects(&resolved);
+        state.focus = Focus::Diff;
+        let before = state.diff_scroll;
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 50, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert!(state.diff_scroll > before);
+
+        let after_down = state.diff_scroll;
+        let mouse = make_mouse(MouseEventKind::ScrollUp, 50, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert!(state.diff_scroll < after_down);
+    }
+
+    #[test]
+    fn click_focuses_pane_review() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state_with_rects(&resolved);
+        assert_eq!(state.focus, Focus::Sidebar);
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(state.focus, Focus::Diff);
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn click_on_sidebar_selects_row() {
+        let a = file_diff("a.txt");
+        let b = file_diff("b.txt");
+        let resolved = vec![
+            ResolvedFile {
+                file: &a,
+                before: "a1\n".to_string(),
+                after: "a2\n".to_string(),
+            },
+            ResolvedFile {
+                file: &b,
+                before: "b1\n".to_string(),
+                after: "b2\n".to_string(),
+            },
+        ];
+        let mut state = make_state_with_rects(&resolved);
+        let row_count = state.sidebar.row_count();
+        assert!(row_count >= 2, "need at least 2 rows for this test");
+
+        // Sidebar rect starts at y=0, so row 1 = border,
+        // row 2 = second content row (index 1). Click on the last row.
+        let target_row = row_count - 1;
+        let mouse_y = 1 + target_row as u16; // +1 for top border
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, mouse_y);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(state.sidebar.selected(), target_row,);
+        assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn mouse_swallowed_while_help_visible() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
+            after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
+        }];
+        let mut state = make_state_with_rects(&resolved);
+        state.focus = Focus::Diff;
+        state.help_visible = true;
+        let scroll_before = state.diff_scroll;
+        let focus_before = state.focus;
+
+        let mouse = make_mouse(MouseEventKind::ScrollDown, 50, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(
+            state.diff_scroll, scroll_before,
+            "scroll should not change while help visible"
+        );
+        assert_eq!(
+            state.focus, focus_before,
+            "focus should not change while help visible"
+        );
+        assert!(state.help_visible, "help should stay visible");
+    }
+
+    #[test]
+    fn click_outside_panes_is_noop_review() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state_with_rects(&resolved);
+        state.focus = Focus::Sidebar;
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(state.focus, Focus::Sidebar);
     }
 }

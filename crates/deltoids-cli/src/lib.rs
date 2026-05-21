@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod hashline;
 pub mod sidebar;
+pub mod terminal;
 pub mod trace_store;
 pub mod tui;
 

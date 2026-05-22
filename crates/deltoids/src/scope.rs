@@ -2662,10 +2662,7 @@ export class MyModule {}
 ";
 
         let diff = Diff::compute(original, updated, "test.ts");
-        assert!(
-            !diff.text().is_empty(),
-            "engine should detect a diff"
-        );
+        assert!(!diff.text().is_empty(), "engine should detect a diff");
         let hunks = diff.hunks();
         assert_eq!(
             hunks.len(),

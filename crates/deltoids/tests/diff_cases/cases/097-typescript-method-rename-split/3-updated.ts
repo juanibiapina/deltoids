@@ -1,0 +1,49 @@
+class ItemService {
+  constructor(
+    private readonly db: Database,
+    private readonly logger: Logger
+  ) {}
+
+  private async fetchById(id: string): Promise<ItemResult> {
+    const where = isUuid(id)
+      ? { id }
+      : { externalId: id };
+
+    const res = await fromPromise(
+      this.db.item.findFirst({
+        where,
+        include: {
+          details: true,
+        },
+      }),
+      toError(DbError)
+    );
+
+    if (res.isErr()) {
+      return err(res.error);
+    }
+
+    if (!res.value) {
+      return err(NotFoundError(`Item ${id} not found`));
+    }
+
+    return ok(toItem(res.value));
+  }
+
+  async getById(id: string): Promise<ItemResult> {
+    const result = await this.fetchById(id);
+
+    if (result.isErr()) {
+      return result;
+    }
+
+    const flags = await this.features.resolve(id);
+
+    return ok({ ...result.value, flags });
+  }
+
+  async getAll(): Promise<ItemResults> {
+    const items = await this.db.item.findMany();
+    return ok(items).map((xs) => xs.map(toItem));
+  }
+}

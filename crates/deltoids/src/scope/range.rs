@@ -446,16 +446,36 @@ fn old_replace_context_range(
 /// the diff, i.e. the OLD scope's start and end lines map through the diff
 /// to the NEW scope's start and end lines. Robust against earlier edits
 /// that shifted line numbers, unlike absolute position equality.
+///
+/// When a method is renamed, the diff algorithm can match its closing brace
+/// to a different `}` occurrence later in the new file (e.g. the end of a
+/// newly added wrapper method). This makes the strict end-line check fail
+/// even though the scopes occupy the same position. A fallback checks
+/// whether the start maps correctly AND an interior body line maps inside
+/// the new scope, which is sufficient to identify a renamed method.
 pub(super) fn same_slot(old_scope: &ScopeNode, new_scope: &ScopeNode, ops: &[DiffOp]) -> bool {
     let (old_start, old_end, _) = scope_bounds(old_scope);
     let (new_start, new_end, _) = scope_bounds(new_scope);
     let Some(mapped_start) = align_old_to_new(old_start, ops) else {
         return false;
     };
-    let Some(mapped_end) = align_old_to_new(old_end, ops) else {
-        return false;
-    };
-    mapped_start == new_start && mapped_end == new_end
+    // Primary: both bounds map exactly.
+    if let Some(mapped_end) = align_old_to_new(old_end, ops)
+        && mapped_start == new_start
+        && mapped_end == new_end
+    {
+        return true;
+    }
+    // Fallback: start maps correctly and an interior body line maps inside
+    // the new scope. Catches renames where the closing brace was matched to
+    // a wrong occurrence.
+    if mapped_start == new_start
+        && old_end > old_start + 1
+        && let Some(mapped_interior) = align_old_to_new(old_start + 1, ops)
+    {
+        return mapped_interior > new_start && mapped_interior <= new_end;
+    }
+    false
 }
 
 fn new_replace_scope_range(

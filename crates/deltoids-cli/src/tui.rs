@@ -814,7 +814,7 @@ fn draw(
 
 fn help_bar(theme: &Theme) -> Paragraph<'static> {
     Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
-    .style(Style::default().fg(rgb_to_color(theme.muted)))
+        .style(Style::default().fg(rgb_to_color(theme.muted)))
 }
 
 fn entry_icon(ok: bool) -> (&'static str, Color) {

@@ -127,7 +127,7 @@ impl ParsedFile {
                     || kind_is_call_promoted)
                     && self.is_nested_in_function(n));
             if include {
-                let start_line = decorator_adjusted_start(n) + 1;
+                let start_line = leading_adjusted_start(n, self.leading_comment_kinds) + 1;
                 let end_line = node_end_line(n);
                 let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
                 let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
@@ -403,16 +403,15 @@ fn is_string_literal_kind(kind: &str) -> bool {
     )
 }
 
-/// Walk backward through preceding `decorator` siblings of `node` and
-/// return the earliest start row. When a class or method is decorated,
-/// this extends the scope's start line to cover the decorators so hunks
-/// for changes inside decorator arguments include the full decorator
-/// context.
-fn decorator_adjusted_start(node: Node<'_>) -> usize {
+/// Walk backward through preceding named siblings that are decorators or
+/// leading-comment kinds (doc comments, attributes) and return the earliest
+/// start row. Extends the scope's start line so hunks for changes inside
+/// the function body include the full leading context.
+fn leading_adjusted_start(node: Node<'_>, leading_comment_kinds: &[&str]) -> usize {
     let mut start = node.start_position().row;
     let mut prev = node.prev_named_sibling();
     while let Some(p) = prev {
-        if p.kind() == "decorator" {
+        if p.kind() == "decorator" || leading_comment_kinds.contains(&p.kind()) {
             start = p.start_position().row;
             prev = p.prev_named_sibling();
         } else {

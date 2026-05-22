@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - diff: Deleting lines inside a class-level decorator (e.g. `@Module({...})`) no longer produces an empty diff.
 - diff: Method renames no longer split across two hunks when a new wrapper method is added nearby.
+- diff: Scope expansion for a function body edit now includes leading doc comments and attributes (`///`, `#[inline]`, etc.) in the hunk context.
 
 ## [0.7.0] - 2026-05-18
 

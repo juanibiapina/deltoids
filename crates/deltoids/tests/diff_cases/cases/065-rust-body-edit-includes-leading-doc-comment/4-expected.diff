@@ -1,0 +1,11 @@
+@@ -5,9 +5,9 @@ [function_item compute]
+ /// Computes the answer.
+ ///
+ /// Returns the ultimate value.
+ #[inline]
+ fn compute() -> i32 {
+-    let x = 1;
++    let x = 10;
+     let y = 2;
+     x + y
+ }

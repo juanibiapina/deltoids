@@ -2623,4 +2623,65 @@ fn target_renamed(
                 .collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn delete_inside_decorator_produces_hunk() {
+        // Bug: deleting lines inside a class decorator (e.g. @Module({...}))
+        // produces no hunk. `skip_decorators` in enclosing_scopes jumps from
+        // the decorator content to the class_declaration, whose line range
+        // doesn't cover the deleted lines. The context range anchors on the
+        // class (far past the delete) and the hunk builder drops the result
+        // as context-only.
+        let original = "\
+@Decorator({
+  items: [
+    SomeModule.forRootAsync({
+      inject: [SomeService],
+      imports: [],
+      inject: [SomeService],
+      useFactory: (cfg) => {
+        return cfg;
+      },
+    }),
+  ],
+})
+export class MyModule {}
+";
+        let updated = "\
+@Decorator({
+  items: [
+    SomeModule.forRootAsync({
+      inject: [SomeService],
+      useFactory: (cfg) => {
+        return cfg;
+      },
+    }),
+  ],
+})
+export class MyModule {}
+";
+
+        let diff = Diff::compute(original, updated, "test.ts");
+        assert!(
+            !diff.text().is_empty(),
+            "engine should detect a diff"
+        );
+        let hunks = diff.hunks();
+        assert_eq!(
+            hunks.len(),
+            1,
+            "delete inside decorator should produce 1 hunk, got 0"
+        );
+        let removed: Vec<&str> = hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Removed)
+            .map(|l| l.content.as_str())
+            .collect();
+        assert!(
+            removed.iter().any(|l| l.contains("imports: []")),
+            "removed lines should include 'imports: []', got {:?}",
+            removed
+        );
+    }
 }

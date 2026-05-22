@@ -127,7 +127,7 @@ impl ParsedFile {
                     || kind_is_call_promoted)
                     && self.is_nested_in_function(n));
             if include {
-                let start_line = n.start_position().row + 1;
+                let start_line = decorator_adjusted_start(n) + 1;
                 let end_line = node_end_line(n);
                 let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
                 let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
@@ -401,6 +401,25 @@ fn is_string_literal_kind(kind: &str) -> bool {
         kind,
         "string" | "template_string" | "interpreted_string_literal" | "raw_string_literal"
     )
+}
+
+/// Walk backward through preceding `decorator` siblings of `node` and
+/// return the earliest start row. When a class or method is decorated,
+/// this extends the scope's start line to cover the decorators so hunks
+/// for changes inside decorator arguments include the full decorator
+/// context.
+fn decorator_adjusted_start(node: Node<'_>) -> usize {
+    let mut start = node.start_position().row;
+    let mut prev = node.prev_named_sibling();
+    while let Some(p) = prev {
+        if p.kind() == "decorator" {
+            start = p.start_position().row;
+            prev = p.prev_named_sibling();
+        } else {
+            break;
+        }
+    }
+    start
 }
 
 /// If `node` (or any of its ancestors) is one of `kinds`, walk forward

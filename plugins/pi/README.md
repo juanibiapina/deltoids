@@ -44,9 +44,9 @@ warm) and the tool surface deterministic.
   `insert_after`, `delete` with `LINEhh` anchors). A stale anchor
   rejects the whole batch with fresh-anchor context. Adds `hashread`
   as a new tool for reading text files with anchors. Pi's built-in
-  `read` is not overridden — it remains the right choice for images,
-  directories, URLs, archives, SQLite, and other non-text content
-  `hashread` cannot handle; prompt guidelines steer the model toward
+  `read` is not overridden — it remains the right choice for skill files
+  (read-only reference you won't edit), images, directories, URLs,
+  archives, SQLite, and other non-text content `hashread` cannot handle;
   `hashread` for text-file reads.
 
 `write` is overridden in both modes (full-file rewrites land in the

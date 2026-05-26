@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- pi plugin: Steer model to use `read` (not `hashread`) for skill files in hash mode.
+
 ## [0.8.0] - 2026-05-22
 
 ### Added

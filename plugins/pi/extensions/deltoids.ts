@@ -614,7 +614,7 @@ export default function (pi: ExtensionAPI) {
         "Read a text file with hashline anchors. **Use this in place of the built-in `read` tool when reading text files** — the `edit` tool in this session requires the `LINEhh` anchors that only `hashread` produces. The built-in `read` is still the right choice for images, directories, URLs, archives, SQLite, and other non-text content. Each line is returned as `LINEhh|TEXT` where `LINEhh` is the anchor token (1-indexed line number plus a 2-character content hash). Copy the `LINEhh` token verbatim into `pos`/`end` fields of `edit` ops. Never include the `|TEXT` body in those fields.",
       promptGuidelines: [
         "Use `hashread`, not the built-in `read`, for any text file — even one-off inspection reads. Reading text with `read` first wastes a turn because the `edit` tool needs `LINEhh` anchors only `hashread` produces.",
-        "The built-in `read` tool remains appropriate for images, directories, URLs, archives, SQLite, and other non-text content `hashread` cannot handle.",
+        "Exception: skill files (SKILL.md and supporting files from the skills directory) are read-only reference material — use the built-in `read` for those since you will never edit them and anchors would be wasted.",
       ],
       label: "hashread",
       parameters: hashReadSchema,
@@ -674,7 +674,7 @@ export default function (pi: ExtensionAPI) {
       renderCall: undefined,
       renderResult: undefined,
       description:
-        "Read a file. **In this session, use `hashread` instead for any text file** — even one-off inspection reads. The `edit` tool requires `LINEhh` anchors only `hashread` produces, so reading text with `read` first forces a re-read through `hashread` before you can edit, wasting a turn. Use this `read` tool only when `hashread` cannot handle the content: images (jpg, png, gif, webp), directories, URLs, archives, SQLite, and other non-text content. Images are sent as attachments.",
+        "Read a file. **In this session, use `hashread` instead for any text file** — even one-off inspection reads. The `edit` tool requires `LINEhh` anchors only `hashread` produces, so reading text with `read` first forces a re-read through `hashread` before you can edit, wasting a turn. Use this `read` tool only when `hashread` cannot handle the content: skill files (read-only reference you won't edit), images (jpg, png, gif, webp), directories, URLs, archives, SQLite, and other non-text content. Images are sent as attachments.",
       promptGuidelines: [
         "Prefer `hashread` over `read` for every text file, including quick peeks. `read` is reserved for non-text content (images, directories, archives, SQLite, etc.).",
       ],

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "deltoids",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "deltoids plugin for Claude Code: record every Write/Edit call as a trace, grouped by Claude session.",
   "owner": {
     "name": "Juan Ibiapina",

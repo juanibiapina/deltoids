@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - pi plugin: Steer model to use `read` (not `hashread`) for skill files in hash mode.
+- diff: Replacing a function body with code containing nested callbacks (arrow functions, call expressions) no longer drops the added lines from the hunk.
 
 ## [0.8.0] - 2026-05-22
 

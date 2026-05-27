@@ -508,6 +508,14 @@ fn first_different_new_scope_start(
             continue;
         }
 
+        // If old_scope's equivalent appears anywhere in the enclosing scope
+        // chain at this line, the line is still inside old_scope. Any scope
+        // here (anonymous callback, call expression, etc.) is a nested
+        // expression — not a separate new scope that deserves its own hunk.
+        if new_scopes.iter().any(|s| same_slot(old_scope, s, ops)) {
+            continue;
+        }
+
         let scope_start = innermost.start_line.saturating_sub(1);
         if scope_start < new_start || scope_start >= new_end {
             continue;

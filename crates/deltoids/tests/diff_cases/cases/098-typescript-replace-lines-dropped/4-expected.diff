@@ -1,0 +1,25 @@
+@@ -1,6 +1,7 @@
+ import { Bot } from "grammy";
+ import type { Env } from "../types";
++import { formatAndSend } from "../telegram/send";
+ 
+ export const createRoute = () => {
+   const router = new Router<{ Bindings: Env }>();
+ 
+
+@@ -10,9 +11,12 @@ [variable_declarator createRoute] [call_expression router.post("/webhook")] [variable_declarator sendReply]
+     const sendReply = async (
+       chatId: number,
+       threadId: number,
+       text: string,
+     ) => {
+-      await bot.api.sendMessage(chatId, text, {
+-        message_thread_id: threadId,
+-      });
++      await formatAndSend(text, (formatted, parseMode) =>
++        bot.api.sendMessage(chatId, formatted, {
++          message_thread_id: threadId,
++          ...(parseMode && { parse_mode: parseMode }),
++        }),
++      );
+     };

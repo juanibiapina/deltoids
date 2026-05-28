@@ -494,14 +494,35 @@ fn new_replace_scope_range(
     let new_scope = scope_at(ctx.new_parsed, scope_line)?;
     let (new_scope_start, new_scope_end, _) = scope_bounds(&new_scope);
 
+    // Anchor-only scopes (anonymous arrow functions, function expressions)
+    // passed as arguments) are not named code structures. When they appear
+    // inside a Replace's new content they are restructured expressions, not
+    // brand-new scopes that deserve their own hunk.
+    if ctx.new_parsed.is_anchor_only(&new_scope) {
+        return None;
+    }
+
     // Same slot: the OLD scope at `old_index` aligns with the NEW scope
     // through the diff. This catches both pure renames and structural
     // conversions (arrow-property -> method) of the same logical member,
     // even when earlier edits in the file shifted line numbers.
-    if let Some(old_scope) = scope_at(ctx.old_parsed, old_index)
-        && same_slot(&old_scope, &new_scope, ops)
-    {
-        return None;
+    if let Some(old_scope) = scope_at(ctx.old_parsed, old_index) {
+        if same_slot(&old_scope, &new_scope, ops) {
+            return None;
+        }
+
+        // If the new scope is nested inside a NEW-tree ancestor that
+        // occupies the same slot as the old scope, it's a child
+        // expression (e.g. a call_expression wrapped inside a
+        // variable_declarator that was rewritten). The old-anchored
+        // range already covers these lines — don't emit a duplicate.
+        let new_ancestors = ctx.new_parsed.enclosing_scopes(scope_line);
+        if new_ancestors
+            .iter()
+            .any(|ancestor| same_slot(&old_scope, ancestor, ops))
+        {
+            return None;
+        }
     }
 
     Some(ContextRange {

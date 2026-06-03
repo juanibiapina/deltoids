@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 use std::io::{self, IsTerminal, Read};
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -825,17 +826,27 @@ fn entry_icon(ok: bool) -> (&'static str, Color) {
     }
 }
 
+fn file_basename(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+
 fn entry_label_line(entry: &HistoryEntry) -> Line<'static> {
-    let (icon, color) = entry_icon(entry.ok);
+    let (icon, icon_color) = entry_icon(entry.ok);
+    let basename = file_basename(&entry.path);
     Line::from(vec![
-        Span::styled(icon.to_string(), Style::default().fg(color)),
-        Span::raw(format!(" {}", entry.reason)),
+        Span::styled(icon.to_string(), Style::default().fg(icon_color)),
+        Span::raw(format!(" {basename} ")),
+        Span::styled(entry.reason.clone(), Style::default().fg(Color::DarkGray)),
     ])
 }
 
 fn entry_label_plain(entry: &HistoryEntry) -> String {
     let (icon, _) = entry_icon(entry.ok);
-    format!("{icon} {}", entry.reason)
+    format!("{icon} {} {}", file_basename(&entry.path), entry.reason)
 }
 
 fn trace_label(summary: &TraceSummary) -> String {
@@ -1687,8 +1698,8 @@ mod tests {
         let theme = test_theme();
         let output = render_scripted(&traces, &state, 140, 30, &theme);
 
-        assert!(output.contains("\u{2713} Update x constant"));
-        assert!(output.contains("\u{2713} Rewrite config"));
+        assert!(output.contains("\u{2713} app.txt"));
+        assert!(output.contains("\u{2713} config.json"));
         assert!(output.contains("01JTESTTRA"));
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
@@ -1773,7 +1784,7 @@ mod tests {
         let theme = test_theme();
         let output = render_scripted(&traces, &state, 140, 30, &theme);
 
-        assert!(output.contains("> \u{2713} Rewrite config"));
+        assert!(output.contains("> \u{2713} config.json"));
         assert!(output.contains("Rewrite config"));
         assert!(output.contains("write • ok • 0 hunks"));
     }

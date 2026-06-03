@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- traces TUI: Entries pane now shows the filename first with a dimmed reason, instead of reason only.
+
 ### Fixed
 
 - diff: Wrapping a function body in a new call expression (e.g. `withDORetry(() => { ... })`) no longer duplicates the added lines in a ghost second hunk.

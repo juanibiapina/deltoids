@@ -129,8 +129,8 @@ fn renders_traces_and_entries_for_current_directory() {
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
     assert!(stdout.contains("[1] Entries 1 of 2"));
     assert!(stdout.contains("[2] Traces 1 of 1"));
-    assert!(stdout.contains("\u{2713} Update x constant"));
-    assert!(stdout.contains("\u{2713} Rewrite config"));
+    assert!(stdout.contains("\u{2713} app.txt"));
+    assert!(stdout.contains("\u{2713} config.json"));
     assert!(stdout.contains(&trace_id[..10]));
     assert!(stdout.contains("app.txt"));
     assert!(stdout.contains("edit • ok • 1 edit • 1 hunk"));
@@ -195,7 +195,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
 
     assert!(tui_output.status.success());
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
-    assert!(stdout.contains("> \u{2713} Rewrite config"));
+    assert!(stdout.contains("> \u{2713} config.json"));
     assert!(stdout.contains("config.json"));
     assert!(stdout.contains("write • ok • 1 hunk"));
     assert!(stdout.contains("\"version\": 2"));

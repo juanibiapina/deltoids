@@ -833,7 +833,6 @@ fn file_basename(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-
 fn entry_label_line(entry: &HistoryEntry) -> Line<'static> {
     let (icon, icon_color) = entry_icon(entry.ok);
     let basename = file_basename(&entry.path);

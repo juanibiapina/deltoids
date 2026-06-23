@@ -2,8 +2,15 @@
 //!
 //! Parses source code for the stable [`Language`] detected by the language
 //! module. Constructed via [`ParsedFile::parse`]; all syntax-level questions
-//! (enclosing scopes, structure-vs-data tier) are answered through methods on
+//! (enclosing scopes, structure membership) are answered through methods on
 //! [`ParsedFile`].
+//!
+//! The ancestor chain (breadcrumb) is built from *boundary* node kinds:
+//! named structures (functions, classes, methods, modules) plus the
+//! promoted / labeled-callback / anchor-only refinements. Every other
+//! ancestor is transparent. Growing a hunk's context outward through
+//! transparent ancestors is [`ParsedFile::expansion_anchor`], which walks
+//! the raw tree-sitter chain rather than this filtered breadcrumb chain.
 
 use tree_sitter::{Node, Parser, Point, Tree};
 
@@ -18,8 +25,6 @@ pub struct ParsedFile {
     source: Vec<u8>,
     /// Node kinds used for the ancestor chain (display breadcrumb).
     structure_kinds: &'static [&'static str],
-    /// Node kinds used as hunk anchors when no structure contains the change.
-    data_kinds: &'static [&'static str],
     /// Wrapper kinds promoted to structure when their `value` field is a
     /// function body.
     promoted_kinds: &'static [&'static str],
@@ -41,6 +46,10 @@ pub struct ParsedFile {
     /// attach to that structure for scope queries. See
     /// [`crate::language::TreeSitterConfig`].
     leading_comment_kinds: &'static [&'static str],
+    /// Whether [`Self::expansion_anchor`] may grow context through
+    /// transparent ancestors. False for prose (Markdown). See
+    /// [`crate::language::TreeSitterConfig`].
+    transparent_expansion: bool,
 }
 
 impl ParsedFile {
@@ -61,56 +70,38 @@ impl ParsedFile {
             tree,
             source: source.as_bytes().to_vec(),
             structure_kinds: entry.structure_kinds,
-            data_kinds: entry.data_kinds,
             promoted_kinds: entry.promoted_kinds,
             function_body_kinds: entry.function_body_kinds,
             anchor_only_kinds: entry.anchor_only_kinds,
             call_promoted_kinds: entry.call_promoted_kinds,
             positional_name_kinds: entry.positional_name_kinds,
             leading_comment_kinds: entry.leading_comment_kinds,
+            transparent_expansion: entry.transparent_expansion,
         })
     }
 
-    /// Return all enclosing scope nodes at the given 0-indexed `line`,
-    /// outermost first. A scope is included when its tree-sitter kind is
-    /// part of the language's structure or data tier, or is a wrapper kind
-    /// that has been promoted because its value is a function body.
-    /// Structures and promoted scopes nested inside another function body
-    /// (local helpers) are excluded.
+    /// Return all enclosing *boundary* scope nodes at the given 0-indexed
+    /// `line`, outermost first — the breadcrumb chain. A scope is included
+    /// when its tree-sitter kind is a named structure, an anchor-only
+    /// callback, or a wrapper kind promoted because its value/argument is
+    /// a function body. Transparent ancestors (assignments, calls,
+    /// argument lists, anonymous data containers) are not included; growing
+    /// context through them is [`Self::expansion_anchor`]. Structures and
+    /// promoted scopes nested inside another function body (local helpers)
+    /// are excluded.
     pub fn enclosing_scopes(&self, line: usize) -> Vec<ScopeNode> {
-        let point = self.point_at_first_non_whitespace(line);
-        let Some(node) = self
-            .tree
-            .root_node()
-            .descendant_for_point_range(point, point)
-        else {
+        let Some(node) = self.resolve_start_node(line) else {
             return Vec::new();
         };
-
-        // Method- and class-level decorators (e.g. `@Cron(...)` above a class
-        // method or `@Injectable()` above a class) appear in the tree as
-        // siblings of the decorated node, not as children. A query at a
-        // decorator line would otherwise walk up through `class_body` straight
-        // to the class, skipping the method the decorator belongs to.
-        //
-        // Doc comments (`///`, JSDoc, `# …` above a `def`, …) and Rust
-        // attributes (`#[derive(…)]`) sit in the same shape: a sibling above
-        // the structure they document, not a child. `skip_leading_comments`
-        // walks past such siblings to the structure they precede so the
-        // breadcrumb resolves to the documented item, not its parent.
-        let node = skip_leading_comments(node, self.leading_comment_kinds);
-        let node = skip_decorators(node);
 
         let mut ancestors = Vec::new();
         let mut current = Some(node);
         while let Some(n) = current {
             let kind_is_structure = self.structure_kinds.contains(&n.kind());
-            let kind_is_data = self.data_kinds.contains(&n.kind());
             let kind_is_promoted = self.promoted_kinds.contains(&n.kind());
             let kind_is_anchor_only = self.anchor_only_kinds.contains(&n.kind());
             let kind_is_call_promoted = self.call_promoted_kinds.contains(&n.kind());
             let include = kind_is_structure
-                || kind_is_data
                 || kind_is_anchor_only
                 || (kind_is_promoted && self.has_function_value(&n))
                 || (kind_is_call_promoted && self.has_function_argument(n));
@@ -163,6 +154,113 @@ impl ParsedFile {
             || self.call_promoted_kinds.contains(&kind)
     }
 
+    /// Resolve the tree-sitter node a scope query starts from for `line`.
+    ///
+    /// Descends to the node at the first non-whitespace column, then skips
+    /// leading comments / attributes and decorators so doc comments,
+    /// attributes, and decorators attach to the structure they document
+    /// rather than its parent. Shared by [`Self::enclosing_scopes`] and
+    /// [`Self::expansion_anchor`].
+    ///
+    // Method- and class-level decorators (e.g. `@Cron(...)` above a class
+    // method or `@Injectable()` above a class) appear in the tree as
+    // siblings of the decorated node, not as children. A query at a
+    // decorator line would otherwise walk up through `class_body` straight
+    // to the class, skipping the method the decorator belongs to.
+    //
+    // Doc comments (`///`, JSDoc, `# …` above a `def`, …) and Rust
+    // attributes (`#[derive(…)]`) sit in the same shape: a sibling above
+    // the structure they document, not a child. `skip_leading_comments`
+    // walks past such siblings to the structure they precede.
+    fn resolve_start_node(&self, line: usize) -> Option<Node<'_>> {
+        let point = self.point_at_first_non_whitespace(line);
+        let node = self
+            .tree
+            .root_node()
+            .descendant_for_point_range(point, point)?;
+        let node = skip_leading_comments(node, self.leading_comment_kinds);
+        Some(skip_decorators(node))
+    }
+
+    /// Pick an expansion anchor for a *contained* change when no enclosing
+    /// structure exists. Grows the hunk outward through transparent
+    /// ancestors (assignments, calls, argument lists, literals —
+    /// kind-agnostic) and stops just below the file root.
+    ///
+    /// Walks the raw tree-sitter ancestor chain from the change start
+    /// (resolved exactly as [`Self::enclosing_scopes`]), excludes the file
+    /// root, and returns the **outermost** ancestor that contains the
+    /// change range `[range_start, range_end)` (0-indexed, end-exclusive)
+    /// and whose span fits within `budget` lines. The anchor must span
+    /// more lines than the change itself; otherwise returns `None` so
+    /// trivial single-line entry nodes (a one-line `array`, a JSON `pair`)
+    /// fall through to the default 3-line context.
+    ///
+    /// The returned [`ScopeNode`] carries the raw node kind and an empty
+    /// name. It is never a structure, so the breadcrumb filter drops it.
+    ///
+    /// No ceiling logic is needed: callers only invoke this when there is
+    /// no enclosing structure, so the only thing above the chain is the
+    /// root, which is already excluded.
+    ///
+    /// Returns `None` for prose languages (Markdown) where transparent
+    /// expansion is disabled: their outermost fitting ancestor is a whole
+    /// heading-delimited section that would swallow unrelated sibling
+    /// blocks, so such changes use 3-line default context instead.
+    pub fn expansion_anchor(
+        &self,
+        range_start: usize,
+        range_end: usize,
+        budget: usize,
+    ) -> Option<ScopeNode> {
+        if !self.transparent_expansion {
+            return None;
+        }
+        let node = self.resolve_start_node(range_start)?;
+        let change_lines = range_end.saturating_sub(range_start).max(1);
+
+        // Raw ancestor chain, innermost first, excluding the file root.
+        // An ancestor is kept only when its own parent exists; the
+        // top-level statement's parent is the root, so it is included,
+        // but the root itself is not.
+        let mut chain: Vec<Node<'_>> = Vec::new();
+        let mut current = Some(node);
+        while let Some(n) = current {
+            if n.parent().is_some() {
+                chain.push(n);
+            }
+            current = n.parent();
+        }
+
+        // Outermost first: the largest spans come first, so the first
+        // ancestor that both contains the change and fits the budget is
+        // the outermost fitting ancestor.
+        let anchor = chain.into_iter().rev().find(|n| {
+            let start = leading_adjusted_start(*n, self.leading_comment_kinds);
+            let end = node_end_line(*n).saturating_sub(1);
+            let lines = end - start + 1;
+            let contains = start <= range_start && end >= range_end.saturating_sub(1);
+            contains && lines <= budget
+        })?;
+
+        let start_line = leading_adjusted_start(anchor, self.leading_comment_kinds) + 1;
+        let end_line = node_end_line(anchor);
+        // Floor: the anchor must add context beyond the change itself.
+        if end_line.saturating_sub(start_line) < change_lines {
+            return None;
+        }
+        let text = self
+            .source_line_raw(anchor.start_position().row)
+            .unwrap_or_default();
+        Some(ScopeNode {
+            kind: anchor.kind().to_string(),
+            name: String::new(),
+            start_line,
+            end_line,
+            text,
+        })
+    }
+
     /// True when `scope`'s kind is anchor-only — a hunk-anchor that must
     /// not appear in the breadcrumb. Anonymous callbacks (arrow functions,
     /// function expressions passed inline) carry their identity in the
@@ -170,12 +268,6 @@ impl ParsedFile {
     /// `[KIND name]` entry would just add noise.
     pub fn is_anchor_only(&self, scope: &ScopeNode) -> bool {
         self.anchor_only_kinds.contains(&scope.kind.as_str())
-    }
-
-    /// True when `scope`'s kind belongs to this language's data tier
-    /// (anonymous containers like JS objects/arrays or YAML mappings).
-    pub fn is_data(&self, scope: &ScopeNode) -> bool {
-        self.data_kinds.contains(&scope.kind.as_str())
     }
 
     /// True when `node`'s `value` field holds a function body (arrow
@@ -537,11 +629,10 @@ mod tests {
             .find(|s| s.kind == "function_item")
             .expect("function_item scope");
         assert!(parsed.is_structure(func));
-        assert!(!parsed.is_data(func));
     }
 
     #[test]
-    fn is_data_true_for_object_in_javascript() {
+    fn enclosing_scopes_omits_anonymous_data_containers() {
         let source = "\
 const config = {
     name: \"test\",
@@ -549,14 +640,11 @@ const config = {
 };
 ";
         let parsed = ParsedFile::parse("app.js", source).expect("parse");
-        // line 1 is `    name: "test",` inside the object literal
+        // line 1 is `    name: "test",` inside the object literal. The
+        // object is a transparent container, not a breadcrumb boundary,
+        // so it never appears in the enclosing-scope chain.
         let scopes = parsed.enclosing_scopes(1);
-        let object = scopes
-            .iter()
-            .find(|s| s.kind == "object")
-            .expect("object scope");
-        assert!(parsed.is_data(object));
-        assert!(!parsed.is_structure(object));
+        assert!(scopes.iter().all(|s| s.kind != "object"));
     }
 
     #[test]
@@ -577,6 +665,101 @@ impl Foo {
         let names: Vec<&str> = scopes.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(kinds, vec!["impl_item", "function_item"]);
         assert_eq!(names, vec!["Foo", "compute"]);
+    }
+
+    #[test]
+    fn expansion_anchor_grows_to_whole_wrapped_statement() {
+        let source = "\
+const proxy = createProxy(
+  [\"A\", \"B\"],
+  [\"C\"],
+);
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // change on line 2 (the `[\"C\"]` argument), end-exclusive 3
+        let anchor = parsed.expansion_anchor(2, 3, 200).expect("anchor");
+        assert_eq!(anchor.kind, "lexical_declaration");
+        assert_eq!(anchor.name, "");
+        assert_eq!(anchor.start_line, 1);
+        assert_eq!(anchor.end_line, 4);
+    }
+
+    #[test]
+    fn expansion_anchor_excludes_root_and_picks_outermost_statement() {
+        let source = "\
+const a = 1;
+const proxy = createProxy(
+  [\"A\"],
+  [\"C\"],
+);
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // change on line 3 (`[\"C\"]`); anchor must be the proxy statement,
+        // never the program root that also spans `const a = 1;`.
+        let anchor = parsed.expansion_anchor(3, 4, 200).expect("anchor");
+        assert_eq!(anchor.kind, "lexical_declaration");
+        assert_eq!(anchor.start_line, 2);
+        assert_eq!(anchor.end_line, 5);
+    }
+
+    #[test]
+    fn expansion_anchor_floor_rejects_single_line_statement() {
+        let source = "const x = 1;\nconst y = 2;\n";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // a 1-line statement is not bigger than the 1-line change
+        assert!(parsed.expansion_anchor(0, 1, 200).is_none());
+    }
+
+    #[test]
+    fn expansion_anchor_returns_none_when_only_too_large_container_exists() {
+        let mut source = String::from("const proxy = createProxy(\n");
+        for i in 0..220 {
+            source.push_str(&format!("  [\"K{i}\"],\n"));
+        }
+        source.push_str(");\n");
+        let parsed = ParsedFile::parse("app.ts", &source).expect("parse");
+        // the statement is > 200 lines; the only smaller fitting ancestor
+        // is a 1-line array == change size, rejected by the floor
+        assert!(parsed.expansion_anchor(50, 51, 200).is_none());
+    }
+
+    #[test]
+    fn expansion_anchor_includes_leading_comment_in_start() {
+        let source = "\
+// explain proxy
+const proxy = createProxy(
+  [\"A\"],
+  [\"C\"],
+);
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // change on line 3 (`[\"C\"]`); the anchor start extends up to the
+        // leading `// explain proxy` comment on line 0.
+        let anchor = parsed.expansion_anchor(3, 4, 200).expect("anchor");
+        assert_eq!(anchor.kind, "lexical_declaration");
+        assert_eq!(anchor.start_line, 1);
+        assert_eq!(anchor.end_line, 5);
+    }
+
+    #[test]
+    fn expansion_anchor_disabled_for_markdown() {
+        let source = "\
+# Title
+
+Intro paragraph.
+
+## Section
+
+- bullet one
+- bullet two
+- bullet three
+";
+        let parsed = ParsedFile::parse("doc.md", source).expect("parse");
+        // `- bullet two` (line 7) is body text with no structure ancestor.
+        // Transparent expansion is off for prose, so no anchor is returned
+        // and the change falls back to default context rather than growing
+        // to the whole section/document.
+        assert!(parsed.expansion_anchor(7, 8, 200).is_none());
     }
 
     #[test]

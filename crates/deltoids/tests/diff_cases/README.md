@@ -125,6 +125,7 @@ Cases are organised loosely by theme via their numeric prefix:
 * `170-179` — Java scope behaviour
 * `180-189` — Bash scope behaviour
 * `190-199` — CSS scope behaviour
+* `200-209` — Markdown scope behaviour
 * `220-229` — TOML scope behaviour
 
 Current cases:
@@ -149,6 +150,9 @@ Current cases:
 | `060-rust-comment-anchor-inside-fn`                 | Doc-comment edit above a fn keeps the fn as ancestor                      |
 | `070-json-property-change`                          | JSON change → no breadcrumb (data-only language)                          |
 | `075-typescript-config-property-change`             | TS config object literal → no breadcrumb                                  |
+| `076-typescript-wrapped-assignment-context`         | Edit on the value line of a wrapped `const x =\n  expr;` expands to the whole statement |
+| `077-typescript-call-arg-object-context`            | Edit inside a multi-line object passed as a call arg expands through the call to the whole statement |
+| `078-typescript-call-arg-array-context`             | Edit to an array arg of `const … = call(…)` expands to the whole statement (no breadcrumb) |
 | `080-typescript-method-modification`                | Class method change → `[class_declaration X] [method_definition Y]`       |
 | `085-typescript-multi-pair-replace`                 | Multi-pair `Replace` stays in a single hunk                               |
 | `090-yaml-property-change`                          | YAML change → no breadcrumb, scope-expanded context                       |
@@ -174,6 +178,8 @@ Current cases:
 | `170-java-javadoc-only-edit-above-method`           | Java `/** */` Javadoc-only edit above a class method anchors on the method |
 | `180-bash-comment-only-edit-above-fn`               | Bash `#` comment-only edit above a function anchors on the function |
 | `190-css-comment-only-edit-above-rule`              | CSS `/* … */` comment-only edit above a rule_set anchors on the rule |
+| `200-markdown-line-edit-default-context`            | Markdown body line edit uses 3-line default context, not the whole document |
+| `201-markdown-paragraph-edit-default-context`       | Markdown paragraph rewrite uses default context, not the whole document |
 | `220-toml-comment-only-edit-above-table`            | TOML `#` comment-only edit above a table anchors on the table |
 | `095-typescript-large-fn-no-hunk-overlap`          | Insert beside object literal in 200+ line fn → no overlapping hunks       |
 | `096-typescript-large-fn-nearby-changes-merge`     | Three replaces in adjacent objects in 200+ line fn → one merged hunk      |

@@ -41,11 +41,6 @@ pub(crate) struct TreeSitterConfig {
     /// Named code structures (functions, classes, modules, tables, headings).
     /// Resolution prefers the innermost structure that contains a change.
     pub(crate) structure_kinds: &'static [&'static str],
-    /// Anonymous data containers (JSON/TS objects and arrays, YAML mappings
-    /// and sequences). Used as a fallback when no structure wraps a change;
-    /// resolution picks the outermost data container that still fits under
-    /// `MAX_SCOPE_LINES`.
-    pub(crate) data_kinds: &'static [&'static str],
     /// Wrapper kinds that should be promoted to a structure when their
     /// `value` field holds a function body.
     pub(crate) promoted_kinds: &'static [&'static str],
@@ -77,6 +72,16 @@ pub(crate) struct TreeSitterConfig {
     /// plus the language's attribute kinds (Rust `attribute_item`).
     /// Mirrors the role `decorator` plays for `skip_decorators`.
     pub(crate) leading_comment_kinds: &'static [&'static str],
+    /// Whether a contained change with no enclosing structure may expand
+    /// outward through transparent ancestors (see
+    /// [`crate::syntax::ParsedFile::expansion_anchor`]). True for code and
+    /// data languages, where the outermost fitting ancestor is a single
+    /// statement or a compact container. False for prose (Markdown), where
+    /// the outermost fitting ancestor is a whole heading-delimited
+    /// `section` that would drag in unrelated sibling blocks; such changes
+    /// fall back to 3-line default context until a Markdown-specific
+    /// section model exists.
+    pub(crate) transparent_expansion: bool,
 }
 
 impl Language {
@@ -178,33 +183,24 @@ impl Language {
                     "trait_item",
                     "mod_item",
                 ],
-                // Multi-line array and struct literals (e.g. `const FOO:
-                // &[...] = &[ ... ];` or `const CFG: Settings = Settings {
-                // ... };`) act as data containers so a change inside them
-                // expands the hunk to cover the whole literal, mirroring
-                // the JSON/TS-config/YAML pattern.
-                data_kinds: &["array_expression", "struct_expression"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_item", "closure_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["line_comment", "block_comment", "attribute_item"],
+                transparent_expansion: true,
             },
             Language::Python => TreeSitterConfig {
                 language: tree_sitter_python::LANGUAGE,
                 structure_kinds: &["function_definition", "class_definition"],
-                // Multi-line dict and list literals (module-level config
-                // dicts, route tables, …) act as data containers so a
-                // change inside them expands the hunk to cover the whole
-                // literal.
-                data_kinds: &["dictionary", "list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::JavaScript => TreeSitterConfig {
                 language: tree_sitter_javascript::LANGUAGE,
@@ -213,7 +209,6 @@ impl Language {
                     "class_declaration",
                     "method_definition",
                 ],
-                data_kinds: &["object", "array"],
                 // JS class fields use the kind `field_definition`. Lexical and
                 // var declarations promote via their inner `variable_declarator`,
                 // which directly carries the `name` and `value` fields.
@@ -247,6 +242,7 @@ impl Language {
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::TypeScript => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -257,7 +253,6 @@ impl Language {
                     "interface_declaration",
                     "type_alias_declaration",
                 ],
-                data_kinds: &["object", "array"],
                 // TS class fields use `public_field_definition`. Lexical
                 // declarations promote via their inner `variable_declarator`.
                 promoted_kinds: &["public_field_definition", "variable_declarator"],
@@ -279,6 +274,7 @@ impl Language {
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Tsx => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -289,7 +285,6 @@ impl Language {
                     "interface_declaration",
                     "type_alias_declaration",
                 ],
-                data_kinds: &["object", "array"],
                 promoted_kinds: &["public_field_definition", "variable_declarator"],
                 function_body_kinds: &[
                     "function_declaration",
@@ -309,6 +304,7 @@ impl Language {
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Go => TreeSitterConfig {
                 language: tree_sitter_go::LANGUAGE,
@@ -317,10 +313,6 @@ impl Language {
                     "method_declaration",
                     "type_declaration",
                 ],
-                // Composite literals (`[]T{ … }`, `map[K]V{ … }`,
-                // `T{ … }`) act as data containers so a change inside a
-                // multi-line literal expands the hunk to cover it.
-                data_kinds: &["composite_literal"],
                 promoted_kinds: &[],
                 function_body_kinds: &[
                     "function_declaration",
@@ -335,15 +327,11 @@ impl Language {
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Ruby => TreeSitterConfig {
                 language: tree_sitter_ruby::LANGUAGE,
                 structure_kinds: &["method", "singleton_method", "class", "module"],
-                // Multi-line hash and array literals (top-level constants,
-                // routes.rb-style tables) act as data containers so a
-                // change inside them expands the hunk to cover the whole
-                // literal.
-                data_kinds: &["hash", "array"],
                 promoted_kinds: &[],
                 function_body_kinds: &["method", "singleton_method", "block", "do_block", "lambda"],
                 // Ruby blocks (`do … end`, `{ … }`) and lambdas are
@@ -354,6 +342,7 @@ impl Language {
                 call_promoted_kinds: &["call"],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Java => TreeSitterConfig {
                 language: tree_sitter_java::LANGUAGE,
@@ -363,7 +352,6 @@ impl Language {
                     "method_declaration",
                     "constructor_declaration",
                 ],
-                data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[
                     "method_declaration",
@@ -374,21 +362,18 @@ impl Language {
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["line_comment", "block_comment"],
+                transparent_expansion: true,
             },
             Language::C => TreeSitterConfig {
                 language: tree_sitter_c::LANGUAGE,
                 structure_kinds: &["function_definition", "struct_specifier"],
-                // Aggregate initializers (`{ … }` for arrays/structs of
-                // tables, device descriptors, command tables) act as data
-                // containers so a change inside a multi-line initializer
-                // expands the hunk to cover it.
-                data_kinds: &["initializer_list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Cpp => TreeSitterConfig {
                 language: tree_sitter_cpp::LANGUAGE,
@@ -397,34 +382,28 @@ impl Language {
                     "class_specifier",
                     "namespace_definition",
                 ],
-                // Same rationale as C: multi-line `{ … }` aggregate
-                // initializers expand the hunk to cover the literal.
-                data_kinds: &["initializer_list"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Bash => TreeSitterConfig {
                 language: tree_sitter_bash::LANGUAGE,
                 structure_kinds: &["function_definition"],
-                data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Lua => TreeSitterConfig {
                 language: tree_sitter_lua::LANGUAGE,
                 structure_kinds: &["function_declaration"],
-                // Multi-line table constructors (Neovim configs, settings
-                // tables, keymaps) act as data containers so a change
-                // inside them expands the hunk to cover the whole table.
-                data_kinds: &["table_constructor"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_declaration", "function_definition"],
                 // Anonymous Lua functions (`function() … end`) are
@@ -436,27 +415,22 @@ impl Language {
                 call_promoted_kinds: &["function_call"],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Css => TreeSitterConfig {
                 language: tree_sitter_css::LANGUAGE,
                 structure_kinds: &["rule_set", "media_statement"],
-                data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Hcl => TreeSitterConfig {
                 language: tree_sitter_hcl::LANGUAGE,
                 structure_kinds: &["block"],
-                // Multi-line `tuple` (`[ … ]`) and `object` (`{ k = v … }`)
-                // literals act as a data-tier fallback when the enclosing
-                // block is too big to expand: a change inside one of
-                // them grows the hunk to cover the literal so the
-                // binding line and surrounding entries stay visible.
-                data_kinds: &["tuple", "object"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
@@ -468,50 +442,57 @@ impl Language {
                 // breadcrumb name from those positional children.
                 positional_name_kinds: &["block"],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Markdown => TreeSitterConfig {
                 language: tree_sitter_md::LANGUAGE,
                 structure_kinds: &["atx_heading", "setext_heading"],
-                data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &[],
+                // Prose: body changes have no structure ancestor, and the
+                // outermost transparent ancestor is a whole heading-
+                // delimited section (often the entire document). Disable
+                // transparent expansion so such changes use 3-line default
+                // context instead of swallowing the file. A dedicated
+                // section model is future work.
+                transparent_expansion: false,
             },
             Language::Toml => TreeSitterConfig {
                 language: tree_sitter_toml_ng::LANGUAGE,
                 structure_kinds: &["table", "table_array_element"],
-                data_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
             },
             Language::Json => TreeSitterConfig {
                 language: tree_sitter_json::LANGUAGE,
                 structure_kinds: &[],
-                data_kinds: &["object", "array"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &[],
+                transparent_expansion: true,
             },
             Language::Yaml => TreeSitterConfig {
                 language: tree_sitter_yaml::LANGUAGE,
                 structure_kinds: &[],
-                data_kinds: &["block_mapping", "block_sequence"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
                 leading_comment_kinds: &[],
+                transparent_expansion: true,
             },
         }
     }

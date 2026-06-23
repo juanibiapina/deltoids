@@ -86,50 +86,35 @@ struct ScopeRangeContext<'a> {
     total_new: usize,
 }
 
-/// Pick the hunk-anchor scope for a range of lines.
+/// Pick the **new-scope-detection** anchor for a range of lines.
 ///
-/// Strategy:
-/// 1. Prefer the innermost *structure* scope (function, class, method,
-///    promoted arrow-field) at the change first line that fits under
-///    `MAX_SCOPE_LINES`. The structure does not need to contain the whole
-///    change range; if the change extends past it (rare, multi-method
-///    edit), the hunk anchors on the structure containing the start.
-///    Critically we never climb past this innermost structure to an outer
-///    scope (e.g. the enclosing class) just because the inner one does
-///    not contain the whole range. Climbing produces hunks that include
-///    unrelated sibling methods, which is misleading.
-/// 2. If step 1 selected no structure (no enclosing structure exists, or
-///    the innermost one exceeds `MAX_SCOPE_LINES`), fall back to the
-///    outermost *data* scope (JSON/YAML/TS object or array) that wraps
-///    the range and fits under `MAX_SCOPE_LINES`.
-/// 3. Otherwise return `None` and let the caller use default 3-line context.
+/// Returns the innermost *structure* scope (function, class, method,
+/// promoted arrow-field, labeled callback) at the change first line that
+/// fits under `MAX_SCOPE_LINES`, or `None`. The structure does not need
+/// to contain the whole change range; if the change extends past it
+/// (rare, multi-method edit), the anchor is the structure containing the
+/// start. We never climb past this innermost structure to an outer scope
+/// (e.g. the enclosing class) just because the inner one does not contain
+/// the whole range: climbing produces hunks that include unrelated
+/// sibling methods.
+///
+/// This answers the *detection* question only ("is there a brand-new
+/// structure here that deserves its own hunk?"). Context *expansion* for
+/// a contained change with no enclosing structure is a separate,
+/// kind-agnostic walk: [`crate::syntax::ParsedFile::expansion_anchor`].
 fn scope_for_range(
     parsed: &crate::syntax::ParsedFile,
     range_start: usize,
-    range_end: usize,
+    _range_end: usize,
 ) -> Option<ScopeNode> {
     let scopes = parsed.enclosing_scopes(range_start);
-    let contains_range = |scope: &ScopeNode| {
-        let (scope_start, scope_end, _) = scope_bounds(scope);
-        scope_start <= range_start && scope_end >= range_end.saturating_sub(1)
-    };
     let fits = |scope: &ScopeNode| scope_bounds(scope).2 <= MAX_SCOPE_LINES;
 
-    // 1. Innermost structure that fits. We do NOT require it to contain
-    //    the whole range and we do NOT climb to outer structures when the
-    //    innermost one does not fit. If the innermost structure exists
-    //    but does not fit, fall through to the data tier (rare for code)
-    //    or to default context.
+    // Innermost structure that fits. We do NOT require it to contain the
+    // whole range and we do NOT climb to outer structures when the
+    // innermost one does not fit.
     if let Some(s) = scopes.iter().rev().find(|s| parsed.is_structure(s))
         && fits(s)
-    {
-        return Some(s.clone());
-    }
-
-    // 2. Outermost data container that contains the range and fits.
-    if let Some(s) = scopes
-        .iter()
-        .find(|s| parsed.is_data(s) && contains_range(s) && fits(s))
     {
         return Some(s.clone());
     }
@@ -137,9 +122,9 @@ fn scope_for_range(
     None
 }
 
-/// Pick the hunk-anchor scope at a single line.
+/// Pick the new-scope-detection anchor at a single line.
 ///
-/// Uses the same structure-first, data-fallback strategy as `scope_for_range`.
+/// Uses the same structure-only strategy as `scope_for_range`.
 fn scope_at(parsed: &crate::syntax::ParsedFile, line: usize) -> Option<ScopeNode> {
     scope_for_range(parsed, line, line + 1)
 }
@@ -252,16 +237,35 @@ fn context_ranges_for_insert(
     }
 
     let scope_line = query_old_line(old_index, ctx.total_old);
-    let inner = innermost_structure_at(ctx.old_parsed, scope_line);
-    let inner_too_large = inner
-        .as_ref()
-        .is_some_and(|s| scope_bounds(s).2 > MAX_SCOPE_LINES);
 
-    if !inner_too_large
-        && let Some(scope) = scope_at(ctx.old_parsed, scope_line)
-        && scope_bounds(&scope).2 <= MAX_SCOPE_LINES
+    // Structure-first, then a kind-agnostic expansion anchor, then the
+    // 3-line default. See [`scope_for_range`] for the strategy rationale.
+    if let Some(ref structure) = innermost_structure_at(ctx.old_parsed, scope_line) {
+        if scope_bounds(structure).2 <= MAX_SCOPE_LINES {
+            let (scope_start, scope_end, _) = scope_bounds(structure);
+            return vec![ContextRange {
+                start: scope_start,
+                end: scope_end,
+                ancestor_source: AncestorSource::Old,
+                scope_line,
+                prevent_merge: false,
+                scope_id: Some((scope_start, scope_end)),
+            }];
+        }
+        return vec![structure_context_range(
+            old_index,
+            old_index,
+            structure,
+            AncestorSource::Old,
+            scope_line,
+        )];
+    }
+
+    if let Some(anchor) =
+        ctx.old_parsed
+            .expansion_anchor(scope_line, scope_line + 1, MAX_SCOPE_LINES)
     {
-        let (scope_start, scope_end, _) = scope_bounds(&scope);
+        let (scope_start, scope_end, _) = scope_bounds(&anchor);
         return vec![ContextRange {
             start: scope_start,
             end: scope_end,
@@ -270,16 +274,6 @@ fn context_ranges_for_insert(
             prevent_merge: false,
             scope_id: Some((scope_start, scope_end)),
         }];
-    }
-
-    if let Some(ref structure) = inner {
-        return vec![structure_context_range(
-            old_index,
-            old_index,
-            structure,
-            AncestorSource::Old,
-            scope_line,
-        )];
     }
 
     let range = default_context_range(
@@ -366,6 +360,19 @@ fn context_ranges_for_delete(
                 AncestorSource::Old,
                 old_start,
             ));
+        } else if let Some(anchor) =
+            ctx.old_parsed
+                .expansion_anchor(old_start, old_end, MAX_SCOPE_LINES)
+        {
+            let (scope_start, scope_end, _) = scope_bounds(&anchor);
+            ranges.push(ContextRange {
+                start: scope_start.min(old_start),
+                end: scope_end.max(old_end.saturating_sub(1)),
+                ancestor_source: AncestorSource::Old,
+                scope_line: old_start,
+                prevent_merge: false,
+                scope_id: Some((scope_start, scope_end)),
+            });
         } else {
             ranges.push(default_context_range(
                 old_start,
@@ -393,26 +400,43 @@ fn old_replace_context_range(
     // context. This keeps adjacent edits inside the same big method in
     // their own merged hunk and prevents accidental merges with
     // neighbouring methods.
-    let inner = innermost_structure_at(ctx.old_parsed, old_start);
-    // When the innermost structure is too large, skip scope_for_range:
-    // step 1 would fail (too big) and step 2 would return a data container
-    // whose scope_id would prevent merging with nearby changes in the same
-    // structure.  Use structure_context_range instead (below).
-    let inner_too_large = inner
-        .as_ref()
-        .is_some_and(|s| scope_bounds(s).2 > MAX_SCOPE_LINES);
+    // Structure-first, then a kind-agnostic expansion anchor, then the
+    // 3-line default. See [`scope_for_range`] for the strategy rationale.
+    if let Some(ref structure) = innermost_structure_at(ctx.old_parsed, old_start) {
+        if scope_bounds(structure).2 <= MAX_SCOPE_LINES {
+            let (scope_start, scope_end, _) = scope_bounds(structure);
+            // Extend the range to cover the change itself when it sits
+            // outside the tree-sitter scope bounds. A method-level
+            // decorator is a sibling of `method_definition`, so a change
+            // on the decorator line is BEFORE `scope.start`. Without this
+            // extension the hunk would have no removed/added lines and
+            // get dropped entirely.
+            return ContextRange {
+                start: scope_start.min(old_start),
+                end: scope_end.max(old_end.saturating_sub(1)),
+                ancestor_source: AncestorSource::Old,
+                scope_line: old_start,
+                prevent_merge: false,
+                scope_id: Some((scope_start, scope_end)),
+            };
+        }
+        // Innermost structure too large: a budget-sized window inside it.
+        return structure_context_range(
+            old_start,
+            old_end.saturating_sub(1),
+            structure,
+            AncestorSource::Old,
+            old_start,
+        );
+    }
 
-    if !inner_too_large
-        && let Some(scope) = scope_for_range(ctx.old_parsed, old_start, old_end)
-        && scope_bounds(&scope).2 <= MAX_SCOPE_LINES
+    // No enclosing structure: grow outward through transparent ancestors
+    // up to the outermost non-root ancestor that fits the budget.
+    if let Some(anchor) = ctx
+        .old_parsed
+        .expansion_anchor(old_start, old_end, MAX_SCOPE_LINES)
     {
-        let (scope_start, scope_end, _) = scope_bounds(&scope);
-        // Extend the range to cover the change itself when it sits
-        // outside the tree-sitter scope bounds. A method-level
-        // decorator is a sibling of `method_definition`, so a change
-        // on the decorator line is BEFORE `scope.start`. Without this
-        // extension the hunk would have no removed/added lines and
-        // get dropped entirely.
+        let (scope_start, scope_end, _) = scope_bounds(&anchor);
         return ContextRange {
             start: scope_start.min(old_start),
             end: scope_end.max(old_end.saturating_sub(1)),
@@ -421,16 +445,6 @@ fn old_replace_context_range(
             prevent_merge: false,
             scope_id: Some((scope_start, scope_end)),
         };
-    }
-
-    if let Some(ref structure) = inner {
-        return structure_context_range(
-            old_start,
-            old_end.saturating_sub(1),
-            structure,
-            AncestorSource::Old,
-            old_start,
-        );
     }
 
     default_context_range(
@@ -646,6 +660,75 @@ mod tests {
         crate::engine::Snapshot::compute(original, updated)
             .ops()
             .to_vec()
+    }
+
+    #[test]
+    fn contained_change_inside_function_anchors_on_function_not_statement() {
+        // A wrapped multi-line call inside a function. The innermost
+        // structure (the function) is the ceiling: expansion must anchor
+        // on the whole function, never grow only to the inner statement.
+        let original = "\
+function outer() {
+  const proxy = createProxy(
+    [\"A\"],
+    [\"C\"],
+  );
+}
+";
+        let updated = "\
+function outer() {
+  const proxy = createProxy(
+    [\"A\"],
+    [\"C\", \"D\"],
+  );
+}
+";
+        let ops = ops_for(original, updated);
+        let old_parsed = crate::syntax::ParsedFile::parse("app.ts", original).unwrap();
+        let new_parsed = crate::syntax::ParsedFile::parse("app.ts", updated).unwrap();
+        let ranges = compute_context_ranges(
+            &ops,
+            &old_parsed,
+            &new_parsed,
+            original.lines().count(),
+            updated.lines().count(),
+        );
+        assert_eq!(ranges.len(), 1);
+        // function outer spans lines 0..=5 (0-indexed).
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].end, 5);
+    }
+
+    #[test]
+    fn contained_change_in_wrapped_statement_anchors_on_whole_statement() {
+        // No enclosing structure: expansion grows through the call and
+        // argument list up to the whole top-level statement.
+        let original = "\
+const proxy = createProxy(
+  [\"A\"],
+  [\"C\"],
+);
+";
+        let updated = "\
+const proxy = createProxy(
+  [\"A\"],
+  [\"C\", \"D\"],
+);
+";
+        let ops = ops_for(original, updated);
+        let old_parsed = crate::syntax::ParsedFile::parse("app.ts", original).unwrap();
+        let new_parsed = crate::syntax::ParsedFile::parse("app.ts", updated).unwrap();
+        let ranges = compute_context_ranges(
+            &ops,
+            &old_parsed,
+            &new_parsed,
+            original.lines().count(),
+            updated.lines().count(),
+        );
+        assert_eq!(ranges.len(), 1);
+        // The whole `const proxy = createProxy( … );` statement: lines 0..=3.
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].end, 3);
     }
 
     #[test]

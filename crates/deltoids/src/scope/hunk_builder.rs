@@ -502,9 +502,10 @@ fn first_different_new_scope_start(
             continue;
         };
 
-        // Data-tier scopes (objects, arrays, JSON pairs) never get their own
-        // hunk, so they must not cut off the enclosing hunk either.
-        if new_parsed.is_data(innermost) {
+        // Only a named structure starts a new hunk. Non-structure nodes
+        // (objects, arrays, bare statements) never get their own hunk, so
+        // they must not cut off the enclosing hunk either.
+        if !new_parsed.is_structure(innermost) {
             continue;
         }
 

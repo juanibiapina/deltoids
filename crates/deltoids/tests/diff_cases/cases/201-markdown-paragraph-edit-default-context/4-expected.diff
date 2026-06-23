@@ -1,0 +1,13 @@
+@@ -4,9 +4,9 @@
+ 
+ ## Overview
+ 
+-This tool reads a diff.
+-It expands context.
+-It renders hunks.
++This tool parses a unified diff.
++It expands scope context.
++It renders enriched hunks.
+ 
+ ## Footer
+ 

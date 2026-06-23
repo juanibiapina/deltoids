@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - traces TUI: Entries pane now shows the filename first with a dimmed reason, instead of reason only.
+- diff: Reworked how hunks grow their surrounding context, fixing a range of edge cases where edits inside wrapped statements, calls, and literals showed too little (or too much) context.
 
 ### Fixed
 

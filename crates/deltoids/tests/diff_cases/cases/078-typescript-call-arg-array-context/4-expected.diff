@@ -1,0 +1,6 @@
+@@ -3,4 +3,4 @@
+ const proxy = createProxy(
+   ["ANTHROPIC_API_KEY", "BRAVE_API_KEY"],
+-  ["GOOGLE_WORKSPACE_CLI_TOKEN"],
++  ["GOOGLE_WORKSPACE_CLI_TOKEN", "GH_TOKEN"],
+ );

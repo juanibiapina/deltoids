@@ -745,7 +745,7 @@ impl Foo {
     fn compute_small_json_with_distant_changes_merges_into_one_hunk() {
         // Small file with changes split across the top and the bottom should
         // merge into a single hunk. The root object (< MAX_SCOPE_LINES) is
-        // the outermost-fit data container for both changes, so they share
+        // the outermost-fit container for both changes, so they share
         // the same anchored range.
         let original = "\
 {
@@ -833,7 +833,7 @@ function getConfig() {
             .any(|a| matches!(a.kind.as_str(), "object" | "array" | "pair"));
         assert!(
             !has_data_kind,
-            "data-tier ancestors should be filtered out, got {:?}",
+            "anonymous containers should be filtered out of the breadcrumb, got {:?}",
             hunks[0].ancestors
         );
     }
@@ -841,8 +841,9 @@ function getConfig() {
     #[test]
     fn compute_ts_top_level_const_object_anchors_on_object() {
         // A change inside a top-level `const x = { ... }` should anchor the
-        // hunk on the object (data-tier outermost-fit), not produce only 3
-        // lines of default context.
+        // hunk on the whole statement (the outermost-fit transparent
+        // ancestor, == the object span here), not produce only 3 lines of
+        // default context.
         let original = "\
 const config = {
   aaa: 1,

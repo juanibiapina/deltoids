@@ -523,11 +523,10 @@ fn reload_traces(
 }
 
 fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str, theme: &Theme) -> Result<(), String> {
-    let stdout = io::stdout();
-    let backend = CrosstermBackend::new(stdout);
+    let _session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("Failed to create screen: {err}"))?;
-    let _session = TerminalSession::enter(&mut terminal)?;
 
     // Watch the trace root directory for changes.
     let (notify_tx, notify_rx) = mpsc::channel();

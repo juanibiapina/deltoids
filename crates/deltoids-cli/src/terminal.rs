@@ -2,12 +2,16 @@
 
 use std::io::{self, Write};
 
-use ratatui::Terminal;
-
 pub struct TerminalSession;
 
 impl TerminalSession {
-    pub fn enter<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<Self, String> {
+    // Do NOT call `terminal.clear()` here. On `ratatui-core >= 0.1.1`,
+    // `Terminal::clear()` snapshots the cursor with an `ESC[6n` query via
+    // `get_cursor_position`. Routed through ratatui's crossterm backend
+    // without `use-dev-tty`, that read busy-spins forever on macOS, hanging
+    // before the first draw. The alternate screen is already blank after
+    // `?1049h`, so the first `terminal.draw` paints everything.
+    pub fn enter() -> Result<Self, String> {
         crossterm::terminal::enable_raw_mode()
             .map_err(|err| format!("failed to enable raw mode: {err}"))?;
         crossterm::execute!(
@@ -17,9 +21,6 @@ impl TerminalSession {
             crossterm::event::EnableMouseCapture
         )
         .map_err(|err| format!("failed to enter screen: {err}"))?;
-        terminal
-            .clear()
-            .map_err(|err| format!("failed to clear screen: {err}"))?;
         Ok(Self)
     }
 }

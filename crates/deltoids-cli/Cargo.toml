@@ -16,6 +16,11 @@ path = "src/lib.rs"
 # EINVAL, crossterm swallows the error, and every later `event::poll`
 # surfaces a generic "Failed to initialize input reader". The flag
 # matters for the `deltoids review` and `deltoids traces` subcommands.
+#
+# Pin to crossterm 0.29 to match ratatui-crossterm's copy so cargo
+# resolves a SINGLE crossterm and feature-unifies `use-dev-tty` onto it.
+# Otherwise our DSR queries (e.g. `get_cursor_position`) route through
+# ratatui's `use-dev-tty`-less 0.29 backend and busy-spin forever on macOS.
 [[bin]]
 name = "deltoids"
 path = "src/bin/deltoids.rs"
@@ -23,7 +28,7 @@ path = "src/bin/deltoids.rs"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
-crossterm = { version = "0.28", features = ["use-dev-tty"] }
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 deltoids = { path = "../deltoids", features = ["blob-resolve", "ratatui"] }
 dirs = "6"
 fs2 = "0.4"

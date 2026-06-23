@@ -616,11 +616,10 @@ fn sidebar_width(terminal_width: u16) -> u16 {
 }
 
 fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<(), String> {
-    let stdout = io::stdout();
-    let backend = CrosstermBackend::new(stdout);
+    let _session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("failed to create screen: {err}"))?;
-    let _session = TerminalSession::enter(&mut terminal)?;
 
     // Build sidebar from the resolved files plus per-file delta counts.
     let sidebar_files: Vec<SidebarFile<'_>> = files

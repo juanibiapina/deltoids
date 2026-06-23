@@ -26,6 +26,8 @@
 //! - `Shift+J`/`Shift+K` — scroll diff three lines, regardless of focus.
 //! - `PgDn`/`PgUp` — page (current focus).
 //! - `g`/`G` / `Home`/`End` — jump to top/bottom (current focus).
+//! - `<`/`>` — narrow/widen the sidebar (any focus). The divider
+//!   between the panes can also be dragged with the mouse.
 //! - `q`/`Esc` — quit.
 //! - `?` — toggle the help popup (lists every binding).
 //!
@@ -38,11 +40,10 @@
 
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use clap::Args as ClapArgs;
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
@@ -60,6 +61,7 @@ use deltoids::{Diff, LineKind, Theme, content, git};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
+use crate::events::read_event_burst;
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
 use crate::terminal::TerminalSession;
 
@@ -90,6 +92,7 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("PgDn / PgUp", "page in current pane"),
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),
+    ("< / >", "narrow / widen sidebar"),
     ("q / Esc", "quit (or close this popup)"),
 ];
 
@@ -100,6 +103,23 @@ const HELP_KEYS: &[(&str, &str)] = &[
 const DEFAULT_SIDEBAR_WIDTH: u16 = 38;
 /// Below this terminal width the sidebar is hidden entirely.
 const MIN_TERMINAL_WIDTH_FOR_SIDEBAR: u16 = 80;
+/// Smallest the sidebar may be shrunk to (outer width, includes borders).
+const MIN_SIDEBAR_WIDTH: u16 = 24;
+/// Smallest the diff pane content may be squeezed to when the sidebar
+/// grows. Bounds how wide the sidebar can get.
+const MIN_DIFF_WIDTH: u16 = 24;
+/// Columns added/removed per `<`/`>` keypress.
+const SIDEBAR_RESIZE_STEP: u16 = 4;
+/// Idle poll timeout for the event loop.
+const POLL_TIMEOUT: Duration = Duration::from_millis(250);
+/// Minimum wall-clock gap between full diff-cache rebuilds. Rebuilding
+/// the whole cache on every resize step stalls the event loop; with
+/// held-key auto-repeat that stall lets a backlog of `<`/`>` presses
+/// pile up and keep resizing the sidebar after the key is released
+/// (scrolling never rebuilds, so it never coasts). Between rebuilds the
+/// diff is drawn from the existing cache (ratatui clips it to the new
+/// width) and snaps correct once resizing settles within this interval.
+const DIFF_REBUILD_THROTTLE: Duration = Duration::from_millis(50);
 
 pub fn run(_args: Args) -> ExitCode {
     match run_inner() {
@@ -305,6 +325,13 @@ struct ViewState {
     /// Last-drawn pane rects, used for mouse hit-testing.
     sidebar_rect: Rect,
     diff_rect: Rect,
+    /// User's preferred sidebar outer width (includes borders). Adjusted
+    /// by `<`/`>` or by dragging the divider; clamped on use by
+    /// [`effective_sidebar_width`].
+    sidebar_width: u16,
+    /// True while the left button is held on the pane divider, so
+    /// subsequent `Drag` events resize the sidebar.
+    dragging_divider: bool,
 }
 
 impl ViewState {
@@ -320,6 +347,8 @@ impl ViewState {
             help_visible: false,
             sidebar_rect: Rect::default(),
             diff_rect: Rect::default(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            dragging_divider: false,
         }
     }
 
@@ -518,6 +547,20 @@ fn handle_key(
                 AppCommand::Continue
             }
         },
+        // Resize the sidebar regardless of focus. The stored value is
+        // the raw preference; clamping happens in `effective_sidebar_width`
+        // at draw time.
+        KeyCode::Char('>') => {
+            state.sidebar_width = state.sidebar_width.saturating_add(SIDEBAR_RESIZE_STEP);
+            AppCommand::Continue
+        }
+        KeyCode::Char('<') => {
+            state.sidebar_width = state
+                .sidebar_width
+                .saturating_sub(SIDEBAR_RESIZE_STEP)
+                .max(MIN_SIDEBAR_WIDTH);
+            AppCommand::Continue
+        }
         _ => AppCommand::Continue,
     }
 }
@@ -534,6 +577,21 @@ fn handle_key_help(state: &mut ViewState, key: KeyCode) -> AppCommand {
         _ => {}
     }
     AppCommand::Continue
+}
+
+/// The two adjacent border columns that form the visible divider
+/// between the sidebar and diff panes: the sidebar's right border and
+/// the diff's left border. `None` when the sidebar is hidden.
+fn divider_columns(state: &ViewState) -> Option<(u16, u16)> {
+    if state.sidebar_rect.width == 0 {
+        return None;
+    }
+    let right_border = state.sidebar_rect.right().saturating_sub(1);
+    Some((right_border, right_border.saturating_add(1)))
+}
+
+fn is_on_divider(state: &ViewState, col: u16) -> bool {
+    matches!(divider_columns(state), Some((a, b)) if col == a || col == b)
 }
 
 fn pane_at(state: &ViewState, col: u16, row: u16) -> Option<Focus> {
@@ -555,6 +613,23 @@ fn handle_mouse(
 ) -> AppCommand {
     if state.help_visible {
         return AppCommand::Continue;
+    }
+
+    // Divider drag takes precedence over pane dispatch so a grab on the
+    // border neither selects a sidebar row nor changes focus.
+    match mouse.kind {
+        MouseEventKind::Up(MouseButton::Left) => {
+            state.dragging_divider = false;
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.dragging_divider => {
+            state.sidebar_width = mouse.column.saturating_add(1).max(MIN_SIDEBAR_WIDTH);
+            return AppCommand::Continue;
+        }
+        MouseEventKind::Down(MouseButton::Left) if is_on_divider(state, mouse.column) => {
+            state.dragging_divider = true;
+            return AppCommand::Continue;
+        }
+        _ => {}
     }
 
     let target = match pane_at(state, mouse.column, mouse.row) {
@@ -606,13 +681,19 @@ fn handle_mouse(
 // TUI loop
 // ---------------------------------------------------------------------------
 
-/// Compute the sidebar's column width given the terminal width. Returns
-/// 0 when the terminal is too narrow to comfortably show the sidebar.
-fn sidebar_width(terminal_width: u16) -> u16 {
+/// Resolve the sidebar's column width from the user's preferred width and
+/// the current terminal width. Returns 0 when the terminal is too narrow
+/// to comfortably show the sidebar. Otherwise clamps `preferred` to
+/// `[MIN_SIDEBAR_WIDTH, terminal_width - MIN_DIFF_WIDTH]` so the diff pane
+/// always keeps a usable minimum.
+fn effective_sidebar_width(preferred: u16, terminal_width: u16) -> u16 {
     if terminal_width < MIN_TERMINAL_WIDTH_FOR_SIDEBAR {
         return 0;
     }
-    DEFAULT_SIDEBAR_WIDTH.min(terminal_width / 3)
+    let max = terminal_width
+        .saturating_sub(MIN_DIFF_WIDTH)
+        .max(MIN_SIDEBAR_WIDTH);
+    preferred.clamp(MIN_SIDEBAR_WIDTH, max)
 }
 
 fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<(), String> {
@@ -639,7 +720,8 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
     // Build the diff view for the initial diff-pane width, then rebuild
     // on resize.
     let initial_total_width = terminal.size().map(|s| s.width).unwrap_or(120);
-    let initial_diff_width = diff_pane_width(initial_total_width);
+    let initial_sidebar_width = effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, initial_total_width);
+    let initial_diff_width = diff_pane_width(initial_sidebar_width, initial_total_width);
 
     let display_order = sidebar.display_order();
     let view = build_view(files, diffs, &display_order, initial_diff_width, theme);
@@ -654,6 +736,7 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         .unwrap_or(40);
     state.snap_diff_to_selected_file(initial_diff_viewport);
 
+    let mut last_rebuild = Instant::now();
     loop {
         // Draw and capture viewport metrics for the current frame.
         let metrics = terminal
@@ -661,7 +744,8 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
             .map_err(|err| format!("failed to render screen: {err}"))?;
         let total_width = metrics.area.width;
         let total_height = metrics.area.height;
-        let diff_width = diff_pane_width(total_width);
+        let sidebar_w = effective_sidebar_width(state.sidebar_width, total_width);
+        let diff_width = diff_pane_width(sidebar_w, total_width);
         // -2 for the pane's top and bottom borders. The result is
         // the number of content rows the pane shows, i.e. the scroll
         // viewport. (No bottom help bar; help is a `?`-triggered
@@ -670,12 +754,19 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         let diff_viewport = pane_viewport;
         let sidebar_viewport = pane_viewport;
 
-        // Rebuild the diff line cache if the diff pane changed width.
-        if diff_width != state.cached_width && diff_width > 0 {
+        // Rebuild the diff line cache if the diff pane changed width, but
+        // no more than once per `DIFF_REBUILD_THROTTLE`. The rebuild is the
+        // one expensive step in the loop; throttling it keeps the loop
+        // responsive during a resize so held-key repeats don't pile into a
+        // backlog that coasts after release.
+        let mut rebuild_pending = diff_width != state.cached_width && diff_width > 0;
+        if rebuild_pending && last_rebuild.elapsed() >= DIFF_REBUILD_THROTTLE {
             let view = build_view(files, diffs, &state.display_order, diff_width, theme);
             state.diff_lines = view.lines;
             state.file_offsets = view.file_offsets;
             state.cached_width = diff_width;
+            last_rebuild = Instant::now();
+            rebuild_pending = false;
             // Clamp scroll to the new content length.
             let max = state.max_diff_scroll(diff_viewport);
             if state.diff_scroll > max {
@@ -683,7 +774,15 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
             }
         }
 
-        let cmd = read_event(diff_viewport, sidebar_viewport, &mut state)?;
+        // While a rebuild is deferred, poll briefly so the loop comes back
+        // to reflow the diff once resizing stops, even without new input.
+        let timeout = if rebuild_pending {
+            DIFF_REBUILD_THROTTLE
+        } else {
+            POLL_TIMEOUT
+        };
+        let burst = read_event_burst(timeout)?;
+        let cmd = apply_events(&mut state, burst, diff_viewport, sidebar_viewport);
         if cmd == AppCommand::Quit {
             break;
         }
@@ -694,39 +793,74 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
 
 /// Width budget for the diff pane *content* (terminal minus the
 /// sidebar pane minus this pane's own two border columns). When no
-/// sidebar is shown the diff pane spans the whole terminal, still
-/// minus its own two borders.
-fn diff_pane_width(terminal_width: u16) -> usize {
-    let sw = sidebar_width(terminal_width);
-    terminal_width.saturating_sub(sw + 2) as usize
+/// sidebar is shown (`sidebar_w == 0`) the diff pane spans the whole
+/// terminal, still minus its own two borders.
+fn diff_pane_width(sidebar_w: u16, terminal_width: u16) -> usize {
+    terminal_width.saturating_sub(sidebar_w + 2) as usize
 }
 
-fn read_event(
+/// Apply a whole burst of input events to `state`, stopping early on
+/// `Quit`. Draining the queue per frame (see [`read_event_burst`]) collapses
+/// the burst into a single redraw.
+///
+/// Sidebar-resize keys (`<`/`>`) are additionally coalesced to a single
+/// step per burst. Holding the key fires OS auto-repeat, which buffers a
+/// backlog of presses; applying every one would overshoot and keep growing
+/// the sidebar after the key is released as the backlog drains. One step
+/// per burst makes a hold grow at a steady, frame-paced rate that stops
+/// within one frame of release. Mouse drag needs no such guard: it sets an
+/// absolute width, so the last event in the burst already wins.
+fn apply_events(
+    state: &mut ViewState,
+    events: impl IntoIterator<Item = Event>,
+    diff_viewport: usize,
+    sidebar_viewport: usize,
+) -> AppCommand {
+    let mut resized = false;
+    for event in events {
+        if is_resize_key(&event) {
+            if resized {
+                continue;
+            }
+            resized = true;
+        }
+        if dispatch_event(event, diff_viewport, sidebar_viewport, state) == AppCommand::Quit {
+            return AppCommand::Quit;
+        }
+    }
+    AppCommand::Continue
+}
+
+/// A key-press of `<` or `>` (the sidebar-resize bindings).
+fn is_resize_key(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && matches!(key.code, KeyCode::Char('<') | KeyCode::Char('>'))
+    )
+}
+
+fn dispatch_event(
+    event: Event,
     diff_viewport: usize,
     sidebar_viewport: usize,
     state: &mut ViewState,
-) -> Result<AppCommand, String> {
-    use std::time::Duration;
-
-    if !event::poll(Duration::from_millis(250))
-        .map_err(|err| format!("failed to poll input event: {err}"))?
-    {
-        return Ok(AppCommand::Continue);
-    }
-    match event::read().map_err(|err| format!("failed to read input event: {err}"))? {
+) -> AppCommand {
+    match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            Ok(handle_key(state, key.code, diff_viewport, sidebar_viewport))
+            handle_key(state, key.code, diff_viewport, sidebar_viewport)
         }
-        Event::Mouse(mouse) => Ok(handle_mouse(state, mouse, diff_viewport, sidebar_viewport)),
-        Event::Resize(_, _) => Ok(AppCommand::Continue),
-        _ => Ok(AppCommand::Continue),
+        Event::Mouse(mouse) => handle_mouse(state, mouse, diff_viewport, sidebar_viewport),
+        Event::Resize(_, _) => AppCommand::Continue,
+        _ => AppCommand::Continue,
     }
 }
 
 fn draw(frame: &mut ratatui::Frame<'_>, state: &mut ViewState, theme: &Theme) {
     let area = frame.area();
 
-    let sw = sidebar_width(area.width);
+    let sw = effective_sidebar_width(state.sidebar_width, area.width);
     if sw > 0 {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -1444,16 +1578,102 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_width_hides_when_terminal_is_narrow() {
-        assert_eq!(sidebar_width(60), 0);
+    fn effective_sidebar_width_hides_when_terminal_is_narrow() {
+        assert_eq!(effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, 60), 0);
     }
 
     #[test]
-    fn sidebar_width_caps_at_third_of_terminal() {
-        // Plenty wide → use the default width.
-        assert_eq!(sidebar_width(200), DEFAULT_SIDEBAR_WIDTH);
-        // Narrower terminal → capped at third.
-        assert_eq!(sidebar_width(90), 30);
+    fn effective_sidebar_width_uses_preferred_when_it_fits() {
+        assert_eq!(
+            effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, 200),
+            DEFAULT_SIDEBAR_WIDTH
+        );
+    }
+
+    #[test]
+    fn effective_sidebar_width_clamps_to_min() {
+        assert_eq!(effective_sidebar_width(1, 200), MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn effective_sidebar_width_clamps_to_leave_diff_room() {
+        // A huge preference is capped so the diff pane keeps MIN_DIFF_WIDTH.
+        assert_eq!(effective_sidebar_width(u16::MAX, 100), 100 - MIN_DIFF_WIDTH);
+    }
+
+    #[test]
+    fn handle_key_grow_and_shrink_sidebar() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        let initial = state.sidebar_width;
+        handle_key(&mut state, KeyCode::Char('>'), 4, 4);
+        assert_eq!(state.sidebar_width, initial + SIDEBAR_RESIZE_STEP);
+        handle_key(&mut state, KeyCode::Char('<'), 4, 4);
+        assert_eq!(state.sidebar_width, initial);
+    }
+
+    #[test]
+    fn handle_key_shrink_sidebar_floors_at_min() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        state.sidebar_width = MIN_SIDEBAR_WIDTH;
+        handle_key(&mut state, KeyCode::Char('<'), 4, 4);
+        assert_eq!(state.sidebar_width, MIN_SIDEBAR_WIDTH);
+    }
+
+    fn key_press(code: KeyCode) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    }
+
+    #[test]
+    fn apply_events_coalesces_repeated_resize_keys() {
+        // A burst of auto-repeated `>` (as when the key is held) must
+        // grow the sidebar by a single step, not one per repeat.
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        let initial = state.sidebar_width;
+        let burst = vec![
+            key_press(KeyCode::Char('>')),
+            key_press(KeyCode::Char('>')),
+            key_press(KeyCode::Char('>')),
+            key_press(KeyCode::Char('>')),
+        ];
+        apply_events(&mut state, burst, 4, 4);
+        assert_eq!(state.sidebar_width, initial + SIDEBAR_RESIZE_STEP);
+    }
+
+    #[test]
+    fn apply_events_applies_non_resize_keys_each() {
+        // Scroll keys are not coalesced: each repeat advances the diff.
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
+            after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
+        }];
+        let mut state = make_state(&resolved);
+        state.focus = Focus::Diff;
+        let burst = vec![key_press(KeyCode::Char('j')), key_press(KeyCode::Char('j'))];
+        apply_events(&mut state, burst, 2, 2);
+        assert_eq!(state.diff_scroll, 2);
     }
 
     fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
@@ -1581,6 +1801,122 @@ mod tests {
         handle_mouse(&mut state, mouse, 18, 18);
         assert_eq!(state.sidebar.selected(), target_row,);
         assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn is_on_divider_matches_border_columns() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let state = make_state_with_rects(&resolved);
+        // sidebar_rect = (0,0,38,20): divider columns are 37 and 38.
+        assert!(is_on_divider(&state, 37));
+        assert!(is_on_divider(&state, 38));
+        assert!(!is_on_divider(&state, 5));
+        assert!(!is_on_divider(&state, 60));
+    }
+
+    #[test]
+    fn is_on_divider_false_when_sidebar_hidden() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        state.sidebar_rect = Rect::default();
+        assert!(!is_on_divider(&state, 0));
+    }
+
+    #[test]
+    fn divider_press_starts_drag_without_selecting() {
+        let a = file_diff("a.txt");
+        let b = file_diff("b.txt");
+        let resolved = vec![
+            ResolvedFile {
+                file: &a,
+                before: "a1\n".to_string(),
+                after: "a2\n".to_string(),
+            },
+            ResolvedFile {
+                file: &b,
+                before: "b1\n".to_string(),
+                after: "b2\n".to_string(),
+            },
+        ];
+        let mut state = make_state_with_rects(&resolved);
+        let selected = state.sidebar.selected();
+        let focus = state.focus;
+
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 37, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert!(state.dragging_divider);
+        assert_eq!(
+            state.sidebar.selected(),
+            selected,
+            "divider press must not select"
+        );
+        assert_eq!(state.focus, focus, "divider press must not change focus");
+    }
+
+    #[test]
+    fn divider_drag_resizes_and_release_ends() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state_with_rects(&resolved);
+
+        handle_mouse(
+            &mut state,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 37, 5),
+            18,
+            18,
+        );
+        // Drag right to column 50 -> width 51.
+        handle_mouse(
+            &mut state,
+            make_mouse(MouseEventKind::Drag(MouseButton::Left), 50, 5),
+            18,
+            18,
+        );
+        assert_eq!(state.sidebar_width, 51);
+        // Drag far left -> floored at MIN_SIDEBAR_WIDTH.
+        handle_mouse(
+            &mut state,
+            make_mouse(MouseEventKind::Drag(MouseButton::Left), 2, 5),
+            18,
+            18,
+        );
+        assert_eq!(state.sidebar_width, MIN_SIDEBAR_WIDTH);
+        // Release ends the drag.
+        handle_mouse(
+            &mut state,
+            make_mouse(MouseEventKind::Up(MouseButton::Left), 2, 5),
+            18,
+            18,
+        );
+        assert!(!state.dragging_divider);
+    }
+
+    #[test]
+    fn non_divider_press_does_not_start_drag() {
+        let f = file_diff("a.txt");
+        let resolved = vec![ResolvedFile {
+            file: &f,
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let mut state = make_state_with_rects(&resolved);
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 5);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert!(!state.dragging_divider);
     }
 
     #[test]

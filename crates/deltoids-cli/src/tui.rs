@@ -13,9 +13,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Terminal,
@@ -27,6 +25,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
+use crate::events::read_event_burst;
 use crate::terminal::TerminalSession;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::render_tui::{
@@ -404,22 +403,6 @@ fn app_command_for_event(
         Event::Mouse(mouse) => handle_mouse(state, traces, mouse, detail_row_count, detail_height),
         _ => AppCommand::Continue,
     }
-}
-
-/// Read every input event already buffered into a single batch, blocking up
-/// to `timeout` for the first one. Returns an empty `Vec` on timeout.
-fn read_event_burst(timeout: Duration) -> Result<Vec<Event>, String> {
-    let poll_err = |err| format!("Failed to poll input event: {err}");
-    let read_err = |err| format!("Failed to read input event: {err}");
-
-    if !event::poll(timeout).map_err(poll_err)? {
-        return Ok(Vec::new());
-    }
-    let mut burst = vec![event::read().map_err(read_err)?];
-    while event::poll(Duration::ZERO).map_err(poll_err)? {
-        burst.push(event::read().map_err(read_err)?);
-    }
-    Ok(burst)
 }
 
 /// Apply a batch of input events to `state`, stopping early on `Quit`.

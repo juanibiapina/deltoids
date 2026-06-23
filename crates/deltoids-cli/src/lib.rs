@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod events;
 pub mod hashline;
 pub mod sidebar;
 pub mod terminal;

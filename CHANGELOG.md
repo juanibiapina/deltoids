@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- review TUI: The sidebar is now resizable. Use `<`/`>` to narrow/widen it, or drag the divider between the panes with the mouse.
+
 ### Changed
 
 - traces TUI: Entries pane now shows the filename first with a dimmed reason, instead of reason only.

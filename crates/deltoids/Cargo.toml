@@ -5,9 +5,9 @@ edition.workspace = true
 
 [dependencies]
 dirs = "6"
-git2 = { version = "0.20", optional = true }
+git2 = { version = "0.21", optional = true }
 ratatui = { version = "0.30", optional = true }
-toml = "0.8"
+toml = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 gix-imara-diff = { version = "0.2", features = ["unified_diff"] }

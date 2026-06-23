@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- tui: fix freeze with blank screen at 100% on macOS.
 - diff: Wrapping a function body in a new call expression (e.g. `withDORetry(() => { ... })`) no longer duplicates the added lines in a ghost second hunk.
 
 ## [0.8.1] - 2026-05-27

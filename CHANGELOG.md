@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
+### Changed
+
+- traces TUI: Mouse-wheel scrolling in the diff pane is slower, so it no longer jumps too far per gesture.
+
 ## [0.9.0] - 2026-06-23
 
 ### Added

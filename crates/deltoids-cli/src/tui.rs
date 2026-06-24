@@ -35,6 +35,7 @@ use deltoids::render_tui::{
 use deltoids::{Hunk, Theme};
 
 const DIFF_SCROLL_STEP: usize = 3;
+const DIFF_MOUSE_SCROLL_STEP: usize = 1;
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
 const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
 
@@ -332,7 +333,7 @@ fn handle_mouse_scroll_down(
         Focus::Traces => move_trace_down(state, traces),
         Focus::Diff => {
             let max_scroll = max_detail_scroll(detail_row_count, detail_height);
-            state.diff_scroll = (state.diff_scroll + DIFF_SCROLL_STEP).min(max_scroll);
+            state.diff_scroll = (state.diff_scroll + DIFF_MOUSE_SCROLL_STEP).min(max_scroll);
         }
     }
     AppCommand::Continue
@@ -343,7 +344,7 @@ fn handle_mouse_scroll_up(state: &mut AppState, target: Focus) -> AppCommand {
         Focus::Entries => move_entry_up(state),
         Focus::Traces => move_trace_up(state),
         Focus::Diff => {
-            state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP);
+            state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_MOUSE_SCROLL_STEP);
         }
     }
     AppCommand::Continue
@@ -2301,7 +2302,7 @@ mod tests {
 
         let mouse = make_mouse(MouseEventKind::ScrollDown, 50, 5);
         handle_mouse(&mut state, &traces, mouse, 20, 10);
-        assert_eq!(state.diff_scroll, DIFF_SCROLL_STEP);
+        assert_eq!(state.diff_scroll, DIFF_MOUSE_SCROLL_STEP);
 
         let mouse = make_mouse(MouseEventKind::ScrollUp, 50, 5);
         handle_mouse(&mut state, &traces, mouse, 20, 10);

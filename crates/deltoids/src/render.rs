@@ -359,6 +359,11 @@ fn render_subhunk(
 ///
 /// Sets foreground colors only — the caller owns background. This lets
 /// background colors persist across all tokens.
+///
+/// Limitation: each line is highlighted with fresh syntect state, so
+/// context-dependent tokens in stateful grammars lose color (e.g. a
+/// Dockerfile `RUN`/`ENV` keyword is only colored once the parser has seen
+/// the preceding `FROM`). Carrying state across hunk lines would fix this.
 fn highlight_line(line: &str, highlight: Option<&str>) -> String {
     let assets = SyntaxAssets::load();
     let syntax = assets.syntax_for_name(highlight);

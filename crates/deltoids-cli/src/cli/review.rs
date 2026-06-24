@@ -441,6 +441,7 @@ enum AppCommand {
     Quit,
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_key(
     state: &mut ViewState,
     key: KeyCode,

@@ -163,7 +163,6 @@ user re-runs `claude plugin install`.
 ## Conventions
 
 - Run `cargo fmt --all` before committing.
-- Clippy is report-only for now (no `-D warnings`).
 - Extract small, single-purpose helpers over generic utility modules.
 - Add tests alongside refactors.
 - For diff-engine changes, the diff-case suite is the canonical test

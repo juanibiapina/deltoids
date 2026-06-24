@@ -11,10 +11,14 @@ license = "MIT"
 repository = "https://github.com/juanibiapina/deltoids"
 homepage = "https://github.com/juanibiapina/deltoids"
 
+[workspace.lints.rust]
+warnings = "deny"
+
 [workspace.lints.clippy]
-too_many_arguments = "warn"
-too_many_lines = "warn"
-excessive_nesting = "warn"
+all = { level = "deny", priority = -1 }
+too_many_arguments = "deny"
+too_many_lines = "deny"
+excessive_nesting = "deny"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]

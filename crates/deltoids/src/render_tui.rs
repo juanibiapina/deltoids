@@ -29,8 +29,9 @@ use syntect::highlighting::FontStyle;
 use unicode_width::UnicodeWidthChar;
 
 use crate::config::{SyntaxAssets, Theme};
+use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
-use crate::{Hunk, HunkRun, LineKind, ScopeNode};
+use crate::{Hunk, HunkRun, LineKind};
 
 const TAB_WIDTH: usize = 4;
 
@@ -74,7 +75,14 @@ pub fn render_hunk(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut output = Vec::new();
-    output.extend(render_hunk_header(hunk, highlight, width, theme));
+    match HunkHeader::plan(hunk, width) {
+        HunkHeader::LineNumber { line_num } => {
+            output.extend(render_line_number_box(line_num, theme));
+        }
+        HunkHeader::Breadcrumb(b) => {
+            output.extend(render_breadcrumb_box(&b, highlight, theme));
+        }
+    }
 
     for run in hunk.runs() {
         match run {
@@ -100,19 +108,6 @@ pub fn render_hunk(
 // Hunk header (breadcrumb box or line-number-only box)
 // ---------------------------------------------------------------------------
 
-fn render_hunk_header(
-    hunk: &Hunk,
-    highlight: Option<&str>,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    if hunk.ancestors.is_empty() {
-        render_line_number_box(hunk.new_start, theme)
-    } else {
-        render_breadcrumb_box(&hunk.ancestors, highlight, width, theme)
-    }
-}
-
 /// Three-line box containing only the new-file line number. Used when a
 /// hunk has no enclosing structural scope.
 fn render_line_number_box(line_number: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -129,66 +124,28 @@ fn render_line_number_box(line_number: usize, theme: &Theme) -> Vec<Line<'static
     ]
 }
 
+/// Paint the breadcrumb box from a shared [`Breadcrumb`] plan. Geometry comes
+/// from the plan; this function only paints ratatui spans (rounded corners,
+/// ancestor text truncated to the box width).
 fn render_breadcrumb_box(
-    ancestors: &[ScopeNode],
+    b: &Breadcrumb,
     highlight: Option<&str>,
-    width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let border = Style::default().fg(rgb_to_color(theme.border));
-    let max_content_width = width.saturating_sub(2); // room for " │"
-
-    // Compute the widest line number for right-alignment.
-    let max_line_num = ancestors.iter().map(|a| a.start_line).max().unwrap_or(0);
-    let num_col_width = max_line_num.to_string().len();
-
-    // Build content rows: ancestor lines with optional "..." gaps between.
-    struct Row {
-        line_num: Option<usize>,
-        text: Option<String>, // None for "..." rows
-    }
-    let mut rows: Vec<Row> = Vec::new();
-    for (i, ancestor) in ancestors.iter().enumerate() {
-        if i > 0 {
-            let prev = &ancestors[i - 1];
-            if prev.start_line + 1 < ancestor.start_line {
-                rows.push(Row {
-                    line_num: None,
-                    text: None,
-                });
-            }
-        }
-        rows.push(Row {
-            line_num: Some(ancestor.start_line),
-            text: Some(ancestor.text.clone()),
-        });
-    }
-
-    // Compute the widest rendered line for box width.
-    let prefix_width = num_col_width + 2; // "NNN: "
-    let mut max_row_width = 0usize;
-    for row in &rows {
-        let row_width = match &row.text {
-            Some(text) => prefix_width + display_width(text),
-            None => prefix_width + 3, // "..."
-        };
-        max_row_width = max_row_width.max(row_width);
-    }
-    let content_width = max_row_width.min(max_content_width);
+    let num_col_width = b.num_col_width;
+    let prefix_width = b.prefix_width();
+    let content_width = b.content_width;
 
     let top = format!("{}╮", "─".repeat(content_width + 1));
     let bot = format!("{}╯", "─".repeat(content_width + 1));
 
     let mut lines = vec![Line::from(Span::styled(top, border))];
 
-    for row in &rows {
-        match &row.text {
-            Some(text) => {
-                let num_str = format!(
-                    "{:>width$}: ",
-                    row.line_num.unwrap_or(0),
-                    width = num_col_width
-                );
+    for row in &b.rows {
+        match row {
+            BreadcrumbRow::Scope { line_num, text } => {
+                let num_str = format!("{line_num:>num_col_width$}: ");
                 let available_text_width = content_width.saturating_sub(prefix_width);
                 let (mut code_spans, code_width) = highlighted_spans(
                     theme,
@@ -207,8 +164,7 @@ fn render_breadcrumb_box(
                 spans.push(Span::styled(" │", border));
                 lines.push(Line::from(spans));
             }
-            None => {
-                // "..." gap row
+            BreadcrumbRow::Gap => {
                 let dots = format!("{:>width$}  ...", "", width = num_col_width);
                 let padding = content_width.saturating_sub(display_width(&dots));
                 let mut spans = vec![Span::styled(dots, border)];
@@ -809,7 +765,7 @@ pub fn render_pane_scrollbar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Diff, DiffLine, Language};
+    use crate::{Diff, DiffLine, Language, ScopeNode};
 
     fn rust_function_hunk() -> Hunk {
         Hunk {

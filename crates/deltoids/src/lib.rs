@@ -4,6 +4,7 @@ pub mod content;
 mod engine;
 #[cfg(feature = "blob-resolve")]
 pub mod git;
+mod hunk_header;
 mod intraline;
 mod language;
 pub mod parse;

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: Mouse-wheel scrolling is smoother throughout. Diff views and lists (the file sidebar, traces, and entries) now move in proportion to how much you scroll, instead of jumping too far per gesture.
 
+### Fixed
+
+- pager: Hunks with no enclosing function now get a line-number box, so consecutive hunks are visibly separated (e.g. in lazygit).
+
 ## [0.9.0] - 2026-06-23
 
 ### Added

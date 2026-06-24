@@ -8,11 +8,11 @@
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::FontStyle;
-use unicode_width::UnicodeWidthStr;
 
 use crate::config::{SyntaxAssets, Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
+use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader, display_width};
 use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
-use crate::{Hunk, HunkRun, LineKind, ScopeNode};
+use crate::{Hunk, HunkRun, LineKind};
 
 const TAB_WIDTH: usize = 4;
 
@@ -59,13 +59,13 @@ pub fn render_hunk(
 ) -> Vec<String> {
     let mut output = Vec::new();
 
-    if !hunk.ancestors.is_empty() {
-        output.extend(render_breadcrumb_box(
-            &hunk.ancestors,
-            highlight,
-            width,
-            theme,
-        ));
+    match HunkHeader::plan(hunk, width) {
+        HunkHeader::LineNumber { line_num } => {
+            output.extend(render_line_number_box(line_num, theme));
+        }
+        HunkHeader::Breadcrumb(b) => {
+            output.extend(render_breadcrumb_box(&b, highlight, theme));
+        }
     }
 
     for run in hunk.runs() {
@@ -97,73 +97,44 @@ pub fn render_hunk(
 // Internal renderers
 // ---------------------------------------------------------------------------
 
-/// Render the breadcrumb box for a hunk's enclosing scopes.
-fn render_breadcrumb_box(
-    ancestors: &[ScopeNode],
-    highlight: Option<&str>,
-    width: usize,
-    theme: &Theme,
-) -> Vec<String> {
-    if ancestors.is_empty() {
-        return Vec::new();
-    }
+/// Render a three-line box containing only the new-file line number. Used
+/// when a hunk has no enclosing structural scope, mirroring the ratatui
+/// renderer with sharp corners.
+fn render_line_number_box(line_num: usize, theme: &Theme) -> Vec<String> {
+    let border_fg = rgb_to_ansi_fg(theme.border.0, theme.border.1, theme.border.2);
+    let label = line_num.to_string();
+    let inner = label.len() + 1;
+    vec![
+        format!("{border_fg}{}┐{RESET}", "─".repeat(inner)),
+        format!("{border_fg}{label} │{RESET}"),
+        format!("{border_fg}{}┘{RESET}", "─".repeat(inner)),
+    ]
+}
 
+/// Paint the breadcrumb box from a shared [`Breadcrumb`] plan. Geometry comes
+/// from the plan; this function only paints ANSI strings (sharp corners, no
+/// truncation).
+fn render_breadcrumb_box(b: &Breadcrumb, highlight: Option<&str>, theme: &Theme) -> Vec<String> {
     let border_fg = rgb_to_ansi_fg(theme.border.0, theme.border.1, theme.border.2);
     let line_num_fg = rgb_to_ansi_fg(
         theme.line_number.0,
         theme.line_number.1,
         theme.line_number.2,
     );
-    let max_content_width = width.saturating_sub(2); // room for " │"
 
-    let max_line_num = ancestors.iter().map(|a| a.start_line).max().unwrap_or(0);
-    let num_col_width = max_line_num.to_string().len();
-
-    struct Row {
-        line_num: Option<usize>,
-        text: Option<String>, // None for "..." rows
-    }
-    let mut rows: Vec<Row> = Vec::new();
-    for (i, ancestor) in ancestors.iter().enumerate() {
-        if i > 0 {
-            let prev = &ancestors[i - 1];
-            if prev.start_line + 1 < ancestor.start_line {
-                rows.push(Row {
-                    line_num: None,
-                    text: None,
-                });
-            }
-        }
-        rows.push(Row {
-            line_num: Some(ancestor.start_line),
-            text: Some(ancestor.text.clone()),
-        });
-    }
-
-    let prefix_width = num_col_width + 2; // "NNN: "
-    let mut max_row_width = 0usize;
-    for row in &rows {
-        let row_width = match &row.text {
-            Some(text) => prefix_width + display_width(text),
-            None => prefix_width + 3, // "..."
-        };
-        max_row_width = max_row_width.max(row_width);
-    }
-    let content_width = max_row_width.min(max_content_width);
+    let num_col_width = b.num_col_width;
+    let prefix_width = b.prefix_width();
+    let content_width = b.content_width;
 
     let top = format!("{border_fg}{}┐{RESET}", "─".repeat(content_width + 1));
     let bot = format!("{border_fg}{}┘{RESET}", "─".repeat(content_width + 1));
 
     let mut lines = vec![top];
 
-    for row in &rows {
-        match &row.text {
-            Some(text) => {
-                let num_str = format!(
-                    "{:>width$}: ",
-                    row.line_num.unwrap_or(0),
-                    width = num_col_width
-                );
+    for row in &b.rows {
+        match row {
+            BreadcrumbRow::Scope { line_num, text } => {
+                let num_str = format!("{line_num:>num_col_width$}: ");
                 let highlighted = highlight_line(text, highlight);
                 let text_width = display_width(text);
                 let padding = content_width.saturating_sub(prefix_width + text_width);
@@ -173,7 +144,7 @@ fn render_breadcrumb_box(
                     " ".repeat(padding)
                 ));
             }
-            None => {
+            BreadcrumbRow::Gap => {
                 let dots = format!("{:>width$}  ...", "", width = num_col_width);
                 let padding = content_width.saturating_sub(display_width(&dots));
                 lines.push(format!(
@@ -414,22 +385,10 @@ fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
     }
 }
 
-fn display_width(s: &str) -> usize {
-    let mut width = 0;
-    for ch in s.chars() {
-        if ch == '\t' {
-            width += TAB_WIDTH;
-        } else {
-            width += UnicodeWidthStr::width(ch.to_string().as_str());
-        }
-    }
-    width
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Diff, DiffLine, Language};
+    use crate::{Diff, DiffLine, Language, ScopeNode};
 
     #[test]
     fn file_header_contains_path() {
@@ -558,11 +517,11 @@ mod tests {
             ancestors: Vec::new(),
         };
         let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::AnsiErase, &theme);
-        // No ancestors -> no breadcrumb box; rendered lines are the change
-        // run in order: removed first, added second.
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("\x1b[48;2;113;49;55m"), "minus emph bg");
-        assert!(lines[1].contains("\x1b[48;2;44;90;102m"), "plus emph bg");
+        // No ancestors -> a 3-line line-number box precedes the change run
+        // (removed first, added second).
+        assert_eq!(lines.len(), 5);
+        assert!(lines[3].contains("\x1b[48;2;113;49;55m"), "minus emph bg");
+        assert!(lines[4].contains("\x1b[48;2;44;90;102m"), "plus emph bg");
     }
 
     #[test]
@@ -617,12 +576,37 @@ mod tests {
             ancestors: Vec::new(),
         };
         let lines = render_hunk(&hunk, Some("Rust"), 20, BgFill::Spaces, &theme);
-        let line = lines.first().expect("rendered line");
+        // The line-number box occupies the first 3 lines; the padded diff
+        // line follows.
+        let line = &lines[3];
         assert!(!line.contains("\x1b[0K"));
         let before_reset = line.strip_suffix("\x1b[0m").expect("reset suffix");
         assert!(
             before_reset.ends_with("               "),
             "expected 15 trailing spaces, got {line:?}"
         );
+    }
+
+    #[test]
+    fn render_hunk_emits_line_number_box_when_no_ancestors() {
+        let theme = Theme::default();
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 42,
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: "x".to_string(),
+            }],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::Spaces, &theme);
+        let border_fg = rgb_to_ansi_fg(theme.border.0, theme.border.1, theme.border.2);
+        assert!(lines[0].contains("┐"), "top box corner");
+        assert!(lines[0].contains(&border_fg), "box carries border fg");
+        assert!(
+            lines[1].contains("42"),
+            "box shows the new-file line number"
+        );
+        assert!(lines[2].contains("┘"), "bottom box corner");
     }
 }

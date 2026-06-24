@@ -36,6 +36,7 @@ crates/
     src/scope.rs            # Hunk types, Hunk::runs / HunkRun, public entry
     src/scope/range.rs      # Planning phase: ContextRange per diff op
     src/scope/hunk_builder.rs # Filling phase: ContextRange -> Hunk
+    src/hunk_header.rs      # Shared header layout
     src/render.rs           # Diff rendering as ANSI strings (used by deltoids CLI)
     src/render_tui.rs       # Diff rendering as ratatui Line<'static>; also exports shared pane chrome helpers (pane_block, pane_block_with_footer, pane_border_color, render_pane_scrollbar) used by edit-tui and rv (feature: ratatui)
     src/git.rs              # libgit2 wrapper for blob lookup (feature: blob-resolve)

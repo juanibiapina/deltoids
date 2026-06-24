@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - traces TUI: Mouse-wheel scrolling in the diff pane is slower, so it no longer jumps too far per gesture.
 
+### Fixed
+
+- traces TUI: mouse-wheel scrolling over the entries and traces lists now moves in proportion to how much you scroll, instead of jumping several items at once.
+
 ## [0.9.0] - 2026-06-23
 
 ### Added

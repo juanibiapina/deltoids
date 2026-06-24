@@ -30,7 +30,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::config::{SyntaxAssets, Theme};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
-use crate::{Hunk, HunkRun, Language, LineKind, ScopeNode};
+use crate::{Hunk, HunkRun, LineKind, ScopeNode};
 
 const TAB_WIDTH: usize = 4;
 
@@ -66,15 +66,15 @@ pub fn render_rename_header(old_path: &str, new_path: &str, theme: &Theme) -> Li
 
 /// Render a full hunk: breadcrumb / line-number box followed by the diff
 /// body (context lines + intraline-emphasised subhunks). Highlighting uses
-/// `language`, which callers should obtain from `Diff::language()`.
+/// `highlight`, which callers should obtain from `Diff::highlight()`.
 pub fn render_hunk(
     hunk: &Hunk,
-    language: Option<Language>,
+    highlight: Option<&str>,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut output = Vec::new();
-    output.extend(render_hunk_header(hunk, language, width, theme));
+    output.extend(render_hunk_header(hunk, highlight, width, theme));
 
     for run in hunk.runs() {
         match run {
@@ -82,13 +82,13 @@ pub fn render_hunk(
                 output.push(syntax_diff_line(
                     &line.content,
                     Color::Reset,
-                    language,
+                    highlight,
                     width,
                     theme,
                 ));
             }
             HunkRun::Change(slice) => {
-                render_subhunk(slice, language, width, theme, &mut output);
+                render_subhunk(slice, highlight, width, theme, &mut output);
             }
         }
     }
@@ -102,14 +102,14 @@ pub fn render_hunk(
 
 fn render_hunk_header(
     hunk: &Hunk,
-    language: Option<Language>,
+    highlight: Option<&str>,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     if hunk.ancestors.is_empty() {
         render_line_number_box(hunk.new_start, theme)
     } else {
-        render_breadcrumb_box(&hunk.ancestors, language, width, theme)
+        render_breadcrumb_box(&hunk.ancestors, highlight, width, theme)
     }
 }
 
@@ -131,7 +131,7 @@ fn render_line_number_box(line_number: usize, theme: &Theme) -> Vec<Line<'static
 
 fn render_breadcrumb_box(
     ancestors: &[ScopeNode],
-    language: Option<Language>,
+    highlight: Option<&str>,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -192,7 +192,7 @@ fn render_breadcrumb_box(
                 let available_text_width = content_width.saturating_sub(prefix_width);
                 let (mut code_spans, code_width) = highlighted_spans(
                     theme,
-                    language,
+                    highlight,
                     text,
                     Style::default(),
                     available_text_width.max(1),
@@ -234,7 +234,7 @@ fn render_breadcrumb_box(
 /// lines; pairing the two pools drives intraline emphasis.
 fn render_subhunk(
     lines: &[crate::DiffLine],
-    language: Option<Language>,
+    highlight: Option<&str>,
     width: usize,
     theme: &Theme,
     rendered: &mut Vec<Line<'static>>,
@@ -262,7 +262,7 @@ fn render_subhunk(
                     &line.content,
                     &minus_emphasis[mi],
                     LineKind::Removed,
-                    language,
+                    highlight,
                     width,
                     theme,
                 ));
@@ -273,7 +273,7 @@ fn render_subhunk(
                     &line.content,
                     &plus_emphasis[pi],
                     LineKind::Added,
-                    language,
+                    highlight,
                     width,
                     theme,
                 ));
@@ -294,7 +294,7 @@ fn render_emphasized_line(
     content: &str,
     emphasis: &LineEmphasis,
     kind: LineKind,
-    language: Option<Language>,
+    highlight: Option<&str>,
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
@@ -312,7 +312,7 @@ fn render_emphasized_line(
     };
 
     match emphasis {
-        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, language, width, theme),
+        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, highlight, width, theme),
         LineEmphasis::Paired(sections) => {
             let bg_for_section = |section: &EmphSection| -> Color {
                 match section.kind {
@@ -322,7 +322,7 @@ fn render_emphasized_line(
             };
             let (mut spans, visual_width) = highlighted_spans_with_emphasis(
                 theme,
-                language,
+                highlight,
                 content,
                 sections,
                 bg_for_section,
@@ -344,13 +344,13 @@ fn render_emphasized_line(
 fn syntax_diff_line(
     content: &str,
     bg: Color,
-    language: Option<Language>,
+    highlight: Option<&str>,
     width: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let base_style = Style::default().bg(bg);
 
-    let (mut spans, visual_width) = highlighted_spans(theme, language, content, base_style, width);
+    let (mut spans, visual_width) = highlighted_spans(theme, highlight, content, base_style, width);
     let padding = width.saturating_sub(visual_width);
     if padding > 0 {
         spans.push(Span::styled(" ".repeat(padding), base_style));
@@ -524,7 +524,7 @@ fn plain_text_spans(
 
 fn highlighted_spans(
     theme_ignored: &Theme,
-    language: Option<Language>,
+    highlight: Option<&str>,
     line: &str,
     base_style: Style,
     max_width: usize,
@@ -535,7 +535,7 @@ fn highlighted_spans(
     }
 
     let assets = SyntaxAssets::load();
-    let syntax = assets.syntax_for(language);
+    let syntax = assets.syntax_for_name(highlight);
     let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
 
     match highlighter.highlight_line(line, assets.syntax_set) {
@@ -551,7 +551,7 @@ fn highlighted_spans(
 /// colors are preserved.
 fn highlighted_spans_with_emphasis(
     _theme: &Theme,
-    language: Option<Language>,
+    highlight: Option<&str>,
     line: &str,
     sections: &[EmphSection],
     bg_for_section: impl Fn(&EmphSection) -> Color,
@@ -562,7 +562,7 @@ fn highlighted_spans_with_emphasis(
     }
 
     let assets = SyntaxAssets::load();
-    let syntax = assets.syntax_for(language);
+    let syntax = assets.syntax_for_name(highlight);
     let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
 
     let section_ranges = build_section_byte_ranges(sections);
@@ -809,7 +809,7 @@ pub fn render_pane_scrollbar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Diff, DiffLine};
+    use crate::{Diff, DiffLine, Language};
 
     fn rust_function_hunk() -> Hunk {
         Hunk {
@@ -864,7 +864,7 @@ mod tests {
     fn render_hunk_emits_breadcrumb_when_ancestors_present() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         // First line is the breadcrumb top border.
         assert!(line_text(&lines[0]).contains("╮"));
         // Some line in the box references the ancestor.
@@ -883,7 +883,7 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         // Expect a 3-line box containing the line number.
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(text.iter().any(|t| t.contains("42")));
@@ -894,7 +894,7 @@ mod tests {
     fn render_hunk_added_line_carries_added_bg() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         let added_bg = rgb_to_color(theme.diff_added_bg);
         assert!(
             lines
@@ -922,7 +922,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         let added_emph = rgb_to_color(theme.diff_added_emph_bg);
         let removed_emph = rgb_to_color(theme.diff_deleted_emph_bg);
         let bgs: Vec<Color> = lines
@@ -944,12 +944,13 @@ mod tests {
         let no_ext = Diff::compute(original, updated, "script");
         assert_eq!(with_ext.language(), Some(Language::Bash));
         assert_eq!(no_ext.language(), Some(Language::Bash));
+        assert_eq!(with_ext.highlight(), no_ext.highlight());
 
         let theme = Theme::default();
         let render = |diff: &Diff| -> Vec<Line<'static>> {
             diff.hunks()
                 .iter()
-                .flat_map(|h| render_hunk(h, diff.language(), 120, &theme))
+                .flat_map(|h| render_hunk(h, diff.highlight(), 120, &theme))
                 .collect()
         };
 
@@ -979,7 +980,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         let added_emph = rgb_to_color(theme.diff_added_emph_bg);
         let removed_emph = rgb_to_color(theme.diff_deleted_emph_bg);
         let bgs: Vec<Color> = lines
@@ -1025,7 +1026,7 @@ mod tests {
                 },
             ],
         };
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert!(
             texts.iter().any(|t| t.contains("...")),
@@ -1063,7 +1064,7 @@ mod tests {
                 },
             ],
         };
-        let lines = render_hunk(&hunk, Some(Language::Rust), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
         for line in &lines {
             assert!(
                 !line_text(line).contains("..."),

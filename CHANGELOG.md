@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
+
 ## [0.9.0] - 2026-06-23
 
 ### Added

@@ -984,7 +984,12 @@ fn render_detail_for(
                 rendered.push(Line::from(""));
             }
             DetailItem::Hunk(hunk) => {
-                rendered.extend(render_tui::render_hunk(hunk, entry.language, width, theme));
+                rendered.extend(render_tui::render_hunk(
+                    hunk,
+                    entry.highlight.as_deref(),
+                    width,
+                    theme,
+                ));
             }
         }
     }
@@ -1373,6 +1378,7 @@ mod tests {
             error: None,
             hunks: Vec::new(),
             language: None,
+            highlight: None,
         }
     }
 
@@ -1395,6 +1401,7 @@ mod tests {
             error: None,
             hunks: Vec::new(),
             language: None,
+            highlight: None,
         }
     }
 

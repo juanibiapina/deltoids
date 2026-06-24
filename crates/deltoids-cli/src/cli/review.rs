@@ -281,7 +281,12 @@ fn build_view(
         let diff = &diffs[input_idx];
         for hunk in diff.hunks() {
             lines.push(Line::from(""));
-            lines.extend(render_tui::render_hunk(hunk, diff.language(), width, theme));
+            lines.extend(render_tui::render_hunk(
+                hunk,
+                diff.highlight(),
+                width,
+                theme,
+            ));
         }
     }
 

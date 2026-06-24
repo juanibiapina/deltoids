@@ -137,6 +137,7 @@ pub struct Diff {
     snapshot: Snapshot,
     hunks: Vec<Hunk>,
     language: Option<Language>,
+    highlight: Option<String>,
 }
 
 impl Diff {
@@ -149,11 +150,14 @@ impl Diff {
     pub fn compute(original: &str, updated: &str, path: &str) -> Self {
         let snapshot = Snapshot::compute(original, updated);
         let language = Language::detect(path, updated).or_else(|| Language::detect(path, original));
+        let highlight = Language::detect_highlight_name(path, updated)
+            .or_else(|| Language::detect_highlight_name(path, original));
         let hunks = build_hunks(&snapshot, original, updated, language);
         Diff {
             snapshot,
             hunks,
             language,
+            highlight,
         }
     }
 
@@ -170,6 +174,11 @@ impl Diff {
     /// Returns the detected language used for tree-sitter scope expansion.
     pub fn language(&self) -> Option<Language> {
         self.language
+    }
+
+    /// Returns the detected syntect syntax name used as the highlight key.
+    pub fn highlight(&self) -> Option<&str> {
+        self.highlight.as_deref()
     }
 
     /// Returns the underlying [`Snapshot`] (raw diff op stream and
@@ -561,6 +570,36 @@ impl Foo {
         let hunks = diff.hunks();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].ancestors.is_empty());
+    }
+
+    #[test]
+    fn highlight_uses_syntect_name_for_supported_language() {
+        let diff = Diff::compute("let x = 1;\n", "let x = 2;\n", "test.rs");
+        assert_eq!(diff.highlight(), Some("Rust"));
+    }
+
+    #[test]
+    fn highlight_detects_dockerfile_without_tree_sitter_support() {
+        // Dockerfile has no tree-sitter `Language` but still highlights.
+        let original = "FROM rust:1\nRUN cargo build\n";
+        let updated = "FROM rust:1\nRUN cargo test\n";
+        let diff = Diff::compute(original, updated, "Dockerfile");
+        assert_eq!(diff.language(), None);
+        assert_eq!(diff.highlight(), Some("Dockerfile"));
+    }
+
+    #[test]
+    fn highlight_detects_dockerfile_from_first_line() {
+        let original = "FROM rust:1\nRUN cargo build\n";
+        let updated = "FROM rust:1\nRUN cargo test\n";
+        let diff = Diff::compute(original, updated, "Dockerfile.prod");
+        assert_eq!(diff.highlight(), Some("Dockerfile"));
+    }
+
+    #[test]
+    fn highlight_is_none_for_unrecognised_file() {
+        let diff = Diff::compute("line1\n", "line2\n", "data.unknownext");
+        assert_eq!(diff.highlight(), None);
     }
 
     #[test]

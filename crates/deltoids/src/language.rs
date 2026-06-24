@@ -145,28 +145,13 @@ impl Language {
             .and_then(Self::from_syntax)
     }
 
-    /// Token used to find a syntax in syntect sets for rendering.
-    pub(crate) fn syntax_token(self) -> &'static str {
-        match self {
-            Language::Bash => "bash",
-            Language::C => "c",
-            Language::Cpp => "cpp",
-            Language::Css => "css",
-            Language::Go => "go",
-            Language::Hcl => "hcl",
-            Language::Java => "java",
-            Language::JavaScript => "js",
-            Language::Json => "json",
-            Language::Lua => "lua",
-            Language::Markdown => "md",
-            Language::Python => "py",
-            Language::Ruby => "rb",
-            Language::Rust => "rs",
-            Language::Toml => "toml",
-            Language::Tsx => "tsx",
-            Language::TypeScript => "ts",
-            Language::Yaml => "yaml",
-        }
+    /// Detect the syntect syntax name (the highlight key), independent of
+    /// tree-sitter support. The path is never read from disk.
+    pub(crate) fn detect_highlight_name(path: &str, source: &str) -> Option<String> {
+        let syntax_set = detection_syntax_set();
+        detect_syntax_by_path(syntax_set, path)
+            .or_else(|| detect_syntax_by_first_line(syntax_set, source))
+            .map(|syntax| syntax.name.clone())
     }
 
     /// Tree-sitter parser and scope taxonomy for this language.

@@ -204,6 +204,7 @@ fn record_payload(
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
     let language = computed.language();
+    let highlight = computed.highlight().map(str::to_string);
 
     // Reuse the existing `WriteHistoryEntry` shape for both Write and
     // Edit variants: in the Claude Code hook path we always have the
@@ -227,6 +228,7 @@ fn record_payload(
             diff,
             hunks,
             language,
+            highlight,
         },
     ) {
         // If the success append failed, log a failure entry of the

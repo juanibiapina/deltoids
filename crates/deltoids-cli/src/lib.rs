@@ -315,6 +315,7 @@ fn try_execute_hash_edit(
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
     let language = computed.language();
+    let highlight = computed.highlight().map(str::to_string);
 
     fs::write(path, &applied.text)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -335,6 +336,7 @@ fn try_execute_hash_edit(
             diff: diff.clone(),
             hunks,
             language,
+            highlight,
         },
     )?;
 
@@ -534,6 +536,7 @@ fn try_execute_edit(
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
     let language = computed.language();
+    let highlight = computed.highlight().map(str::to_string);
 
     fs::write(path, &updated)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
@@ -553,6 +556,7 @@ fn try_execute_edit(
             diff: diff.clone(),
             hunks,
             language,
+            highlight,
         },
     )?;
 
@@ -586,6 +590,7 @@ fn try_execute_write(
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
     let language = computed.language();
+    let highlight = computed.highlight().map(str::to_string);
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -616,6 +621,7 @@ fn try_execute_write(
             diff: diff.clone(),
             hunks,
             language,
+            highlight,
         },
     )?;
 

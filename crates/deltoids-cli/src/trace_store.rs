@@ -301,6 +301,8 @@ pub(crate) struct EditHistoryEntry {
     pub hunks: Vec<deltoids::Hunk>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<deltoids::Language>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -334,6 +336,8 @@ pub(crate) struct WriteHistoryEntry {
     pub hunks: Vec<deltoids::Hunk>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<deltoids::Language>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -382,6 +386,8 @@ pub struct HistoryEntry {
     /// before language detection landed, or for unsupported files).
     #[serde(default)]
     pub language: Option<deltoids::Language>,
+    #[serde(default)]
+    pub highlight: Option<String>,
 }
 
 /// Parse a trace's `entries.jsonl` file.

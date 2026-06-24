@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod events;
 pub mod hashline;
+pub mod scroll;
 pub mod sidebar;
 pub mod terminal;
 pub mod trace_store;

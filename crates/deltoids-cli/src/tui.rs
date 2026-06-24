@@ -26,6 +26,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use crate::events::read_event_burst;
+use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::terminal::TerminalSession;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::render_tui::{
@@ -36,13 +37,6 @@ use deltoids::{Hunk, Theme};
 
 const DIFF_SCROLL_STEP: usize = 3;
 const DIFF_MOUSE_SCROLL_STEP: usize = 1;
-/// Number of mouse-wheel events that advance a list selection by one item. A
-/// single physical wheel tick emits several events (high-resolution scrolling
-/// fans one tick into a burst); dividing the event count keeps one tick from
-/// jumping many items. Counting (rather than timing) makes movement strictly
-/// proportional to how much was scrolled: more scrolling always moves more,
-/// never fewer, at any speed. Lower to scroll faster, raise to scroll slower.
-const LIST_SCROLL_EVENTS_PER_ITEM: usize = 3;
 const POLL_TIMEOUT: Duration = Duration::from_secs(2);
 const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
 
@@ -114,13 +108,8 @@ struct AppState {
     entries_rect: Rect,
     traces_rect: Rect,
     diff_rect: Rect,
-    /// Pane and direction the wheel accumulator is currently counting; changing
-    /// either restarts the count so a reversal moves immediately.
-    list_scroll_dir: Option<(Focus, MouseEventKind)>,
-    /// Wheel events counted toward the next list move. One move is emitted each
-    /// time it reaches [`LIST_SCROLL_EVENTS_PER_ITEM`]; the remainder carries
-    /// over so no scrolling is lost.
-    list_scroll_accum: usize,
+    /// Translates fanned-out mouse-wheel events into proportional motion.
+    wheel: WheelScroll<Focus>,
 }
 
 impl AppState {
@@ -136,28 +125,7 @@ impl AppState {
             entries_rect: Rect::default(),
             traces_rect: Rect::default(),
             diff_rect: Rect::default(),
-            list_scroll_dir: None,
-            list_scroll_accum: 0,
-        }
-    }
-
-    /// Whether a list-pane wheel event for `pane` in `kind` should move the
-    /// selection now. Counts events and moves once every
-    /// [`LIST_SCROLL_EVENTS_PER_ITEM`], so movement is proportional to scroll
-    /// amount regardless of speed. A change of pane or direction restarts the
-    /// count primed so the first event after the change moves immediately.
-    fn allow_list_scroll(&mut self, pane: Focus, kind: MouseEventKind) -> bool {
-        if self.list_scroll_dir != Some((pane, kind)) {
-            self.list_scroll_dir = Some((pane, kind));
-            // Prime so the first event of a new gesture moves at once.
-            self.list_scroll_accum = LIST_SCROLL_EVENTS_PER_ITEM - 1;
-        }
-        self.list_scroll_accum += 1;
-        if self.list_scroll_accum >= LIST_SCROLL_EVENTS_PER_ITEM {
-            self.list_scroll_accum -= LIST_SCROLL_EVENTS_PER_ITEM;
-            true
-        } else {
-            false
+            wheel: WheelScroll::new(),
         }
     }
 
@@ -366,18 +334,28 @@ fn handle_mouse_scroll_down(
 ) -> AppCommand {
     match target {
         Focus::Entries => {
-            if state.allow_list_scroll(Focus::Entries, MouseEventKind::ScrollDown) {
+            let steps = state
+                .wheel
+                .advance(target, ScrollDir::Down, ScrollKind::List);
+            for _ in 0..steps {
                 move_entry_down(state, traces);
             }
         }
         Focus::Traces => {
-            if state.allow_list_scroll(Focus::Traces, MouseEventKind::ScrollDown) {
+            let steps = state
+                .wheel
+                .advance(target, ScrollDir::Down, ScrollKind::List);
+            for _ in 0..steps {
                 move_trace_down(state, traces);
             }
         }
         Focus::Diff => {
+            let steps = state
+                .wheel
+                .advance(target, ScrollDir::Down, ScrollKind::Content);
             let max_scroll = max_detail_scroll(detail_row_count, detail_height);
-            state.diff_scroll = (state.diff_scroll + DIFF_MOUSE_SCROLL_STEP).min(max_scroll);
+            state.diff_scroll =
+                (state.diff_scroll + steps * DIFF_MOUSE_SCROLL_STEP).min(max_scroll);
         }
     }
     AppCommand::Continue
@@ -386,17 +364,24 @@ fn handle_mouse_scroll_down(
 fn handle_mouse_scroll_up(state: &mut AppState, target: Focus) -> AppCommand {
     match target {
         Focus::Entries => {
-            if state.allow_list_scroll(Focus::Entries, MouseEventKind::ScrollUp) {
+            let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
+            for _ in 0..steps {
                 move_entry_up(state);
             }
         }
         Focus::Traces => {
-            if state.allow_list_scroll(Focus::Traces, MouseEventKind::ScrollUp) {
+            let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
+            for _ in 0..steps {
                 move_trace_up(state);
             }
         }
         Focus::Diff => {
-            state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_MOUSE_SCROLL_STEP);
+            let steps = state
+                .wheel
+                .advance(target, ScrollDir::Up, ScrollKind::Content);
+            state.diff_scroll = state
+                .diff_scroll
+                .saturating_sub(steps * DIFF_MOUSE_SCROLL_STEP);
         }
     }
     AppCommand::Continue
@@ -2377,28 +2362,6 @@ mod tests {
         ];
         apply_events(&mut state, &traces, burst, 20, 10);
         assert_eq!(state.entry_index(), 1);
-    }
-
-    #[test]
-    fn entries_scroll_moves_one_item_per_event_quota() {
-        let traces = vec![LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 4, "a"),
-            entries: vec![edit_entry(), edit_entry(), edit_entry(), edit_entry()],
-        }];
-        let mut state = state_with_rects(&traces);
-        let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 3);
-
-        // The first event of the gesture moves immediately (primed count).
-        handle_mouse(&mut state, &traces, mouse, 20, 10);
-        assert_eq!(state.entry_index(), 1);
-
-        // The next move takes another full quota of events.
-        for _ in 0..LIST_SCROLL_EVENTS_PER_ITEM - 1 {
-            handle_mouse(&mut state, &traces, mouse, 20, 10);
-            assert_eq!(state.entry_index(), 1);
-        }
-        handle_mouse(&mut state, &traces, mouse, 20, 10);
-        assert_eq!(state.entry_index(), 2);
     }
 
     #[test]

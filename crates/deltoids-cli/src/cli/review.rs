@@ -62,6 +62,7 @@ use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use crate::events::read_event_burst;
+use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
 use crate::terminal::TerminalSession;
 
@@ -337,6 +338,8 @@ struct ViewState {
     /// True while the left button is held on the pane divider, so
     /// subsequent `Drag` events resize the sidebar.
     dragging_divider: bool,
+    /// Translates fanned-out mouse-wheel events into proportional motion.
+    wheel: WheelScroll<Focus>,
 }
 
 impl ViewState {
@@ -354,6 +357,7 @@ impl ViewState {
             diff_rect: Rect::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             dragging_divider: false,
+            wheel: WheelScroll::new(),
         }
     }
 
@@ -645,23 +649,37 @@ fn handle_mouse(
     match mouse.kind {
         MouseEventKind::ScrollDown => match target {
             Focus::Sidebar => {
-                state.sidebar.move_down(sidebar_viewport);
-                state.snap_diff_to_selected_file(diff_viewport);
+                let steps = state
+                    .wheel
+                    .advance(target, ScrollDir::Down, ScrollKind::List);
+                for _ in 0..steps {
+                    state.sidebar.move_down(sidebar_viewport);
+                    state.snap_diff_to_selected_file(diff_viewport);
+                }
                 AppCommand::Continue
             }
             Focus::Diff => {
-                state.scroll_diff_by(SCROLL_STEP_SMALL as isize, diff_viewport);
+                let steps = state
+                    .wheel
+                    .advance(target, ScrollDir::Down, ScrollKind::Content);
+                state.scroll_diff_by((steps * SCROLL_STEP_SMALL) as isize, diff_viewport);
                 AppCommand::Continue
             }
         },
         MouseEventKind::ScrollUp => match target {
             Focus::Sidebar => {
-                state.sidebar.move_up(sidebar_viewport);
-                state.snap_diff_to_selected_file(diff_viewport);
+                let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
+                for _ in 0..steps {
+                    state.sidebar.move_up(sidebar_viewport);
+                    state.snap_diff_to_selected_file(diff_viewport);
+                }
                 AppCommand::Continue
             }
             Focus::Diff => {
-                state.scroll_diff_by(-(SCROLL_STEP_SMALL as isize), diff_viewport);
+                let steps = state
+                    .wheel
+                    .advance(target, ScrollDir::Up, ScrollKind::Content);
+                state.scroll_diff_by(-((steps * SCROLL_STEP_SMALL) as isize), diff_viewport);
                 AppCommand::Continue
             }
         },
@@ -1734,6 +1752,33 @@ mod tests {
         let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 5);
         handle_mouse(&mut state, mouse, 18, 18);
         assert!(state.sidebar.selected() > initial);
+    }
+
+    #[test]
+    fn sidebar_burst_scroll_moves_one_row_per_tick() {
+        // A single physical wheel tick fans out into a burst of events; the
+        // shared WheelScroll collapses one quota's worth of events into a
+        // single selection move, so the sidebar steps slowly like the traces
+        // lists rather than jumping several rows per tick.
+        let files: Vec<FileDiff> = (0..6).map(|i| file_diff(&format!("f{i}.txt"))).collect();
+        let resolved: Vec<ResolvedFile> = files
+            .iter()
+            .map(|f| ResolvedFile {
+                file: f,
+                before: "a\n".to_string(),
+                after: "b\n".to_string(),
+            })
+            .collect();
+        let mut state = make_state_with_rects(&resolved);
+        let initial = state.sidebar.selected();
+
+        let burst = vec![
+            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 5)),
+            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 5)),
+            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 5)),
+        ];
+        apply_events(&mut state, burst, 18, 18);
+        assert_eq!(state.sidebar.selected(), initial + 1);
     }
 
     #[test]

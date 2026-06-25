@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TUI: The `review` and `traces` sidebars resize the same way: use `<`/`>` to narrow/widen them or drag the divider with the mouse. The default width scales with the terminal, and the sidebar never disappears on narrow terminals.
 - review TUI: browse local uncommitted changes, refreshing automatically as you edit, add, revert, or commit files.
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
@@ -17,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: Long diff lines now wrap onto continuation rows instead of being cut at the pane edge, so you can see the whole line in both `review` and `traces`.
 - TUI: Mouse-wheel scrolling is smoother throughout. Diff views and lists (the file sidebar, traces, and entries) now move in proportion to how much you scroll, instead of jumping too far per gesture.
 - review TUI: The file sidebar now lists files and folders interleaved alphabetically, matching lazygit's default order, instead of grouping all folders first.
-- review TUI: The sidebar's default width now scales with the terminal width instead of a fixed size. You can still resize it with `<`/`>` or by dragging.
 
 ### Fixed
 

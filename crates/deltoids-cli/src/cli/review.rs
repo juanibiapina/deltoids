@@ -96,6 +96,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::events::read_event_burst;
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
+use crate::sidebar_width::{self, Preference};
 use crate::terminal::TerminalSession;
 
 const OVERVIEW: &str = r#"Open a diff in a scrollable TUI.
@@ -134,23 +135,6 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("q / Esc", "quit (or close this popup)"),
 ];
 
-/// Numerator/denominator of the terminal width used as the default
-/// sidebar outer width (borders included). 1/5 keeps the tree compact
-/// while still scaling with the terminal: a 120-col terminal floors at
-/// `MIN_SIDEBAR_WIDTH` (24), a 200-col terminal gets ~40. The result is
-/// clamped by [`default_sidebar_width`] and again by
-/// [`effective_sidebar_width`] at draw time.
-const SIDEBAR_WIDTH_NUM: u16 = 1;
-const SIDEBAR_WIDTH_DEN: u16 = 5;
-/// Below this terminal width the sidebar is hidden entirely.
-const MIN_TERMINAL_WIDTH_FOR_SIDEBAR: u16 = 80;
-/// Smallest the sidebar may be shrunk to (outer width, includes borders).
-const MIN_SIDEBAR_WIDTH: u16 = 24;
-/// Smallest the diff pane content may be squeezed to when the sidebar
-/// grows. Bounds how wide the sidebar can get.
-const MIN_DIFF_WIDTH: u16 = 24;
-/// Columns added/removed per `<`/`>` keypress.
-const SIDEBAR_RESIZE_STEP: u16 = 4;
 /// Idle poll timeout for the event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 /// Debounce window for working-tree change events. A burst of file-system
@@ -423,10 +407,10 @@ struct ViewState {
     /// Last-drawn pane rects, used for mouse hit-testing.
     sidebar_rect: Rect,
     diff_rect: Rect,
-    /// User's preferred sidebar outer width (includes borders). Adjusted
-    /// by `<`/`>` or by dragging the divider; clamped on use by
-    /// [`effective_sidebar_width`].
-    sidebar_width: u16,
+    /// User's preferred sidebar width plus the policy to resolve it to
+    /// an on-screen width each frame. Adjusted by `<`/`>` or by dragging
+    /// the divider; clamped on use by [`Preference::effective`].
+    sidebar_pref: Preference,
     /// True while the left button is held on the pane divider, so
     /// subsequent `Drag` events resize the sidebar.
     dragging_divider: bool,
@@ -440,7 +424,7 @@ impl ViewState {
         sidebar: Sidebar,
         display_order: Vec<usize>,
         width: usize,
-        sidebar_width: u16,
+        sidebar_pref: Preference,
     ) -> Self {
         Self {
             diff_lines: view.lines,
@@ -453,7 +437,7 @@ impl ViewState {
             help_visible: false,
             sidebar_rect: Rect::default(),
             diff_rect: Rect::default(),
-            sidebar_width,
+            sidebar_pref,
             dragging_divider: false,
             wheel: WheelScroll::new(),
         }
@@ -656,17 +640,14 @@ fn handle_key(
             }
         },
         // Resize the sidebar regardless of focus. The stored value is
-        // the raw preference; clamping happens in `effective_sidebar_width`
+        // the raw preference; clamping happens in `Preference::effective`
         // at draw time.
         KeyCode::Char('>') => {
-            state.sidebar_width = state.sidebar_width.saturating_add(SIDEBAR_RESIZE_STEP);
+            state.sidebar_pref.widen();
             AppCommand::Continue
         }
         KeyCode::Char('<') => {
-            state.sidebar_width = state
-                .sidebar_width
-                .saturating_sub(SIDEBAR_RESIZE_STEP)
-                .max(MIN_SIDEBAR_WIDTH);
+            state.sidebar_pref.narrow();
             AppCommand::Continue
         }
         _ => AppCommand::Continue,
@@ -730,7 +711,7 @@ fn handle_mouse(
             state.dragging_divider = false;
         }
         MouseEventKind::Drag(MouseButton::Left) if state.dragging_divider => {
-            state.sidebar_width = mouse.column.saturating_add(1).max(MIN_SIDEBAR_WIDTH);
+            state.sidebar_pref.set_from_divider(mouse.column);
             return AppCommand::Continue;
         }
         MouseEventKind::Down(MouseButton::Left) if is_on_divider(state, mouse.column) => {
@@ -803,35 +784,6 @@ fn handle_mouse(
 // TUI loop
 // ---------------------------------------------------------------------------
 
-/// Default sidebar outer width (borders included) for a given terminal
-/// width: a fraction of the terminal, clamped to
-/// `[MIN_SIDEBAR_WIDTH, terminal_width - MIN_DIFF_WIDTH]` so it never
-/// starves the diff pane. Used once at startup to seed the user's
-/// preferred width; [`effective_sidebar_width`] still applies the
-/// hide-on-narrow rule and final clamp at draw time.
-fn default_sidebar_width(terminal_width: u16) -> u16 {
-    let proportional = terminal_width.saturating_mul(SIDEBAR_WIDTH_NUM) / SIDEBAR_WIDTH_DEN;
-    let max = terminal_width
-        .saturating_sub(MIN_DIFF_WIDTH)
-        .max(MIN_SIDEBAR_WIDTH);
-    proportional.clamp(MIN_SIDEBAR_WIDTH, max)
-}
-
-/// Resolve the sidebar's column width from the user's preferred width and
-/// the current terminal width. Returns 0 when the terminal is too narrow
-/// to comfortably show the sidebar. Otherwise clamps `preferred` to
-/// `[MIN_SIDEBAR_WIDTH, terminal_width - MIN_DIFF_WIDTH]` so the diff pane
-/// always keeps a usable minimum.
-fn effective_sidebar_width(preferred: u16, terminal_width: u16) -> u16 {
-    if terminal_width < MIN_TERMINAL_WIDTH_FOR_SIDEBAR {
-        return 0;
-    }
-    let max = terminal_width
-        .saturating_sub(MIN_DIFF_WIDTH)
-        .max(MIN_SIDEBAR_WIDTH);
-    preferred.clamp(MIN_SIDEBAR_WIDTH, max)
-}
-
 /// Install a recursive filesystem watcher for a refreshable source.
 ///
 /// The callback only forwards each event's paths over the returned
@@ -872,6 +824,7 @@ fn spawn_watcher(
     Ok((watcher, notify_rx))
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<(), String> {
     let _session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -885,9 +838,10 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
     // Build the diff view for the initial diff-pane width, then rebuild
     // on resize.
     let initial_total_width = terminal.size().map(|s| s.width).unwrap_or(120);
-    let pref_width = default_sidebar_width(initial_total_width);
-    let initial_sidebar_width = effective_sidebar_width(pref_width, initial_total_width);
-    let initial_diff_width = diff_pane_width(initial_sidebar_width, initial_total_width);
+    let sidebar_pref = Preference::seeded(initial_total_width);
+    let initial_sidebar_width = sidebar_pref.effective(initial_total_width);
+    let initial_diff_width =
+        sidebar_width::diff_pane_width(initial_sidebar_width, initial_total_width);
 
     let sidebar = build_sidebar(&model, theme);
     let display_order = sidebar.display_order();
@@ -898,7 +852,13 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
         initial_diff_width,
         theme,
     );
-    let mut state = ViewState::new(view, sidebar, display_order, initial_diff_width, pref_width);
+    let mut state = ViewState::new(
+        view,
+        sidebar,
+        display_order,
+        initial_diff_width,
+        sidebar_pref,
+    );
 
     // Snap diff to the sidebar's initial selection. The viewport isn't
     // known until the first draw, so approximate it from terminal
@@ -918,8 +878,8 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
             .map_err(|err| format!("failed to render screen: {err}"))?;
         let total_width = metrics.area.width;
         let total_height = metrics.area.height;
-        let sidebar_w = effective_sidebar_width(state.sidebar_width, total_width);
-        let diff_width = diff_pane_width(sidebar_w, total_width);
+        let sidebar_w = state.sidebar_pref.effective(total_width);
+        let diff_width = sidebar_width::diff_pane_width(sidebar_w, total_width);
         // -2 for the pane's top and bottom borders. The result is
         // the number of content rows the pane shows, i.e. the scroll
         // viewport. (No bottom help bar; help is a `?`-triggered
@@ -1112,14 +1072,6 @@ fn reload_view(
     state.snap_diff_to_selected_file(diff_viewport);
 }
 
-/// Width budget for the diff pane *content* (terminal minus the
-/// sidebar pane minus this pane's own two border columns). When no
-/// sidebar is shown (`sidebar_w == 0`) the diff pane spans the whole
-/// terminal, still minus its own two borders.
-fn diff_pane_width(sidebar_w: u16, terminal_width: u16) -> usize {
-    terminal_width.saturating_sub(sidebar_w + 2) as usize
-}
-
 /// Apply a whole burst of input events to `state`, stopping early on
 /// `Quit`. Draining the queue per frame (see [`read_event_burst`]) collapses
 /// the burst into a single redraw.
@@ -1181,21 +1133,15 @@ fn dispatch_event(
 fn draw(frame: &mut ratatui::Frame<'_>, state: &mut ViewState, theme: &Theme) {
     let area = frame.area();
 
-    let sw = effective_sidebar_width(state.sidebar_width, area.width);
-    if sw > 0 {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(sw), Constraint::Min(10)])
-            .split(area);
-        state.sidebar_rect = cols[0];
-        state.diff_rect = cols[1];
-        draw_sidebar(frame, cols[0], state, theme);
-        draw_diff(frame, cols[1], state, theme);
-    } else {
-        state.sidebar_rect = Rect::default();
-        state.diff_rect = area;
-        draw_diff(frame, area, state, theme);
-    }
+    let sw = state.sidebar_pref.effective(area.width);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(sw), Constraint::Min(10)])
+        .split(area);
+    state.sidebar_rect = cols[0];
+    state.diff_rect = cols[1];
+    draw_sidebar(frame, cols[0], state, theme);
+    draw_diff(frame, cols[1], state, theme);
 
     if state.help_visible {
         draw_help_popup(frame, area, theme);
@@ -1467,7 +1413,7 @@ mod tests {
             Sidebar::build_with_icons(&sidebar_files, &theme(), crate::sidebar::IconMode::Off);
         let display_order = sidebar.display_order();
         let view = build_view(files, &diffs, &display_order, 80, &theme());
-        ViewState::new(view, sidebar, display_order, 80, 38)
+        ViewState::new(view, sidebar, display_order, 80, Preference::seeded(200))
     }
 
     #[test]
@@ -1920,48 +1866,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_sidebar_width_hides_when_terminal_is_narrow() {
-        assert_eq!(effective_sidebar_width(38, 60), 0);
-    }
-
-    #[test]
-    fn effective_sidebar_width_uses_preferred_when_it_fits() {
-        assert_eq!(effective_sidebar_width(38, 200), 38);
-    }
-
-    #[test]
-    fn effective_sidebar_width_clamps_to_min() {
-        assert_eq!(effective_sidebar_width(1, 200), MIN_SIDEBAR_WIDTH);
-    }
-
-    #[test]
-    fn effective_sidebar_width_clamps_to_leave_diff_room() {
-        // A huge preference is capped so the diff pane keeps MIN_DIFF_WIDTH.
-        assert_eq!(effective_sidebar_width(u16::MAX, 100), 100 - MIN_DIFF_WIDTH);
-    }
-
-    #[test]
-    fn default_sidebar_width_scales_with_terminal() {
-        // Wider terminal yields a wider default tree.
-        assert!(default_sidebar_width(200) > default_sidebar_width(80));
-    }
-
-    #[test]
-    fn default_sidebar_width_leaves_diff_room() {
-        // Even on a very wide terminal the default keeps MIN_DIFF_WIDTH for
-        // the diff pane.
-        let w = 2000;
-        assert!(default_sidebar_width(w) <= w - MIN_DIFF_WIDTH);
-    }
-
-    #[test]
-    fn default_sidebar_width_clamps_to_min_on_narrow() {
-        // Tiny/degenerate widths never go below the floor and never panic.
-        assert_eq!(default_sidebar_width(0), MIN_SIDEBAR_WIDTH);
-        assert_eq!(default_sidebar_width(10), MIN_SIDEBAR_WIDTH);
-    }
-
-    #[test]
     fn handle_key_grow_and_shrink_sidebar() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
@@ -1970,11 +1874,11 @@ mod tests {
             after: "b\n".to_string(),
         }];
         let mut state = make_state(&resolved);
-        let initial = state.sidebar_width;
+        let initial = state.sidebar_pref.effective(200);
         handle_key(&mut state, KeyCode::Char('>'), 4, 4);
-        assert_eq!(state.sidebar_width, initial + SIDEBAR_RESIZE_STEP);
+        assert!(state.sidebar_pref.effective(200) > initial);
         handle_key(&mut state, KeyCode::Char('<'), 4, 4);
-        assert_eq!(state.sidebar_width, initial);
+        assert_eq!(state.sidebar_pref.effective(200), initial);
     }
 
     #[test]
@@ -1986,9 +1890,14 @@ mod tests {
             after: "b\n".to_string(),
         }];
         let mut state = make_state(&resolved);
-        state.sidebar_width = MIN_SIDEBAR_WIDTH;
+        // Shrink well past the floor; effective width must settle at the
+        // minimum (24) and never go lower.
+        for _ in 0..20 {
+            handle_key(&mut state, KeyCode::Char('<'), 4, 4);
+        }
+        let floored = state.sidebar_pref.effective(200);
         handle_key(&mut state, KeyCode::Char('<'), 4, 4);
-        assert_eq!(state.sidebar_width, MIN_SIDEBAR_WIDTH);
+        assert_eq!(state.sidebar_pref.effective(200), floored);
     }
 
     fn key_press(code: KeyCode) -> Event {
@@ -2009,7 +1918,7 @@ mod tests {
             after: "b\n".to_string(),
         }];
         let mut state = make_state(&resolved);
-        let initial = state.sidebar_width;
+        let initial = state.sidebar_pref.effective(200);
         let burst = vec![
             key_press(KeyCode::Char('>')),
             key_press(KeyCode::Char('>')),
@@ -2017,7 +1926,8 @@ mod tests {
             key_press(KeyCode::Char('>')),
         ];
         apply_events(&mut state, burst, 4, 4);
-        assert_eq!(state.sidebar_width, initial + SIDEBAR_RESIZE_STEP);
+        // One step (4 cols) per burst, not one per repeat.
+        assert_eq!(state.sidebar_pref.effective(200), initial + 4);
     }
 
     #[test]
@@ -2273,15 +2183,15 @@ mod tests {
             18,
             18,
         );
-        assert_eq!(state.sidebar_width, 51);
-        // Drag far left -> floored at MIN_SIDEBAR_WIDTH.
+        assert_eq!(state.sidebar_pref.effective(200), 51);
+        // Drag far left -> floored at the minimum (24).
         handle_mouse(
             &mut state,
             make_mouse(MouseEventKind::Drag(MouseButton::Left), 2, 5),
             18,
             18,
         );
-        assert_eq!(state.sidebar_width, MIN_SIDEBAR_WIDTH);
+        assert_eq!(state.sidebar_pref.effective(200), 24);
         // Release ends the drag.
         handle_mouse(
             &mut state,

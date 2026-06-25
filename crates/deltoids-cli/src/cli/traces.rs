@@ -13,6 +13,7 @@ Keys:
 - Tab:          switch focus between the traces pane and the entries pane
 - j / k / arrows: move within the focused pane
 - PgUp / PgDn:  scroll the diff pane
+- < / >:        narrow / widen the sidebar (or drag the divider with the mouse)
 - q / Esc:      quit
 "#;
 

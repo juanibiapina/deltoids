@@ -6,6 +6,11 @@
 //! - Right: diff / detail for the selected entry.
 //!
 //! Focus toggles between the traces pane and the entries pane with `Tab`.
+//!
+//! The left column (entries + traces) is a resizable sidebar: `<`/`>`
+//! narrow/widen it from any focus, or drag the divider between the panes
+//! with the mouse. Its default width scales with the terminal and it
+//! never hides, clamping to a minimum on narrow terminals.
 
 use std::collections::HashSet;
 use std::io::{self, IsTerminal, Read};
@@ -27,6 +32,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::events::read_event_burst;
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
+use crate::sidebar_width::{self, Preference};
 use crate::terminal::TerminalSession;
 use crate::{HistoryEntry, TraceSummary, list_traces_for_current_directory, read_history_entries};
 use deltoids::render_tui::{
@@ -108,6 +114,13 @@ struct AppState {
     entries_rect: Rect,
     traces_rect: Rect,
     diff_rect: Rect,
+    /// User's preferred sidebar width plus the policy to resolve it to an
+    /// on-screen width each frame. Adjusted by `<`/`>` or by dragging the
+    /// divider; clamped on use by [`Preference::effective`].
+    sidebar_pref: Preference,
+    /// True while the left button is held on the pane divider, so
+    /// subsequent `Drag` events resize the sidebar.
+    dragging_divider: bool,
     /// Translates fanned-out mouse-wheel events into proportional motion.
     wheel: WheelScroll<Focus>,
 }
@@ -125,6 +138,8 @@ impl AppState {
             entries_rect: Rect::default(),
             traces_rect: Rect::default(),
             diff_rect: Rect::default(),
+            sidebar_pref: Preference::seeded(0),
+            dragging_divider: false,
             wheel: WheelScroll::new(),
         }
     }
@@ -228,6 +243,17 @@ fn handle_key(
             state.diff_scroll = state.diff_scroll.saturating_sub(detail_height.max(1));
             AppCommand::Continue
         }
+        // Resize the sidebar regardless of focus, matching review. The
+        // stored value is the raw preference; clamping happens in
+        // `Preference::effective` at draw time.
+        KeyCode::Char('>') => {
+            state.sidebar_pref.widen();
+            AppCommand::Continue
+        }
+        KeyCode::Char('<') => {
+            state.sidebar_pref.narrow();
+            AppCommand::Continue
+        }
         _ => AppCommand::Continue,
     }
 }
@@ -288,6 +314,23 @@ fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -> usize {
     detail_row_count.saturating_sub(detail_height.max(1))
 }
 
+/// The two adjacent border columns that form the visible divider
+/// between the left column (entries/traces) and the diff pane: the left
+/// column's right border and the diff's left border. Both `entries_rect`
+/// and `traces_rect` share the left column's x/width, so either gives the
+/// boundary. `None` when the left column has zero width.
+fn divider_columns(state: &AppState) -> Option<(u16, u16)> {
+    if state.entries_rect.width == 0 {
+        return None;
+    }
+    let right_border = state.entries_rect.right().saturating_sub(1);
+    Some((right_border, right_border.saturating_add(1)))
+}
+
+fn is_on_divider(state: &AppState, col: u16) -> bool {
+    matches!(divider_columns(state), Some((a, b)) if col == a || col == b)
+}
+
 fn pane_at(state: &AppState, col: u16, row: u16) -> Option<Focus> {
     let pos = Position::new(col, row);
     if state.entries_rect.contains(pos) {
@@ -308,6 +351,23 @@ fn handle_mouse(
     detail_row_count: usize,
     detail_height: usize,
 ) -> AppCommand {
+    // Divider drag takes precedence over pane dispatch so a grab on the
+    // border neither selects a list row nor changes focus.
+    match mouse.kind {
+        MouseEventKind::Up(MouseButton::Left) => {
+            state.dragging_divider = false;
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.dragging_divider => {
+            state.sidebar_pref.set_from_divider(mouse.column);
+            return AppCommand::Continue;
+        }
+        MouseEventKind::Down(MouseButton::Left) if is_on_divider(state, mouse.column) => {
+            state.dragging_divider = true;
+            return AppCommand::Continue;
+        }
+        _ => {}
+    }
+
     let target = match pane_at(state, mouse.column, mouse.row) {
         Some(pane) => pane,
         None => return AppCommand::Continue,
@@ -448,6 +508,13 @@ fn app_command_for_event(
 /// The TUI loop collects every event already buffered before redrawing so a
 /// burst of key repeats (e.g. holding `j`) collapses into a single redraw
 /// instead of one redraw per repeat.
+///
+/// Sidebar-resize keys (`<`/`>`) are additionally coalesced to a single
+/// step per burst. Holding the key fires OS auto-repeat, which buffers a
+/// backlog of presses; applying every one would overshoot and keep growing
+/// the sidebar after the key is released. One step per burst makes a hold
+/// resize at a steady, frame-paced rate. Mouse drag needs no such guard: it
+/// sets an absolute width, so the last event in the burst already wins.
 fn apply_events(
     state: &mut AppState,
     traces: &[LoadedTrace],
@@ -455,7 +522,14 @@ fn apply_events(
     detail_row_count: usize,
     detail_height: usize,
 ) -> AppCommand {
+    let mut resized = false;
     for event in events {
+        if is_resize_key(&event) {
+            if resized {
+                continue;
+            }
+            resized = true;
+        }
         if app_command_for_event(state, traces, event, detail_row_count, detail_height)
             == AppCommand::Quit
         {
@@ -463,6 +537,16 @@ fn apply_events(
         }
     }
     AppCommand::Continue
+}
+
+/// A key-press of `<` or `>` (the sidebar-resize bindings).
+fn is_resize_key(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && matches!(key.code, KeyCode::Char('<') | KeyCode::Char('>'))
+    )
 }
 
 /// Reload traces from disk unconditionally. When a new trace appears at
@@ -568,6 +652,8 @@ fn run_tui(mut traces: Vec<LoadedTrace>, cwd: &str, theme: &Theme) -> Result<(),
         .map_err(|err| format!("Failed to watch {}: {}", trace_root.display(), err))?;
 
     let mut state = AppState::new(traces.len());
+    let initial_total_width = terminal.size().map(|s| s.width).unwrap_or(120);
+    state.sidebar_pref = Preference::seeded(initial_total_width);
     let mut dirty_since: Option<Instant> = None;
 
     loop {
@@ -806,9 +892,10 @@ fn draw(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
+    let sidebar_w = state.sidebar_pref.effective(root[0].width);
     let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .constraints([Constraint::Length(sidebar_w), Constraint::Min(10)])
         .split(root[0]);
 
     let sidebar = Layout::default()
@@ -834,8 +921,10 @@ fn draw(
 }
 
 fn help_bar(theme: &Theme) -> Paragraph<'static> {
-    Paragraph::new("Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  q quit")
-        .style(Style::default().fg(rgb_to_color(theme.muted)))
+    Paragraph::new(
+        "Tab/1/2/3 focus  j/k move  Shift+J/K or PgUp/PgDn scroll diff  < / > resize  q quit",
+    )
+    .style(Style::default().fg(rgb_to_color(theme.muted)))
 }
 
 fn entry_icon(ok: bool) -> (&'static str, Color) {
@@ -1291,7 +1380,7 @@ fn render_scripted(
         return "No traces found for this directory.\n".to_string();
     }
 
-    let left_width = (width / 3).max(30).min(width.saturating_sub(20));
+    let left_width = sidebar_width::default_width(width as u16) as usize;
     let right_width = width.saturating_sub(left_width + 3);
     let body_height = height.max(3);
     let sidebar_half = (body_height / 2).max(2);
@@ -2529,5 +2618,136 @@ mod tests {
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
         handle_mouse(&mut state, &traces, mouse, 20, 10);
         assert_eq!(state.focus, Focus::Entries);
+    }
+
+    #[test]
+    fn handle_key_grow_and_shrink_sidebar() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.sidebar_pref = Preference::seeded(200);
+        let initial = state.sidebar_pref.effective(200);
+        handle_key(&mut state, &traces, KeyCode::Char('>'), 0, 0);
+        assert!(state.sidebar_pref.effective(200) > initial);
+        handle_key(&mut state, &traces, KeyCode::Char('<'), 0, 0);
+        assert_eq!(state.sidebar_pref.effective(200), initial);
+    }
+
+    #[test]
+    fn handle_key_shrink_sidebar_floors_at_min() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.sidebar_pref = Preference::seeded(200);
+        for _ in 0..20 {
+            handle_key(&mut state, &traces, KeyCode::Char('<'), 0, 0);
+        }
+        let floored = state.sidebar_pref.effective(200);
+        handle_key(&mut state, &traces, KeyCode::Char('<'), 0, 0);
+        assert_eq!(state.sidebar_pref.effective(200), floored);
+    }
+
+    #[test]
+    fn apply_events_coalesces_repeated_resize_keys() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = AppState::new(traces.len());
+        state.sidebar_pref = Preference::seeded(200);
+        let initial = state.sidebar_pref.effective(200);
+        let burst = vec![
+            key_press(KeyCode::Char('>')),
+            key_press(KeyCode::Char('>')),
+            key_press(KeyCode::Char('>')),
+            key_press(KeyCode::Char('>')),
+        ];
+        apply_events(&mut state, &traces, burst, 0, 0);
+        // One step (4 cols) per burst, not one per repeat.
+        assert_eq!(state.sidebar_pref.effective(200), initial + 4);
+    }
+
+    #[test]
+    fn divider_drag_resizes_and_release_ends() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.sidebar_pref = Preference::seeded(200);
+        // entries_rect = (0,0,30,10): divider columns are 29 and 30.
+        assert!(is_on_divider(&state, 29));
+        assert!(is_on_divider(&state, 30));
+        assert!(!is_on_divider(&state, 5));
+
+        // Grab the divider, then drag right to column 50 -> width 51.
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 29, 5),
+            20,
+            10,
+        );
+        assert!(state.dragging_divider);
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse(MouseEventKind::Drag(MouseButton::Left), 50, 5),
+            20,
+            10,
+        );
+        assert_eq!(state.sidebar_pref.effective(200), 51);
+        // Drag far left -> floored at the minimum (24).
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse(MouseEventKind::Drag(MouseButton::Left), 2, 5),
+            20,
+            10,
+        );
+        assert_eq!(state.sidebar_pref.effective(200), 24);
+        // Release ends the drag.
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse(MouseEventKind::Up(MouseButton::Left), 2, 5),
+            20,
+            10,
+        );
+        assert!(!state.dragging_divider);
+    }
+
+    #[test]
+    fn divider_press_does_not_select_or_change_focus() {
+        let traces = vec![
+            LoadedTrace {
+                trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
+                entries: vec![edit_entry(), edit_entry()],
+            },
+            LoadedTrace {
+                trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
+                entries: vec![edit_entry()],
+            },
+        ];
+        let mut state = state_with_rects(&traces);
+        let entry = state.entry_index();
+        let trace = state.trace_index;
+        let focus = state.focus;
+
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 29, 5),
+            20,
+            10,
+        );
+        assert!(state.dragging_divider);
+        assert_eq!(state.entry_index(), entry);
+        assert_eq!(state.trace_index, trace);
+        assert_eq!(state.focus, focus);
     }
 }

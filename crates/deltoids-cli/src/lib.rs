@@ -3,6 +3,7 @@ pub mod events;
 pub mod hashline;
 pub mod scroll;
 pub mod sidebar;
+pub mod sidebar_width;
 pub mod terminal;
 pub mod trace_store;
 pub mod tui;

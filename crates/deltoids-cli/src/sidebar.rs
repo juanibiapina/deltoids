@@ -274,7 +274,7 @@ struct Node {
     name: String,
     /// `Some(file_index)` when this node is a leaf; `None` for directories.
     file_index: Option<usize>,
-    /// Children sorted by name with directories first.
+    /// Children sorted by name (directories and files interleaved).
     children: Vec<Node>,
 }
 
@@ -290,12 +290,12 @@ impl Node {
 
 /// Build a tree from the file paths, then walk it to produce [`Row`]s.
 ///
-/// Tree building rule (lazygit-style):
+/// Tree building rule (matches lazygit's default `mixed` order):
 ///
 /// 1. Split each file's display path on `/`; insert the leaf as a child
 ///    of the deepest directory.
-/// 2. Sort each directory's children: directories before files,
-///    alphabetic within each group.
+/// 2. Sort each directory's children alphabetically by name, with
+///    directories and files interleaved (no dir-vs-file tiebreak).
 /// 3. Collapse single-child directory chains: if a directory has
 ///    exactly one child and that child is a directory, fold the child's
 ///    name into the parent's label and continue collapsing.
@@ -342,15 +342,7 @@ fn insert_path(root: &mut Node, path: &str, file_index: usize) {
 }
 
 fn sort_tree(node: &mut Node) {
-    node.children.sort_by(|a, b| {
-        match (a.file_index.is_none(), b.file_index.is_none()) {
-            // Both dirs or both files: alphabetic.
-            (true, true) | (false, false) => a.name.cmp(&b.name),
-            // Dir before file.
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-        }
-    });
+    node.children.sort_by(|a, b| a.name.cmp(&b.name));
     for child in &mut node.children {
         sort_tree(child);
     }
@@ -1551,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn build_rows_sorts_dirs_before_files_alphabetic() {
+    fn build_rows_sorts_mixed_by_name() {
         let a = fd("zzz.rs");
         let b = fd("src/a.rs");
         let c = fd("aaa.rs");
@@ -1573,14 +1565,18 @@ mod tests {
             },
         ];
         let rows = build_rows(&files);
-        // Expect: src/ ; src/a.rs ; aaa.rs ; zzz.rs
+        // Expect (mixed): aaa.rs ; src/ ; src/a.rs ; zzz.rs
         match &rows[0] {
+            Row::File { name, .. } => assert_eq!(name, "aaa.rs"),
+            other => panic!("expected aaa.rs first, got {other:?}"),
+        }
+        match &rows[1] {
             Row::Dir { label, .. } => assert_eq!(label, "src/"),
-            other => panic!("expected src/ first, got {other:?}"),
+            other => panic!("expected src/ second, got {other:?}"),
         }
         match &rows[2] {
-            Row::File { name, .. } => assert_eq!(name, "aaa.rs"),
-            other => panic!("expected aaa.rs after src/, got {other:?}"),
+            Row::File { name, .. } => assert_eq!(name, "a.rs"),
+            other => panic!("expected src/a.rs third, got {other:?}"),
         }
         match &rows[3] {
             Row::File { name, .. } => assert_eq!(name, "zzz.rs"),
@@ -1730,11 +1726,11 @@ mod tests {
 
     #[test]
     fn nearest_file_index_on_dir_returns_first_file_in_subtree() {
-        // Layout: src/{a.rs,b.rs}, top-level c.rs.
-        // Rows: src/ ; src/a.rs ; src/b.rs ; c.rs.
+        // Layout: src/{a.rs,b.rs}, top-level z.rs.
+        // Rows (mixed): src/ ; src/a.rs ; src/b.rs ; z.rs.
         let a = fd("src/a.rs");
         let b = fd("src/b.rs");
-        let c = fd("c.rs");
+        let c = fd("z.rs");
         let files = vec![
             SidebarFile {
                 file: &a,
@@ -1764,7 +1760,7 @@ mod tests {
         // Then b.rs.
         sidebar.move_down(20);
         assert_eq!(sidebar.nearest_file_index(), Some(1));
-        // Then c.rs (top-level file).
+        // Then z.rs (top-level file).
         sidebar.move_down(20);
         assert_eq!(sidebar.nearest_file_index(), Some(2));
     }

@@ -23,7 +23,7 @@
 }
 
 :root {
-  /* Tokyo Night-inspired dark palette (matches edit-tui defaults). */
+  /* Tokyo Night-inspired dark palette (matches the traces TUI defaults). */
   --bg: #1a1b26;
   --bg-surface: #1f2335;
   --bg-card: #232639;

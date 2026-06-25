@@ -45,7 +45,7 @@ default = []
 # repository's object database (uses libgit2 via the `git2` crate).
 blob-resolve = ["dep:git2"]
 # Render `Hunk`s and headers as ratatui `Line<'static>` values for use in
-# scrolling TUIs (rv, edit-tui).
+# scrolling TUIs (review, traces).
 ratatui = ["dep:ratatui"]
 
 [lints]

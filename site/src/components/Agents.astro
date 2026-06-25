@@ -1,7 +1,7 @@
 ---
 import { Image } from "astro:assets";
 import { AGENT_TOOLS } from "../data/site";
-import editTuiShot from "../assets/screenshots/edit-tui.png";
+import tracesShot from "../assets/screenshots/traces.png";
 ---
 
 <section id="agents" class="section">
@@ -9,7 +9,7 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
     <div class="section-head">
       <h2>Review every edit by coding agents</h2>
       <p>
-        <code>edit-tui</code> browses every edit, with its reason and
+        <code>traces</code> browses every edit, with its reason and
         semantic context.
       </p>
     </div>
@@ -32,8 +32,8 @@ import editTuiShot from "../assets/screenshots/edit-tui.png";
 
     <figure class="proof">
       <Image
-        src={editTuiShot}
-        alt="edit-tui showing a trace of agent edits with diffs and reasons"
+        src={tracesShot}
+        alt="traces showing a trace of agent edits with diffs and reasons"
         widths={[800, 1200, 1600]}
         sizes="(min-width: 1024px) 1024px, 100vw"
         format="webp"

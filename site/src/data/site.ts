@@ -95,7 +95,7 @@ git:
   },
 ];
 
-/** edit-tui install snippets per coding agent. */
+/** traces install snippets per coding agent. */
 export const AGENT_TOOLS: {
   id: string;
   label: string;

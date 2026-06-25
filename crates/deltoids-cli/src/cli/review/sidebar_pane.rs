@@ -76,7 +76,7 @@ pub(super) fn draw_sidebar(
 
     // Extend the selection background across the full inner pane width
     // so the highlighted row reads as a continuous bar (matching
-    // lazygit and edit-tui's `List` widget). Pad against the inner
+    // lazygit and the traces TUI's `List` widget). Pad against the inner
     // width so the trailing block stops just before the right border.
     if let Some(rel) = sidebar.selected().checked_sub(scroll)
         && rel < visible.len()

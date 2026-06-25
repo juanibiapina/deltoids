@@ -324,7 +324,7 @@ fn handle_key(
             AppCommand::Continue
         }
         // Shift+J/K always scroll the diff regardless of focus, matching
-        // edit-tui — useful when navigating files but wanting to peek at
+        // traces — useful when navigating files but wanting to peek at
         // a long diff. This is the documented cross-cutting binding: the
         // shell routes it straight to the diff pane.
         KeyCode::Char('J') => {

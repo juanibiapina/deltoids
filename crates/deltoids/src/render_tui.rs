@@ -722,7 +722,7 @@ fn display_width(text: &str) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Pane helpers (shared between edit-tui and rv)
+// Pane helpers (shared between traces and review)
 // ---------------------------------------------------------------------------
 //
 // These build the rounded, titled, optionally-footered [`Block`] used to

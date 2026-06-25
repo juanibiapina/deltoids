@@ -10,11 +10,11 @@
 //! disappearing.
 
 /// Numerator/denominator of the terminal width used as the default
-/// sidebar outer width (borders included). 1/5 keeps the tree compact
-/// while still scaling with the terminal: a 120-col terminal floors at
-/// [`MIN_SIDEBAR_WIDTH`] (24), a 200-col terminal gets ~40.
+/// sidebar outer width (borders included). 1/4 keeps the tree compact
+/// while still scaling with the terminal: a 120-col terminal gets 30, a
+/// 200-col terminal gets 50. Matches lazygit's default `sidePanelWidth`.
 const SIDEBAR_WIDTH_NUM: u16 = 1;
-const SIDEBAR_WIDTH_DEN: u16 = 5;
+const SIDEBAR_WIDTH_DEN: u16 = 4;
 /// Smallest the sidebar may be shrunk to (outer width, includes borders).
 const MIN_SIDEBAR_WIDTH: u16 = 24;
 /// Smallest the diff/content pane may be squeezed to when the sidebar
@@ -106,6 +106,13 @@ mod tests {
     fn default_width_scales_with_terminal() {
         // Wider terminal yields a wider default tree.
         assert!(default_width(200) > default_width(80));
+    }
+
+    #[test]
+    fn default_width_is_one_quarter() {
+        // The default is 1/4 of the terminal width (matching lazygit).
+        assert_eq!(default_width(200), 50);
+        assert_eq!(default_width(160), 40);
     }
 
     #[test]

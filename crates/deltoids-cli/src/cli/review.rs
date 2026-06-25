@@ -134,11 +134,14 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("q / Esc", "quit (or close this popup)"),
 ];
 
-/// Default sidebar width in columns, *including the two border
-/// columns* (clamped against the terminal width at draw time). Picked
-/// to fit a typical "crates/deltoids/src/" + file row without
-/// truncation: outer 38 = inner 36.
-const DEFAULT_SIDEBAR_WIDTH: u16 = 38;
+/// Numerator/denominator of the terminal width used as the default
+/// sidebar outer width (borders included). 1/5 keeps the tree compact
+/// while still scaling with the terminal: a 120-col terminal floors at
+/// `MIN_SIDEBAR_WIDTH` (24), a 200-col terminal gets ~40. The result is
+/// clamped by [`default_sidebar_width`] and again by
+/// [`effective_sidebar_width`] at draw time.
+const SIDEBAR_WIDTH_NUM: u16 = 1;
+const SIDEBAR_WIDTH_DEN: u16 = 5;
 /// Below this terminal width the sidebar is hidden entirely.
 const MIN_TERMINAL_WIDTH_FOR_SIDEBAR: u16 = 80;
 /// Smallest the sidebar may be shrunk to (outer width, includes borders).
@@ -432,7 +435,13 @@ struct ViewState {
 }
 
 impl ViewState {
-    fn new(view: DiffView, sidebar: Sidebar, display_order: Vec<usize>, width: usize) -> Self {
+    fn new(
+        view: DiffView,
+        sidebar: Sidebar,
+        display_order: Vec<usize>,
+        width: usize,
+        sidebar_width: u16,
+    ) -> Self {
         Self {
             diff_lines: view.lines,
             file_offsets: view.file_offsets,
@@ -444,7 +453,7 @@ impl ViewState {
             help_visible: false,
             sidebar_rect: Rect::default(),
             diff_rect: Rect::default(),
-            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_width,
             dragging_divider: false,
             wheel: WheelScroll::new(),
         }
@@ -794,6 +803,20 @@ fn handle_mouse(
 // TUI loop
 // ---------------------------------------------------------------------------
 
+/// Default sidebar outer width (borders included) for a given terminal
+/// width: a fraction of the terminal, clamped to
+/// `[MIN_SIDEBAR_WIDTH, terminal_width - MIN_DIFF_WIDTH]` so it never
+/// starves the diff pane. Used once at startup to seed the user's
+/// preferred width; [`effective_sidebar_width`] still applies the
+/// hide-on-narrow rule and final clamp at draw time.
+fn default_sidebar_width(terminal_width: u16) -> u16 {
+    let proportional = terminal_width.saturating_mul(SIDEBAR_WIDTH_NUM) / SIDEBAR_WIDTH_DEN;
+    let max = terminal_width
+        .saturating_sub(MIN_DIFF_WIDTH)
+        .max(MIN_SIDEBAR_WIDTH);
+    proportional.clamp(MIN_SIDEBAR_WIDTH, max)
+}
+
 /// Resolve the sidebar's column width from the user's preferred width and
 /// the current terminal width. Returns 0 when the terminal is too narrow
 /// to comfortably show the sidebar. Otherwise clamps `preferred` to
@@ -862,7 +885,8 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
     // Build the diff view for the initial diff-pane width, then rebuild
     // on resize.
     let initial_total_width = terminal.size().map(|s| s.width).unwrap_or(120);
-    let initial_sidebar_width = effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, initial_total_width);
+    let pref_width = default_sidebar_width(initial_total_width);
+    let initial_sidebar_width = effective_sidebar_width(pref_width, initial_total_width);
     let initial_diff_width = diff_pane_width(initial_sidebar_width, initial_total_width);
 
     let sidebar = build_sidebar(&model, theme);
@@ -874,7 +898,7 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
         initial_diff_width,
         theme,
     );
-    let mut state = ViewState::new(view, sidebar, display_order, initial_diff_width);
+    let mut state = ViewState::new(view, sidebar, display_order, initial_diff_width, pref_width);
 
     // Snap diff to the sidebar's initial selection. The viewport isn't
     // known until the first draw, so approximate it from terminal
@@ -1443,7 +1467,7 @@ mod tests {
             Sidebar::build_with_icons(&sidebar_files, &theme(), crate::sidebar::IconMode::Off);
         let display_order = sidebar.display_order();
         let view = build_view(files, &diffs, &display_order, 80, &theme());
-        ViewState::new(view, sidebar, display_order, 80)
+        ViewState::new(view, sidebar, display_order, 80, 38)
     }
 
     #[test]
@@ -1897,15 +1921,12 @@ mod tests {
 
     #[test]
     fn effective_sidebar_width_hides_when_terminal_is_narrow() {
-        assert_eq!(effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, 60), 0);
+        assert_eq!(effective_sidebar_width(38, 60), 0);
     }
 
     #[test]
     fn effective_sidebar_width_uses_preferred_when_it_fits() {
-        assert_eq!(
-            effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, 200),
-            DEFAULT_SIDEBAR_WIDTH
-        );
+        assert_eq!(effective_sidebar_width(38, 200), 38);
     }
 
     #[test]
@@ -1917,6 +1938,27 @@ mod tests {
     fn effective_sidebar_width_clamps_to_leave_diff_room() {
         // A huge preference is capped so the diff pane keeps MIN_DIFF_WIDTH.
         assert_eq!(effective_sidebar_width(u16::MAX, 100), 100 - MIN_DIFF_WIDTH);
+    }
+
+    #[test]
+    fn default_sidebar_width_scales_with_terminal() {
+        // Wider terminal yields a wider default tree.
+        assert!(default_sidebar_width(200) > default_sidebar_width(80));
+    }
+
+    #[test]
+    fn default_sidebar_width_leaves_diff_room() {
+        // Even on a very wide terminal the default keeps MIN_DIFF_WIDTH for
+        // the diff pane.
+        let w = 2000;
+        assert!(default_sidebar_width(w) <= w - MIN_DIFF_WIDTH);
+    }
+
+    #[test]
+    fn default_sidebar_width_clamps_to_min_on_narrow() {
+        // Tiny/degenerate widths never go below the floor and never panic.
+        assert_eq!(default_sidebar_width(0), MIN_SIDEBAR_WIDTH);
+        assert_eq!(default_sidebar_width(10), MIN_SIDEBAR_WIDTH);
     }
 
     #[test]

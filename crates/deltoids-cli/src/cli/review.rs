@@ -15,6 +15,25 @@
 //! hunks as ratatui [`Line<'static>`] values and scroll them in an
 //! alternate screen.
 //!
+//! In bare mode the working tree is watched: saving, adding, reverting,
+//! or committing a tracked or untracked file re-runs the pipeline and
+//! re-renders within ~200ms, preserving focus, the selected file (by
+//! path), sidebar width, scroll, and the help popup. Reverting or
+//! committing every change shows a "no local changes" empty state
+//! instead of exiting; new edits repopulate it. Gitignored paths and
+//! `.git/` churn never trigger a reload. Piped-diff mode stays static:
+//! stdin is closed, so there is nothing to re-read.
+//!
+//! Known limitation (Linux): the watcher arms recursively
+//! ([`RecursiveMode::Recursive`]), which on Linux allocates one inotify
+//! watch per directory. The gitignore filter drops *events* from
+//! ignored trees but does not stop inotify from *watching* them, so a
+//! repo with a huge ignored tree (e.g. `node_modules`) can be slow to
+//! arm and may hit `fs.inotify.max_user_watches`. macOS is unaffected
+//! (FSEvents watches a whole tree with one handle). A future refinement
+//! is to enumerate only non-ignored directories (e.g. via the `ignore`
+//! crate) and add per-directory non-recursive watches.
+//!
 //! Usage:
 //!
 //! ```sh
@@ -49,14 +68,17 @@
 //! [`HELP_KEYS`]).
 
 use std::io::{self, IsTerminal, Read};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use clap::Args as ClapArgs;
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
+use notify::{RecursiveMode, Watcher};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Clear, Paragraph};
@@ -128,6 +150,11 @@ const MIN_DIFF_WIDTH: u16 = 24;
 const SIDEBAR_RESIZE_STEP: u16 = 4;
 /// Idle poll timeout for the event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
+/// Debounce window for working-tree change events. A burst of file-system
+/// notifications (an editor save touches several files, git churns the
+/// index) collapses into one reload once this much wall-clock has passed
+/// since the first event. Matches the traces TUI.
+const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
 /// Minimum wall-clock gap between full diff-cache rebuilds. Rebuilding
 /// the whole cache on every resize step stalls the event loop; with
 /// held-key auto-repeat that stall lets a backlog of `<`/`>` presses
@@ -158,7 +185,8 @@ fn run_inner() -> Result<(), String> {
     // Pick the diff source by whether stdin is piped. A piped diff is read
     // verbatim (the classic `git diff | deltoids review`); a bare
     // invocation in a terminal shows the repo's local working-tree changes.
-    let (input, repo) = if io::stdin().is_terminal() {
+    let stdin_is_tty = io::stdin().is_terminal();
+    let (input, repo) = if stdin_is_tty {
         let repo = git::Repo::discover().ok_or_else(|| {
             "not a git repository; pipe a diff (e.g. `git diff | deltoids review`) \
              or run inside a repo"
@@ -182,43 +210,73 @@ fn run_inner() -> Result<(), String> {
     };
 
     let theme = Theme::load();
-    let parsed = GitDiff::parse(&input);
-    let resolved = resolve(&parsed, repo.as_ref())?;
-    let diffs = precompute_diffs(&resolved);
+    let model = build_model(&input, repo.as_ref())?;
 
-    run_tui(&resolved, &diffs, &theme)
+    // Bare mode re-diffs the working tree on change; a piped diff is a
+    // closed stream with nothing to re-read, so it stays static even when
+    // `repo` is `Some` (used only for blob resolution).
+    let source = match (stdin_is_tty, repo.as_ref()) {
+        (true, Some(repo)) => DiffSource::WorkingTree(repo),
+        _ => DiffSource::Static,
+    };
+
+    run_tui(model, source, &theme)
 }
 
-/// One file's resolved content, ready for rendering.
+/// Describes whether and how the diff can be refreshed mid-session.
+enum DiffSource<'a> {
+    /// Piped stdin: a closed stream, never refreshes.
+    Static,
+    /// Bare repo: re-diff the working tree when files change on disk.
+    WorkingTree(&'a git::Repo),
+}
+
+/// The owned data the TUI renders: resolved files plus their diffs.
+/// Rebuilt wholesale on each working-tree reload.
+struct Model {
+    files: Vec<ResolvedFile>,
+    diffs: Vec<Diff>,
+}
+
+/// Parse `input`, resolve every file's before/after content against
+/// `repo`, and compute per-file [`Diff`]s.
+fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model, String> {
+    let parsed = GitDiff::parse(input);
+    let files = resolve(parsed, repo)?;
+    let diffs = precompute_diffs(&files);
+    Ok(Model { files, diffs })
+}
+
+/// One file's resolved content, ready for rendering. Owns its
+/// [`FileDiff`] so a [`Model`] is a self-contained owned value (no
+/// borrow of the parsed diff), which lets the TUI replace it on reload.
 #[cfg_attr(test, derive(Debug))]
-struct ResolvedFile<'a> {
-    file: &'a FileDiff,
+struct ResolvedFile {
+    file: FileDiff,
     before: String,
     after: String,
 }
 
-/// Resolve content for every file. Returns the resolved files on success,
-/// or a string describing the first missing blob on failure.
-fn resolve<'a>(
-    parsed: &'a GitDiff,
-    repo: Option<&git::Repo>,
-) -> Result<Vec<ResolvedFile<'a>>, String> {
+/// Resolve content for every file. Consumes the parsed diff (taking each
+/// [`FileDiff`] by value). Returns the resolved files on success, or a
+/// string describing the first missing blob on failure.
+fn resolve(parsed: GitDiff, repo: Option<&git::Repo>) -> Result<Vec<ResolvedFile>, String> {
     let mut files = Vec::with_capacity(parsed.files.len());
 
-    for file in &parsed.files {
-        let resolved = content::retrieve(file, repo);
+    for file in parsed.files {
+        let resolved = content::retrieve(&file, repo);
         let before = match resolved.before {
             SideContent::Resolved(s) => s,
             SideContent::Absent => String::new(),
             SideContent::Missing { hash } => {
-                return Err(missing_blob_message(&hash, display_path(file)));
+                return Err(missing_blob_message(&hash, display_path(&file)));
             }
         };
         let after = match resolved.after {
             SideContent::Resolved(s) => s,
             SideContent::Absent => String::new(),
             SideContent::Missing { hash } => {
-                return Err(missing_blob_message(&hash, display_path(file)));
+                return Err(missing_blob_message(&hash, display_path(&file)));
             }
         };
         files.push(ResolvedFile {
@@ -240,10 +298,10 @@ fn missing_blob_message(hash: &str, path: &str) -> String {
 
 /// Compute one [`Diff`] per resolved file. Done once at startup so the
 /// diff pane and the sidebar share the same line-count totals.
-fn precompute_diffs(files: &[ResolvedFile<'_>]) -> Vec<Diff> {
+fn precompute_diffs(files: &[ResolvedFile]) -> Vec<Diff> {
     files
         .iter()
-        .map(|f| Diff::compute(&f.before, &f.after, display_path(f.file)))
+        .map(|f| Diff::compute(&f.before, &f.after, display_path(&f.file)))
         .collect()
 }
 
@@ -283,7 +341,7 @@ struct DiffView {
 /// up `file_offsets[input_index]` to find where that file's header
 /// starts in the rendered output.
 fn build_view(
-    files: &[ResolvedFile<'_>],
+    files: &[ResolvedFile],
     diffs: &[Diff],
     display_order: &[usize],
     width: usize,
@@ -299,7 +357,7 @@ fn build_view(
         file_offsets[input_idx] = lines.len();
 
         let resolved = &files[input_idx];
-        let path = display_path(resolved.file);
+        let path = display_path(&resolved.file);
         lines.extend(render_tui::render_file_header(path, width, theme));
 
         if let Some(old_path) = &resolved.file.rename_from {
@@ -751,26 +809,55 @@ fn effective_sidebar_width(preferred: u16, terminal_width: u16) -> u16 {
     preferred.clamp(MIN_SIDEBAR_WIDTH, max)
 }
 
-fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<(), String> {
+/// Install a recursive filesystem watcher for a refreshable source.
+///
+/// The callback only forwards each event's paths over the returned
+/// channel: git2's `Repository` is `!Send` and can't move into the (Send)
+/// closure, so gitignore filtering stays on the main thread. For a static
+/// source (or a bare repo with no workdir) no watcher is created and the
+/// receiver never fires (the sender is dropped here).
+#[allow(clippy::type_complexity)]
+fn spawn_watcher(
+    source: &DiffSource<'_>,
+) -> Result<
+    (
+        Option<notify::RecommendedWatcher>,
+        mpsc::Receiver<Vec<PathBuf>>,
+    ),
+    String,
+> {
+    let (notify_tx, notify_rx) = mpsc::channel::<Vec<PathBuf>>();
+    let watcher = match source {
+        DiffSource::WorkingTree(repo) => match repo.workdir() {
+            Some(workdir) => {
+                let mut watcher =
+                    notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                        if let Ok(event) = res {
+                            let _ = notify_tx.send(event.paths);
+                        }
+                    })
+                    .map_err(|err| format!("failed to create filesystem watcher: {err}"))?;
+                watcher
+                    .watch(workdir, RecursiveMode::Recursive)
+                    .map_err(|err| format!("failed to watch {}: {err}", workdir.display()))?;
+                Some(watcher)
+            }
+            None => None,
+        },
+        DiffSource::Static => None,
+    };
+    Ok((watcher, notify_rx))
+}
+
+fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<(), String> {
     let _session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("failed to create screen: {err}"))?;
 
-    // Build sidebar from the resolved files plus per-file delta counts.
-    let sidebar_files: Vec<SidebarFile<'_>> = files
-        .iter()
-        .zip(diffs.iter())
-        .map(|(f, d)| {
-            let (added, deleted) = count_deltas(d);
-            SidebarFile {
-                file: f.file,
-                added,
-                deleted,
-            }
-        })
-        .collect();
-    let sidebar = Sidebar::build(&sidebar_files, theme);
+    // Watch the working tree when the diff is refreshable. The receiver
+    // never fires for a static (piped) source.
+    let (_watcher, notify_rx) = spawn_watcher(&source)?;
 
     // Build the diff view for the initial diff-pane width, then rebuild
     // on resize.
@@ -778,8 +865,15 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
     let initial_sidebar_width = effective_sidebar_width(DEFAULT_SIDEBAR_WIDTH, initial_total_width);
     let initial_diff_width = diff_pane_width(initial_sidebar_width, initial_total_width);
 
+    let sidebar = build_sidebar(&model, theme);
     let display_order = sidebar.display_order();
-    let view = build_view(files, diffs, &display_order, initial_diff_width, theme);
+    let view = build_view(
+        &model.files,
+        &model.diffs,
+        &display_order,
+        initial_diff_width,
+        theme,
+    );
     let mut state = ViewState::new(view, sidebar, display_order, initial_diff_width);
 
     // Snap diff to the sidebar's initial selection. The viewport isn't
@@ -792,6 +886,7 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
     state.snap_diff_to_selected_file(initial_diff_viewport);
 
     let mut last_rebuild = Instant::now();
+    let mut dirty_since: Option<Instant> = None;
     loop {
         // Draw and capture viewport metrics for the current frame.
         let metrics = terminal
@@ -816,7 +911,13 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         // backlog that coasts after release.
         let mut rebuild_pending = diff_width != state.cached_width && diff_width > 0;
         if rebuild_pending && last_rebuild.elapsed() >= DIFF_REBUILD_THROTTLE {
-            let view = build_view(files, diffs, &state.display_order, diff_width, theme);
+            let view = build_view(
+                &model.files,
+                &model.diffs,
+                &state.display_order,
+                diff_width,
+                theme,
+            );
             state.diff_lines = view.lines;
             state.file_offsets = view.file_offsets;
             state.cached_width = diff_width;
@@ -829,10 +930,12 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
             }
         }
 
-        // While a rebuild is deferred, poll briefly so the loop comes back
-        // to reflow the diff once resizing stops, even without new input.
+        // Pick the poll timeout: a deferred rebuild or a pending reload
+        // both want a short wake; an idle loop uses the long timeout.
         let timeout = if rebuild_pending {
             DIFF_REBUILD_THROTTLE
+        } else if let Some(since) = dirty_since {
+            DEBOUNCE_DELAY.saturating_sub(since.elapsed())
         } else {
             POLL_TIMEOUT
         };
@@ -841,9 +944,148 @@ fn run_tui(files: &[ResolvedFile<'_>], diffs: &[Diff], theme: &Theme) -> Result<
         if cmd == AppCommand::Quit {
             break;
         }
+
+        // Drain working-tree notifications, keeping only events that could
+        // change the diff (a tracked/untracked, non-`.git/` path). Coalesce
+        // the burst into one reload via the debounce window.
+        while let Ok(paths) = notify_rx.try_recv() {
+            if should_reload(&source, &paths) {
+                dirty_since.get_or_insert_with(Instant::now);
+            }
+        }
+        let reload_width = if diff_width > 0 {
+            diff_width
+        } else {
+            state.cached_width
+        };
+        if dirty_since.is_some_and(|since| since.elapsed() >= DEBOUNCE_DELAY) {
+            if let DiffSource::WorkingTree(repo) = source {
+                reload_working_tree(
+                    &mut state,
+                    &mut model,
+                    repo,
+                    theme,
+                    reload_width,
+                    diff_viewport,
+                )?;
+                last_rebuild = Instant::now();
+            }
+            dirty_since = None;
+        }
     }
 
     Ok(())
+}
+
+/// Build the sidebar from a model plus per-file delta counts.
+fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
+    let sidebar_files: Vec<SidebarFile<'_>> = model
+        .files
+        .iter()
+        .zip(model.diffs.iter())
+        .map(|(f, d)| {
+            let (added, deleted) = count_deltas(d);
+            SidebarFile {
+                file: &f.file,
+                added,
+                deleted,
+            }
+        })
+        .collect();
+    Sidebar::build(&sidebar_files, theme)
+}
+
+/// Whether a batch of changed `paths` warrants a working-tree reload.
+///
+/// Only [`DiffSource::WorkingTree`] reloads. A path counts when it is
+/// neither inside `.git/` (git's constant index/lock churn) nor
+/// gitignored (ignored files never appear in `working_tree_diff`, so a
+/// change there can't alter the diff). Fails open via
+/// [`git::Repo::is_ignored`], so a real change is never missed.
+fn should_reload(source: &DiffSource<'_>, paths: &[PathBuf]) -> bool {
+    let DiffSource::WorkingTree(repo) = source else {
+        return false;
+    };
+    paths
+        .iter()
+        .any(|path| !is_git_internal(path) && !repo.is_ignored(path))
+}
+
+/// Whether `path` lies inside a `.git` directory.
+fn is_git_internal(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".git")
+}
+
+/// Re-diff the working tree and rebuild the view in place, preserving the
+/// selected file by path. Captures the current selection's path from the
+/// old `model`, builds a fresh model from `repo.working_tree_diff()`,
+/// applies it via [`reload_view`], then swaps `model` to the new value.
+fn reload_working_tree(
+    state: &mut ViewState,
+    model: &mut Model,
+    repo: &git::Repo,
+    theme: &Theme,
+    width: usize,
+    diff_viewport: usize,
+) -> Result<(), String> {
+    let prev_path = state
+        .sidebar
+        .nearest_file_index()
+        .and_then(|idx| model.files.get(idx))
+        .map(|f| display_path(&f.file).to_string());
+    let input = repo.working_tree_diff()?;
+    let new_model = build_model(&input, Some(repo))?;
+    reload_view(
+        state,
+        &new_model,
+        prev_path.as_deref(),
+        theme,
+        width,
+        diff_viewport,
+    );
+    *model = new_model;
+    Ok(())
+}
+
+/// Rebuild the sidebar and diff view from `model`, preserving the user's
+/// navigation state. Selection is restored by `prev_path` (index-based
+/// restore would break when files are added or removed); when the file is
+/// gone the fresh sidebar's default (first file) stands. Focus, sidebar
+/// width, help visibility, and wheel state live on `state` and are left
+/// untouched. Scroll is clamped to the new range then snapped to the
+/// restored selection.
+fn reload_view(
+    state: &mut ViewState,
+    model: &Model,
+    prev_path: Option<&str>,
+    theme: &Theme,
+    width: usize,
+    diff_viewport: usize,
+) {
+    let sidebar = build_sidebar(model, theme);
+    let display_order = sidebar.display_order();
+    let view = build_view(&model.files, &model.diffs, &display_order, width, theme);
+
+    state.diff_lines = view.lines;
+    state.file_offsets = view.file_offsets;
+    state.display_order = display_order;
+    state.sidebar = sidebar;
+    state.cached_width = width;
+
+    if let Some(path) = prev_path
+        && let Some(idx) = model
+            .files
+            .iter()
+            .position(|f| display_path(&f.file) == path)
+    {
+        state.sidebar.select_file_index(idx, diff_viewport);
+    }
+
+    let min = state.min_diff_scroll();
+    let max = state.max_diff_scroll(diff_viewport);
+    state.diff_scroll = state.diff_scroll.clamp(min, max.max(min));
+    state.snap_diff_to_selected_file(diff_viewport);
 }
 
 /// Width budget for the diff pane *content* (terminal minus the
@@ -990,6 +1232,28 @@ fn pad_selected_row(line: &mut Line<'static>, width: usize, theme: &Theme) {
 }
 
 fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, theme: &Theme) {
+    let color = pane_border_color(state.focus == Focus::Diff, theme);
+
+    // After a reload that reverted/committed every change there are no
+    // files: render a centered empty state rather than a blank pane.
+    if state.display_order.is_empty() {
+        let block = pane_block_with_footer("─[2]─Diff─", color, None);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let msg = Paragraph::new("No local changes.")
+            .style(Style::default().fg(rgb_to_color(theme.muted)))
+            .alignment(Alignment::Center);
+        let mid = inner.height / 2;
+        let line = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(mid),
+            width: inner.width,
+            height: 1.min(inner.height),
+        };
+        frame.render_widget(msg, line);
+        return;
+    }
+
     let inner = area.inner(Margin {
         vertical: 1,
         horizontal: 1,
@@ -1000,7 +1264,6 @@ fn draw_diff(frame: &mut ratatui::Frame<'_>, area: Rect, state: &mut ViewState, 
     let end = scroll.saturating_add(viewport.max(1)).min(range.end);
     let visible: Vec<Line<'static>> = state.diff_lines[scroll..end].to_vec();
 
-    let color = pane_border_color(state.focus == Focus::Diff, theme);
     let footer = diff_footer(state);
     let block = pane_block_with_footer("─[2]─Diff─", color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
@@ -1162,7 +1425,7 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    fn make_state(files: &[ResolvedFile<'_>]) -> ViewState {
+    fn make_state(files: &[ResolvedFile]) -> ViewState {
         let diffs = precompute_diffs(files);
         let sidebar_files: Vec<SidebarFile<'_>> = files
             .iter()
@@ -1170,7 +1433,7 @@ mod tests {
             .map(|(f, d)| {
                 let (added, deleted) = count_deltas(d);
                 SidebarFile {
-                    file: f.file,
+                    file: &f.file,
                     added,
                     deleted,
                 }
@@ -1187,7 +1450,7 @@ mod tests {
     fn build_view_emits_file_header_and_hunk_for_one_file() {
         let f = file_diff("foo.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "hello\n".to_string(),
             after: "world\n".to_string(),
         }];
@@ -1215,12 +1478,12 @@ mod tests {
         let b = file_diff("b.txt");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1245,12 +1508,12 @@ mod tests {
         let b = file_diff("b.txt");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1268,7 +1531,7 @@ mod tests {
         f.old_path = "old.txt".to_string();
         f.rename_from = Some("old.txt".to_string());
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "x\n".to_string(),
             after: "y\n".to_string(),
         }];
@@ -1292,7 +1555,7 @@ mod tests {
     fn count_deltas_counts_added_and_removed() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "old1\nold2\nshared\n".to_string(),
             after: "new1\nshared\nnew2\n".to_string(),
         }];
@@ -1306,7 +1569,7 @@ mod tests {
     fn handle_key_q_quits() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1321,7 +1584,7 @@ mod tests {
     fn handle_key_tab_toggles_focus() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1338,7 +1601,7 @@ mod tests {
         // Build a diff with enough lines to scroll.
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
@@ -1354,12 +1617,12 @@ mod tests {
         let b = file_diff("b.txt");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1389,17 +1652,17 @@ mod tests {
         let c = file_diff("gamma/c.rs");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "old_alpha\n".to_string(),
                 after: "new_alpha\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "old_beta\n".to_string(),
                 after: "new_beta\n".to_string(),
             },
             ResolvedFile {
-                file: &c,
+                file: c,
                 before: "old_gamma\n".to_string(),
                 after: "new_gamma\n".to_string(),
             },
@@ -1465,12 +1728,12 @@ mod tests {
         let b = file_diff("other/b.rs");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1513,7 +1776,7 @@ mod tests {
     fn handle_key_capital_j_scrolls_diff_in_sidebar_focus() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
@@ -1528,7 +1791,7 @@ mod tests {
     fn handle_key_question_mark_opens_help() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1542,7 +1805,7 @@ mod tests {
     fn handle_key_question_mark_toggles_help_closed() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1556,7 +1819,7 @@ mod tests {
     fn handle_key_esc_in_help_closes_popup_does_not_quit() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1571,7 +1834,7 @@ mod tests {
     fn handle_key_q_in_help_closes_popup_does_not_quit() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1586,7 +1849,7 @@ mod tests {
     fn handle_key_navigation_swallowed_while_help_visible() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
@@ -1603,7 +1866,7 @@ mod tests {
     fn diff_footer_includes_help_hint() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1625,7 +1888,7 @@ mod tests {
                     @@ -1 +0,0 @@\n\
                     -gone\n";
         let parsed = GitDiff::parse(diff);
-        let Err(err) = resolve(&parsed, None) else {
+        let Err(err) = resolve(parsed, None) else {
             panic!("resolve should fail on missing blob");
         };
         assert!(err.contains("missing index blob"), "got: {err}");
@@ -1660,7 +1923,7 @@ mod tests {
     fn handle_key_grow_and_shrink_sidebar() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1676,7 +1939,7 @@ mod tests {
     fn handle_key_shrink_sidebar_floors_at_min() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1699,7 +1962,7 @@ mod tests {
         // grow the sidebar by a single step, not one per repeat.
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1720,7 +1983,7 @@ mod tests {
         // Scroll keys are not coalesced: each repeat advances the diff.
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
@@ -1740,7 +2003,7 @@ mod tests {
         }
     }
 
-    fn make_state_with_rects(files: &[ResolvedFile<'_>]) -> ViewState {
+    fn make_state_with_rects(files: &[ResolvedFile]) -> ViewState {
         let mut state = make_state(files);
         state.sidebar_rect = Rect::new(0, 0, 38, 20);
         state.diff_rect = Rect::new(38, 0, 82, 20);
@@ -1751,7 +2014,7 @@ mod tests {
     fn pane_at_returns_correct_focus_review() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1768,12 +2031,12 @@ mod tests {
         let b = file_diff("b.txt");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1794,7 +2057,7 @@ mod tests {
         // lists rather than jumping several rows per tick.
         let files: Vec<FileDiff> = (0..6).map(|i| file_diff(&format!("f{i}.txt"))).collect();
         let resolved: Vec<ResolvedFile> = files
-            .iter()
+            .into_iter()
             .map(|f| ResolvedFile {
                 file: f,
                 before: "a\n".to_string(),
@@ -1817,7 +2080,7 @@ mod tests {
     fn scroll_on_diff_scrolls_content() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
@@ -1839,7 +2102,7 @@ mod tests {
     fn click_focuses_pane_review() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1861,12 +2124,12 @@ mod tests {
         let b = file_diff("b.txt");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1889,7 +2152,7 @@ mod tests {
     fn is_on_divider_matches_border_columns() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1905,7 +2168,7 @@ mod tests {
     fn is_on_divider_false_when_sidebar_hidden() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1920,12 +2183,12 @@ mod tests {
         let b = file_diff("b.txt");
         let resolved = vec![
             ResolvedFile {
-                file: &a,
+                file: a,
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: &b,
+                file: b,
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1949,7 +2212,7 @@ mod tests {
     fn divider_drag_resizes_and_release_ends() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -1991,7 +2254,7 @@ mod tests {
     fn non_divider_press_does_not_start_drag() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -2005,7 +2268,7 @@ mod tests {
     fn mouse_swallowed_while_help_visible() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: (0..50).map(|i| format!("line {i}\n")).collect::<String>(),
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
@@ -2032,7 +2295,7 @@ mod tests {
     fn click_outside_panes_is_noop_review() {
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
-            file: &f,
+            file: f,
             before: "a\n".to_string(),
             after: "b\n".to_string(),
         }];
@@ -2042,5 +2305,177 @@ mod tests {
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
         handle_mouse(&mut state, mouse, 18, 18);
         assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    // --- model / reload ---------------------------------------------
+
+    /// A resolved file with distinct before/after so its diff is non-empty.
+    fn resolved(path: &str) -> ResolvedFile {
+        ResolvedFile {
+            file: file_diff(path),
+            before: format!("{path} old\n"),
+            after: format!("{path} new\n"),
+        }
+    }
+
+    fn model_of(paths: &[&str]) -> Model {
+        let files: Vec<ResolvedFile> = paths.iter().map(|p| resolved(p)).collect();
+        let diffs = precompute_diffs(&files);
+        Model { files, diffs }
+    }
+
+    /// Input index of the file owning the current sidebar selection.
+    fn selected_path(state: &ViewState, model: &Model) -> Option<String> {
+        state
+            .sidebar
+            .nearest_file_index()
+            .and_then(|i| model.files.get(i))
+            .map(|f| display_path(&f.file).to_string())
+    }
+
+    #[test]
+    fn reload_preserves_selection_by_path() {
+        let m1 = model_of(&["a.txt", "b.txt", "c.txt"]);
+        let mut state = make_state(&m1.files);
+        state.sidebar.select_file_index(1, 4); // b.txt (input index 1)
+        let prev = selected_path(&state, &m1);
+        assert_eq!(prev.as_deref(), Some("b.txt"));
+
+        // New model inserts a file before b.txt, shifting its index.
+        let m2 = model_of(&["a.txt", "aa.txt", "b.txt", "c.txt"]);
+        reload_view(&mut state, &m2, prev.as_deref(), &theme(), 80, 4);
+
+        assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
+        // The diff pane is filtered to the restored file.
+        let range = state.visible_diff_range();
+        assert_eq!(line_text(&state.diff_lines[range.start]), "b.txt");
+        assert!(range.contains(&state.diff_scroll) || state.diff_scroll == range.start);
+    }
+
+    #[test]
+    fn reload_to_empty_model_renders_empty_state() {
+        let m1 = model_of(&["a.txt", "b.txt"]);
+        let mut state = make_state(&m1.files);
+        let empty = Model {
+            files: Vec::new(),
+            diffs: Vec::new(),
+        };
+        reload_view(&mut state, &empty, Some("a.txt"), &theme(), 80, 4);
+
+        assert!(state.diff_lines.is_empty());
+        assert_eq!(state.visible_diff_range(), 0..0);
+        assert_eq!(sidebar_footer(&state), None);
+        assert_eq!(diff_footer(&state), None);
+    }
+
+    #[test]
+    fn reload_clamps_selection_when_file_disappears() {
+        let m1 = model_of(&["a.txt", "b.txt", "c.txt"]);
+        let mut state = make_state(&m1.files);
+        state.sidebar.select_file_index(1, 4); // b.txt
+
+        // b.txt is gone (reverted/committed); selection must clamp.
+        let m2 = model_of(&["a.txt", "c.txt"]);
+        reload_view(&mut state, &m2, Some("b.txt"), &theme(), 80, 4);
+
+        let path = selected_path(&state, &m2);
+        assert!(
+            matches!(path.as_deref(), Some("a.txt") | Some("c.txt")),
+            "selection should clamp to a surviving file, got {path:?}"
+        );
+    }
+
+    // --- working-tree integration -----------------------------------
+
+    fn init_repo(dir: &Path) -> git2::Repository {
+        let repo = git2::Repository::init(dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        repo
+    }
+
+    fn stage_all(repo: &git2::Repository) {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+    }
+
+    fn commit_index(repo: &git2::Repository, msg: &str) {
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
+            .unwrap();
+    }
+
+    #[test]
+    fn build_model_from_working_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Stage the change so the post-image blob is in the ODB.
+        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).unwrap();
+
+        assert_eq!(model.files.len(), 1);
+        assert_eq!(display_path(&model.files[0].file), "a.txt");
+        assert_eq!(model.files[0].before, "hello\n");
+        assert_eq!(model.files[0].after, "world\n");
+        assert!(!model.diffs[0].hunks().is_empty());
+    }
+
+    #[test]
+    fn should_reload_filters_ignored_and_git_internal() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let source = DiffSource::WorkingTree(&wrapper);
+
+        assert!(should_reload(&source, &[dir.path().join("src/main.rs")]));
+        assert!(!should_reload(
+            &source,
+            &[dir.path().join("node_modules/x.js")]
+        ));
+        assert!(!should_reload(
+            &source,
+            &[dir.path().join(".git/index.lock")]
+        ));
+        // A batch with at least one real path still reloads.
+        assert!(should_reload(
+            &source,
+            &[
+                dir.path().join(".git/index"),
+                dir.path().join("src/main.rs"),
+            ]
+        ));
+        // A static source never reloads.
+        assert!(!should_reload(
+            &DiffSource::Static,
+            &[dir.path().join("src/main.rs")]
+        ));
+    }
+
+    #[test]
+    fn is_git_internal_detects_dot_git() {
+        assert!(is_git_internal(Path::new("/repo/.git/index")));
+        assert!(is_git_internal(Path::new(".git/HEAD")));
+        assert!(!is_git_internal(Path::new("/repo/src/main.rs")));
     }
 }

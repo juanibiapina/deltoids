@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- review TUI: browse local uncommitted changes.
+- review TUI: browse local uncommitted changes, refreshing automatically as you edit, add, revert, or commit files.
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
 ### Changed

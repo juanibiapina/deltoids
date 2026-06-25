@@ -943,6 +943,23 @@ impl Sidebar {
         self.set_selected(target, viewport);
     }
 
+    /// Select the row for the file with input index `file_index`.
+    /// Returns `true` when a matching file row was found and selected.
+    /// No-op (returns `false`) when no row owns that file index.
+    pub fn select_file_index(&mut self, file_index: usize, viewport: usize) -> bool {
+        let row = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::File { file_index: fi, .. } if *fi == file_index));
+        match row {
+            Some(row) => {
+                self.set_selected(row, viewport);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn set_selected(&mut self, target: usize, viewport: usize) {
         if target == self.selected {
             return;

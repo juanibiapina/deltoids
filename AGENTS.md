@@ -58,7 +58,7 @@ crates/
     src/scroll.rs           # Shared mouse-wheel scroll feel: WheelScroll<K> turns fanned-out wheel events into proportional motion (one place that owns scroll quotas; both TUIs route wheel events through it)
     src/cli.rs              # Subcommand module declarations
     src/cli/pager.rs        # `deltoids pager` (ANSI diff filter; uses deltoids::{git, content})
-    src/cli/review.rs       # `deltoids review` (scrolling TUI; piped diff or, bare in a repo, local working-tree changes vs HEAD via git::Repo::working_tree_diff; uses deltoids::{git, content, render_tui})
+    src/cli/review.rs       # `deltoids review` scrolling diff TUI
     src/cli/edit.rs         # `deltoids edit` subcommand (oldText/newText replacement)
     src/cli/write.rs        # `deltoids write` subcommand (full-file rewrite)
     src/cli/hash_read.rs    # `deltoids hashread` subcommand (emits `LINEhh|TEXT` anchors)

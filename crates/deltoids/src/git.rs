@@ -3,6 +3,8 @@
 //!
 //! Available only when the `blob-resolve` cargo feature is enabled.
 
+use std::path::Path;
+
 use git2::{DiffFormat, DiffOptions, ObjectType, Oid, Repository};
 
 /// A discovered git repository, used to look up blobs by hash.
@@ -12,6 +14,35 @@ impl Repo {
     /// Discover git repository from current directory.
     pub fn discover() -> Option<Self> {
         Repository::discover(".").ok().map(Repo)
+    }
+
+    /// Discover a git repository starting from `path`, walking up to find
+    /// the enclosing `.git`. Same as [`Repo::discover`] but anchored at an
+    /// explicit path instead of the process working directory.
+    pub fn discover_at(path: &Path) -> Option<Self> {
+        Repository::discover(path).ok().map(Repo)
+    }
+
+    /// The repository's working directory, or `None` for a bare repo.
+    /// The review watcher watches this tree for changes.
+    pub fn workdir(&self) -> Option<&Path> {
+        self.0.workdir()
+    }
+
+    /// Whether `path` is gitignored. Accepts an absolute path inside the
+    /// working tree or a workdir-relative path.
+    ///
+    /// Gitignored files never appear in [`Repo::working_tree_diff`], so a
+    /// change to one must not trigger a reload. Respects nested
+    /// `.gitignore`, `.git/info/exclude`, and global excludes. Returns
+    /// `false` on any error (fail open: never miss a real change).
+    pub fn is_ignored(&self, path: &Path) -> bool {
+        // libgit2 wants a workdir-relative path; map absolute paths down.
+        let rel = match self.0.workdir() {
+            Some(workdir) => path.strip_prefix(workdir).unwrap_or(path),
+            None => path,
+        };
+        self.0.is_path_ignored(rel).unwrap_or(false)
     }
 
     /// Read a blob's text content by hash (abbreviated or full).
@@ -224,6 +255,21 @@ mod tests {
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(patch.contains("a.txt"), "missing path in: {patch}");
         assert!(patch.contains("+first"), "missing added line in: {patch}");
+    }
+
+    #[test]
+    fn is_ignored_respects_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        assert!(wrapper.is_ignored(&dir.path().join("node_modules/x.js")));
+        assert!(wrapper.is_ignored(Path::new("node_modules/x.js")));
+        assert!(!wrapper.is_ignored(&dir.path().join("src/main.rs")));
+        assert!(!wrapper.is_ignored(Path::new("src/main.rs")));
     }
 
     #[test]

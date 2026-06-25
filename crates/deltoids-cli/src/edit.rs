@@ -1,0 +1,473 @@
+//! `edit` tool execution: validate an [`EditRequest`], apply its exact
+//! text replacements, write the file, and record the trace entry.
+
+use std::fs;
+use std::path::Path;
+
+use crate::trace_store::{EditFailureHistoryEntry, EditHistoryEntry, TraceStore};
+use crate::{
+    EditRequest, SuccessResponse, TextEdit, ToolError, current_timestamp,
+    current_working_directory, success_message, tool_error, validate_target_path,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MatchedEdit {
+    index: usize,
+    start: usize,
+    end: usize,
+    new_text: String,
+}
+
+pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
+    let store = TraceStore::from_env().map_err(|error| ToolError {
+        error,
+        trace_id: String::new(),
+        message: String::new(),
+    })?;
+    execute_request_with_trace(&store, request, None)
+}
+
+pub fn execute_request_with_trace(
+    store: &TraceStore,
+    request: EditRequest,
+    trace_id: Option<&str>,
+) -> Result<SuccessResponse, ToolError> {
+    let resolved_trace = store.resolve(trace_id).map_err(|error| ToolError {
+        error,
+        trace_id: String::new(),
+        message: String::new(),
+    })?;
+
+    match try_execute_edit(
+        store,
+        &request,
+        &resolved_trace.trace_id,
+        resolved_trace.reused,
+    ) {
+        Ok(response) => Ok(response),
+        Err(error) => Err(log_edit_failure(
+            store,
+            request,
+            resolved_trace.trace_id,
+            resolved_trace.reused,
+            error,
+        )),
+    }
+}
+
+fn try_execute_edit(
+    store: &TraceStore,
+    request: &EditRequest,
+    trace_id: &str,
+    reused_trace: bool,
+) -> Result<SuccessResponse, String> {
+    validate_request(request)?;
+
+    let path = Path::new(&request.path);
+    validate_target_path(path, &request.path)?;
+
+    let original = fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
+    let updated = apply_edits(&original, &request.edits, &request.path)?;
+    let computed = deltoids::Diff::compute(&original, &updated, &request.path);
+    let hunks = computed.hunks().to_vec();
+    let diff = computed.text().to_string();
+    let language = computed.language();
+    let highlight = computed.highlight().map(str::to_string);
+
+    fs::write(path, &updated)
+        .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
+
+    store.append(
+        trace_id,
+        &EditHistoryEntry {
+            v: 2,
+            tool: "edit",
+            trace_id: trace_id.to_string(),
+            timestamp: current_timestamp(),
+            cwd: current_working_directory()?,
+            path: request.path.clone(),
+            reason: request.reason.clone(),
+            ok: true,
+            edits: request.edits.clone(),
+            diff: diff.clone(),
+            hunks,
+            language,
+            highlight,
+        },
+    )?;
+
+    Ok(SuccessResponse {
+        ok: true,
+        path: request.path.clone(),
+        trace_id: trace_id.to_string(),
+        message: success_message(trace_id, reused_trace),
+        diff,
+    })
+}
+
+fn log_edit_failure(
+    store: &TraceStore,
+    request: EditRequest,
+    trace_id: String,
+    reused_trace: bool,
+    error: String,
+) -> ToolError {
+    let logging_error = store
+        .append(
+            &trace_id,
+            &EditFailureHistoryEntry {
+                v: 1,
+                tool: "edit",
+                trace_id: trace_id.clone(),
+                timestamp: current_timestamp(),
+                cwd: current_working_directory().unwrap_or_else(|_| String::new()),
+                path: request.path,
+                reason: request.reason,
+                ok: false,
+                edits: request.edits,
+                error: error.clone(),
+            },
+        )
+        .err();
+
+    tool_error(trace_id, reused_trace, error, logging_error)
+}
+
+fn validate_request(request: &EditRequest) -> Result<(), String> {
+    if request.reason.trim().is_empty() {
+        return Err("reason must not be empty".to_string());
+    }
+
+    if request.edits.is_empty() {
+        return Err("edits must contain at least one replacement".to_string());
+    }
+
+    for (index, edit) in request.edits.iter().enumerate() {
+        if edit.reason.trim().is_empty() {
+            return Err(format!("edits[{index}].reason must not be empty"));
+        }
+
+        if edit.old_text.is_empty() {
+            return Err(format!("edits[{index}].oldText must not be empty"));
+        }
+    }
+
+    Ok(())
+}
+
+pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
+    deltoids::Diff::compute(original, updated, path)
+        .text()
+        .to_string()
+}
+
+pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {
+    let mut matches = Vec::with_capacity(edits.len());
+
+    for (index, edit) in edits.iter().enumerate() {
+        let occurrences = original.match_indices(&edit.old_text).collect::<Vec<_>>();
+        match occurrences.len() {
+            0 => {
+                return Err(format!(
+                    "Could not find edits[{index}] in {path}. The oldText must match exactly."
+                ));
+            }
+            1 => {
+                let (start, matched) = occurrences[0];
+                matches.push(MatchedEdit {
+                    index,
+                    start,
+                    end: start + matched.len(),
+                    new_text: edit.new_text.clone(),
+                });
+            }
+            count => {
+                return Err(format!(
+                    "Found {count} occurrences of edits[{index}] in {path}. Each oldText must be unique."
+                ));
+            }
+        }
+    }
+
+    matches.sort_by_key(|m| m.start);
+    for pair in matches.windows(2) {
+        let previous = &pair[0];
+        let current = &pair[1];
+        if previous.end > current.start {
+            return Err(format!(
+                "edits[{}] and edits[{}] overlap in {}. Merge them into one edit or target disjoint regions.",
+                previous.index, current.index, path
+            ));
+        }
+    }
+
+    let mut result = original.to_string();
+    for matched in matches.iter().rev() {
+        result.replace_range(matched.start..matched.end, &matched.new_text);
+    }
+
+    if result == original {
+        return Err(format!(
+            "No changes made to {path}. The replacements produced identical content."
+        ));
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applies_single_exact_edit() {
+        let result = apply_edits(
+            "Hello, world!",
+            &[TextEdit {
+                reason: "Replace world".to_string(),
+                old_text: "world".to_string(),
+                new_text: "pi".to_string(),
+            }],
+            "test.txt",
+        )
+        .unwrap();
+
+        assert_eq!(result, "Hello, pi!");
+    }
+
+    #[test]
+    fn applies_multiple_disjoint_edits_against_original_content() {
+        let result = apply_edits(
+            "foo\nbar\nbaz\n",
+            &[
+                TextEdit {
+                    reason: "Expand foo".to_string(),
+                    old_text: "foo\n".to_string(),
+                    new_text: "foo bar\n".to_string(),
+                },
+                TextEdit {
+                    reason: "Uppercase bar".to_string(),
+                    old_text: "bar\n".to_string(),
+                    new_text: "BAR\n".to_string(),
+                },
+            ],
+            "test.txt",
+        )
+        .unwrap();
+
+        assert_eq!(result, "foo bar\nBAR\nbaz\n");
+    }
+
+    #[test]
+    fn rejects_missing_text() {
+        let error = apply_edits(
+            "hello\n",
+            &[TextEdit {
+                reason: "Replace missing".to_string(),
+                old_text: "missing".to_string(),
+                new_text: "x".to_string(),
+            }],
+            "test.txt",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Could not find"));
+    }
+
+    #[test]
+    fn rejects_duplicate_text() {
+        let error = apply_edits(
+            "foo foo foo",
+            &[TextEdit {
+                reason: "Replace foo".to_string(),
+                old_text: "foo".to_string(),
+                new_text: "bar".to_string(),
+            }],
+            "test.txt",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Found 3 occurrences"));
+    }
+
+    #[test]
+    fn rejects_overlapping_regions() {
+        let error = apply_edits(
+            "one\ntwo\nthree\n",
+            &[
+                TextEdit {
+                    reason: "Uppercase first block".to_string(),
+                    old_text: "one\ntwo\n".to_string(),
+                    new_text: "ONE\nTWO\n".to_string(),
+                },
+                TextEdit {
+                    reason: "Uppercase second block".to_string(),
+                    old_text: "two\nthree\n".to_string(),
+                    new_text: "TWO\nTHREE\n".to_string(),
+                },
+            ],
+            "test.txt",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("overlap"));
+    }
+
+    #[test]
+    fn rejects_no_op_replacement() {
+        let error = apply_edits(
+            "same",
+            &[TextEdit {
+                reason: "No-op replace".to_string(),
+                old_text: "same".to_string(),
+                new_text: "same".to_string(),
+            }],
+            "test.txt",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("No changes made"));
+    }
+
+    #[test]
+    fn rejects_empty_edits_request() {
+        let request = EditRequest {
+            reason: "Test edit".to_string(),
+            path: "test.txt".to_string(),
+            edits: Vec::new(),
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("edits must contain at least one replacement"));
+    }
+
+    #[test]
+    fn rejects_empty_edit_reason() {
+        let request = EditRequest {
+            reason: "Test edit".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                reason: String::new(),
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("edits[0].reason must not be empty"));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_edit_reason() {
+        let request = EditRequest {
+            reason: "Test edit".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                reason: " \n\t ".to_string(),
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("edits[0].reason must not be empty"));
+    }
+
+    #[test]
+    fn rejects_empty_old_text() {
+        let request = EditRequest {
+            reason: "Test edit".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                reason: "Replace text".to_string(),
+                old_text: String::new(),
+                new_text: "replacement".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("edits[0].oldText must not be empty"));
+    }
+
+    #[test]
+    fn rejects_empty_reason() {
+        let request = EditRequest {
+            reason: String::new(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                reason: "Replace before".to_string(),
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("reason must not be empty"));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_reason() {
+        let request = EditRequest {
+            reason: " \n\t ".to_string(),
+            path: "test.txt".to_string(),
+            edits: vec![TextEdit {
+                reason: "Replace before".to_string(),
+                old_text: "before".to_string(),
+                new_text: "after".to_string(),
+            }],
+        };
+
+        let error = validate_request(&request).unwrap_err();
+        assert!(error.contains("reason must not be empty"));
+    }
+
+    #[test]
+    fn does_not_partially_apply_when_one_multi_edit_fails() {
+        let original = "alpha\nbeta\ngamma\n";
+        let error = apply_edits(
+            original,
+            &[
+                TextEdit {
+                    reason: "Uppercase alpha".to_string(),
+                    old_text: "alpha\n".to_string(),
+                    new_text: "ALPHA\n".to_string(),
+                },
+                TextEdit {
+                    reason: "Try missing line".to_string(),
+                    old_text: "missing\n".to_string(),
+                    new_text: "MISSING\n".to_string(),
+                },
+            ],
+            "test.txt",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Could not find"));
+        assert_eq!(original, "alpha\nbeta\ngamma\n");
+    }
+
+    #[test]
+    fn renders_a_line_based_diff() {
+        let diff = render_diff("const x = 1;\n", "const x = 2;\n", "test.txt");
+
+        assert!(diff.contains("--- original"));
+        assert!(diff.contains("+++ modified"));
+        assert!(diff.contains("-const x = 1;"));
+        assert!(diff.contains("+const x = 2;"));
+    }
+
+    #[test]
+    fn renders_multiple_changes_in_one_diff() {
+        let diff = render_diff(
+            "alpha\nbeta\ngamma\ndelta\n",
+            "ALPHA\nbeta\nGAMMA\ndelta\n",
+            "test.txt",
+        );
+
+        assert!(diff.contains("-alpha"));
+        assert!(diff.contains("+ALPHA"));
+        assert!(diff.contains("-gamma"));
+        assert!(diff.contains("+GAMMA"));
+    }
+}

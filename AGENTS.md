@@ -30,55 +30,55 @@ cargo install --path crates/deltoids-cli  # produces the `deltoids` binary
 ```
 crates/
   deltoids/
-    src/lib.rs              # Library exports
-    src/engine.rs           # Line-level diff engine: Snapshot, DiffOp, align_old_to_new
-    src/parse.rs            # Git diff parsing
-    src/scope.rs            # Hunk types, Hunk::runs / HunkRun, public entry
-    src/scope/range.rs      # Planning phase: ContextRange per diff op
-    src/scope/hunk_builder.rs # Filling phase: ContextRange -> Hunk
-    src/hunk_header.rs      # Shared header layout
-    src/render.rs           # Diff rendering as ANSI strings (used by deltoids CLI)
-    src/render_tui.rs       # Diff rendering as ratatui Line<'static>; also exports shared pane chrome helpers (pane_block, pane_block_with_footer, pane_border_color, render_pane_scrollbar) used by edit-tui and rv (feature: ratatui)
-    src/git.rs              # libgit2 wrapper for blob lookup (feature: blob-resolve)
-    src/content.rs          # Resolve before/after content for a FileDiff (feature: blob-resolve)
-    src/intraline.rs        # Within-line diff algorithm
-    src/reverse.rs          # Diff reversal
-    src/language.rs         # Stable language detection and per-language parser config
-    src/syntax.rs           # ParsedFile tree-sitter parsing and scope queries
-    tests/diff_cases.rs       # Entry point for the diff-case reference suite
-    tests/diff_cases/         # Harness, README, and case directories
-      cases/<NNN-slug>/       # 1-case.md, 2-original.<EXT>, 3-updated.<EXT>, 4-expected.diff
+    src/lib.rs                # Library exports
+    src/engine.rs             # Line-level diff engine
+    src/parse.rs              # Git diff parsing
+    src/scope.rs              # Hunk types and scope context
+    src/scope/range.rs        # Context-range planning phase
+    src/scope/hunk_builder.rs # Hunk filling phase
+    src/hunk_header.rs        # Shared header layout
+    src/render.rs             # Diff rendering as ANSI
+    src/render_tui.rs         # Diff rendering for ratatui
+    src/git.rs                # Git blob lookup
+    src/content.rs            # Before/after content resolution
+    src/intraline.rs          # Within-line diff algorithm
+    src/reverse.rs            # Diff reversal
+    src/language.rs           # Language detection and config
+    src/syntax.rs             # Tree-sitter parsing and scopes
+    tests/diff_cases.rs       # Diff-case suite entry point
+    tests/diff_cases/         # Diff-case harness and cases
+      cases/<NNN-slug>/       # One case per directory
 
   deltoids-cli/
-    src/lib.rs              # Library entry: request types and edit/write/hashedit/hashread execution shared by the subcommands
-    src/trace_store.rs      # TraceStore: trace dir layout, append/read/list
-    src/hashline.rs         # Hashline engine (pure): line-content hash, anchor parsing, apply_hash_edits. 647 BPE-friendly bigrams (ported from oh-my-pi, MIT).
-    src/tui.rs              # `traces` subcommand chrome (panes, lists, HistoryEntry header) — diff lines come from `deltoids::render_tui::render_hunk`
-    src/sidebar.rs          # Lazygit-style file tree sidebar for `review` (status badges, icons, deltas)
-    src/scroll.rs           # Shared mouse-wheel scroll feel: WheelScroll<K> turns fanned-out wheel events into proportional motion (one place that owns scroll quotas; both TUIs route wheel events through it)
-    src/cli.rs              # Subcommand module declarations
-    src/cli/pager.rs        # `deltoids pager` (ANSI diff filter; uses deltoids::{git, content})
-    src/cli/review.rs       # `deltoids review` scrolling diff TUI
-    src/cli/edit.rs         # `deltoids edit` subcommand (oldText/newText replacement)
-    src/cli/write.rs        # `deltoids write` subcommand (full-file rewrite)
-    src/cli/hash_read.rs    # `deltoids hashread` subcommand (emits `LINEhh|TEXT` anchors)
-    src/cli/hash_edit.rs    # `deltoids hashedit` subcommand (line+hash-anchored edits)
-    src/cli/traces.rs       # `deltoids traces` subcommand (delegates to `tui::run`)
-    src/cli/hook.rs         # `deltoids hook <adapter>` subcommand; today only `claude-code` (PostToolUse)
-    src/bin/deltoids.rs     # Single binary; clap dispatcher for all subcommands
+    src/lib.rs               # Library entry: edit/write execution
+    src/trace_store.rs       # Trace storage
+    src/hashline.rs          # Hashline engine
+    src/tui.rs               # `traces` subcommand chrome
+    src/sidebar.rs           # File tree sidebar for `review`
+    src/scroll.rs            # Mouse-wheel scroll feel
+    src/cli.rs               # Subcommand module declarations
+    src/cli/pager.rs         # `deltoids pager` subcommand
+    src/cli/review.rs        # `deltoids review` scrolling diff TUI
+    src/cli/edit.rs          # `deltoids edit` subcommand
+    src/cli/write.rs         # `deltoids write` subcommand
+    src/cli/hash_read.rs     # `deltoids hashread` subcommand
+    src/cli/hash_edit.rs     # `deltoids hashedit` subcommand
+    src/cli/traces.rs        # `deltoids traces` subcommand
+    src/cli/hook.rs          # `deltoids hook` subcommand
+    src/bin/deltoids.rs      # Single binary dispatcher
 
   tests/
-    tests/tui_cli.rs            # Integration tests for `deltoids edit`/`write`/`traces` interaction
-    tests/hash_cli.rs           # Integration tests for `deltoids hashread`/`hashedit` and trace round-trip
-    tests/claude_code_hook.rs   # Integration tests for `deltoids hook claude-code`
-    fixtures/claude-code/       # Real Claude Code PostToolUse JSON envelopes used by the hook tests
+    tests/tui_cli.rs          # Integration tests for edit/write/traces
+    tests/hash_cli.rs         # Integration tests for hashread/hashedit
+    tests/claude_code_hook.rs # Integration tests for the hook
+    fixtures/claude-code/     # Hook test fixtures
 
 plugins/
-  pi/             # Pi extension. `DELTOIDS_EDIT_MODE` (read once at load) picks the `edit` tool's schema and backend: `text` spawns `deltoids edit` (oldText/newText), `hash` spawns `deltoids hashedit` (LINEhh anchors). Hash mode also adds a `hashread` tool. `write` is always overridden.
-  claude-code/    # Claude Code plugin: registers a PostToolUse hook on Write|Edit
+  pi/             # Pi extension
+  claude-code/    # Claude Code plugin
 
 .claude-plugin/
-  marketplace.json # Repo doubles as a Claude Code plugin marketplace; installs `claude-code/` as plugin `deltoids`
+  marketplace.json # Claude Code plugin marketplace
 ```
 
 ## Site

@@ -18,11 +18,16 @@
 //! In bare mode the working tree is watched: saving, adding, reverting,
 //! or committing a tracked or untracked file re-runs the pipeline and
 //! re-renders within ~200ms, preserving focus, the selected file (by
-//! path), sidebar width, scroll, and the help popup. Reverting or
-//! committing every change shows a "no local changes" empty state
-//! instead of exiting; new edits repopulate it. Gitignored paths and
-//! `.git/` churn never trigger a reload. Piped-diff mode stays static:
-//! stdin is closed, so there is nothing to re-read.
+//! path), sidebar width, scroll, and the help popup. Bare mode also
+//! *starts* in the "no local changes" empty state when the tree is
+//! clean, repopulating on the first edit; reverting or committing every
+//! change drops back to that empty state instead of exiting. The
+//! filesystem watcher keeps edit latency low, but it ignores `.git/`
+//! churn, so commits and external `git add`/`reset`/checkout/branch
+//! switches are caught by a periodic poll of `git diff HEAD` (every
+//! ~1s); the poll reloads only when that output actually changes.
+//! Gitignored paths never trigger a reload. Piped-diff mode stays
+//! static: stdin is closed, so there is nothing to re-read.
 //!
 //! Known limitation (Linux): the watcher arms recursively
 //! ([`RecursiveMode::Recursive`]), which on Linux allocates one inotify
@@ -142,6 +147,15 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 /// index) collapses into one reload once this much wall-clock has passed
 /// since the first event. Matches the traces TUI.
 const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
+/// Minimum wall-clock gap between polls of `git diff HEAD`. The
+/// filesystem watcher ignores `.git/` churn, so commits, external
+/// `git add`/`reset`, checkouts, and branch switches are only noticed by
+/// re-running the diff. Gated to one cheap `working_tree_diff` per
+/// interval and deduped against the last input, so an unchanged tree
+/// costs one git call and no view rebuild. This interval sets the
+/// worst-case delay before a commit clears the diff; ~1s trades a little
+/// latency for staying cheap on large repos.
+const GIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Minimum wall-clock gap between full diff-cache rebuilds. Rebuilding
 /// the whole cache on every resize step stalls the event loop; with
 /// held-key auto-repeat that stall lets a backlog of `<`/`>` presses
@@ -180,10 +194,6 @@ fn run_inner() -> Result<(), String> {
                 .to_string()
         })?;
         let input = repo.working_tree_diff()?;
-        if input.trim().is_empty() {
-            eprintln!("deltoids review: no local changes");
-            return Ok(());
-        }
         (input, Some(repo))
     } else {
         let mut input = String::new();
@@ -207,7 +217,7 @@ fn run_inner() -> Result<(), String> {
         _ => DiffSource::Static,
     };
 
-    run_tui(model, source, &theme)
+    run_tui(model, input, source, &theme)
 }
 
 /// Describes whether and how the diff can be refreshed mid-session.
@@ -825,7 +835,12 @@ fn spawn_watcher(
 }
 
 #[allow(clippy::too_many_lines)]
-fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<(), String> {
+fn run_tui(
+    mut model: Model,
+    initial_input: String,
+    source: DiffSource<'_>,
+    theme: &Theme,
+) -> Result<(), String> {
     let _session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal =
@@ -871,6 +886,11 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
 
     let mut last_rebuild = Instant::now();
     let mut dirty_since: Option<Instant> = None;
+    // The diff text the current model was built from. The poll compares
+    // fresh `working_tree_diff` output against this to skip rebuilds when
+    // nothing changed.
+    let mut last_input = initial_input;
+    let mut last_poll = Instant::now();
     loop {
         // Draw and capture viewport metrics for the current frame.
         let metrics = terminal
@@ -937,21 +957,32 @@ fn run_tui(mut model: Model, source: DiffSource<'_>, theme: &Theme) -> Result<()
                 dirty_since.get_or_insert_with(Instant::now);
             }
         }
+        // Poll git on a steady interval to catch state changes the
+        // filesystem watcher filters out (commits and other `.git/`
+        // writes). Route it through the same debounce; the reload dedups
+        // on input, so a tick with no real change is cheap.
+        if matches!(source, DiffSource::WorkingTree(_)) && last_poll.elapsed() >= GIT_POLL_INTERVAL
+        {
+            dirty_since.get_or_insert_with(Instant::now);
+            last_poll = Instant::now();
+        }
         let reload_width = if diff_width > 0 {
             diff_width
         } else {
             state.cached_width
         };
         if dirty_since.is_some_and(|since| since.elapsed() >= DEBOUNCE_DELAY) {
-            if let DiffSource::WorkingTree(repo) = source {
-                reload_working_tree(
+            if let DiffSource::WorkingTree(repo) = source
+                && reload_working_tree(
                     &mut state,
                     &mut model,
                     repo,
                     theme,
                     reload_width,
                     diff_viewport,
-                )?;
+                    &mut last_input,
+                )?
+            {
                 last_rebuild = Instant::now();
             }
             dirty_since = None;
@@ -1001,10 +1032,24 @@ fn is_git_internal(path: &Path) -> bool {
         .any(|component| component.as_os_str() == ".git")
 }
 
+/// Whether a freshly-computed `working_tree_diff` differs from the text
+/// the current model was built from. The diff text is the source of
+/// truth, so this is the one check that decides whether a poll tick or
+/// filesystem event warrants a rebuild.
+fn reload_needed(new_input: &str, last_input: &str) -> bool {
+    new_input != last_input
+}
+
 /// Re-diff the working tree and rebuild the view in place, preserving the
 /// selected file by path. Captures the current selection's path from the
 /// old `model`, builds a fresh model from `repo.working_tree_diff()`,
 /// applies it via [`reload_view`], then swaps `model` to the new value.
+///
+/// Deduplicates on the diff text: `last_input` holds what the current
+/// model was built from, so an unchanged tree (a poll tick or a
+/// filesystem event that doesn't alter the diff) costs one
+/// `working_tree_diff` and skips the model/view rebuild. Returns `true`
+/// only when it rebuilt.
 fn reload_working_tree(
     state: &mut ViewState,
     model: &mut Model,
@@ -1012,13 +1057,17 @@ fn reload_working_tree(
     theme: &Theme,
     width: usize,
     diff_viewport: usize,
-) -> Result<(), String> {
+    last_input: &mut String,
+) -> Result<bool, String> {
+    let input = repo.working_tree_diff()?;
+    if !reload_needed(&input, last_input) {
+        return Ok(false);
+    }
     let prev_path = state
         .sidebar
         .nearest_file_index()
         .and_then(|idx| model.files.get(idx))
         .map(|f| display_path(&f.file).to_string());
-    let input = repo.working_tree_diff()?;
     let new_model = build_model(&input, Some(repo))?;
     reload_view(
         state,
@@ -1029,7 +1078,8 @@ fn reload_working_tree(
         diff_viewport,
     );
     *model = new_model;
-    Ok(())
+    *last_input = input;
+    Ok(true)
 }
 
 /// Rebuild the sidebar and diff view from `model`, preserving the user's
@@ -1414,6 +1464,39 @@ mod tests {
         let display_order = sidebar.display_order();
         let view = build_view(files, &diffs, &display_order, 80, &theme());
         ViewState::new(view, sidebar, display_order, 80, Preference::seeded(200))
+    }
+
+    #[test]
+    fn build_model_empty_input_yields_no_files() {
+        let model = build_model("", None).expect("empty model");
+        assert!(model.files.is_empty(), "expected zero files");
+        assert!(model.diffs.is_empty(), "expected zero diffs");
+    }
+
+    #[test]
+    fn empty_model_state_has_empty_display_order() {
+        // Guards the startup empty-state render path: a clean repo opens
+        // the TUI with no files, and `draw_diff` keys the "No local
+        // changes." message off `display_order.is_empty()`.
+        let state = make_state(&[]);
+        assert!(
+            state.display_order.is_empty(),
+            "expected empty display order for a zero-file model"
+        );
+    }
+
+    #[test]
+    fn reload_needed_only_when_input_changed() {
+        assert!(
+            !reload_needed("same", "same"),
+            "identical input must not trigger a rebuild"
+        );
+        assert!(
+            reload_needed("new", "old"),
+            "changed input must trigger a rebuild"
+        );
+        // Clearing the diff (commit that drops to the empty state).
+        assert!(reload_needed("", "old diff"), "cleared diff must rebuild");
     }
 
     #[test]

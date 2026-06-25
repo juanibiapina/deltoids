@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - TUI: The `review` and `traces` sidebars resize the same way: use `<`/`>` to narrow/widen them or drag the divider with the mouse. The default width scales with the terminal, and the sidebar never disappears on narrow terminals.
-- review TUI: browse local uncommitted changes, refreshing automatically as you edit, add, revert, or commit files.
+- review TUI: browse local uncommitted changes, refreshing automatically as the working tree changes.
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
 ### Changed

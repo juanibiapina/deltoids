@@ -50,15 +50,44 @@ crates/
       cases/<NNN-slug>/       # One case per directory
 
   deltoids-cli/
-    src/lib.rs               # Library entry: edit/write execution
+    src/lib.rs               # Thin crate root: re-exports + shared helpers
+    src/types.rs             # Wire request/response/error types
+    src/edit.rs              # `edit` tool execution + apply_edits
+    src/write.rs             # `write` tool execution
+    src/hash_edit.rs         # `hashedit` execution + op translation
+    src/hash_read.rs         # `hashread` rendering
     src/trace_store.rs       # Trace storage
-    src/hashline.rs          # Hashline engine
-    src/tui.rs               # `traces` subcommand chrome
-    src/sidebar.rs           # File tree sidebar for `review`
+    src/hashline/            # Hashline engine
+      mod.rs                 #   docs + re-exports
+      anchor.rs             #   hash alphabet, formatters, anchor parsing
+      apply.rs              #   edit ops + splice engine
+    src/tui/                 # `traces` subcommand TUI (split by pane)
+      mod.rs                 #   shell: run, loop, routing, layout
+      model.rs              #   load traces/entries
+      entries_pane.rs       #   entries list slice
+      traces_pane.rs        #   traces list slice
+      detail.rs            #   detail/diff slice (cache + renderers)
+      reload.rs            #   reload from disk
+      scripted.rs          #   headless render path
+      test_support.rs      #   shared test fixtures
+    src/sidebar/             # File tree sidebar for `review`
+      mod.rs                 #   Sidebar state + navigation
+      status.rs            #   file classification
+      tree.rs              #   path-tree construction
+      icons.rs             #   nerd-font glyph tables
+      render.rs            #   row -> styled line
+      test_support.rs      #   shared test fixtures
     src/scroll.rs            # Mouse-wheel scroll feel
     src/cli.rs               # Subcommand module declarations
     src/cli/pager.rs         # `deltoids pager` subcommand
-    src/cli/review.rs        # `deltoids review` scrolling diff TUI
+    src/cli/review/          # `deltoids review` scrolling diff TUI (split by pane)
+      mod.rs                 #   shell: Args, run, loop, routing, coordination
+      model.rs             #   parse/resolve/diff
+      diff_pane.rs         #   diff pane slice
+      sidebar_pane.rs      #   sidebar pane slice
+      help.rs              #   help popup slice
+      reload.rs            #   working-tree watcher + rebuild
+      test_support.rs      #   shared test fixtures
     src/cli/edit.rs          # `deltoids edit` subcommand
     src/cli/write.rs         # `deltoids write` subcommand
     src/cli/hash_read.rs     # `deltoids hashread` subcommand
@@ -102,12 +131,13 @@ Each entry names the module that owns a concern and the invariant to respect. Re
 - **Diff pipeline.** `Diff::compute()` runs the line-level engine (`engine.rs`), detects one stable `Language`, then two phases in `scope/`: range planning (`range.rs`) and hunk building (`hunk_builder.rs`).
 - **Hunk iteration.** Walk hunks via `Hunk::runs()` -> `HunkRun` (`Header`/`Subhunk`/`Context`), not by regrouping lines. `render_hunk` and the TUI's `detail_items` share it; reach for it before adding new line-grouping code.
 - **Per-line stateless highlighting.** Each diff line is highlighted with fresh syntect state, so stateful grammars lose context-dependent color (e.g. a Dockerfile `RUN` without its `FROM`). Known limitation, not a goal.
-- **TUI chrome is shared.** `review` and `traces` share pane chrome from `render_tui`; both scroll by physical rows, and the diff body hard-wraps long lines onto padded continuation rows.
+- **TUI chrome is shared.** `review` and `traces` share pane chrome from `render_tui`; both scroll by physical rows, and the diff body hard-wraps long lines onto padded continuation rows. The two TUIs also use the same submodule layout (`cli/review/` and `tui/`): a `mod.rs` shell that owns the loop, routing, and layout, plus one file per pane/feature owning its state, input, and render.
+- **Big files become directories.** A source file past ~1,000 lines with separable concerns becomes a `foo/` directory split by change axis (the pane/feature that changes together, not by layer): `mod.rs` holds the entry point and glue, one file per named concern owns its full vertical slice, tests live beside their code, and shared fixtures go in one `test_support.rs`. `scope/` is the original precedent; `cli/review/`, `tui/`, `sidebar/`, and `hashline/` follow it. The crate root (`lib.rs`) cannot be a directory, so it carves concerns into sibling modules (`edit.rs`, `write.rs`, `hash_edit.rs`, `hash_read.rs`, `types.rs`) and stays a thin re-export root.
 - **Scroll feel is one file.** All wheel-burst smoothing lives in `scroll.rs` (`WheelScroll`); both TUIs route wheel events through it, so changing scroll feel is a one-file edit they both inherit.
 - **Sidebar sizing is one file.** All clamp/fraction/step/divider math lives in `sidebar_width.rs`; change sizing policy there. Sidebars never hide.
 - **Default behavior.** Plain `deltoids` runs `pager` when stdin is piped (preserving `git config core.pager 'deltoids | less -R'`) and prints help on a TTY.
 - **Trace storage.** Traces live in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`; `hashedit` records as `EditHistoryEntry { tool: "hashedit" }` with synthesised per-op `TextEdit`s (preserving each `reason`) so the trace TUI and pager work unchanged.
-- **Edit modes.** `DELTOIDS_EDIT_MODE` (`text` default, `hash`) is read once at extension load to keep the system prompt static for prompt caching; switching modes needs a pi restart. Both modes override pi's `edit`/`write`; hash mode also adds `hashread` and re-describes `read` to steer text reads toward it (`read`'s real implementation still handles images, dirs, URLs, archives, etc.). The hash is a validation token, not an address. Engine: `hashline.rs`.
+- **Edit modes.** `DELTOIDS_EDIT_MODE` (`text` default, `hash`) is read once at extension load to keep the system prompt static for prompt caching; switching modes needs a pi restart. Both modes override pi's `edit`/`write`; hash mode also adds `hashread` and re-describes `read` to steer text reads toward it (`read`'s real implementation still handles images, dirs, URLs, archives, etc.). The hash is a validation token, not an address. Engine: `hashline/`.
 
 ## Diff cases (start here when changing the diff engine)
 

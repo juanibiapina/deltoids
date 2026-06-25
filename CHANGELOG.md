@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- TUI: Long diff lines now wrap onto continuation rows instead of being cut at the pane edge, so you can see the whole line in both `review` and `traces`.
 - TUI: Mouse-wheel scrolling is smoother throughout. Diff views and lists (the file sidebar, traces, and entries) now move in proportion to how much you scroll, instead of jumping too far per gesture.
 
 ### Fixed

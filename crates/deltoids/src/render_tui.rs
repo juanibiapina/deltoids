@@ -9,7 +9,9 @@
 //! Public surface:
 //!
 //! - [`render_hunk`] — breadcrumb / line-number box plus the body of one
-//!   hunk (context + intraline-emphasised subhunks).
+//!   hunk (context + intraline-emphasised subhunks). Body lines longer than
+//!   `width` wrap onto continuation rows (hard char wrap); the breadcrumb box
+//!   still truncates ancestor text to its fixed geometry.
 //! - [`render_file_header`] — bold path line plus separator rule.
 //! - [`render_rename_header`] — single muted line `renamed: old ⟶ new`.
 //!
@@ -87,7 +89,7 @@ pub fn render_hunk(
     for run in hunk.runs() {
         match run {
             HunkRun::Context(line) => {
-                output.push(syntax_diff_line(
+                output.extend(syntax_diff_line(
                     &line.content,
                     Color::Reset,
                     highlight,
@@ -214,7 +216,7 @@ fn render_subhunk(
     for line in lines {
         match line.kind {
             LineKind::Removed => {
-                rendered.push(render_emphasized_line(
+                rendered.extend(render_emphasized_line(
                     &line.content,
                     &minus_emphasis[mi],
                     LineKind::Removed,
@@ -225,7 +227,7 @@ fn render_subhunk(
                 mi += 1;
             }
             LineKind::Added => {
-                rendered.push(render_emphasized_line(
+                rendered.extend(render_emphasized_line(
                     &line.content,
                     &plus_emphasis[pi],
                     LineKind::Added,
@@ -246,6 +248,9 @@ fn render_subhunk(
 ///
 /// `kind` selects which theme background pair to use; only `Added` and
 /// `Removed` reach this function (subhunks emit those exclusively).
+///
+/// Lines longer than `width` wrap onto continuation rows (hard char wrap);
+/// every emitted row is padded to `width` with the line's plain background.
 fn render_emphasized_line(
     content: &str,
     emphasis: &LineEmphasis,
@@ -253,7 +258,7 @@ fn render_emphasized_line(
     highlight: Option<&str>,
     width: usize,
     theme: &Theme,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let (plain_bg, emph_bg) = match kind {
         LineKind::Added => (
             rgb_to_color(theme.diff_added_bg),
@@ -270,49 +275,49 @@ fn render_emphasized_line(
     match emphasis {
         LineEmphasis::Plain => syntax_diff_line(content, plain_bg, highlight, width, theme),
         LineEmphasis::Paired(sections) => {
+            if width == 0 {
+                return vec![Line::from(Vec::new())];
+            }
             let bg_for_section = |section: &EmphSection| -> Color {
                 match section.kind {
                     EmphKind::Emph => emph_bg,
                     EmphKind::NonEmph => plain_bg,
                 }
             };
-            let (mut spans, visual_width) = highlighted_spans_with_emphasis(
-                theme,
+            let section_ranges = build_section_byte_ranges(sections);
+            let mut sink = WrapSink::new(width, plain_bg);
+            produce_emphasized(
+                &mut sink,
                 highlight,
                 content,
                 sections,
-                bg_for_section,
-                width,
+                &section_ranges,
+                &bg_for_section,
             );
-            let padding = width.saturating_sub(visual_width);
-            if padding > 0 {
-                spans.push(Span::styled(
-                    " ".repeat(padding),
-                    Style::default().bg(plain_bg),
-                ));
-            }
-            Line::from(spans)
+            sink.finish()
         }
     }
 }
 
 /// Render a context (or unemphasised) line with optional background.
+///
+/// Lines longer than `width` wrap onto continuation rows (hard char wrap);
+/// every emitted row is padded to `width` with `bg`.
 fn syntax_diff_line(
     content: &str,
     bg: Color,
     highlight: Option<&str>,
     width: usize,
     theme: &Theme,
-) -> Line<'static> {
-    let base_style = Style::default().bg(bg);
-
-    let (mut spans, visual_width) = highlighted_spans(theme, highlight, content, base_style, width);
-    let padding = width.saturating_sub(visual_width);
-    if padding > 0 {
-        spans.push(Span::styled(" ".repeat(padding), base_style));
+) -> Vec<Line<'static>> {
+    let _ = theme;
+    if width == 0 {
+        return vec![Line::from(Vec::new())];
     }
-
-    Line::from(spans)
+    let base_style = Style::default().bg(bg);
+    let mut sink = WrapSink::new(width, bg);
+    produce_highlighted(&mut sink, highlight, content, base_style);
+    sink.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -418,66 +423,253 @@ fn visible_char(ch: char) -> Option<VisibleChar> {
     })
 }
 
-fn truncate_highlighted_ranges(
-    ranges: Vec<(syntect::highlighting::Style, &str)>,
-    base_style: Style,
+/// Consumer of a stream of styled visible characters.
+///
+/// The char-production functions ([`produce_highlighted`] /
+/// [`produce_emphasized`]) own tab expansion, zero-width skipping, wide-char
+/// handling and per-section background selection; the sink owns the only
+/// behaviour that differs between the breadcrumb and the diff body: what to do
+/// when the next char would not fit the current row. [`TruncateSink`] stops
+/// (single row, capped to the box); [`WrapSink`] starts a new padded row.
+trait CharSink {
+    /// Accept one styled visible char. Returns `false` to ask the producer to
+    /// stop feeding (truncation); `true` to keep going.
+    fn accept(&mut self, style: Style, visible: &VisibleChar) -> bool;
+}
+
+/// Single-row sink that stops once the next char would exceed `max_width`.
+/// Used by the breadcrumb box, whose ancestor text is intentionally cut to
+/// fit the fixed box geometry.
+struct TruncateSink {
+    spans: Vec<Span<'static>>,
+    buffer: String,
+    current_style: Option<Style>,
+    width: usize,
     max_width: usize,
-) -> (Vec<Span<'static>>, usize) {
-    let mut spans = Vec::new();
-    let mut buffer = String::new();
-    let mut current_style = None;
-    let mut width = 0;
+}
 
-    'outer: for (style, segment) in ranges {
-        let style = to_ratatui_style(base_style, style);
-        for ch in segment.chars() {
-            let Some(visible) = visible_char(ch) else {
-                continue;
-            };
-
-            if width + visible.width > max_width {
-                break 'outer;
-            }
-
-            push_styled_text(
-                &mut spans,
-                &mut buffer,
-                &mut current_style,
-                style,
-                &visible.text,
-            );
-            width += visible.width;
+impl TruncateSink {
+    fn new(max_width: usize) -> Self {
+        Self {
+            spans: Vec::new(),
+            buffer: String::new(),
+            current_style: None,
+            width: 0,
+            max_width,
         }
     }
 
-    flush_styled_text(&mut spans, &mut buffer, &mut current_style);
-    (spans, width)
+    fn finish(mut self) -> (Vec<Span<'static>>, usize) {
+        flush_styled_text(&mut self.spans, &mut self.buffer, &mut self.current_style);
+        (self.spans, self.width)
+    }
 }
 
-fn plain_text_spans(
-    line: &str,
-    base_style: Style,
-    max_width: usize,
-) -> (Vec<Span<'static>>, usize) {
-    let mut spans = Vec::new();
-    let mut text = String::new();
-    let mut width = 0;
+impl CharSink for TruncateSink {
+    fn accept(&mut self, style: Style, visible: &VisibleChar) -> bool {
+        if self.width + visible.width > self.max_width {
+            return false;
+        }
+        push_styled_text(
+            &mut self.spans,
+            &mut self.buffer,
+            &mut self.current_style,
+            style,
+            &visible.text,
+        );
+        self.width += visible.width;
+        true
+    }
+}
 
-    for ch in line.chars() {
+/// Multi-row sink that folds the char stream into wrapped rows. When the next
+/// char would exceed `max_width` the current row is flushed (and padded to
+/// `max_width` with `fill_bg`) and a fresh row begins. Used by the diff body
+/// so long lines are shown in full instead of being cut.
+struct WrapSink {
+    rows: Vec<Line<'static>>,
+    spans: Vec<Span<'static>>,
+    buffer: String,
+    current_style: Option<Style>,
+    width: usize,
+    max_width: usize,
+    fill_bg: Color,
+}
+
+impl WrapSink {
+    fn new(max_width: usize, fill_bg: Color) -> Self {
+        Self {
+            rows: Vec::new(),
+            spans: Vec::new(),
+            buffer: String::new(),
+            current_style: None,
+            width: 0,
+            max_width,
+            fill_bg,
+        }
+    }
+
+    /// Flush the current row: emit its spans (padded to `max_width`) and reset
+    /// for the next row.
+    fn flush_row(&mut self) {
+        flush_styled_text(&mut self.spans, &mut self.buffer, &mut self.current_style);
+        let padding = self.max_width.saturating_sub(self.width);
+        if padding > 0 {
+            self.spans.push(Span::styled(
+                " ".repeat(padding),
+                Style::default().bg(self.fill_bg),
+            ));
+        }
+        self.rows.push(Line::from(std::mem::take(&mut self.spans)));
+        self.width = 0;
+    }
+
+    /// Emit the final (possibly partial or empty) row and return all rows.
+    /// Empty content yields exactly one padded row.
+    fn finish(mut self) -> Vec<Line<'static>> {
+        self.flush_row();
+        self.rows
+    }
+}
+
+impl CharSink for WrapSink {
+    fn accept(&mut self, style: Style, visible: &VisibleChar) -> bool {
+        if self.width + visible.width > self.max_width {
+            self.flush_row();
+        }
+        push_styled_text(
+            &mut self.spans,
+            &mut self.buffer,
+            &mut self.current_style,
+            style,
+            &visible.text,
+        );
+        self.width += visible.width;
+        true
+    }
+}
+
+/// Feed one segment of constant-style chars into `sink`. Returns `false` if
+/// the sink asked to stop (truncation).
+fn feed_segment<S: CharSink>(sink: &mut S, segment: &str, style: Style) -> bool {
+    for ch in segment.chars() {
         let Some(visible) = visible_char(ch) else {
             continue;
         };
-        if width + visible.width > max_width {
-            break;
+        if !sink.accept(style, &visible) {
+            return false;
         }
-        text.push_str(&visible.text);
-        width += visible.width;
     }
-
-    spans.push(Span::styled(text, base_style));
-    (spans, width)
+    true
 }
 
+/// Feed `line`'s syntax-highlighted chars into `sink`, with a constant
+/// background from `base_style`. Falls back to plain (single style) when the
+/// highlighter errors.
+fn produce_highlighted<S: CharSink>(
+    sink: &mut S,
+    highlight: Option<&str>,
+    line: &str,
+    base_style: Style,
+) {
+    let assets = SyntaxAssets::load();
+    let syntax = assets.syntax_for_name(highlight);
+    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
+
+    match highlighter.highlight_line(line, assets.syntax_set) {
+        Ok(ranges) => {
+            for (syn_style, segment) in ranges {
+                let style = to_ratatui_style(base_style, syn_style);
+                if !feed_segment(sink, segment, style) {
+                    break;
+                }
+            }
+        }
+        Err(_) => {
+            feed_segment(sink, line, base_style);
+        }
+    }
+}
+
+/// Feed one segment into `sink`, choosing each char's background from its
+/// emphasis section (and optionally layering a syntect foreground). Tracks the
+/// running `byte_offset`. Returns `false` if the sink asked to stop.
+fn feed_emphasized_segment<S: CharSink>(
+    sink: &mut S,
+    segment: &str,
+    byte_offset: &mut usize,
+    syn_style: Option<syntect::highlighting::Style>,
+    sections: &[EmphSection],
+    section_ranges: &[(usize, usize)],
+    bg_for_section: &impl Fn(&EmphSection) -> Color,
+) -> bool {
+    for ch in segment.chars() {
+        let Some(visible) = visible_char(ch) else {
+            *byte_offset += ch.len_utf8();
+            continue;
+        };
+        let bg = section_index_at(*byte_offset, section_ranges)
+            .map(|i| bg_for_section(&sections[i]))
+            .unwrap_or(Color::Reset);
+        let style = match syn_style {
+            Some(syn) => to_ratatui_style(Style::default().bg(bg), syn),
+            None => Style::default().bg(bg),
+        };
+        if !sink.accept(style, &visible) {
+            return false;
+        }
+        *byte_offset += visible.byte_len;
+    }
+    true
+}
+
+/// Feed `line`'s syntax-highlighted chars into `sink`, choosing each char's
+/// background from its emphasis section. Syntax foreground colours are kept.
+fn produce_emphasized<S: CharSink>(
+    sink: &mut S,
+    highlight: Option<&str>,
+    line: &str,
+    sections: &[EmphSection],
+    section_ranges: &[(usize, usize)],
+    bg_for_section: &impl Fn(&EmphSection) -> Color,
+) {
+    let assets = SyntaxAssets::load();
+    let syntax = assets.syntax_for_name(highlight);
+    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
+
+    let mut byte_offset = 0usize;
+    match highlighter.highlight_line(line, assets.syntax_set) {
+        Ok(ranges) => {
+            for (syn_style, segment) in ranges {
+                if !feed_emphasized_segment(
+                    sink,
+                    segment,
+                    &mut byte_offset,
+                    Some(syn_style),
+                    sections,
+                    section_ranges,
+                    bg_for_section,
+                ) {
+                    break;
+                }
+            }
+        }
+        Err(_) => {
+            feed_emphasized_segment(
+                sink,
+                line,
+                &mut byte_offset,
+                None,
+                sections,
+                section_ranges,
+                bg_for_section,
+            );
+        }
+    }
+}
+
+/// Single-row, truncating highlighted spans. Used by the breadcrumb box,
+/// whose ancestor text is intentionally capped to the box width (no wrap).
 fn highlighted_spans(
     theme_ignored: &Theme,
     highlight: Option<&str>,
@@ -485,56 +677,13 @@ fn highlighted_spans(
     base_style: Style,
     max_width: usize,
 ) -> (Vec<Span<'static>>, usize) {
-    let _ = theme_ignored; // accepted for symmetry with the emphasis variant
+    let _ = theme_ignored; // accepted for symmetry with the body renderers
     if max_width == 0 {
         return (Vec::new(), 0);
     }
-
-    let assets = SyntaxAssets::load();
-    let syntax = assets.syntax_for_name(highlight);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
-
-    match highlighter.highlight_line(line, assets.syntax_set) {
-        Ok(ranges) => truncate_highlighted_ranges(ranges, base_style, max_width),
-        Err(_) => plain_text_spans(line, base_style, max_width),
-    }
-}
-
-/// Produce syntax-highlighted spans with per-section background colors.
-///
-/// Each `EmphSection` maps to a substring of `line`. The `bg_for_section`
-/// callback returns the background color for that section. Syntax foreground
-/// colors are preserved.
-fn highlighted_spans_with_emphasis(
-    _theme: &Theme,
-    highlight: Option<&str>,
-    line: &str,
-    sections: &[EmphSection],
-    bg_for_section: impl Fn(&EmphSection) -> Color,
-    max_width: usize,
-) -> (Vec<Span<'static>>, usize) {
-    if max_width == 0 {
-        return (Vec::new(), 0);
-    }
-
-    let assets = SyntaxAssets::load();
-    let syntax = assets.syntax_for_name(highlight);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
-
-    let section_ranges = build_section_byte_ranges(sections);
-
-    match highlighter.highlight_line(line, assets.syntax_set) {
-        Ok(ranges) => truncate_with_emphasis(
-            ranges,
-            sections,
-            &section_ranges,
-            &bg_for_section,
-            max_width,
-        ),
-        Err(_) => {
-            plain_text_with_emphasis(line, sections, &section_ranges, &bg_for_section, max_width)
-        }
-    }
+    let mut sink = TruncateSink::new(max_width);
+    produce_highlighted(&mut sink, highlight, line, base_style);
+    sink.finish()
 }
 
 /// For each emphasis section, compute its byte range in the original line.
@@ -558,90 +707,6 @@ fn section_index_at(byte_offset: usize, ranges: &[(usize, usize)]) -> Option<usi
         }
     }
     None
-}
-
-fn truncate_with_emphasis(
-    ranges: Vec<(syntect::highlighting::Style, &str)>,
-    sections: &[EmphSection],
-    section_ranges: &[(usize, usize)],
-    bg_for_section: &impl Fn(&EmphSection) -> Color,
-    max_width: usize,
-) -> (Vec<Span<'static>>, usize) {
-    let mut spans = Vec::new();
-    let mut buffer = String::new();
-    let mut current_style: Option<Style> = None;
-    let mut width = 0;
-    let mut byte_offset = 0usize;
-
-    'outer: for (syn_style, segment) in ranges {
-        for ch in segment.chars() {
-            let Some(visible) = visible_char(ch) else {
-                byte_offset += ch.len_utf8();
-                continue;
-            };
-
-            if width + visible.width > max_width {
-                break 'outer;
-            }
-
-            let bg = section_index_at(byte_offset, section_ranges)
-                .map(|i| bg_for_section(&sections[i]))
-                .unwrap_or(Color::Reset);
-            let style = to_ratatui_style(Style::default().bg(bg), syn_style);
-            push_styled_text(
-                &mut spans,
-                &mut buffer,
-                &mut current_style,
-                style,
-                &visible.text,
-            );
-            width += visible.width;
-            byte_offset += visible.byte_len;
-        }
-    }
-
-    flush_styled_text(&mut spans, &mut buffer, &mut current_style);
-    (spans, width)
-}
-
-fn plain_text_with_emphasis(
-    line: &str,
-    sections: &[EmphSection],
-    section_ranges: &[(usize, usize)],
-    bg_for_section: &impl Fn(&EmphSection) -> Color,
-    max_width: usize,
-) -> (Vec<Span<'static>>, usize) {
-    let mut spans = Vec::new();
-    let mut buffer = String::new();
-    let mut current_style: Option<Style> = None;
-    let mut width = 0;
-    let mut byte_offset = 0usize;
-
-    for ch in line.chars() {
-        let Some(visible) = visible_char(ch) else {
-            byte_offset += ch.len_utf8();
-            continue;
-        };
-        if width + visible.width > max_width {
-            break;
-        }
-        let bg = section_index_at(byte_offset, section_ranges)
-            .map(|i| bg_for_section(&sections[i]))
-            .unwrap_or(Color::Reset);
-        let style = Style::default().bg(bg);
-        push_styled_text(
-            &mut spans,
-            &mut buffer,
-            &mut current_style,
-            style,
-            &visible.text,
-        );
-        width += visible.width;
-        byte_offset += visible.byte_len;
-    }
-
-    flush_styled_text(&mut spans, &mut buffer, &mut current_style);
-    (spans, width)
 }
 
 fn display_width(text: &str) -> usize {
@@ -794,6 +859,187 @@ mod tests {
     /// Concatenate the visible text of a `Line<'static>` (ignoring styles).
     fn line_text(line: &Line<'static>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Visible width of a `Line<'static>` (sum of span display widths).
+    fn line_width(line: &Line<'static>) -> usize {
+        line.spans
+            .iter()
+            .map(|s| display_width(s.content.as_ref()))
+            .sum()
+    }
+
+    fn context_hunk(content: &str) -> Hunk {
+        Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![DiffLine {
+                kind: LineKind::Context,
+                content: content.to_string(),
+            }],
+            ancestors: Vec::new(),
+        }
+    }
+
+    /// Body rows (everything after the 3-line header box).
+    fn body_rows(lines: &[Line<'static>]) -> Vec<Line<'static>> {
+        lines[3..].to_vec()
+    }
+
+    #[test]
+    fn long_context_line_wraps_into_multiple_rows() {
+        let theme = Theme::default();
+        let content = "abcdefghij klmnopqrst uvwxyz0123 456789"; // 39 cols
+        let width = 10;
+        let hunk = context_hunk(content);
+        let lines = render_hunk(&hunk, None, width, &theme);
+        let body = body_rows(&lines);
+        assert!(body.len() > 1, "expected multiple wrapped rows");
+        for row in &body {
+            assert!(
+                line_width(row) <= width,
+                "row wider than width: {:?}",
+                line_text(row)
+            );
+        }
+        // Concatenated visible body (trimmed of trailing pad) reproduces content.
+        let joined: String = body.iter().map(line_text).collect();
+        assert_eq!(joined.trim_end(), content);
+    }
+
+    #[test]
+    fn wrapped_added_line_pads_every_row_with_added_bg() {
+        let theme = Theme::default();
+        let width = 8;
+        let added_bg = rgb_to_color(theme.diff_added_bg);
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: "0123456789abcdefghij".to_string(), // 20 cols
+            }],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, None, width, &theme);
+        let body = body_rows(&lines);
+        assert!(body.len() > 1, "expected wrap");
+        for row in &body {
+            assert_eq!(line_width(row), width, "each row padded to width");
+            assert!(
+                row.spans.iter().any(|s| s.style.bg == Some(added_bg)),
+                "every wrapped row carries the added background"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_width_content_produces_single_row() {
+        let theme = Theme::default();
+        let width = 10;
+        let hunk = context_hunk("0123456789"); // exactly 10 cols
+        let lines = render_hunk(&hunk, None, width, &theme);
+        let body = body_rows(&lines);
+        assert_eq!(
+            body.len(),
+            1,
+            "exact-fit content must not emit a trailing row"
+        );
+        assert_eq!(line_width(&body[0]), width);
+    }
+
+    #[test]
+    fn wide_char_at_boundary_moves_whole_to_next_row() {
+        let theme = Theme::default();
+        let width = 4;
+        // Three columns of ASCII then a width-2 char: it cannot fit at col 3,
+        // so it moves whole to the next row.
+        let hunk = context_hunk("abc世");
+        let lines = render_hunk(&hunk, None, width, &theme);
+        let body = body_rows(&lines);
+        assert_eq!(body.len(), 2);
+        assert_eq!(line_text(&body[0]).trim_end(), "abc");
+        assert_eq!(line_text(&body[1]).trim_end(), "世");
+        for row in &body {
+            assert!(line_width(row) <= width);
+        }
+    }
+
+    #[test]
+    fn paired_change_wraps_and_keeps_both_backgrounds() {
+        let theme = Theme::default();
+        let width = 8;
+        let plain_bg = rgb_to_color(theme.diff_added_bg);
+        let emph_bg = rgb_to_color(theme.diff_added_emph_bg);
+        // A long pair that differs only in the tail so emphasis sits late in
+        // the line, forcing an emph section past the first wrap boundary.
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: "value_aaaaaaaaaaaa = 1".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "value_aaaaaaaaaaaa = 2".to_string(),
+                },
+            ],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, None, width, &theme);
+        // Added rows: every row padded to width, and both bg colors appear
+        // across the wrapped rows.
+        let added_rows: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| matches!(s.style.bg, Some(b) if b == plain_bg || b == emph_bg))
+            })
+            .collect();
+        assert!(added_rows.len() > 1, "expected the added line to wrap");
+        for row in &added_rows {
+            assert_eq!(line_width(row), width);
+        }
+        let bgs: Vec<Color> = added_rows
+            .iter()
+            .flat_map(|l| l.spans.iter().filter_map(|s| s.style.bg))
+            .collect();
+        assert!(bgs.contains(&plain_bg), "plain bg present across wrap");
+        assert!(bgs.contains(&emph_bg), "emph bg present across wrap");
+    }
+
+    #[test]
+    fn breadcrumb_ancestor_text_stays_capped_and_unwrapped() {
+        let theme = Theme::default();
+        let width = 30;
+        let long = "fn very_long_function_name_that_exceeds_the_box(arg: SomeLongType) -> Result<(), Error>";
+        let hunk = Hunk {
+            old_start: 10,
+            new_start: 10,
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: "    x = 1;".to_string(),
+            }],
+            ancestors: vec![ScopeNode {
+                kind: "function_item".to_string(),
+                name: "very_long_function_name_that_exceeds_the_box".to_string(),
+                start_line: 10,
+                end_line: 20,
+                text: long.to_string(),
+            }],
+        };
+        let lines = render_hunk(&hunk, Some("Rust"), width, &theme);
+        // Exactly one scope row inside the box references the ancestor, and it
+        // fits within the box width (truncated, not wrapped).
+        let scope_rows: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|l| line_text(l).contains("fn very"))
+            .collect();
+        assert_eq!(scope_rows.len(), 1, "ancestor text must not wrap");
+        assert!(line_width(scope_rows[0]) <= width);
     }
 
     #[test]

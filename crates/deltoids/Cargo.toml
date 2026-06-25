@@ -36,6 +36,9 @@ tree-sitter-yaml = "0.7"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = []
 # Resolve before/after content for a `parse::FileDiff` from a git

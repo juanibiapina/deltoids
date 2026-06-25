@@ -3,7 +3,7 @@
 //! Subcommands:
 //!
 //! - `pager`     ANSI diff filter for `less` / `core.pager`
-//! - `review`    scrolling TUI viewer for a unified diff
+//! - `review`    scrolling TUI for local repo changes or a piped diff
 //! - `edit`      agent edit tool, appends to a trace
 //! - `write`     agent write tool, appends to a trace
 //! - `hashread`  agent read tool that emits hashline anchors
@@ -46,7 +46,7 @@ struct Cli {
 enum Command {
     /// ANSI diff filter for less / core.pager.
     Pager(pager::Args),
-    /// Scrolling TUI viewer for a unified diff.
+    /// Scrolling TUI for local repo changes or a piped diff.
     Review(review::Args),
     /// Agent edit tool — appends to a trace.
     Edit(edit::Args),

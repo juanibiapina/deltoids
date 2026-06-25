@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- review TUI: browse local uncommitted changes.
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
 ### Changed

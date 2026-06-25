@@ -1,14 +1,24 @@
 //! `deltoids review` — render a unified diff in a scrollable TUI.
 //!
-//! Mirrors the input pipeline of the pager exactly: read a unified diff
-//! from stdin, parse it, resolve before/after blob content against the
-//! local repo, and compute per-file [`Diff`]s. Instead of emitting ANSI
-//! text for `less`, render hunks as ratatui [`Line<'static>`] values
-//! and scroll them in an alternate screen.
+//! Two input modes, selected by whether stdin is a pipe:
+//!
+//! - **Piped diff** (`git diff | deltoids review`): read the unified
+//!   diff from stdin.
+//! - **Bare in a repo** (`deltoids review`): discover the repository and
+//!   show its local working-tree changes against `HEAD` — staged and
+//!   unstaged edits to tracked files plus untracked files, the same set
+//!   `git diff HEAD` reports.
+//!
+//! From there both modes share the pager's pipeline: parse the diff,
+//! resolve before/after blob content against the local repo, and compute
+//! per-file [`Diff`]s. Instead of emitting ANSI text for `less`, render
+//! hunks as ratatui [`Line<'static>`] values and scroll them in an
+//! alternate screen.
 //!
 //! Usage:
 //!
 //! ```sh
+//! deltoids review          # local working-tree changes
 //! git diff | deltoids review
 //! ```
 //!
@@ -66,9 +76,14 @@ use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
 use crate::terminal::TerminalSession;
 
-const OVERVIEW: &str = r#"Read a unified diff on stdin and open it in a scrollable TUI.
+const OVERVIEW: &str = r#"Open a diff in a scrollable TUI.
+
+With no piped input, shows the current repo's local changes (working
+tree and index vs HEAD, plus untracked files). With a diff piped in,
+shows that diff instead.
 
 Examples:
+  deltoids review
   git diff | deltoids review
   git show HEAD~1 | deltoids review
 
@@ -133,25 +148,41 @@ pub fn run(_args: Args) -> ExitCode {
 }
 
 fn run_inner() -> Result<(), String> {
-    let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|err| format!("failed to read stdin: {err}"))?;
-
-    if input.is_empty() {
-        return Ok(());
-    }
-
     if !io::stdout().is_terminal() {
         return Err(
-            "stdout must be a terminal (rv is interactive); pipe diffs into rv, not out of it"
+            "stdout must be a terminal (review is interactive); pipe diffs into review, not out of it"
                 .to_string(),
         );
     }
 
+    // Pick the diff source by whether stdin is piped. A piped diff is read
+    // verbatim (the classic `git diff | deltoids review`); a bare
+    // invocation in a terminal shows the repo's local working-tree changes.
+    let (input, repo) = if io::stdin().is_terminal() {
+        let repo = git::Repo::discover().ok_or_else(|| {
+            "not a git repository; pipe a diff (e.g. `git diff | deltoids review`) \
+             or run inside a repo"
+                .to_string()
+        })?;
+        let input = repo.working_tree_diff()?;
+        if input.trim().is_empty() {
+            eprintln!("deltoids review: no local changes");
+            return Ok(());
+        }
+        (input, Some(repo))
+    } else {
+        let mut input = String::new();
+        io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|err| format!("failed to read stdin: {err}"))?;
+        if input.is_empty() {
+            return Ok(());
+        }
+        (input, git::Repo::discover())
+    };
+
     let theme = Theme::load();
     let parsed = GitDiff::parse(&input);
-    let repo = git::Repo::discover();
     let resolved = resolve(&parsed, repo.as_ref())?;
     let diffs = precompute_diffs(&resolved);
 

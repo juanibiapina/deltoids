@@ -536,6 +536,7 @@ dependencies = [
  "regex",
  "serde",
  "syntect",
+ "tempfile",
  "terminal-colorsaurus",
  "toml 1.1.2+spec-1.1.0",
  "tree-sitter",

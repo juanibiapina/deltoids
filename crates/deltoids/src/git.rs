@@ -3,7 +3,7 @@
 //!
 //! Available only when the `blob-resolve` cargo feature is enabled.
 
-use git2::{ObjectType, Oid, Repository};
+use git2::{DiffFormat, DiffOptions, ObjectType, Oid, Repository};
 
 /// A discovered git repository, used to look up blobs by hash.
 pub struct Repo(Repository);
@@ -32,6 +32,53 @@ impl Repo {
         let blob = self.0.find_blob(oid).ok()?;
         std::str::from_utf8(blob.content()).ok().map(String::from)
     }
+
+    /// Unified diff of the working tree against `HEAD`, as patch text
+    /// ready for [`crate::parse::GitDiff::parse`].
+    ///
+    /// Covers the same set of changes as `git diff HEAD`: staged and
+    /// unstaged edits to tracked files, plus untracked files (shown as
+    /// additions with their content). Returns an empty string when the
+    /// working tree matches `HEAD`. An unborn `HEAD` (a repo with no
+    /// commits) is treated as an empty tree, so every file shows as an
+    /// addition.
+    pub fn working_tree_diff(&self) -> Result<String, String> {
+        let head_tree = match self.0.head() {
+            Ok(head) => Some(
+                head.peel_to_tree()
+                    .map_err(|e| format!("failed to read HEAD tree: {e}"))?,
+            ),
+            // Unborn HEAD (no commits yet): diff against an empty tree.
+            Err(_) => None,
+        };
+
+        let mut opts = DiffOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
+
+        let diff = self
+            .0
+            .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
+            .map_err(|e| format!("failed to diff working tree: {e}"))?;
+
+        let mut out = String::new();
+        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+            // For +/-/context lines git2 strips the origin prefix; the
+            // file and hunk headers already carry their full text.
+            match line.origin() {
+                '+' | '-' | ' ' => out.push(line.origin()),
+                _ => {}
+            }
+            if let Ok(text) = std::str::from_utf8(line.content()) {
+                out.push_str(text);
+            }
+            true
+        })
+        .map_err(|e| format!("failed to format diff: {e}"))?;
+
+        Ok(out)
+    }
 }
 
 /// Check if hash represents "no file" (all zeros).
@@ -58,6 +105,157 @@ pub fn blob_hash_matches(content: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    /// Init a repo at `dir` with a committable identity configured.
+    fn init_repo(dir: &Path) -> Repository {
+        let repo = Repository::init(dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        repo
+    }
+
+    /// Stage everything under the working tree and write the index.
+    fn stage_all(repo: &Repository) {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+    }
+
+    /// Commit the current index as a new commit on `HEAD`.
+    fn commit_index(repo: &Repository, msg: &str) {
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
+            .unwrap();
+    }
+
+    #[test]
+    fn working_tree_diff_shows_modified_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(patch.contains("a.txt"), "missing path in: {patch}");
+        assert!(patch.contains("index "), "missing index header in: {patch}");
+        assert!(patch.contains("-hello"), "missing old line in: {patch}");
+        assert!(patch.contains("+world"), "missing new line in: {patch}");
+    }
+
+    #[test]
+    fn working_tree_diff_includes_staged_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Change and stage it: vs HEAD this must still appear.
+        fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(
+            patch.contains("+staged"),
+            "staged change missing in: {patch}"
+        );
+    }
+
+    #[test]
+    fn working_tree_diff_includes_untracked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::write(dir.path().join("new.txt"), "brand new\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(
+            patch.contains("new.txt"),
+            "untracked path missing in: {patch}"
+        );
+        assert!(
+            patch.contains("+brand new"),
+            "untracked content missing in: {patch}"
+        );
+        assert!(
+            patch.contains("/dev/null"),
+            "untracked old side should be /dev/null in: {patch}"
+        );
+    }
+
+    #[test]
+    fn working_tree_diff_empty_when_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        assert_eq!(wrapper.working_tree_diff().unwrap(), "");
+    }
+
+    #[test]
+    fn working_tree_diff_unborn_head_shows_additions() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "first\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(patch.contains("a.txt"), "missing path in: {patch}");
+        assert!(patch.contains("+first"), "missing added line in: {patch}");
+    }
+
+    #[test]
+    fn working_tree_diff_round_trips_through_resolve() {
+        use crate::content::{self, SideContent};
+        use crate::parse::GitDiff;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Stage the change so the post-image blob lives in the ODB and
+        // resolution does not depend on the process working directory.
+        fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        let parsed = GitDiff::parse(&patch);
+        assert_eq!(parsed.files.len(), 1);
+
+        let resolved = content::retrieve(&parsed.files[0], Some(&wrapper));
+        match (resolved.before, resolved.after) {
+            (SideContent::Resolved(before), SideContent::Resolved(after)) => {
+                assert_eq!(before, "hello\n");
+                assert_eq!(after, "world\n");
+            }
+            _ => panic!("expected both sides resolved"),
+        }
+    }
 
     #[test]
     fn null_hash_detection() {

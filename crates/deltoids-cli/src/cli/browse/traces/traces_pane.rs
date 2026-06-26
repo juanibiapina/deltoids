@@ -92,9 +92,9 @@ fn short_trace_id(trace_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::test_support::*;
-    use crate::tui::{apply_events, handle_key, handle_mouse};
-    use crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind};
+    use crate::cli::browse::traces::test_support::*;
+    use crate::cli::browse::traces::{handle_key, handle_mouse};
+    use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 
     #[test]
     fn j_moves_traces_when_focused_on_traces() {
@@ -155,12 +155,15 @@ mod tests {
         let mut state = state_with_rects(&traces);
         assert_eq!(state.trace_index, 0);
 
-        let burst = vec![
-            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 15)),
-            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 15)),
-            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 15)),
-        ];
-        apply_events(&mut state, &traces, burst, 20, 10);
+        for _ in 0..3 {
+            handle_mouse(
+                &mut state,
+                &traces,
+                make_mouse(MouseEventKind::ScrollDown, 5, 15),
+                20,
+                10,
+            );
+        }
         assert_eq!(state.trace_index, 1);
     }
 

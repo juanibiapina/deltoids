@@ -9,16 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- TUI: The `review` and `traces` sidebars resize the same way: use `<`/`>` to narrow/widen them or drag the divider with the mouse. The default width scales with the terminal, and the sidebar never disappears on narrow terminals.
-- review TUI: browse local uncommitted changes, refreshing automatically as the working tree changes.
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
 ### Changed
 
-- TUI: Long diff lines now wrap onto continuation rows instead of being cut at the pane edge, so you can see the whole line in both `review` and `traces`.
-- TUI: Mouse-wheel scrolling is smoother throughout. Diff views and lists (the file sidebar, traces, and entries) now move in proportion to how much you scroll, instead of jumping too far per gesture.
-- review TUI: The file sidebar now lists files and folders interleaved alphabetically, matching lazygit's default order, instead of grouping all folders first.
-- TUI: The sidebar now opens a bit wider by default.
+- The `review` and `traces` UIs are unified into a single `deltoids tui` (also opened by running `deltoids` in a terminal); `[` / `]` switch between the working-tree diff and the trace browser.
+- TUI: Long diff lines wrap onto continuation rows instead of being cut off at the pane edge.
+- TUI: Mouse-wheel scrolling moves in proportion to the gesture instead of jumping too far.
+- TUI: The sidebar resizes with `<`/`>` or by dragging the divider, opens a bit wider by default, scales with the terminal, and never disappears on narrow terminals.
+- TUI: The file sidebar lists files and folders interleaved alphabetically (matching lazygit) instead of grouping folders first.
 
 ### Fixed
 

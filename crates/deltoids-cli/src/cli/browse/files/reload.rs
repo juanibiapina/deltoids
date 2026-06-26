@@ -11,10 +11,10 @@ use deltoids::{Theme, git};
 
 use crate::sidebar::display_path;
 
-use super::ViewState;
 use super::diff_pane::{DiffPane, build_view};
 use super::model::{DiffSource, Model, build_model};
 use super::sidebar_pane::build_sidebar;
+use crate::sidebar::Sidebar;
 
 /// Install a recursive filesystem watcher for a refreshable source.
 ///
@@ -96,27 +96,29 @@ fn reload_needed(new_input: &str, last_input: &str) -> bool {
 /// filesystem event that doesn't alter the diff) costs one
 /// `working_tree_diff` and skips the model/view rebuild. Returns `true`
 /// only when it rebuilt.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn reload_working_tree(
-    state: &mut ViewState,
+    diff: &mut DiffPane,
+    sidebar: &mut Sidebar,
     model: &mut Model,
+    last_input: &mut String,
     repo: &git::Repo,
     theme: &Theme,
     width: usize,
     diff_viewport: usize,
-    last_input: &mut String,
 ) -> Result<bool, String> {
     let input = repo.working_tree_diff()?;
     if !reload_needed(&input, last_input) {
         return Ok(false);
     }
-    let prev_path = state
-        .sidebar
+    let prev_path = sidebar
         .nearest_file_index()
         .and_then(|idx| model.files.get(idx))
         .map(|f| display_path(&f.file).to_string());
     let new_model = build_model(&input, Some(repo))?;
     reload_view(
-        state,
+        diff,
+        sidebar,
         &new_model,
         prev_path.as_deref(),
         theme,
@@ -136,25 +138,26 @@ pub(super) fn reload_working_tree(
 /// untouched. Scroll is clamped to the new range then snapped to the
 /// restored selection.
 fn reload_view(
-    state: &mut ViewState,
+    diff: &mut DiffPane,
+    sidebar: &mut Sidebar,
     model: &Model,
     prev_path: Option<&str>,
     theme: &Theme,
     width: usize,
     diff_viewport: usize,
 ) {
-    let sidebar = build_sidebar(model, theme);
-    let display_order = sidebar.display_order();
+    let new_sidebar = build_sidebar(model, theme);
+    let display_order = new_sidebar.display_order();
     let view = build_view(&model.files, &model.diffs, &display_order, width, theme);
 
-    state.diff = DiffPane {
+    *diff = DiffPane {
         diff_lines: view.lines,
         file_offsets: view.file_offsets,
         display_order,
         cached_width: width,
-        diff_scroll: state.diff.diff_scroll,
+        diff_scroll: diff.diff_scroll,
     };
-    state.sidebar = sidebar;
+    *sidebar = new_sidebar;
 
     if let Some(path) = prev_path
         && let Some(idx) = model
@@ -162,21 +165,25 @@ fn reload_view(
             .iter()
             .position(|f| display_path(&f.file) == path)
     {
-        state.sidebar.select_file_index(idx, diff_viewport);
+        sidebar.select_file_index(idx, diff_viewport);
     }
 
-    let dr = state.sidebar.selection_display_range();
-    let min = state.diff.min_scroll(dr.clone());
-    let max = state.diff.max_scroll(dr, diff_viewport);
-    state.diff.diff_scroll = state.diff.diff_scroll.clamp(min, max.max(min));
-    state.snap_diff_to_selected_file(diff_viewport);
+    let dr = sidebar.selection_display_range();
+    let min = diff.min_scroll(dr.clone());
+    let max = diff.max_scroll(dr, diff_viewport);
+    diff.diff_scroll = diff.diff_scroll.clamp(min, max.max(min));
+    // Snap to the restored selection.
+    if let Some(file_idx) = sidebar.nearest_file_index() {
+        let dr = sidebar.selection_display_range();
+        diff.snap_to_file(file_idx, diff_viewport, dr);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::review::sidebar_pane::sidebar_footer;
-    use crate::cli::review::test_support::*;
+    use crate::cli::browse::files::sidebar_pane::sidebar_footer;
+    use crate::cli::browse::files::test_support::*;
 
     #[test]
     fn reload_needed_only_when_input_changed() {
@@ -202,7 +209,15 @@ mod tests {
 
         // New model inserts a file before b.txt, shifting its index.
         let m2 = model_of(&["a.txt", "aa.txt", "b.txt", "c.txt"]);
-        reload_view(&mut state, &m2, prev.as_deref(), &theme(), 80, 4);
+        reload_view(
+            &mut state.diff,
+            &mut state.sidebar,
+            &m2,
+            prev.as_deref(),
+            &theme(),
+            80,
+            4,
+        );
 
         assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
         // The diff pane is filtered to the restored file.
@@ -219,7 +234,15 @@ mod tests {
             files: Vec::new(),
             diffs: Vec::new(),
         };
-        reload_view(&mut state, &empty, Some("a.txt"), &theme(), 80, 4);
+        reload_view(
+            &mut state.diff,
+            &mut state.sidebar,
+            &empty,
+            Some("a.txt"),
+            &theme(),
+            80,
+            4,
+        );
 
         assert!(state.diff.diff_lines.is_empty());
         assert_eq!(state.visible_diff_range(), 0..0);
@@ -241,7 +264,15 @@ mod tests {
 
         // b.txt is gone (reverted/committed); selection must clamp.
         let m2 = model_of(&["a.txt", "c.txt"]);
-        reload_view(&mut state, &m2, Some("b.txt"), &theme(), 80, 4);
+        reload_view(
+            &mut state.diff,
+            &mut state.sidebar,
+            &m2,
+            Some("b.txt"),
+            &theme(),
+            80,
+            4,
+        );
 
         let path = selected_path(&state, &m2);
         assert!(

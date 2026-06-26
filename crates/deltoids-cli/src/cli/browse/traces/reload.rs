@@ -87,8 +87,8 @@ pub(super) fn reload_traces(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::DiffCache;
-    use crate::tui::test_support::*;
+    use crate::cli::browse::traces::DiffCache;
+    use crate::cli::browse::traces::test_support::*;
 
     #[test]
     fn reload_preserves_selection() {

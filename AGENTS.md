@@ -6,9 +6,9 @@ This is a Rust workspace with CLI tools that trace file edits, plus a TUI to bro
 
 **Crates:**
 - `deltoids` — diff library with tree-sitter scope context. Optional features:
-  - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by the `pager` and `review` subcommands).
-  - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by the `review` and `traces` subcommands).
-- `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `review` (scrolling TUI), `edit`/`write` (agent edit tools), `traces` (trace browser). Also holds the trace-management library shared by `edit`/`write`. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
+  - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by the `pager` and `tui` subcommands).
+  - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by the `tui` subcommand).
+- `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (unified scrolling TUI: working-tree diff + trace browser), `edit`/`write` (agent edit tools). Also holds the trace-management library shared by `edit`/`write`. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
 - `tests` — cross-crate integration tests
 
 ## Build & Test
@@ -61,16 +61,7 @@ crates/
       mod.rs                 #   docs + re-exports
       anchor.rs             #   hash alphabet, formatters, anchor parsing
       apply.rs              #   edit ops + splice engine
-    src/tui/                 # `traces` subcommand TUI (split by pane)
-      mod.rs                 #   shell: run, loop, routing, layout
-      model.rs              #   load traces/entries
-      entries_pane.rs       #   entries list slice
-      traces_pane.rs        #   traces list slice
-      detail.rs            #   detail/diff slice (cache + renderers)
-      reload.rs            #   reload from disk
-      scripted.rs          #   headless render path
-      test_support.rs      #   shared test fixtures
-    src/sidebar/             # File tree sidebar for `review`
+    src/sidebar/             # File tree sidebar for Files mode
       mod.rs                 #   Sidebar state + navigation
       status.rs            #   file classification
       tree.rs              #   path-tree construction
@@ -80,19 +71,34 @@ crates/
     src/scroll.rs            # Mouse-wheel scroll feel
     src/cli.rs               # Subcommand module declarations
     src/cli/pager.rs         # `deltoids pager` subcommand
-    src/cli/review/          # `deltoids review` scrolling diff TUI (split by pane)
-      mod.rs                 #   shell: Args, run, loop, routing, coordination
-      model.rs             #   parse/resolve/diff
-      diff_pane.rs         #   diff pane slice
-      sidebar_pane.rs      #   sidebar pane slice
-      help.rs              #   help popup slice
-      reload.rs            #   working-tree watcher + rebuild
-      test_support.rs      #   shared test fixtures
+    src/cli/browse/          # unified scrolling TUI (review + traces)
+      mod.rs                 #   mode-agnostic shell: loop, routing, layout,
+                             #     divider, resize, wheel, mode toggle, help,
+                             #     reload orchestration (active eager / lazy)
+      mode.rs               #   Mode trait + TabStrip + AppCommand
+      help.rs               #   shared help popup
+      tests.rs              #   shell tests (mock Mode)
+      files/                 #   FilesMode (working-tree / piped diff)
+        mod.rs               #     FilesMode impl of Mode
+        model.rs             #     parse/resolve/diff
+        diff_pane.rs         #     diff pane slice
+        sidebar_pane.rs      #     sidebar pane slice
+        reload.rs            #     working-tree watcher + rebuild
+        test_support.rs      #     shared test fixtures
+      traces/                #   TracesMode (edit/write trace browser)
+        mod.rs               #     TracesMode impl of Mode
+        model.rs             #     load traces/entries
+        entries_pane.rs      #     entries list slice
+        traces_pane.rs       #     traces list slice
+        detail.rs            #     detail/diff slice (cache + renderers)
+        reload.rs            #     reload from disk
+        scripted.rs          #     headless render path
+        test_support.rs      #     shared test fixtures
+    src/cli/tui.rs           # `deltoids tui` entry (interactive / headless scripted)
     src/cli/edit.rs          # `deltoids edit` subcommand
     src/cli/write.rs         # `deltoids write` subcommand
     src/cli/hash_read.rs     # `deltoids hashread` subcommand
     src/cli/hash_edit.rs     # `deltoids hashedit` subcommand
-    src/cli/traces.rs        # `deltoids traces` subcommand
     src/cli/hook.rs          # `deltoids hook` subcommand
     src/bin/deltoids.rs      # Single binary dispatcher
 
@@ -131,11 +137,11 @@ Each entry names the module that owns a concern and the invariant to respect. Re
 - **Diff pipeline.** `Diff::compute()` runs the line-level engine (`engine.rs`), detects one stable `Language`, then two phases in `scope/`: range planning (`range.rs`) and hunk building (`hunk_builder.rs`).
 - **Hunk iteration.** Walk hunks via `Hunk::runs()` -> `HunkRun` (`Header`/`Subhunk`/`Context`), not by regrouping lines. `render_hunk` and the TUI's `detail_items` share it; reach for it before adding new line-grouping code.
 - **Per-line stateless highlighting.** Each diff line is highlighted with fresh syntect state, so stateful grammars lose context-dependent color (e.g. a Dockerfile `RUN` without its `FROM`). Known limitation, not a goal.
-- **TUI chrome is shared.** `review` and `traces` share pane chrome from `render_tui`; both scroll by physical rows, and the diff body hard-wraps long lines onto padded continuation rows. The two TUIs also use the same submodule layout (`cli/review/` and `tui/`): a `mod.rs` shell that owns the loop, routing, and layout, plus one file per pane/feature owning its state, input, and render.
-- **Big files become directories.** A source file past ~1,000 lines with separable concerns becomes a `foo/` directory split by change axis (the pane/feature that changes together, not by layer): `mod.rs` holds the entry point and glue, one file per named concern owns its full vertical slice, tests live beside their code, and shared fixtures go in one `test_support.rs`. `scope/` is the original precedent; `cli/review/`, `tui/`, `sidebar/`, and `hashline/` follow it. The crate root (`lib.rs`) cannot be a directory, so it carves concerns into sibling modules (`edit.rs`, `write.rs`, `hash_edit.rs`, `hash_read.rs`, `types.rs`) and stays a thin re-export root.
+- **One unified TUI, two modes.** `deltoids tui` (and bare `deltoids` on a TTY) opens the TUI (`cli/browse/`); the starting mode is smart (`browse::smart_initial_mode`): **Files** mode (`files/`) when the working tree has local changes, otherwise **Traces** mode (`traces/`). `[`/`]` toggle the left panel between them, lazygit-style. (When stdout is not a TTY, `tui` falls back to the Traces headless scripted render, the `tui_cli.rs` contract.) The active mode's top-left panel title is a lazygit-style tab strip `─[1]─Files - Traces─` (`render_tui::pane_block_with_tabs`), with the active label bold-accent and the inactive one muted. The `Mode` seam (`mode.rs`) is a real seam: the shell (`mod.rs`) is mode-agnostic and owns the terminal, the event loop, the one draggable divider, the shared sidebar width, `<`/`>` resize, the help popup, the `[`/`]` toggle, and reload orchestration; each mode owns its full vertical slice (state, keys, mouse, render, reload) behind the trait. Pane chrome still comes from `render_tui`; both modes scroll by physical rows and hard-wrap long diff lines onto padded continuation rows. Live reload keeps the active mode fresh eagerly (after a debounce) and reloads the inactive mode lazily on its next activation. Both modes build lazily, including the one shown at startup: the shell starts with two empty placeholders, flips the active tab, draws a `Loading…` frame (`draw_loading`, the tab strip plus a centered message), then builds the mode on the next loop step. Neither launch nor a toggle blocks on a blank screen, and the inactive mode never pays its build/watcher cost (Files mode's working-tree diff and recursive watcher, which scale with repo size) until first activated. The build is synchronous (the data crosses no thread), so input pauses during it, but the visible `Loading…` state shows why. Sidebar width is shell-level and shared across both modes.
+- **Big files become directories.** A source file past ~1,000 lines with separable concerns becomes a `foo/` directory split by change axis (the pane/feature that changes together, not by layer): `mod.rs` holds the entry point and glue, one file per named concern owns its full vertical slice, tests live beside their code, and shared fixtures go in one `test_support.rs`. `scope/` is the original precedent; `cli/browse/` (with its `files/` and `traces/` mode subtrees), `sidebar/`, and `hashline/` follow it. The crate root (`lib.rs`) cannot be a directory, so it carves concerns into sibling modules (`edit.rs`, `write.rs`, `hash_edit.rs`, `hash_read.rs`, `types.rs`) and stays a thin re-export root.
 - **Scroll feel is one file.** All wheel-burst smoothing lives in `scroll.rs` (`WheelScroll`); both TUIs route wheel events through it, so changing scroll feel is a one-file edit they both inherit.
 - **Sidebar sizing is one file.** All clamp/fraction/step/divider math lives in `sidebar_width.rs`; change sizing policy there. Sidebars never hide.
-- **Default behavior.** Plain `deltoids` runs `pager` when stdin is piped (preserving `git config core.pager 'deltoids | less -R'`) and prints help on a TTY.
+- **Default behavior.** Plain `deltoids` runs `pager` when stdin is piped (preserving `git config core.pager 'deltoids | less -R'`) and opens the `tui` on a TTY. The TUI no longer reads a piped diff; piped diffs always go to the pager.
 - **Trace storage.** Traces live in `$XDG_DATA_HOME/edit/traces/<trace-id>/entries.jsonl`; `hashedit` records as `EditHistoryEntry { tool: "hashedit" }` with synthesised per-op `TextEdit`s (preserving each `reason`) so the trace TUI and pager work unchanged.
 - **Edit modes.** `DELTOIDS_EDIT_MODE` (`text` default, `hash`) is read once at extension load to keep the system prompt static for prompt caching; switching modes needs a pi restart. Both modes override pi's `edit`/`write`; hash mode also adds `hashread` and re-describes `read` to steer text reads toward it (`read`'s real implementation still handles images, dirs, URLs, archives, etc.). The hash is a validation token, not an address. Engine: `hashline/`.
 

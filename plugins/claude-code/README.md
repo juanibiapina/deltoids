@@ -72,11 +72,12 @@ the session with `claude --continue` keeps writing to that same trace.
 Browse the recorded traces with:
 
 ```bash
-deltoids traces
+deltoids tui
 ```
 
-(`deltoids traces` filters by current working directory, so run it
-from the same directory the Claude session was running in.)
+(The TUI opens on the working-tree diff; press `[` or `]` to toggle to
+the trace browser. Traces are filtered by current working directory, so
+run it from the same directory the Claude session was running in.)
 
 ## How It Works
 

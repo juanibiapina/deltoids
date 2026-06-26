@@ -251,7 +251,7 @@ fn hashedit_trace_is_visible_in_traces_subcommand() {
     assert!(edit_output.status.success());
 
     let traces_output = run_command_in_dir(
-        "traces",
+        "tui",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",

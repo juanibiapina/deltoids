@@ -37,7 +37,7 @@ pub(super) struct DiffView {
 /// Build the diff pane as a flat list of ratatui lines. Same layout as
 /// before; renders files in `display_order` (sidebar tree order) so the
 /// diff pane's vertical layout matches the sidebar exactly. The
-/// returned `file_offsets` is keyed by *input* index — the caller looks
+/// returned `file_offsets` is keyed by *input* index; the caller looks
 /// up `file_offsets[input_index]` to find where that file's header
 /// starts in the rendered output.
 pub(super) fn build_view(
@@ -293,9 +293,9 @@ impl DiffPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::review::model::precompute_diffs;
-    use crate::cli::review::test_support::*;
-    use crate::cli::review::{Focus, handle_key};
+    use crate::cli::browse::files::model::precompute_diffs;
+    use crate::cli::browse::files::test_support::*;
+    use crate::cli::browse::files::{Focus, handle_key};
 
     #[test]
     fn empty_model_state_has_empty_display_order() {
@@ -501,7 +501,7 @@ mod tests {
             "gamma leaked into beta filter: {visible_text:?}"
         );
 
-        // Move to a file row — visible range narrows to that single file.
+        // Move to a file row; visible range narrows to that single file.
         state.sidebar.move_down(20); // file row inside beta/
         assert!(!state.sidebar.selected_is_dir());
         let file_range = state.visible_diff_range();
@@ -606,12 +606,12 @@ mod tests {
         let before = state.diff.diff_scroll;
 
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollDown, 50, 5);
-        crate::cli::review::handle_mouse(&mut state, mouse, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
         assert!(state.diff.diff_scroll > before);
 
         let after_down = state.diff.diff_scroll;
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollUp, 50, 5);
-        crate::cli::review::handle_mouse(&mut state, mouse, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
         assert!(state.diff.diff_scroll < after_down);
     }
 }

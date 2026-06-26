@@ -166,7 +166,7 @@ fn pad_or_truncate(rows: &[String], target: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::test_support::*;
+    use crate::cli::browse::traces::test_support::*;
 
     #[test]
     fn scripted_render_shows_traces_and_entries() {

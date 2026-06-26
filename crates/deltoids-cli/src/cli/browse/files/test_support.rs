@@ -4,19 +4,21 @@
 
 use std::path::Path;
 
-use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
+use crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 use deltoids::Theme;
 use deltoids::parse::FileDiff;
 
-use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
-use crate::sidebar_width::Preference;
+use std::time::Instant;
 
-use super::ViewState;
+use crate::scroll::WheelScroll;
+use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
+
 use super::diff_pane::{DiffPane, build_view};
 use super::model::{Model, ResolvedFile, count_deltas, precompute_diffs};
+use super::{FilesMode, Focus};
 
 pub(super) fn theme() -> Theme {
     Theme::default()
@@ -42,7 +44,7 @@ pub(super) fn line_text(line: &Line<'static>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
-pub(super) fn make_state(files: &[ResolvedFile]) -> ViewState {
+pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
     let diffs = precompute_diffs(files);
     let sidebar_files: Vec<SidebarFile<'_>> = files
         .iter()
@@ -60,10 +62,26 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> ViewState {
     let display_order = sidebar.display_order();
     let view = build_view(files, &diffs, &display_order, 80, &theme());
     let diff = DiffPane::new(view, display_order, 80);
-    ViewState::new(diff, sidebar, Preference::seeded(200))
+    FilesMode {
+        diff,
+        sidebar,
+        focus: Focus::Sidebar,
+        sidebar_rect: Rect::default(),
+        diff_rect: Rect::default(),
+        wheel: WheelScroll::new(),
+        model: Model {
+            files: Vec::new(),
+            diffs: Vec::new(),
+        },
+        repo: None,
+        is_static: true,
+        last_input: String::new(),
+        last_rebuild: Instant::now(),
+        _watcher: None,
+    }
 }
 
-pub(super) fn make_state_with_rects(files: &[ResolvedFile]) -> ViewState {
+pub(super) fn make_state_with_rects(files: &[ResolvedFile]) -> FilesMode {
     let mut state = make_state(files);
     state.sidebar_rect = Rect::new(0, 0, 38, 20);
     state.diff_rect = Rect::new(38, 0, 82, 20);
@@ -86,19 +104,12 @@ pub(super) fn model_of(paths: &[&str]) -> Model {
 }
 
 /// Input index of the file owning the current sidebar selection.
-pub(super) fn selected_path(state: &ViewState, model: &Model) -> Option<String> {
+pub(super) fn selected_path(state: &FilesMode, model: &Model) -> Option<String> {
     state
         .sidebar
         .nearest_file_index()
         .and_then(|i| model.files.get(i))
         .map(|f| display_path(&f.file).to_string())
-}
-
-pub(super) fn key_press(code: KeyCode) -> crossterm::event::Event {
-    crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-        code,
-        crossterm::event::KeyModifiers::NONE,
-    ))
 }
 
 pub(super) fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {

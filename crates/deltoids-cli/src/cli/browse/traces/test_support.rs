@@ -1,7 +1,7 @@
 //! Shared test fixtures for the traces TUI submodules: theme, history
 //! entry/trace builders, event builders, and a state-with-rects helper.
 
-use crossterm::event::{Event, KeyCode, MouseEvent, MouseEventKind};
+use crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use deltoids::Theme;
@@ -74,13 +74,6 @@ pub(super) fn trace_summary(trace_id: &str, entry_count: usize, last_reason: &st
         last_path: "/tmp/project/app.txt".to_string(),
         last_reason: last_reason.to_string(),
     }
-}
-
-pub(super) fn key_press(code: KeyCode) -> Event {
-    Event::Key(crossterm::event::KeyEvent::new(
-        code,
-        crossterm::event::KeyModifiers::NONE,
-    ))
 }
 
 pub(super) fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {

@@ -776,6 +776,26 @@ pub fn pane_block_with_footer(
     block
 }
 
+/// Like [`pane_block_with_footer`] but takes a pre-styled [`Line`] as the
+/// title instead of a plain `&str`. Used by the unified TUI's top-left
+/// panel to draw the `Files│Traces` tab strip with the active mode
+/// highlighted. Pass `None` to skip the footer.
+pub fn pane_block_with_tabs(
+    title: Line<'static>,
+    color: Color,
+    footer: Option<String>,
+) -> Block<'static> {
+    let mut block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color));
+    if let Some(footer) = footer {
+        block = block.title_bottom(Line::from(footer).right_aligned());
+    }
+    block
+}
+
 /// Format a position counter for the pane footer: `" 3 of 12 "`.
 pub fn position_footer(position: usize, total: usize) -> String {
     format!(" {position} of {total} ")

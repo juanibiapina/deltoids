@@ -60,7 +60,7 @@ fn renders_empty_state_for_directory_with_no_traces() {
     let data_home = tempdir().unwrap();
 
     let output = run_command_in_dir(
-        "traces",
+        "tui",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",
@@ -118,7 +118,7 @@ fn renders_traces_and_entries_for_current_directory() {
     assert!(write_output.status.success());
 
     let tui_output = run_command_in_dir(
-        "traces",
+        "tui",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",
@@ -186,7 +186,7 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     // straight to the second entry (write). `\t` then proves Tab switches
     // focus to the traces pane.
     let tui_output = run_command_in_dir(
-        "traces",
+        "tui",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"j\t",
@@ -262,7 +262,7 @@ fn shows_only_traces_for_the_current_directory() {
             .to_string();
 
     let tui_output = run_command_in_dir(
-        "traces",
+        "tui",
         &[],
         &[("XDG_DATA_HOME", data_home.path())],
         b"",

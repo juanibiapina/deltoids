@@ -457,7 +457,7 @@ pub(super) fn fit_line(line: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::test_support::*;
+    use crate::cli::browse::traces::test_support::*;
 
     #[test]
     fn diff_cache_matches_selection_and_width_checks_all_cache_fields() {

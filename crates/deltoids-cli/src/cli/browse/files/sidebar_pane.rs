@@ -12,8 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use deltoids::Theme;
 use deltoids::render_tui::{
-    pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
-    rgb_to_color,
+    pane_block_with_tabs, pane_border_color, pane_inner_height, render_pane_scrollbar, rgb_to_color,
 };
 
 use crate::sidebar::{Sidebar, SidebarFile};
@@ -60,6 +59,7 @@ pub(super) fn draw_sidebar(
     sidebar: &Sidebar,
     display_order: &[usize],
     focused: bool,
+    title: Line<'static>,
     theme: &Theme,
 ) {
     let inner = area.inner(Margin {
@@ -86,7 +86,7 @@ pub(super) fn draw_sidebar(
 
     let color = pane_border_color(focused, theme);
     let footer = sidebar_footer(sidebar, display_order);
-    let block = pane_block_with_footer("─[1]─Files─", color, footer);
+    let block = pane_block_with_tabs(title, color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
 
     render_pane_scrollbar(
@@ -155,10 +155,10 @@ pub(super) fn sidebar_footer(sidebar: &Sidebar, display_order: &[usize]) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::review::model::ResolvedFile;
-    use crate::cli::review::test_support::*;
-    use crate::cli::review::{Focus, handle_key, handle_mouse};
-    use crossterm::event::{Event, MouseButton, MouseEventKind};
+    use crate::cli::browse::files::model::ResolvedFile;
+    use crate::cli::browse::files::test_support::*;
+    use crate::cli::browse::files::{Focus, handle_key, handle_mouse};
+    use crossterm::event::{MouseButton, MouseEventKind};
 
     #[test]
     fn handle_key_j_in_sidebar_focus_moves_sidebar_and_snaps_diff() {
@@ -233,12 +233,14 @@ mod tests {
         let mut state = make_state_with_rects(&resolved);
         let initial = state.sidebar.selected();
 
-        let burst = vec![
-            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 5)),
-            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 5)),
-            Event::Mouse(make_mouse(MouseEventKind::ScrollDown, 5, 5)),
-        ];
-        crate::cli::review::apply_events(&mut state, burst, 18, 18);
+        for _ in 0..3 {
+            handle_mouse(
+                &mut state,
+                make_mouse(MouseEventKind::ScrollDown, 5, 5),
+                18,
+                18,
+            );
+        }
         assert_eq!(state.sidebar.selected(), initial + 1);
     }
 

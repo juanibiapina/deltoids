@@ -3,35 +3,34 @@
 //! Subcommands:
 //!
 //! - `pager`     ANSI diff filter for `less` / `core.pager`
-//! - `review`    scrolling TUI for local repo changes or a piped diff
+//! - `tui`       unified scrolling TUI (working-tree diff + trace browser)
 //! - `edit`      agent edit tool, appends to a trace
 //! - `write`     agent write tool, appends to a trace
 //! - `hashread`  agent read tool that emits hashline anchors
 //! - `hashedit`  agent edit tool using hashline anchors
-//! - `traces`    browse edit/write traces for the current dir
 //! - `hook`      coding-agent lifecycle adapters (Claude Code, …)
 //!
 //! Default (no subcommand): if stdin is a pipe, run `pager` (so
-//! `git config core.pager 'deltoids | less -R'` keeps working). If
-//! stdin is a TTY, print top-level help.
+//! `git config core.pager 'deltoids | less -R'` keeps working). On a
+//! TTY, open the `tui`.
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
-use deltoids_cli::cli::{edit, hash_edit, hash_read, hook, pager, review, traces, write};
+use deltoids_cli::cli::{edit, hash_edit, hash_read, hook, pager, tui, write};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "deltoids",
     version,
     disable_version_flag = true,
-    about = "Diff renderer, scrolling TUI, agent edit tools, and trace browser.",
+    about = "Diff renderer, unified scrolling TUI, and agent edit tools.",
     long_about = "\
-The deltoids toolkit. Run `deltoids <subcommand> --help` for details on \
-each subcommand. With no subcommand and a unified diff piped in, \
-`deltoids` runs the pager (preserving `git config core.pager 'deltoids | less -R'`)."
+The deltoids toolkit. Run `deltoids <subcommand> --help` for details. \
+With no subcommand, a piped diff runs the pager (preserving \
+`git config core.pager 'deltoids | less -R'`) and a TTY opens the TUI."
 )]
 struct Cli {
     /// Print version and exit.
@@ -46,8 +45,8 @@ struct Cli {
 enum Command {
     /// ANSI diff filter for less / core.pager.
     Pager(pager::Args),
-    /// Scrolling TUI for local repo changes or a piped diff.
-    Review(review::Args),
+    /// Unified scrolling TUI: working-tree diff and trace browser.
+    Tui(tui::Args),
     /// Agent edit tool — appends to a trace.
     Edit(edit::Args),
     /// Agent write tool — appends to a trace.
@@ -56,8 +55,6 @@ enum Command {
     Hashread(hash_read::Args),
     /// Agent edit tool using hashline anchors.
     Hashedit(hash_edit::Args),
-    /// Browse edit/write traces for the current directory.
-    Traces(traces::Args),
     /// Coding-agent lifecycle adapters (e.g. Claude Code PostToolUse).
     #[command(hide = true)]
     Hook(hook::Args),
@@ -67,21 +64,17 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Pager(args)) => pager::run(args),
-        Some(Command::Review(args)) => review::run(args),
+        Some(Command::Tui(args)) => tui::run(args),
         Some(Command::Edit(args)) => edit::run(args),
         Some(Command::Write(args)) => write::run(args),
         Some(Command::Hashread(args)) => hash_read::run(args),
         Some(Command::Hashedit(args)) => hash_edit::run(args),
-        Some(Command::Traces(args)) => traces::run(args),
         Some(Command::Hook(args)) => hook::run(args),
         None => {
-            // No subcommand: pipe → pager (preserve `core.pager` use),
-            // TTY → help.
+            // Smart default: a piped diff feeds the pager (preserving
+            // `core.pager`); a TTY opens the unified TUI.
             if std::io::stdin().is_terminal() {
-                let mut cmd = Cli::command();
-                let _ = cmd.print_help();
-                println!();
-                ExitCode::SUCCESS
+                tui::run(tui::Args::default())
             } else {
                 pager::run(pager::Args::default())
             }

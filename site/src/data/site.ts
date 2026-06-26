@@ -95,7 +95,7 @@ git:
   },
 ];
 
-/** traces install snippets per coding agent. */
+/** Agent tool install snippets per coding agent. */
 export const AGENT_TOOLS: {
   id: string;
   label: string;

@@ -24,7 +24,7 @@ The extension overrides pi's built-in `edit` and `write` tools in both modes —
 
 - **Trace tracking**: All edits are recorded in traces at `$XDG_DATA_HOME/edit/traces/`
 - **Trace continuity**: Trace IDs persist across tool calls within a session
-- **TUI browser**: Review traces with `deltoids traces`
+- **TUI browser**: Review changes with `deltoids tui` (opens on the working-tree diff; press `[`/`]` to toggle to the trace browser)
 
 ## Modes
 

@@ -112,7 +112,7 @@ pub(super) fn count_deltas(diff: &Diff) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::review::test_support::*;
+    use crate::cli::browse::files::test_support::*;
 
     #[test]
     fn build_model_empty_input_yields_no_files() {

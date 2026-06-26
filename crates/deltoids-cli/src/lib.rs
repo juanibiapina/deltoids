@@ -12,7 +12,6 @@ pub mod sidebar;
 pub mod sidebar_width;
 pub mod terminal;
 pub mod trace_store;
-pub mod tui;
 
 mod edit;
 mod hash_edit;

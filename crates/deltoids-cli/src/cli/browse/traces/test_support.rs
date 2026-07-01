@@ -77,11 +77,20 @@ pub(super) fn trace_summary(trace_id: &str, entry_count: usize, last_reason: &st
 }
 
 pub(super) fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+    make_mouse_mods(kind, col, row, crossterm::event::KeyModifiers::NONE)
+}
+
+pub(super) fn make_mouse_mods(
+    kind: MouseEventKind,
+    col: u16,
+    row: u16,
+    modifiers: crossterm::event::KeyModifiers,
+) -> MouseEvent {
     MouseEvent {
         kind,
         column: col,
         row,
-        modifiers: crossterm::event::KeyModifiers::NONE,
+        modifiers,
     }
 }
 

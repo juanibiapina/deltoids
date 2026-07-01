@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
-use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use notify::{RecursiveMode, Watcher};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
@@ -281,9 +281,23 @@ fn handle_mouse(
     detail_row_count: usize,
     detail_height: usize,
 ) -> AppCommand {
-    let target = match pane_at(state, mouse.column, mouse.row) {
-        Some(pane) => pane,
-        None => return AppCommand::Continue,
+    // Ctrl + wheel redirects the scroll to the entries (edits) list
+    // regardless of hover position, so the diff can be scrolled by
+    // hovering it while Ctrl steps through entries. (Shift+wheel is
+    // swallowed by common terminals/tmux as a mouse-mode bypass, so
+    // Ctrl is used instead.)
+    let is_scroll = matches!(
+        mouse.kind,
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+    );
+    let modified = mouse.modifiers.contains(KeyModifiers::CONTROL);
+    let target = if is_scroll && modified {
+        Focus::Entries
+    } else {
+        match pane_at(state, mouse.column, mouse.row) {
+            Some(pane) => pane,
+            None => return AppCommand::Continue,
+        }
     };
 
     match mouse.kind {
@@ -628,6 +642,36 @@ mod tests {
         let mouse = make_mouse(MouseEventKind::ScrollUp, 50, 5);
         handle_mouse(&mut state, &traces, mouse, 20, 10);
         assert_eq!(state.diff_scroll, 0);
+    }
+
+    #[test]
+    fn ctrl_scroll_on_diff_moves_entries() {
+        // Hovering the diff with Ctrl held redirects the wheel to the
+        // entries list instead of scrolling the diff.
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
+            entries: vec![edit_entry(), write_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        let initial = state.entry_index();
+
+        // Cursor over the diff (col 50), Ctrl held.
+        let mouse = make_mouse_mods(
+            MouseEventKind::ScrollDown,
+            50,
+            5,
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+
+        assert!(
+            state.entry_index() > initial,
+            "ctrl+scroll should move the entries selection"
+        );
+        assert_eq!(
+            state.diff_scroll, 0,
+            "ctrl+scroll should not scroll the diff"
+        );
     }
 
     #[test]

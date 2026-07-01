@@ -715,4 +715,44 @@ mod tests {
         crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
         assert!(state.diff.diff_scroll < after_down);
     }
+
+    #[test]
+    fn ctrl_scroll_on_diff_moves_sidebar() {
+        // Hovering the diff with Ctrl held redirects the wheel to the
+        // sidebar list instead of scrolling the diff.
+        let resolved = vec![
+            ResolvedFile {
+                file: file_diff("a.txt"),
+                before: "a1\n".to_string(),
+                after: "a2\n".to_string(),
+            },
+            ResolvedFile {
+                file: file_diff("b.txt"),
+                before: "b1\n".to_string(),
+                after: "b2\n".to_string(),
+            },
+        ];
+        let mut state = make_state_with_rects(&resolved);
+        let _ = state.visible_diff_window(DrawBudget::Full);
+        let initial = state.sidebar.selected();
+        let diff_before = state.diff.diff_scroll;
+
+        // Cursor over the diff (col 50), Ctrl held.
+        let mouse = make_mouse_mods(
+            crossterm::event::MouseEventKind::ScrollDown,
+            50,
+            5,
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
+
+        assert!(
+            state.sidebar.selected() > initial,
+            "ctrl+scroll should move the sidebar selection"
+        );
+        assert_eq!(
+            state.diff.diff_scroll, diff_before,
+            "ctrl+scroll should not scroll the diff"
+        );
+    }
 }

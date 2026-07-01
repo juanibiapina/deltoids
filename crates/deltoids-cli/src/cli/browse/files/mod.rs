@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
-use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
 use deltoids::{Theme, git};
@@ -263,9 +263,22 @@ fn handle_mouse(
     diff_viewport: usize,
     sidebar_viewport: usize,
 ) -> AppCommand {
-    let target = match pane_at(state, mouse.column, mouse.row) {
-        Some(pane) => pane,
-        None => return AppCommand::Continue,
+    // Ctrl + wheel redirects the scroll to the sidebar list regardless
+    // of hover position, so the diff can be scrolled by hovering it while
+    // Ctrl steps through files. (Shift+wheel is swallowed by common
+    // terminals/tmux as a mouse-mode bypass, so Ctrl is used instead.)
+    let is_scroll = matches!(
+        mouse.kind,
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+    );
+    let modified = mouse.modifiers.contains(KeyModifiers::CONTROL);
+    let target = if is_scroll && modified {
+        Focus::Sidebar
+    } else {
+        match pane_at(state, mouse.column, mouse.row) {
+            Some(pane) => pane,
+            None => return AppCommand::Continue,
+        }
     };
 
     match mouse.kind {

@@ -216,6 +216,77 @@ fn divider_drag_resizes_and_release_ends() {
 }
 
 #[test]
+fn click_on_tab_switches_mode() {
+    let (mut modes, files_rec, _, _) = three_modes();
+    let mut s = shell();
+    // Wide left column at the origin so the whole strip renders; its top
+    // border row is y = 0, strip starts at x = 1.
+    s.left_rect = Rect::new(0, 0, 40, 20);
+    // With title_start_x = 1, the Traces label sits at cols 14..20.
+    s.handle_mouse(
+        &mut modes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 15, 0),
+        18,
+        18,
+    );
+    assert_eq!(s.active, TRACES_MODE);
+    // The click was swallowed; the active mode never saw it.
+    assert_eq!(files_rec.borrow().mouse, 0);
+}
+
+#[test]
+fn click_off_tabs_routes_to_active_mode() {
+    let (mut modes, files_rec, _, _) = three_modes();
+    let mut s = shell();
+    s.left_rect = Rect::new(0, 0, 40, 20);
+    // Top row but on the prefix (col 2, inside `[1]`): not a label, so it
+    // routes to the active mode and does not switch.
+    s.handle_mouse(
+        &mut modes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 2, 0),
+        18,
+        18,
+    );
+    assert_eq!(s.active, FILES_MODE);
+    assert_eq!(files_rec.borrow().mouse, 1);
+}
+
+#[test]
+fn click_below_top_row_is_not_a_tab_click() {
+    let (mut modes, files_rec, _, _) = three_modes();
+    let mut s = shell();
+    s.left_rect = Rect::new(0, 0, 40, 20);
+    // Same column as the Traces label but a row below the strip: routes to
+    // the mode, no switch.
+    s.handle_mouse(
+        &mut modes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 15, 5),
+        18,
+        18,
+    );
+    assert_eq!(s.active, FILES_MODE);
+    assert_eq!(files_rec.borrow().mouse, 1);
+}
+
+#[test]
+fn click_on_active_tab_is_a_noop() {
+    let (mut modes, files_rec, _, _) = three_modes();
+    let mut s = shell();
+    s.left_rect = Rect::new(0, 0, 40, 20);
+    // Files label sits at cols 6..11; Files is already active.
+    s.handle_mouse(
+        &mut modes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 7, 0),
+        18,
+        18,
+    );
+    assert_eq!(s.active, FILES_MODE);
+    // Swallowed, and no spurious reload flag.
+    assert_eq!(files_rec.borrow().mouse, 0);
+    assert!(!s.toggle_pending);
+}
+
+#[test]
 fn non_divider_mouse_routes_to_active_mode() {
     let (mut modes, files_rec, _, _) = three_modes();
     let mut s = shell();

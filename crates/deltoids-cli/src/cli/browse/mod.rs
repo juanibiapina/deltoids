@@ -11,11 +11,12 @@
 //! - **Live** ([`live::LiveMode`]): an ephemeral, in-memory feed of
 //!   working-tree edits as they happen, one entry per change.
 //!
-//! `]` cycles to the next mode and `[` to the previous; the right pane
-//! follows whichever mode is active. The active mode's top-left panel
-//! title shows a `Files - Traces - Live` tab strip with the active label
-//! highlighted. Both subcommands open this same TUI, seeded with a
-//! different starting mode: `review` → Files, `traces` → Traces.
+//! `]` cycles to the next mode and `[` to the previous; clicking a tab
+//! label switches directly to that mode. The right pane follows whichever
+//! mode is active. The active mode's top-left panel title shows a
+//! `Files - Traces - Live` tab strip with the active label highlighted.
+//! Both subcommands open this same TUI, seeded with a different starting
+//! mode: `review` → Files, `traces` → Traces.
 //!
 //! ## Module layout
 //!
@@ -330,11 +331,23 @@ impl Shell {
     /// wrapping around, and arm an immediate lazy reload if the now-active
     /// mode is dirty.
     fn cycle(&mut self, forward: bool) {
-        self.active = if forward {
+        let next = if forward {
             (self.active + 1) % MODE_COUNT
         } else {
             (self.active + MODE_COUNT - 1) % MODE_COUNT
         };
+        self.select_mode(next);
+    }
+
+    /// Make mode `index` active and arm an immediate lazy reload if it is
+    /// dirty. Shared by keyboard cycling (`cycle`) and tab clicks. A
+    /// no-op when `index` is already active, so re-selecting the current
+    /// tab never sets a spurious reload.
+    fn select_mode(&mut self, index: usize) {
+        if index == self.active {
+            return;
+        }
+        self.active = index;
         self.toggle_pending = true;
     }
 
@@ -436,6 +449,19 @@ impl Shell {
         right_viewport: usize,
     ) -> AppCommand {
         if self.help_visible {
+            return AppCommand::Continue;
+        }
+        // A left-click on a tab label in the top-left panel title switches
+        // to that mode, matching keyboard `[`/`]`. The strip sits on the
+        // left column's top border row, one column in from its left edge.
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
+            && mouse.row == self.left_rect.y
+            && let Some(index) = (TabStrip {
+                active: self.active,
+            })
+            .hit_test(mouse.column, self.left_rect.x.saturating_add(1))
+        {
+            self.select_mode(index);
             return AppCommand::Continue;
         }
         match mouse.kind {

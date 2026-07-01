@@ -3,7 +3,8 @@
 //!
 //! The shell (`super`) is mode-agnostic: it owns the terminal, the event
 //! loop, the one draggable divider, sidebar sizing, the help popup, and
-//! the `[`/`]` mode cycling. Everything that genuinely varies between the
+//! mode switching (`[`/`]` cycling and tab clicks, via [`TabStrip::hit_test`]).
+//! Everything that genuinely varies between the
 //! left-panel modes lives behind this trait. Three adapters implement it:
 //! [`super::files::FilesMode`] (the working-tree / piped-diff view),
 //! [`super::traces::TracesMode`] (the edit/write trace browser), and
@@ -42,6 +43,52 @@ pub(crate) struct TabStrip {
     pub(crate) active: usize,
 }
 
+/// One piece of the tab strip, in left-to-right order. `text` is the
+/// literal glyphs; `mode` is `Some(index)` for a clickable label,
+/// `None` for the surrounding rules and separators.
+struct StripPiece {
+    text: &'static str,
+    mode: Option<usize>,
+}
+
+/// The tab strip's layout: a prefix rule + `[1]` badge, then each label
+/// separated by `" - "`, then a trailing rule. Painting (`title_line`)
+/// and hit-testing (`hit_test`) both walk this so the geometry lives in
+/// one place.
+fn strip_pieces() -> Vec<StripPiece> {
+    let mut pieces = vec![
+        StripPiece {
+            text: "─",
+            mode: None,
+        },
+        StripPiece {
+            text: "[1]",
+            mode: None,
+        },
+        StripPiece {
+            text: "─",
+            mode: None,
+        },
+    ];
+    for (index, label) in TAB_LABELS.iter().enumerate() {
+        if index > 0 {
+            pieces.push(StripPiece {
+                text: " - ",
+                mode: None,
+            });
+        }
+        pieces.push(StripPiece {
+            text: label,
+            mode: Some(index),
+        });
+    }
+    pieces.push(StripPiece {
+        text: "─",
+        mode: None,
+    });
+    pieces
+}
+
 impl TabStrip {
     /// Build the styled title line for the top-left panel in lazygit's
     /// style: `─[1]─Files - Traces─`. The pane badge `[1]` and the active
@@ -54,26 +101,77 @@ impl TabStrip {
             .add_modifier(Modifier::BOLD);
         let muted = Style::default().fg(rgb_to_color(theme.muted));
 
-        let mut spans = vec![
-            Span::styled("─", border),
-            Span::styled("[1]", active),
-            Span::styled("─", border),
-        ];
-        for (index, label) in TAB_LABELS.iter().enumerate() {
-            if index > 0 {
-                spans.push(Span::styled(" - ", muted));
-            }
-            let style = if index == self.active { active } else { muted };
-            spans.push(Span::styled((*label).to_string(), style));
-        }
-        spans.push(Span::styled("─", border));
+        let spans = strip_pieces()
+            .into_iter()
+            .map(|piece| {
+                let style = match piece.mode {
+                    // `[1]` badge and the surrounding rules.
+                    None if piece.text == "[1]" => active,
+                    None if piece.text == "─" => border,
+                    // Separators.
+                    None => muted,
+                    // Labels: active bold-accent, others muted.
+                    Some(index) if index == self.active => active,
+                    Some(_) => muted,
+                };
+                Span::styled(piece.text.to_string(), style)
+            })
+            .collect::<Vec<_>>();
         Line::from(spans)
+    }
+
+    /// Map a screen column to the mode index whose label sits under it, or
+    /// `None` when the column falls on the prefix, a separator, the
+    /// trailing rule, or outside the strip entirely. `title_start_x` is
+    /// the screen column of the strip's first glyph (one column in from
+    /// the panel's left border).
+    pub(crate) fn hit_test(self, col: u16, title_start_x: u16) -> Option<usize> {
+        let mut x = title_start_x;
+        for piece in strip_pieces() {
+            let width = piece.text.chars().count() as u16;
+            if let Some(index) = piece.mode
+                && col >= x
+                && col < x + width
+            {
+                return Some(index);
+            }
+            x += width;
+        }
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hit_test_maps_columns_to_mode_indices() {
+        // Layout from title_start_x = 1: prefix `─[1]─` = cols 1..6,
+        // then Files 6..11, " - " 11..14, Traces 14..20, " - " 20..23,
+        // Live 23..27, trailing `─` 27.
+        let strip = TabStrip { active: 0 };
+        let start = 1;
+        // Prefix columns miss.
+        assert_eq!(strip.hit_test(1, start), None);
+        assert_eq!(strip.hit_test(5, start), None);
+        // Files label.
+        assert_eq!(strip.hit_test(6, start), Some(0));
+        assert_eq!(strip.hit_test(10, start), Some(0));
+        // Separator misses.
+        assert_eq!(strip.hit_test(11, start), None);
+        // Traces label.
+        assert_eq!(strip.hit_test(14, start), Some(1));
+        assert_eq!(strip.hit_test(19, start), Some(1));
+        // Live label.
+        assert_eq!(strip.hit_test(23, start), Some(2));
+        assert_eq!(strip.hit_test(26, start), Some(2));
+        // Past the strip misses.
+        assert_eq!(strip.hit_test(27, start), None);
+        assert_eq!(strip.hit_test(100, start), None);
+        // Before the strip misses.
+        assert_eq!(strip.hit_test(0, start), None);
+    }
 
     #[test]
     fn tab_strip_highlights_active_label() {

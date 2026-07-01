@@ -54,6 +54,7 @@ pub mod files;
 mod help;
 pub mod mode;
 pub mod traces;
+mod watch;
 
 use files::FilesMode;
 use mode::{AppCommand, Mode, ReloadViewport, TabStrip};

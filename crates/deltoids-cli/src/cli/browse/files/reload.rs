@@ -2,10 +2,8 @@
 //! warrants a reload, and re-diff the working tree in place while
 //! preserving the user's navigation state.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
-
-use notify::{RecursiveMode, Watcher};
 
 use deltoids::{Theme, git};
 
@@ -14,15 +12,14 @@ use crate::sidebar::display_path;
 use super::diff_pane::{DiffPane, build_view};
 use super::model::{DiffSource, Model, build_model};
 use super::sidebar_pane::build_sidebar;
+use crate::cli::browse::watch::{path_warrants_reload, spawn_workdir_watcher};
 use crate::sidebar::Sidebar;
 
 /// Install a recursive filesystem watcher for a refreshable source.
 ///
-/// The callback only forwards each event's paths over the returned
-/// channel: git2's `Repository` is `!Send` and can't move into the (Send)
-/// closure, so gitignore filtering stays on the main thread. For a static
-/// source (or a bare repo with no workdir) no watcher is created and the
-/// receiver never fires (the sender is dropped here).
+/// Delegates to [`spawn_workdir_watcher`] for a
+/// [`DiffSource::WorkingTree`]; a [`DiffSource::Static`] source yields no
+/// watcher and a receiver that never fires (the sender is dropped here).
 #[allow(clippy::type_complexity)]
 pub(super) fn spawn_watcher(
     source: &DiffSource<'_>,
@@ -33,49 +30,21 @@ pub(super) fn spawn_watcher(
     ),
     String,
 > {
-    let (notify_tx, notify_rx) = mpsc::channel::<Vec<PathBuf>>();
-    let watcher = match source {
-        DiffSource::WorkingTree(repo) => match repo.workdir() {
-            Some(workdir) => {
-                let mut watcher =
-                    notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                        if let Ok(event) = res {
-                            let _ = notify_tx.send(event.paths);
-                        }
-                    })
-                    .map_err(|err| format!("failed to create filesystem watcher: {err}"))?;
-                watcher
-                    .watch(workdir, RecursiveMode::Recursive)
-                    .map_err(|err| format!("failed to watch {}: {err}", workdir.display()))?;
-                Some(watcher)
-            }
-            None => None,
-        },
-        DiffSource::Static => None,
-    };
-    Ok((watcher, notify_rx))
+    match source {
+        DiffSource::WorkingTree(repo) => spawn_workdir_watcher(repo),
+        DiffSource::Static => Ok((None, mpsc::channel().1)),
+    }
 }
 
 /// Whether a batch of changed `paths` warrants a working-tree reload.
 ///
-/// Only [`DiffSource::WorkingTree`] reloads. A path counts when it is
-/// neither inside `.git/` (git's constant index/lock churn) nor
-/// gitignored (ignored files never appear in `working_tree_diff`, so a
-/// change there can't alter the diff). Fails open via
-/// [`git::Repo::is_ignored`], so a real change is never missed.
+/// Only [`DiffSource::WorkingTree`] reloads; the filter itself lives in
+/// [`path_warrants_reload`].
 pub(super) fn should_reload(source: &DiffSource<'_>, paths: &[PathBuf]) -> bool {
     let DiffSource::WorkingTree(repo) = source else {
         return false;
     };
-    paths
-        .iter()
-        .any(|path| !is_git_internal(path) && !repo.is_ignored(path))
-}
-
-/// Whether `path` lies inside a `.git` directory.
-fn is_git_internal(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == ".git")
+    path_warrants_reload(repo, paths)
 }
 
 /// Whether a freshly-computed `working_tree_diff` differs from the text
@@ -282,44 +251,11 @@ mod tests {
     }
 
     #[test]
-    fn should_reload_filters_ignored_and_git_internal() {
+    fn static_source_never_reloads() {
         let dir = tempfile::tempdir().unwrap();
-        let repo = init_repo(dir.path());
-        std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
-        stage_all(&repo);
-        commit_index(&repo, "init");
-
-        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
-        let source = DiffSource::WorkingTree(&wrapper);
-
-        assert!(should_reload(&source, &[dir.path().join("src/main.rs")]));
-        assert!(!should_reload(
-            &source,
-            &[dir.path().join("node_modules/x.js")]
-        ));
-        assert!(!should_reload(
-            &source,
-            &[dir.path().join(".git/index.lock")]
-        ));
-        // A batch with at least one real path still reloads.
-        assert!(should_reload(
-            &source,
-            &[
-                dir.path().join(".git/index"),
-                dir.path().join("src/main.rs"),
-            ]
-        ));
-        // A static source never reloads.
         assert!(!should_reload(
             &DiffSource::Static,
             &[dir.path().join("src/main.rs")]
         ));
-    }
-
-    #[test]
-    fn is_git_internal_detects_dot_git() {
-        assert!(is_git_internal(Path::new("/repo/.git/index")));
-        assert!(is_git_internal(Path::new(".git/HEAD")));
-        assert!(!is_git_internal(Path::new("/repo/src/main.rs")));
     }
 }

@@ -5,10 +5,9 @@
 //! loop, the one draggable divider, sidebar sizing, the help popup, and
 //! mode switching (`[`/`]` cycling and tab clicks, via [`TabStrip::hit_test`]).
 //! Everything that genuinely varies between the
-//! left-panel modes lives behind this trait. Three adapters implement it:
-//! [`super::files::FilesMode`] (the working-tree / piped-diff view),
-//! [`super::traces::TracesMode`] (the edit/write trace browser), and
-//! [`super::live::LiveMode`] (the ephemeral working-tree edit feed).
+//! left-panel modes lives behind this trait. Two adapters implement it:
+//! [`super::files::FilesMode`] (the working-tree / piped-diff view) and
+//! [`super::traces::TracesMode`] (the edit/write trace browser).
 //!
 //! Each mode owns its full vertical slice: state, key handling, mouse
 //! hit-testing, render, and live-reload. The shell never reaches inside.
@@ -33,10 +32,10 @@ pub(crate) enum AppCommand {
 }
 
 /// Labels for the modes, in `active`-index order.
-pub(crate) const TAB_LABELS: [&str; 3] = ["Files", "Traces", "Live"];
+pub(crate) const TAB_LABELS: [&str; 2] = ["Files", "Traces"];
 
 /// Which mode is active, handed to the active mode at draw time so it can
-/// render the `Files - Traces - Live` tab strip in its top-left panel
+/// render the `Files - Traces` tab strip in its top-left panel
 /// title.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TabStrip {
@@ -151,8 +150,7 @@ mod tests {
     #[test]
     fn hit_test_maps_columns_to_mode_indices() {
         // Layout from title_start_x = 1: prefix `─[1]─` = cols 1..6,
-        // then Files 6..11, " - " 11..14, Traces 14..20, " - " 20..23,
-        // Live 23..27, trailing `─` 27.
+        // then Files 6..11, " - " 11..14, Traces 14..20, trailing `─` 20.
         let strip = TabStrip { active: 0 };
         let start = 1;
         // Prefix columns miss.
@@ -166,11 +164,8 @@ mod tests {
         // Traces label.
         assert_eq!(strip.hit_test(14, start), Some(1));
         assert_eq!(strip.hit_test(19, start), Some(1));
-        // Live label.
-        assert_eq!(strip.hit_test(23, start), Some(2));
-        assert_eq!(strip.hit_test(26, start), Some(2));
         // Past the strip misses.
-        assert_eq!(strip.hit_test(27, start), None);
+        assert_eq!(strip.hit_test(20, start), None);
         assert_eq!(strip.hit_test(100, start), None);
         // Before the strip misses.
         assert_eq!(strip.hit_test(0, start), None);

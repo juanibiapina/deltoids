@@ -1,20 +1,18 @@
 //! The unified scrolling TUI shared by `deltoids review` and
 //! `deltoids traces`.
 //!
-//! The left panel cycles, lazygit-style, between three **modes**:
+//! The left panel cycles, lazygit-style, between two **modes**:
 //!
 //! - **Files** ([`files::FilesMode`]): a file-tree sidebar plus the
 //!   working-tree (or piped) diff.
 //! - **Traces** ([`traces::TracesMode`]): an entries list and a traces
 //!   list stacked on the left, the selected entry's detail/diff on the
 //!   right.
-//! - **Live** ([`live::LiveMode`]): an ephemeral, in-memory feed of
-//!   working-tree edits as they happen, one entry per change.
 //!
 //! `]` cycles to the next mode and `[` to the previous; clicking a tab
 //! label switches directly to that mode. The right pane follows whichever
 //! mode is active. The active mode's top-left panel title shows a
-//! `Files - Traces - Live` tab strip with the active label highlighted.
+//! `Files - Traces` tab strip with the active label highlighted.
 //! Both subcommands open this same TUI, seeded with a different starting
 //! mode: `review` → Files, `traces` → Traces.
 //!
@@ -55,13 +53,11 @@ use crate::terminal::TerminalSession;
 
 pub mod files;
 mod help;
-pub mod live;
 pub mod mode;
 pub mod traces;
 mod watch;
 
 use files::FilesMode;
-use live::LiveMode;
 use mode::{AppCommand, Mode, ReloadViewport, TAB_LABELS, TabStrip};
 use traces::TracesMode;
 
@@ -69,8 +65,6 @@ use traces::TracesMode;
 pub const FILES_MODE: usize = 0;
 /// Active-mode index for the Traces panel.
 pub const TRACES_MODE: usize = 1;
-/// Active-mode index for the Live panel.
-pub const LIVE_MODE: usize = 2;
 /// Number of left-panel modes the shell cycles through.
 pub const MODE_COUNT: usize = TAB_LABELS.len();
 
@@ -122,7 +116,6 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     let mut modes: [Box<dyn Mode>; MODE_COUNT] = [
         Box::new(FilesMode::empty(&theme, initial_diff_width)),
         Box::new(TracesMode::empty()),
-        Box::new(LiveMode::empty()),
     ];
 
     let mut shell = Shell::new(active_mode, sidebar_pref, total_width);
@@ -206,8 +199,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
 
 /// The shell's owned, mode-agnostic state.
 struct Shell {
-    /// Active mode index ([`FILES_MODE`] / [`TRACES_MODE`] /
-    /// [`LIVE_MODE`]).
+    /// Active mode index ([`FILES_MODE`] / [`TRACES_MODE`]).
     active: usize,
     /// Shared sidebar width preference (one width for both modes).
     sidebar_pref: Preference,
@@ -245,12 +237,12 @@ impl Shell {
             dragging_divider: false,
             help_visible: false,
             left_rect: Rect::default(),
-            receivers: [None, None, None],
-            armed: [false, false, false],
-            needs_poll: [false, false, false],
-            built: [false, false, false],
+            receivers: [None, None],
+            armed: [false, false],
+            needs_poll: [false, false],
+            built: [false, false],
             total_width,
-            dirty_since: [None, None, None],
+            dirty_since: [None, None],
             toggle_pending: false,
             last_poll: Instant::now(),
         }
@@ -563,7 +555,6 @@ fn build_mode(index: usize, theme: &Theme, diff_width: usize) -> Box<dyn Mode> {
             FilesMode::build(theme, diff_width)
                 .unwrap_or_else(|_| FilesMode::empty(theme, diff_width)),
         ),
-        LIVE_MODE => Box::new(LiveMode::build().unwrap_or_else(|_| LiveMode::empty())),
         _ => Box::new(TracesMode::build().unwrap_or_else(|_| TracesMode::empty())),
     }
 }

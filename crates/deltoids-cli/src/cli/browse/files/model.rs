@@ -18,17 +18,14 @@ pub(super) enum DiffSource<'a> {
 
 /// The owned data the TUI renders: resolved files plus their diffs.
 /// Rebuilt wholesale on each working-tree reload.
-pub(in crate::cli::browse) struct Model {
-    pub(in crate::cli::browse) files: Vec<ResolvedFile>,
+pub(super) struct Model {
+    pub(super) files: Vec<ResolvedFile>,
     pub(super) diffs: Vec<Diff>,
 }
 
 /// Parse `input`, resolve every file's before/after content against
 /// `repo`, and compute per-file [`Diff`]s.
-pub(in crate::cli::browse) fn build_model(
-    input: &str,
-    repo: Option<&git::Repo>,
-) -> Result<Model, String> {
+pub(super) fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model, String> {
     let parsed = GitDiff::parse(input);
     let files = resolve(parsed, repo)?;
     let diffs = precompute_diffs(&files);
@@ -39,10 +36,10 @@ pub(in crate::cli::browse) fn build_model(
 /// [`FileDiff`] so a [`Model`] is a self-contained owned value (no
 /// borrow of the parsed diff), which lets the TUI replace it on reload.
 #[cfg_attr(test, derive(Debug))]
-pub(in crate::cli::browse) struct ResolvedFile {
-    pub(in crate::cli::browse) file: FileDiff,
-    pub(in crate::cli::browse) before: String,
-    pub(in crate::cli::browse) after: String,
+pub(super) struct ResolvedFile {
+    pub(super) file: FileDiff,
+    pub(super) before: String,
+    pub(super) after: String,
 }
 
 /// Resolve content for every file. Consumes the parsed diff (taking each
@@ -97,7 +94,7 @@ pub(super) fn precompute_diffs(files: &[ResolvedFile]) -> Vec<Diff> {
 }
 
 /// Sum added/deleted line counts across all hunks of one diff.
-pub(in crate::cli::browse) fn count_deltas(diff: &Diff) -> (usize, usize) {
+pub(super) fn count_deltas(diff: &Diff) -> (usize, usize) {
     let mut added = 0;
     let mut deleted = 0;
     for hunk in diff.hunks() {

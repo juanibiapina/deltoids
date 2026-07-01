@@ -1,7 +1,7 @@
 //! Files mode: the working-tree view of the unified TUI.
 //!
 //! Discovers the repository and shows its local working-tree changes
-//! against `HEAD`. Live: the working tree is watched and re-diffed on
+//! against `HEAD`. The working tree is watched and re-diffed on
 //! change. Outside a repo the mode degrades to an empty
 //! "No local changes." state instead of erroring, so the TUI still opens.
 //!
@@ -35,7 +35,7 @@ use crate::sidebar::Sidebar;
 use super::mode::{AppCommand, Mode, ReloadViewport, TabStrip};
 
 mod diff_pane;
-pub(in crate::cli::browse) mod model;
+mod model;
 mod reload;
 mod sidebar_pane;
 #[cfg(test)]

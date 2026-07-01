@@ -17,12 +17,11 @@ const OVERVIEW: &str = r#"Unified scrolling TUI.
 
 Opens on the working-tree diff (Files mode) when you have local changes,
 otherwise on the trace browser (Traces mode). Press ] to cycle the left
-panel forward (Files -> Traces -> Live) and [ to cycle back. Live is an
-ephemeral, in-memory feed of working-tree edits as they happen.
+panel forward (Files -> Traces) and [ to cycle back.
 
 Keys:
-- [ / ]:           cycle Files / Traces / Live mode
-- Tab / 1 / 2 / 3: focus panes in the current mode
+- [ / ]:           cycle Files / Traces mode
+- Tab / 1 / 2:     focus panes in the current mode
 - j / k / arrows:  move within the focused pane
 - PgUp / PgDn:     scroll the diff pane
 - < / >:           narrow / widen the sidebar (or drag the divider)

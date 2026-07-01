@@ -2,11 +2,11 @@
 //! on a repo's workdir and decide when a batch of changed paths warrants
 //! a reload.
 //!
-//! Both [`super::files::FilesMode`] and [`super::live::LiveMode`] watch
-//! the same thing (the repo working tree) and filter the same noise
-//! (`.git/` churn and gitignored files), so the essence lives here once.
-//! This is a "replace, don't layer" extraction: each mode delegates to
-//! these functions rather than duplicating the watcher/filter logic.
+//! [`super::files::FilesMode`] watches the repo working tree and filters
+//! the noise (`.git/` churn and gitignored files), so the essence lives
+//! here once. This is a "replace, don't layer" extraction: the mode
+//! delegates to these functions rather than inlining the watcher/filter
+//! logic.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

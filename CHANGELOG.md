@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- TUI: Scrolling through trace entries stays smooth even when some edits have large diffs; the diff fills in when you stop, and revisiting an entry is instant.
+- TUI: Faster scrolling and startup on large diffs and working trees.
 - TUI: A focused panel's tab-strip border is now a single continuous colour instead of showing stray blue segments between the tab labels.
 - pager: Hunks with no enclosing function now get a line-number box, so consecutive hunks are visibly separated (e.g. in lazygit).
 

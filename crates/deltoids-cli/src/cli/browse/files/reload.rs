@@ -9,7 +9,7 @@ use deltoids::{Theme, git};
 
 use crate::sidebar::display_path;
 
-use super::diff_pane::{DiffPane, build_view};
+use super::diff_pane::DiffPane;
 use super::model::{DiffSource, Model, build_model};
 use super::sidebar_pane::build_sidebar;
 use crate::cli::browse::watch::{path_warrants_reload, spawn_workdir_watcher};
@@ -117,15 +117,13 @@ fn reload_view(
 ) {
     let new_sidebar = build_sidebar(model, theme);
     let display_order = new_sidebar.display_order();
-    let view = build_view(&model.files, &model.diffs, &display_order, width, theme);
 
-    *diff = DiffPane {
-        diff_lines: view.lines,
-        file_offsets: view.file_offsets,
-        display_order,
-        cached_width: width,
-        diff_scroll: diff.diff_scroll,
-    };
+    // Disk changed: drop the retained per-file blocks and rebuild lazily on
+    // the next draw at the current width.
+    diff.cache.clear();
+    diff.display_order = display_order;
+    diff.cached_width = width;
+    diff.window_rows = 0;
     *sidebar = new_sidebar;
 
     if let Some(path) = prev_path
@@ -137,15 +135,8 @@ fn reload_view(
         sidebar.select_file_index(idx, diff_viewport);
     }
 
-    let dr = sidebar.selection_display_range();
-    let min = diff.min_scroll(dr.clone());
-    let max = diff.max_scroll(dr, diff_viewport);
-    diff.diff_scroll = diff.diff_scroll.clamp(min, max.max(min));
-    // Snap to the restored selection.
-    if let Some(file_idx) = sidebar.nearest_file_index() {
-        let dr = sidebar.selection_display_range();
-        diff.snap_to_file(file_idx, diff_viewport, dr);
-    }
+    // Snap to the top of the restored selection's window.
+    diff.snap_to_top();
 }
 
 #[cfg(test)]
@@ -153,6 +144,7 @@ mod tests {
     use super::*;
     use crate::cli::browse::files::sidebar_pane::sidebar_footer;
     use crate::cli::browse::files::test_support::*;
+    use crate::cli::browse::mode::DrawBudget;
 
     #[test]
     fn reload_needed_only_when_input_changed() {
@@ -189,10 +181,13 @@ mod tests {
         );
 
         assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
-        // The diff pane is filtered to the restored file.
-        let range = state.visible_diff_range();
-        assert_eq!(line_text(&state.diff.diff_lines[range.start]), "b.txt");
-        assert!(range.contains(&state.diff.diff_scroll) || state.diff.diff_scroll == range.start);
+        // The diff pane is filtered to the restored file and snapped to its top.
+        let dr = state.sidebar.selection_display_range();
+        let window = state
+            .diff
+            .assemble_window(dr, &m2, 80, &theme(), DrawBudget::Full);
+        assert_eq!(line_text(&window[0]), "b.txt");
+        assert_eq!(state.diff.diff_scroll, 0);
     }
 
     #[test]
@@ -213,16 +208,18 @@ mod tests {
             4,
         );
 
-        assert!(state.diff.diff_lines.is_empty());
-        assert_eq!(state.visible_diff_range(), 0..0);
+        assert!(state.diff.display_order.is_empty());
+        let dr = state.sidebar.selection_display_range();
+        let window = state
+            .diff
+            .assemble_window(dr, &empty, 80, &theme(), DrawBudget::Full);
+        assert!(window.is_empty());
+        assert_eq!(state.diff.window_rows, 0);
         assert_eq!(
             sidebar_footer(&state.sidebar, &state.diff.display_order),
             None
         );
-        assert_eq!(
-            state.diff.footer(state.sidebar.selection_display_range()),
-            None
-        );
+        assert_eq!(state.diff.footer(), None);
     }
 
     #[test]

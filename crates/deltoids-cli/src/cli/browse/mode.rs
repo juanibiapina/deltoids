@@ -45,6 +45,15 @@ pub(crate) enum DrawBudget {
     Fast,
 }
 
+/// Whether to build (highlight) a deferrable diff body this frame. Always
+/// build on a `Full` frame; on a `Fast` frame (input streaming) build only
+/// when it is already cached, so navigation never blocks on highlighting an
+/// unseen large item. Shared by both mode adapters (Files keys the cache by
+/// file index, Traces by `(trace, entry)`).
+pub(crate) fn should_build_body(budget: DrawBudget, already_cached: bool) -> bool {
+    budget == DrawBudget::Full || already_cached
+}
+
 /// Labels for the modes, in `active`-index order.
 pub(crate) const TAB_LABELS: [&str; 2] = ["Files", "Traces"];
 
@@ -160,6 +169,14 @@ impl TabStrip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_build_body_full_always_builds_fast_only_when_cached() {
+        assert!(should_build_body(DrawBudget::Full, false));
+        assert!(should_build_body(DrawBudget::Full, true));
+        assert!(!should_build_body(DrawBudget::Fast, false));
+        assert!(should_build_body(DrawBudget::Fast, true));
+    }
 
     #[test]
     fn hit_test_maps_columns_to_mode_indices() {

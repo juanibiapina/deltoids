@@ -17,7 +17,7 @@ use deltoids::render_tui::{
 use deltoids::{Hunk, Theme};
 
 use crate::HistoryEntry;
-use crate::cli::browse::mode::DrawBudget;
+use crate::cli::browse::mode::{DrawBudget, should_build_body};
 
 use super::model::LoadedTrace;
 use super::{AppState, Focus};
@@ -78,14 +78,6 @@ impl DiffCache {
 
 pub(super) fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -> usize {
     detail_row_count.saturating_sub(detail_height.max(1))
-}
-
-/// Whether to build (highlight) the diff body this frame. Always build on
-/// a `Full` frame; on a `Fast` frame (input streaming) build only when the
-/// entry is already cached, so navigation never blocks on highlighting an
-/// unseen large entry.
-fn should_build_body(budget: DrawBudget, entry_already_cached: bool) -> bool {
-    budget == DrawBudget::Full || entry_already_cached
 }
 
 fn ensure_diff_cache(
@@ -530,14 +522,6 @@ pub(super) fn fit_line(line: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::cli::browse::traces::test_support::*;
-
-    #[test]
-    fn should_build_body_full_always_builds_fast_only_when_cached() {
-        assert!(should_build_body(DrawBudget::Full, false));
-        assert!(should_build_body(DrawBudget::Full, true));
-        assert!(!should_build_body(DrawBudget::Fast, false));
-        assert!(should_build_body(DrawBudget::Fast, true));
-    }
 
     #[test]
     fn diff_cache_retains_entries_across_selection_changes() {

@@ -11,12 +11,10 @@ use ratatui::text::Line;
 use deltoids::Theme;
 use deltoids::parse::FileDiff;
 
-use std::time::Instant;
-
 use crate::scroll::WheelScroll;
 use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
 
-use super::diff_pane::{DiffPane, build_view};
+use super::diff_pane::DiffPane;
 use super::model::{Model, ResolvedFile, count_deltas, precompute_diffs};
 use super::{FilesMode, Focus};
 
@@ -25,7 +23,7 @@ pub(super) fn theme() -> Theme {
 }
 
 /// Build a `FileDiff` with the given path. The `hunks` field is left
-/// empty: `build_view` runs `Diff::compute` against the supplied
+/// empty: the model runs `Diff::compute` against the supplied
 /// before/after text, so the parsed hunks aren't read.
 pub(super) fn file_diff(path: &str) -> FileDiff {
     FileDiff {
@@ -45,10 +43,16 @@ pub(super) fn line_text(line: &Line<'static>) -> String {
 }
 
 pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
-    let diffs = precompute_diffs(files);
-    let sidebar_files: Vec<SidebarFile<'_>> = files
+    let owned: Vec<ResolvedFile> = files.to_vec();
+    let diffs = precompute_diffs(&owned);
+    let model = Model {
+        files: owned,
+        diffs,
+    };
+    let sidebar_files: Vec<SidebarFile<'_>> = model
+        .files
         .iter()
-        .zip(diffs.iter())
+        .zip(model.diffs.iter())
         .map(|(f, d)| {
             let (added, deleted) = count_deltas(d);
             SidebarFile {
@@ -60,8 +64,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         .collect();
     let sidebar = Sidebar::build_with_icons(&sidebar_files, &theme(), IconMode::Off);
     let display_order = sidebar.display_order();
-    let view = build_view(files, &diffs, &display_order, 80, &theme());
-    let diff = DiffPane::new(view, display_order, 80);
+    let diff = DiffPane::new(display_order, 80);
     FilesMode {
         diff,
         sidebar,
@@ -69,14 +72,10 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         sidebar_rect: Rect::default(),
         diff_rect: Rect::default(),
         wheel: WheelScroll::new(),
-        model: Model {
-            files: Vec::new(),
-            diffs: Vec::new(),
-        },
+        model,
         repo: None,
         is_static: true,
         last_input: String::new(),
-        last_rebuild: Instant::now(),
         _watcher: None,
     }
 }

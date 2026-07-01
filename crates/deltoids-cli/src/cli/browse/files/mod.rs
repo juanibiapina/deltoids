@@ -22,7 +22,6 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -41,16 +40,10 @@ mod sidebar_pane;
 #[cfg(test)]
 mod test_support;
 
-use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL, build_view};
+use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 use model::{DiffSource, Model, build_model};
 use reload::{reload_working_tree, should_reload, spawn_watcher};
 use sidebar_pane::build_sidebar;
-
-/// Minimum wall-clock gap between full diff-cache rebuilds. Rebuilding
-/// the whole cache on every resize step stalls the loop; between rebuilds
-/// the diff is drawn from the existing cache (ratatui clips it) and snaps
-/// correct once resizing settles within this interval.
-const DIFF_REBUILD_THROTTLE: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Focus {
@@ -97,8 +90,6 @@ pub(super) struct FilesMode {
     /// The diff text the current model was built from; the poll compares
     /// fresh `working_tree_diff` output against this to skip rebuilds.
     last_input: String,
-    /// Throttles full diff-cache rebuilds during a resize.
-    last_rebuild: Instant,
     /// Keeps the filesystem watcher alive for the session; dropping it
     /// closes the change channel.
     _watcher: Option<notify::RecommendedWatcher>,
@@ -150,8 +141,7 @@ impl FilesMode {
     ) -> Self {
         let sidebar = build_sidebar(&model, theme);
         let display_order = sidebar.display_order();
-        let view = build_view(&model.files, &model.diffs, &display_order, width, theme);
-        let diff = DiffPane::new(view, display_order, width);
+        let diff = DiffPane::new(display_order, width);
         Self {
             diff,
             sidebar,
@@ -163,7 +153,6 @@ impl FilesMode {
             repo,
             is_static,
             last_input: input,
-            last_rebuild: Instant::now(),
             _watcher: None,
         }
     }
@@ -177,47 +166,29 @@ impl FilesMode {
         }
     }
 
-    /// Rebuild the diff line cache if the pane width changed, throttled so
-    /// a held resize key doesn't stall the loop.
-    fn ensure_width(&mut self, diff_width: usize, diff_viewport: usize, theme: &Theme) {
+    /// Clear the per-file cache when the pane width changed; the next draw
+    /// re-renders only the visible window on demand at the new width.
+    fn ensure_width(&mut self, diff_width: usize) {
         if diff_width == 0 || diff_width == self.diff.cached_width {
             return;
         }
-        if self.last_rebuild.elapsed() < DIFF_REBUILD_THROTTLE {
-            return;
-        }
-        let view = build_view(
-            &self.model.files,
-            &self.model.diffs,
-            &self.diff.display_order,
-            diff_width,
-            theme,
-        );
-        self.diff.diff_lines = view.lines;
-        self.diff.file_offsets = view.file_offsets;
+        self.diff.cache.clear();
         self.diff.cached_width = diff_width;
-        self.last_rebuild = Instant::now();
-        let dr = self.sidebar.selection_display_range();
-        let max = self.diff.max_scroll(dr, diff_viewport);
-        if self.diff.diff_scroll > max {
-            self.diff.diff_scroll = max;
-        }
     }
 
-    /// Window of the diff that should be visible right now.
+    /// Assemble the diff window that should be visible right now.
     #[cfg(test)]
-    fn visible_diff_range(&self) -> std::ops::Range<usize> {
+    fn visible_diff_window(&mut self, budget: DrawBudget) -> Vec<ratatui::text::Line<'static>> {
+        let dr = self.sidebar.selection_display_range();
+        let width = self.diff.cached_width;
         self.diff
-            .visible_range(self.sidebar.selection_display_range())
+            .assemble_window(dr, &self.model, width, &Theme::default(), budget)
     }
 
-    /// Sync the diff pane's scroll to the file the sidebar points at.
-    fn snap_diff_to_selected_file(&mut self, viewport: usize) {
-        let dr = self.sidebar.selection_display_range();
-        let Some(file_idx) = self.sidebar.nearest_file_index() else {
-            return;
-        };
-        self.diff.snap_to_file(file_idx, viewport, dr);
+    /// Sync the diff pane's scroll to the top of the selected file's
+    /// window (a sidebar move re-derives the window).
+    fn snap_diff_to_selected_file(&mut self) {
+        self.diff.snap_to_top();
     }
 }
 
@@ -246,17 +217,15 @@ fn handle_key(
         }
         // Shift+J/K always scroll the diff regardless of focus.
         KeyCode::Char('J') => {
-            let dr = state.sidebar.selection_display_range();
             state
                 .diff
-                .scroll_by(SCROLL_STEP_LARGE as isize, diff_viewport, dr);
+                .scroll_by(SCROLL_STEP_LARGE as isize, diff_viewport);
             AppCommand::Continue
         }
         KeyCode::Char('K') => {
-            let dr = state.sidebar.selection_display_range();
             state
                 .diff
-                .scroll_by(-(SCROLL_STEP_LARGE as isize), diff_viewport, dr);
+                .scroll_by(-(SCROLL_STEP_LARGE as isize), diff_viewport);
             AppCommand::Continue
         }
         // Remaining nav keys route to the focused pane. A sidebar move
@@ -265,12 +234,11 @@ fn handle_key(
             match state.focus {
                 Focus::Sidebar => {
                     if sidebar_pane::handle_key(&mut state.sidebar, other, sidebar_viewport) {
-                        state.snap_diff_to_selected_file(diff_viewport);
+                        state.snap_diff_to_selected_file();
                     }
                 }
                 Focus::Diff => {
-                    let dr = state.sidebar.selection_display_range();
-                    state.diff.handle_key(other, diff_viewport, dr);
+                    state.diff.handle_key(other, diff_viewport);
                 }
             }
             AppCommand::Continue
@@ -308,7 +276,7 @@ fn handle_mouse(
                     .advance(target, ScrollDir::Down, ScrollKind::List);
                 for _ in 0..steps {
                     state.sidebar.move_down(sidebar_viewport);
-                    state.snap_diff_to_selected_file(diff_viewport);
+                    state.snap_diff_to_selected_file();
                 }
                 AppCommand::Continue
             }
@@ -316,10 +284,9 @@ fn handle_mouse(
                 let steps = state
                     .wheel
                     .advance(target, ScrollDir::Down, ScrollKind::Content);
-                let dr = state.sidebar.selection_display_range();
                 state
                     .diff
-                    .scroll_by((steps * SCROLL_STEP_SMALL) as isize, diff_viewport, dr);
+                    .scroll_by((steps * SCROLL_STEP_SMALL) as isize, diff_viewport);
                 AppCommand::Continue
             }
         },
@@ -328,7 +295,7 @@ fn handle_mouse(
                 let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
                 for _ in 0..steps {
                     state.sidebar.move_up(sidebar_viewport);
-                    state.snap_diff_to_selected_file(diff_viewport);
+                    state.snap_diff_to_selected_file();
                 }
                 AppCommand::Continue
             }
@@ -336,10 +303,9 @@ fn handle_mouse(
                 let steps = state
                     .wheel
                     .advance(target, ScrollDir::Up, ScrollKind::Content);
-                let dr = state.sidebar.selection_display_range();
                 state
                     .diff
-                    .scroll_by(-((steps * SCROLL_STEP_SMALL) as isize), diff_viewport, dr);
+                    .scroll_by(-((steps * SCROLL_STEP_SMALL) as isize), diff_viewport);
                 AppCommand::Continue
             }
         },
@@ -351,7 +317,7 @@ fn handle_mouse(
                 let clicked = state.sidebar.scroll() + content_y;
                 if clicked < state.sidebar.row_count() {
                     state.sidebar.set_selected(clicked, sidebar_viewport);
-                    state.snap_diff_to_selected_file(diff_viewport);
+                    state.snap_diff_to_selected_file();
                 }
             }
             AppCommand::Continue
@@ -368,11 +334,10 @@ impl Mode for FilesMode {
         right: Rect,
         tabs: TabStrip,
         theme: &Theme,
-        _budget: DrawBudget,
+        budget: DrawBudget,
     ) {
         let diff_width = right.width.saturating_sub(2) as usize;
-        let diff_viewport = right.height.saturating_sub(2) as usize;
-        self.ensure_width(diff_width, diff_viewport, theme);
+        self.ensure_width(diff_width);
 
         self.sidebar_rect = left;
         self.diff_rect = right;
@@ -389,8 +354,11 @@ impl Mode for FilesMode {
             tabs.title_line(border, theme),
             theme,
         );
+        let window = self
+            .diff
+            .assemble_window(dr, &self.model, diff_width, theme, budget);
         self.diff
-            .render(frame, right, self.focus == Focus::Diff, theme, dr);
+            .render(frame, right, self.focus == Focus::Diff, theme, window);
     }
 
     fn handle_key(

@@ -35,7 +35,7 @@ pub(super) fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model
 /// One file's resolved content, ready for rendering. Owns its
 /// [`FileDiff`] so a [`Model`] is a self-contained owned value (no
 /// borrow of the parsed diff), which lets the TUI replace it on reload.
-#[cfg_attr(test, derive(Debug))]
+#[cfg_attr(test, derive(Debug, Clone))]
 pub(super) struct ResolvedFile {
     pub(super) file: FileDiff,
     pub(super) before: String,

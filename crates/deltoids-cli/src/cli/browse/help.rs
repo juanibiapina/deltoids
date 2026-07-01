@@ -20,7 +20,7 @@ use super::mode::AppCommand;
 /// table inside the popup.
 pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("?", "toggle this help"),
-    ("[ / ]", "switch Files / Traces mode"),
+    ("[ / ]", "cycle Files / Traces / Live mode"),
     ("Tab / 1 / 2 / 3", "focus panes in the current mode"),
     ("j / k", "move (list) or scroll one line (diff)"),
     ("Shift+J / K", "scroll diff three lines (any focus)"),

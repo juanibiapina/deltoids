@@ -74,18 +74,19 @@ impl Mode for RecordingMode {
 
 type Rec = Rc<RefCell<Recorder>>;
 
-fn two_modes() -> ([Box<dyn Mode>; 2], Rec, Rec) {
+fn three_modes() -> ([Box<dyn Mode>; MODE_COUNT], Rec, Rec, Rec) {
     let (files, files_rec) = RecordingMode::new();
     let (traces, traces_rec) = RecordingMode::new();
-    let modes: [Box<dyn Mode>; 2] = [Box::new(files), Box::new(traces)];
-    (modes, files_rec, traces_rec)
+    let (live, live_rec) = RecordingMode::new();
+    let modes: [Box<dyn Mode>; MODE_COUNT] = [Box::new(files), Box::new(traces), Box::new(live)];
+    (modes, files_rec, traces_rec, live_rec)
 }
 
 fn shell() -> Shell {
     let mut s = Shell::new(FILES_MODE, Preference::seeded(200), 200);
-    // Mock modes are already real; mark them built so a toggle never
-    // replaces them with a concrete FilesMode/TracesMode.
-    s.built = [true, true];
+    // Mock modes are already real; mark them built so a cycle never
+    // replaces them with a concrete FilesMode/TracesMode/LiveMode.
+    s.built = [true, true, true];
     s
 }
 
@@ -104,7 +105,7 @@ fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
 
 #[test]
 fn q_and_esc_quit() {
-    let (mut modes, _, _) = two_modes();
+    let (mut modes, _, _, _) = three_modes();
     let mut s = shell();
     assert_eq!(
         s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
@@ -118,7 +119,7 @@ fn q_and_esc_quit() {
 
 #[test]
 fn question_mark_toggles_help_and_help_swallows_keys() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut modes, files_rec, _, _) = three_modes();
     let mut s = shell();
     s.handle_key(&mut modes, KeyCode::Char('?'), 4, 4);
     assert!(s.help_visible);
@@ -132,11 +133,21 @@ fn question_mark_toggles_help_and_help_swallows_keys() {
 }
 
 #[test]
-fn bracket_toggles_active_mode() {
-    let (mut modes, _, _) = two_modes();
+fn bracket_cycles_active_mode() {
+    let (mut modes, _, _, _) = three_modes();
     let mut s = shell();
     assert_eq!(s.active, FILES_MODE);
+    // `]` cycles Files -> Traces -> Live -> Files.
     s.handle_key(&mut modes, KeyCode::Char(']'), 4, 4);
+    assert_eq!(s.active, TRACES_MODE);
+    s.handle_key(&mut modes, KeyCode::Char(']'), 4, 4);
+    assert_eq!(s.active, LIVE_MODE);
+    s.handle_key(&mut modes, KeyCode::Char(']'), 4, 4);
+    assert_eq!(s.active, FILES_MODE);
+    // `[` cycles the other way: Files -> Live -> Traces -> Files.
+    s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
+    assert_eq!(s.active, LIVE_MODE);
+    s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
     assert_eq!(s.active, TRACES_MODE);
     s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
     assert_eq!(s.active, FILES_MODE);
@@ -144,13 +155,13 @@ fn bracket_toggles_active_mode() {
 
 #[test]
 fn nav_keys_route_to_active_mode_only() {
-    let (mut modes, files_rec, traces_rec) = two_modes();
+    let (mut modes, files_rec, traces_rec, _) = three_modes();
     let mut s = shell();
     s.handle_key(&mut modes, KeyCode::Char('j'), 4, 4);
     assert_eq!(files_rec.borrow().keys, vec![KeyCode::Char('j')]);
     assert!(traces_rec.borrow().keys.is_empty());
 
-    s.toggle();
+    s.cycle(true);
     s.handle_key(&mut modes, KeyCode::Char('k'), 4, 4);
     assert_eq!(traces_rec.borrow().keys, vec![KeyCode::Char('k')]);
     // Files mode never saw the second key.
@@ -159,7 +170,7 @@ fn nav_keys_route_to_active_mode_only() {
 
 #[test]
 fn resize_keys_change_shared_sidebar_width() {
-    let (mut modes, _, _) = two_modes();
+    let (mut modes, _, _, _) = three_modes();
     let mut s = shell();
     let initial = s.sidebar_pref.effective(200);
     s.handle_key(&mut modes, KeyCode::Char('>'), 4, 4);
@@ -170,7 +181,7 @@ fn resize_keys_change_shared_sidebar_width() {
 
 #[test]
 fn divider_drag_resizes_and_release_ends() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut modes, files_rec, _, _) = three_modes();
     let mut s = shell();
     s.left_rect = Rect::new(0, 0, 38, 20); // divider at cols 37 / 38
     assert!(s.is_on_divider(37));
@@ -206,7 +217,7 @@ fn divider_drag_resizes_and_release_ends() {
 
 #[test]
 fn non_divider_mouse_routes_to_active_mode() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut modes, files_rec, _, _) = three_modes();
     let mut s = shell();
     s.left_rect = Rect::new(0, 0, 38, 20);
     s.handle_mouse(&mut modes, mouse(MouseEventKind::ScrollDown, 50, 5), 18, 18);
@@ -215,7 +226,7 @@ fn non_divider_mouse_routes_to_active_mode() {
 
 #[test]
 fn toggle_to_dirty_mode_reloads_it_lazily() {
-    let (mut modes, files_rec, traces_rec) = two_modes();
+    let (mut modes, files_rec, traces_rec, _) = three_modes();
     let mut s = shell();
     let vp = ReloadViewport::default();
     let theme = Theme::default();
@@ -226,8 +237,8 @@ fn toggle_to_dirty_mode_reloads_it_lazily() {
     s.reload_active_if_due(&mut modes, vp, &theme).unwrap();
     assert_eq!(traces_rec.borrow().reloads, 0);
 
-    // Toggling to Traces reloads it immediately.
-    s.toggle();
+    // Cycling to Traces reloads it immediately.
+    s.cycle(true);
     s.reload_active_if_due(&mut modes, vp, &theme).unwrap();
     assert_eq!(traces_rec.borrow().reloads, 1);
     assert!(s.dirty_since[TRACES_MODE].is_none());
@@ -237,7 +248,7 @@ fn toggle_to_dirty_mode_reloads_it_lazily() {
 
 #[test]
 fn apply_events_coalesces_repeated_resize_keys() {
-    let (mut modes, _, _) = two_modes();
+    let (mut modes, _, _, _) = three_modes();
     let mut s = shell();
     let vp = ReloadViewport::default();
     let theme = Theme::default();
@@ -255,15 +266,15 @@ fn apply_events_coalesces_repeated_resize_keys() {
 
 #[test]
 fn toggle_is_instant_and_defers_build() {
-    let (mut modes, _, _) = two_modes();
+    let (mut modes, _, _, _) = three_modes();
     let mut s = shell();
     // Pretend the Traces mode hasn't been built yet.
-    s.built = [true, false];
-    s.toggle();
+    s.built = [true, false, true];
+    s.cycle(true);
     assert_eq!(s.active, TRACES_MODE);
     // The flip is instant; the build is deferred to build_active so the
     // loop can draw a loading frame first.
-    assert!(!s.built[TRACES_MODE], "toggle must not build eagerly");
+    assert!(!s.built[TRACES_MODE], "cycle must not build eagerly");
     let _ = &mut modes;
 }
 
@@ -312,7 +323,7 @@ fn loading_frame_shows_tab_strip_and_message() {
 
 #[test]
 fn apply_events_quit_short_circuits() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut modes, files_rec, _, _) = three_modes();
     let mut s = shell();
     let vp = ReloadViewport::default();
     let theme = Theme::default();

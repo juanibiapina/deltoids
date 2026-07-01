@@ -43,7 +43,7 @@ pub(super) fn reload_traces(
         state.traces_list_state.select(Some(0));
         state.set_entry_index(0);
         state.diff_scroll = 0;
-        state.diff_cache = None;
+        state.diff_cache.clear();
         return Ok(());
     }
 
@@ -67,7 +67,7 @@ pub(super) fn reload_traces(
     state.set_entry_index(clamped);
 
     // Invalidate caches.
-    state.diff_cache = None;
+    state.diff_cache.clear();
 
     // Reset scroll only when the selected entry changed (trace disappeared
     // or entry index was clamped). When the same entry is still selected the
@@ -87,7 +87,6 @@ pub(super) fn reload_traces(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::browse::traces::DiffCache;
     use crate::cli::browse::traces::test_support::*;
 
     #[test]
@@ -106,12 +105,7 @@ mod tests {
         let mut state = AppState::new(traces.len());
         state.trace_index = 1;
         state.set_entry_index(0);
-        state.diff_cache = Some(DiffCache {
-            trace_index: 1,
-            entry_index: 0,
-            width: 80,
-            lines: vec![],
-        });
+        state.diff_cache.insert(80, (1, 0), vec![]);
 
         // Simulate a reload where trace_b gains an entry.
         let trace_b_updated = LoadedTrace {
@@ -141,12 +135,12 @@ mod tests {
             prev_entry_index.min(entry_count - 1)
         };
         state.set_entry_index(clamped);
-        state.diff_cache = None;
+        state.diff_cache.clear();
 
         // Selection stays on the same trace.
         assert_eq!(state.trace_index, 1);
         assert_eq!(state.entry_index(), 0);
-        assert!(state.diff_cache.is_none());
+        assert!(state.diff_cache.is_empty());
     }
 
     #[test]
@@ -163,12 +157,7 @@ mod tests {
         let mut traces = vec![trace_a.clone(), trace_b.clone()];
         let mut state = AppState::new(traces.len());
         state.trace_index = 1; // select trace_b
-        state.diff_cache = Some(DiffCache {
-            trace_index: 1,
-            entry_index: 0,
-            width: 80,
-            lines: vec![],
-        });
+        state.diff_cache.insert(80, (1, 0), vec![]);
 
         // Simulate trace_b disappearing.
         let prev_trace_id = traces
@@ -181,7 +170,7 @@ mod tests {
             .as_deref()
             .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
             .unwrap_or(0);
-        state.diff_cache = None;
+        state.diff_cache.clear();
 
         // Falls back to index 0 since trace_b is gone.
         assert_eq!(state.trace_index, 0);
@@ -189,7 +178,7 @@ mod tests {
             traces[state.trace_index].trace.trace_id,
             "01JTESTTRACE00000000000000"
         );
-        assert!(state.diff_cache.is_none());
+        assert!(state.diff_cache.is_empty());
     }
 
     /// Helper that simulates `reload_traces` selection-restore and scroll
@@ -220,7 +209,7 @@ mod tests {
             state.trace_index = 0;
             state.set_entry_index(0);
             state.diff_scroll = 0;
-            state.diff_cache = None;
+            state.diff_cache.clear();
             return;
         }
 
@@ -239,7 +228,7 @@ mod tests {
             prev_entry_index.min(entry_count - 1)
         };
         state.set_entry_index(clamped);
-        state.diff_cache = None;
+        state.diff_cache.clear();
 
         let selection_changed = prev_trace_id.as_deref()
             != traces

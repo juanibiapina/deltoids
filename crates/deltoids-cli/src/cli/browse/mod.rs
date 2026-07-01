@@ -26,6 +26,15 @@
 //! modes lives behind [`mode::Mode`]; the two adapters live in
 //! [`files`] and [`traces`].
 //!
+//! Each frame the shell also derives a [`mode::DrawBudget`] from whether
+//! input is still streaming: `Fast` while a navigation key is held (an
+//! input burst is non-empty), `Full` once it settles (an empty burst =
+//! poll timeout). Modes use this to defer expensive rendering — Traces
+//! mode skips highlighting an unseen entry's diff on `Fast` frames, so
+//! holding `j` stays smooth over large edits. While input streams the
+//! poll timeout shrinks to `SETTLE_TIMEOUT` so the settled `Full` frame
+//! lands promptly after release.
+//!
 //! Live reload keeps both modes resident: both watchers are armed once at
 //! startup, so toggling is instant. The shell drains both receivers each
 //! loop, marks the owning mode dirty, reloads the **active** mode eagerly
@@ -58,7 +67,7 @@ pub mod traces;
 mod watch;
 
 use files::FilesMode;
-use mode::{AppCommand, Mode, ReloadViewport, TAB_LABELS, TabStrip};
+use mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TAB_LABELS, TabStrip};
 use traces::TracesMode;
 
 /// Active-mode index for the Files panel.
@@ -87,6 +96,10 @@ const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
 /// Minimum wall-clock gap between git polls (Files mode catches commits
 /// and other `.git/` writes the filesystem watcher filters out).
 const GIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Poll timeout while input is streaming (a navigation key is held). Kept
+/// short so the first idle frame after release lands quickly and rebuilds
+/// any diff deferred during the hold.
+const SETTLE_TIMEOUT: Duration = Duration::from_millis(80);
 
 /// Run the headless (non-TTY) scripted render path for Traces mode.
 pub fn run_traces_scripted() -> Result<(), String> {
@@ -128,6 +141,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         // a loading frame instead. The tab strip already shows the switch,
         // so the UI feels responsive while the (possibly slow) build runs.
         let building = !shell.built[active];
+        let budget = shell.draw_budget();
         let area = terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -139,7 +153,14 @@ pub fn run(active_mode: usize) -> Result<(), String> {
                 if building {
                     draw_loading(frame, cols[0], cols[1], TabStrip { active }, &theme);
                 } else {
-                    modes[active].draw(frame, cols[0], cols[1], TabStrip { active }, &theme);
+                    modes[active].draw(
+                        frame,
+                        cols[0],
+                        cols[1],
+                        TabStrip { active },
+                        &theme,
+                        budget,
+                    );
                 }
                 if help_visible {
                     help::draw_help_popup(frame, area, &theme);
@@ -174,6 +195,10 @@ pub fn run(active_mode: usize) -> Result<(), String> {
 
         let timeout = shell.poll_timeout();
         let burst = read_event_burst(timeout)?;
+        // An empty burst is a poll timeout: input has settled. A non-empty
+        // burst means the user is actively navigating, so the next frame
+        // draws Fast (deferring expensive rendering).
+        shell.note_input(burst.is_empty());
         if shell.apply_events(&mut modes, burst, vp, &theme)? == AppCommand::Quit {
             break;
         }
@@ -227,6 +252,10 @@ struct Shell {
     toggle_pending: bool,
     /// Last git poll.
     last_poll: Instant,
+    /// Whether the most recent input burst was empty (a poll timeout). When
+    /// false, the user is actively navigating and the next frame draws
+    /// `Fast`; when true, it draws `Full`.
+    input_idle: bool,
 }
 
 impl Shell {
@@ -245,6 +274,7 @@ impl Shell {
             dirty_since: [None, None],
             toggle_pending: false,
             last_poll: Instant::now(),
+            input_idle: true,
         }
     }
 
@@ -294,14 +324,33 @@ impl Shell {
         }
     }
 
+    /// The draw budget for the current frame: `Full` when input has
+    /// settled, `Fast` while a navigation key is streaming so modes can
+    /// defer expensive rendering.
+    fn draw_budget(&self) -> DrawBudget {
+        if self.input_idle {
+            DrawBudget::Full
+        } else {
+            DrawBudget::Fast
+        }
+    }
+
+    /// Record whether the just-read input burst was empty (a poll timeout,
+    /// i.e. input settled). Drives the next frame's [`Shell::draw_budget`].
+    fn note_input(&mut self, burst_empty: bool) {
+        self.input_idle = burst_empty;
+    }
+
     /// Pick the loop's poll timeout: short while a reload is pending,
     /// otherwise the idle timeout.
     fn poll_timeout(&self) -> Duration {
         if let Some(since) = self.dirty_since[self.active] {
-            DEBOUNCE_DELAY.saturating_sub(since.elapsed())
-        } else {
-            POLL_TIMEOUT
+            return DEBOUNCE_DELAY.saturating_sub(since.elapsed());
         }
+        if !self.input_idle {
+            return SETTLE_TIMEOUT;
+        }
+        POLL_TIMEOUT
     }
 
     /// The two adjacent border columns forming the divider between the

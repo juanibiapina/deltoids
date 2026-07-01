@@ -32,7 +32,7 @@ use deltoids::{Theme, git};
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::Sidebar;
 
-use super::mode::{AppCommand, Mode, ReloadViewport, TabStrip};
+use super::mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TabStrip};
 
 mod diff_pane;
 mod model;
@@ -368,6 +368,7 @@ impl Mode for FilesMode {
         right: Rect,
         tabs: TabStrip,
         theme: &Theme,
+        _budget: DrawBudget,
     ) {
         let diff_width = right.width.saturating_sub(2) as usize;
         let diff_viewport = right.height.saturating_sub(2) as usize;

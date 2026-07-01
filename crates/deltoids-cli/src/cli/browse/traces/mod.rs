@@ -37,7 +37,7 @@ use deltoids::render_tui::{
     pane_block, pane_block_with_footer, pane_border_color, position_footer, rgb_to_color,
 };
 
-use super::mode::{AppCommand, Mode, ReloadViewport, TabStrip};
+use super::mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TabStrip};
 
 mod detail;
 mod entries_pane;
@@ -80,7 +80,7 @@ struct AppState {
     trace_index: usize,
     entry_indices: Vec<usize>,
     diff_scroll: usize,
-    diff_cache: Option<DiffCache>,
+    diff_cache: DiffCache,
     entries_list_state: ListState,
     traces_list_state: ListState,
     /// Last-drawn pane rects, used for mouse hit-testing.
@@ -98,7 +98,7 @@ impl AppState {
             trace_index: 0,
             entry_indices: vec![0; trace_count],
             diff_scroll: 0,
-            diff_cache: None,
+            diff_cache: DiffCache::default(),
             entries_list_state: ListState::default().with_selected(Some(0)),
             traces_list_state: ListState::default().with_selected(Some(0)),
             entries_rect: Rect::default(),
@@ -159,11 +159,8 @@ impl TracesMode {
 
     /// Detail-row count from the cached render (0 when not yet built).
     fn detail_row_count(&self) -> usize {
-        self.state
-            .diff_cache
-            .as_ref()
-            .map(|cache| cache.lines.len())
-            .unwrap_or(0)
+        let key = (self.state.trace_index, self.state.entry_index());
+        self.state.diff_cache.rows_for(key)
     }
 }
 
@@ -411,6 +408,7 @@ impl Mode for TracesMode {
         right: Rect,
         tabs: TabStrip,
         theme: &Theme,
+        budget: DrawBudget,
     ) {
         let sidebar = Layout::default()
             .direction(Direction::Vertical)
@@ -439,7 +437,7 @@ impl Mode for TracesMode {
             theme,
         );
         render_traces_pane(frame, sidebar[1], &self.traces, &mut self.state, theme);
-        render_diff_pane(frame, right, active_trace, &mut self.state, theme);
+        render_diff_pane(frame, right, active_trace, &mut self.state, theme, budget);
     }
 
     fn handle_key(

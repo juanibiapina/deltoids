@@ -41,6 +41,7 @@ impl Mode for RecordingMode {
         _right: Rect,
         _tabs: TabStrip,
         _theme: &Theme,
+        _budget: DrawBudget,
     ) {
     }
 
@@ -114,6 +115,24 @@ fn q_and_esc_quit() {
         s.handle_key(&mut modes, KeyCode::Esc, 4, 4),
         AppCommand::Quit
     );
+}
+
+#[test]
+fn draw_budget_follows_input_idle() {
+    let mut s = shell();
+    // Seeded idle: the first frame draws in full.
+    assert_eq!(s.draw_budget(), DrawBudget::Full);
+
+    // A non-empty burst (active navigation) makes the next frame Fast and
+    // shortens the poll so the settled frame lands quickly.
+    s.note_input(false);
+    assert_eq!(s.draw_budget(), DrawBudget::Fast);
+    assert_eq!(s.poll_timeout(), SETTLE_TIMEOUT);
+
+    // An empty burst (settled) returns to Full and the idle poll timeout.
+    s.note_input(true);
+    assert_eq!(s.draw_budget(), DrawBudget::Full);
+    assert_eq!(s.poll_timeout(), POLL_TIMEOUT);
 }
 
 #[test]

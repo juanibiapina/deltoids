@@ -2,6 +2,8 @@
 //! detail model ([`DetailItem`]), all the header/edit-block/wrapping
 //! renderers, and the pane render itself.
 
+use std::collections::HashMap;
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -15,50 +17,89 @@ use deltoids::render_tui::{
 use deltoids::{Hunk, Theme};
 
 use crate::HistoryEntry;
+use crate::cli::browse::mode::DrawBudget;
 
 use super::model::LoadedTrace;
 use super::{AppState, Focus};
 
-#[derive(Debug, Clone)]
+/// Retained store of rendered entry diffs, keyed by
+/// `(trace_index, entry_index)`. Every retained entry shares one `width`;
+/// a width change clears the store (mirroring Files mode's `cached_width`
+/// rebuild). Retaining rendered entries makes revisiting an entry instant
+/// instead of re-highlighting it on every selection change.
+#[derive(Debug, Default, Clone)]
 pub(super) struct DiffCache {
-    pub(super) trace_index: usize,
-    pub(super) entry_index: usize,
-    pub(super) width: usize,
-    pub(super) lines: Vec<Line<'static>>,
+    width: usize,
+    lines: HashMap<(usize, usize), Vec<Line<'static>>>,
+}
+
+impl DiffCache {
+    /// Rendered lines for `(trace, entry)` at `width`, or `None` on a
+    /// width mismatch or a miss.
+    fn get(&self, width: usize, key: (usize, usize)) -> Option<&Vec<Line<'static>>> {
+        if self.width != width {
+            return None;
+        }
+        self.lines.get(&key)
+    }
+
+    /// Whether `(trace, entry)` is already rendered at `width`.
+    fn contains(&self, width: usize, key: (usize, usize)) -> bool {
+        self.width == width && self.lines.contains_key(&key)
+    }
+
+    /// Store rendered `lines` for `(trace, entry)`. A width change clears
+    /// the store first so every retained entry shares one width.
+    pub(super) fn insert(&mut self, width: usize, key: (usize, usize), lines: Vec<Line<'static>>) {
+        if self.width != width {
+            self.lines.clear();
+            self.width = width;
+        }
+        self.lines.insert(key, lines);
+    }
+
+    /// Drop all retained entries (used on reload, when disk data changed).
+    pub(super) fn clear(&mut self) {
+        self.lines.clear();
+    }
+
+    /// Whether the store holds no retained entries.
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// Row count for `(trace, entry)` at the store's current width (0 on a
+    /// miss). Used for scroll math between draws.
+    pub(super) fn rows_for(&self, key: (usize, usize)) -> usize {
+        self.lines.get(&key).map(|lines| lines.len()).unwrap_or(0)
+    }
 }
 
 pub(super) fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -> usize {
     detail_row_count.saturating_sub(detail_height.max(1))
 }
 
-fn diff_cache_matches_selection_and_width(
-    cache: &DiffCache,
-    trace_index: usize,
-    entry_index: usize,
-    width: usize,
-) -> bool {
-    cache.trace_index == trace_index && cache.entry_index == entry_index && cache.width == width
+/// Whether to build (highlight) the diff body this frame. Always build on
+/// a `Full` frame; on a `Fast` frame (input streaming) build only when the
+/// entry is already cached, so navigation never blocks on highlighting an
+/// unseen large entry.
+fn should_build_body(budget: DrawBudget, entry_already_cached: bool) -> bool {
+    budget == DrawBudget::Full || entry_already_cached
 }
 
 fn ensure_diff_cache(
     active_trace: &LoadedTrace,
     state: &mut AppState,
     detail_width: usize,
+    key: (usize, usize),
     theme: &Theme,
 ) {
-    let entry_index = state.entry_index();
-    let cache_valid = state.diff_cache.as_ref().is_some_and(|cache| {
-        diff_cache_matches_selection_and_width(cache, state.trace_index, entry_index, detail_width)
-    });
-    if !cache_valid {
-        let lines = render_detail_for(active_trace, entry_index, detail_width, theme);
-        state.diff_cache = Some(DiffCache {
-            trace_index: state.trace_index,
-            entry_index,
-            width: detail_width,
-            lines,
-        });
+    if state.diff_cache.contains(detail_width, key) {
+        return;
     }
+    let lines = render_detail_for(active_trace, key.1, detail_width, theme);
+    state.diff_cache.insert(detail_width, key, lines);
 }
 
 pub(super) fn render_diff_pane(
@@ -67,39 +108,70 @@ pub(super) fn render_diff_pane(
     active_trace: &LoadedTrace,
     state: &mut AppState,
     theme: &Theme,
+    budget: DrawBudget,
 ) {
     let detail_width = area.width.saturating_sub(2) as usize;
-    ensure_diff_cache(active_trace, state, detail_width, theme);
+    let key = (state.trace_index, state.entry_index());
+
+    if should_build_body(budget, state.diff_cache.contains(detail_width, key)) {
+        ensure_diff_cache(active_trace, state, detail_width, key, theme);
+    }
 
     let diff_viewport = area.height.saturating_sub(2) as usize;
-    let detail_row_count = state
-        .diff_cache
-        .as_ref()
-        .map(|cache| cache.lines.len())
-        .unwrap_or(0);
-    let start = state.diff_scroll.min(detail_row_count);
-    let end = start
-        .saturating_add(diff_viewport.max(1))
-        .min(detail_row_count);
-    let visible_lines: Vec<Line<'static>> = state
-        .diff_cache
-        .as_ref()
-        .map(|cache| cache.lines[start..end].to_vec())
-        .unwrap_or_default();
-    let diff = Paragraph::new(visible_lines).block(pane_block(
+    let block = pane_block(
         "─[3]─Diff─",
         pane_border_color(state.focus == Focus::Diff, theme),
-    ));
-    frame.render_widget(diff, area);
-
-    render_pane_scrollbar(
-        frame,
-        area,
-        detail_row_count,
-        state.diff_scroll,
-        diff_viewport,
-        theme,
     );
+
+    match state.diff_cache.get(detail_width, key) {
+        Some(lines) => {
+            let detail_row_count = lines.len();
+            let start = state.diff_scroll.min(detail_row_count);
+            let end = start
+                .saturating_add(diff_viewport.max(1))
+                .min(detail_row_count);
+            let visible_lines: Vec<Line<'static>> = lines[start..end].to_vec();
+            frame.render_widget(Paragraph::new(visible_lines).block(block), area);
+            render_pane_scrollbar(
+                frame,
+                area,
+                detail_row_count,
+                state.diff_scroll,
+                diff_viewport,
+                theme,
+            );
+        }
+        None => {
+            // Fast frame, entry not yet rendered: show the cheap header
+            // plus a muted placeholder. The body fills in on the settling
+            // Full frame and is then retained.
+            let placeholder = render_detail_placeholder(active_trace, key.1, detail_width, theme);
+            let visible: Vec<Line<'static>> =
+                placeholder.into_iter().take(diff_viewport.max(1)).collect();
+            frame.render_widget(Paragraph::new(visible).block(block), area);
+        }
+    }
+}
+
+/// Cheap stand-in for a not-yet-rendered entry: the detail header (fast to
+/// build) plus a muted "Rendering…" line, so fast scrolling still shows
+/// each entry's reason/path/metadata without the per-line syntax cost.
+fn render_detail_placeholder(
+    trace: &LoadedTrace,
+    entry_index: usize,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let Some(entry) = trace.entries.get(entry_index) else {
+        return Vec::new();
+    };
+    let mut lines = render_detail_header(entry, width, theme);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Rendering…".to_string(),
+        Style::default().fg(rgb_to_color(theme.muted)),
+    )));
+    lines
 }
 
 /// One unit of the entry detail view, ready to be rendered.
@@ -460,18 +532,57 @@ mod tests {
     use crate::cli::browse::traces::test_support::*;
 
     #[test]
-    fn diff_cache_matches_selection_and_width_checks_all_cache_fields() {
-        let cache = DiffCache {
-            trace_index: 1,
-            entry_index: 2,
-            width: 80,
-            lines: Vec::new(),
-        };
+    fn should_build_body_full_always_builds_fast_only_when_cached() {
+        assert!(should_build_body(DrawBudget::Full, false));
+        assert!(should_build_body(DrawBudget::Full, true));
+        assert!(!should_build_body(DrawBudget::Fast, false));
+        assert!(should_build_body(DrawBudget::Fast, true));
+    }
 
-        assert!(diff_cache_matches_selection_and_width(&cache, 1, 2, 80));
-        assert!(!diff_cache_matches_selection_and_width(&cache, 0, 2, 80));
-        assert!(!diff_cache_matches_selection_and_width(&cache, 1, 0, 80));
-        assert!(!diff_cache_matches_selection_and_width(&cache, 1, 2, 79));
+    #[test]
+    fn diff_cache_retains_entries_across_selection_changes() {
+        let mut cache = DiffCache::default();
+        cache.insert(80, (0, 0), vec![Line::from("a")]);
+        cache.insert(80, (0, 1), vec![Line::from("b"), Line::from("b2")]);
+
+        // Both entries stay retained: revisiting the first is a cache hit.
+        assert!(cache.contains(80, (0, 0)));
+        assert!(cache.contains(80, (0, 1)));
+        assert_eq!(cache.rows_for((0, 0)), 1);
+        assert_eq!(cache.rows_for((0, 1)), 2);
+        assert_eq!(cache.get(80, (0, 0)).map(|l| l.len()), Some(1));
+    }
+
+    #[test]
+    fn diff_cache_width_change_clears_store() {
+        let mut cache = DiffCache::default();
+        cache.insert(80, (0, 0), vec![Line::from("a")]);
+        assert!(cache.contains(80, (0, 0)));
+
+        // A different width drops the stale entry and rebuilds at the new width.
+        assert!(!cache.contains(79, (0, 0)));
+        assert!(cache.get(79, (0, 0)).is_none());
+        cache.insert(79, (0, 1), vec![Line::from("b")]);
+        assert!(!cache.contains(79, (0, 0)));
+        assert!(cache.contains(79, (0, 1)));
+    }
+
+    #[test]
+    fn ensure_diff_cache_builds_once_then_hits() {
+        use crate::cli::browse::traces::test_support::*;
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        };
+        let theme = test_theme();
+        let mut state = AppState::new(1);
+
+        assert!(!state.diff_cache.contains(80, (0, 0)));
+        ensure_diff_cache(&trace, &mut state, 80, (0, 0), &theme);
+        assert!(state.diff_cache.contains(80, (0, 0)));
+        // Second call is a no-op hit; the store still holds the one entry.
+        ensure_diff_cache(&trace, &mut state, 80, (0, 0), &theme);
+        assert!(state.diff_cache.contains(80, (0, 0)));
     }
 
     #[test]

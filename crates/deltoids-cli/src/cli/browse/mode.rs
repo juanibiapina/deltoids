@@ -31,6 +31,20 @@ pub(crate) enum AppCommand {
     Quit,
 }
 
+/// How much work a mode may spend on this frame.
+///
+/// The shell passes `Fast` while input is actively streaming (the user is
+/// holding a navigation key) and `Full` once input settles. A mode uses
+/// this to defer expensive, deferrable rendering (Traces mode skips
+/// building an entry's syntax-highlighted diff on `Fast` frames and shows
+/// a cheap placeholder instead). Modes whose draw is already cheap ignore
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrawBudget {
+    Full,
+    Fast,
+}
+
 /// Labels for the modes, in `active`-index order.
 pub(crate) const TAB_LABELS: [&str; 2] = ["Files", "Traces"];
 
@@ -227,7 +241,9 @@ pub(crate) trait Mode {
     /// `right`. The mode subdivides `left` itself (Files: one panel;
     /// Traces: two stacked panels) and caches its sub-rects for mouse
     /// hit-testing. `tabs` carries the active-mode index so the mode
-    /// draws the tab strip in its top-left panel title.
+    /// draws the tab strip in its top-left panel title. `budget` tells
+    /// the mode whether it may defer expensive rendering this frame
+    /// (`Fast` while input streams, `Full` once it settles).
     fn draw(
         &mut self,
         frame: &mut Frame<'_>,
@@ -235,6 +251,7 @@ pub(crate) trait Mode {
         right: Rect,
         tabs: TabStrip,
         theme: &Theme,
+        budget: DrawBudget,
     );
 
     /// Handle a key already stripped of the shell's global bindings

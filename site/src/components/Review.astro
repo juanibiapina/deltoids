@@ -1,0 +1,93 @@
+---
+import { Image } from "astro:assets";
+import { AGENT_TOOLS } from "../data/site";
+import tracesShot from "../assets/screenshots/traces.png";
+---
+
+<section id="review" class="section">
+  <div class="container">
+    <div class="section-head">
+      <h2>Review your working tree and every agent edit</h2>
+      <p>
+        Run <code>deltoids</code> in a repo to open a terminal diff
+        browser: a file sidebar beside scope-expanded, syntax-highlighted
+        diffs. Install the agent edit tools and the same TUI follows your
+        coding agent, each change tagged with its reason.
+      </p>
+    </div>
+
+    <div class="agents-block">
+      <h3 class="agents-heading">Wire up your agent</h3>
+      <div class="install-grid agents-snippets">
+        {
+          AGENT_TOOLS.map((a) => (
+            <div class="install-card">
+              <div class="install-card-label">{a.label}</div>
+              {a.coming ? (
+                <div class="code-card-coming">Coming soon</div>
+              ) : (
+                <pre><code>{a.code}</code></pre>
+              )}
+              {a.note && <p class="install-card-note">{a.note}</p>}
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    <figure class="proof">
+      <Image
+        src={tracesShot}
+        alt="deltoids TUI trace browser: agent edits listed with diffs and reasons"
+        widths={[800, 1200, 1600]}
+        sizes="(min-width: 1024px) 1024px, 100vw"
+        format="webp"
+        loading="lazy"
+      />
+      <figcaption>The trace browser, following a coding agent's edits.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<style>
+  .agents-block {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  .agents-heading {
+    text-align: center;
+    margin-bottom: 20px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .agents-snippets {
+    margin: 0;
+  }
+
+  .install-card-note {
+    margin: 8px 0 0;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+  }
+
+  .proof {
+    margin-top: 56px;
+  }
+
+  .proof :global(img) {
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-code);
+  }
+
+  .proof figcaption {
+    margin-top: 12px;
+    text-align: center;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+  }
+</style>

@@ -10,7 +10,7 @@ export const SITE = {
   license: "MIT",
   tagline: "Diffs for the agentic era.",
   description:
-    "deltoids is a smart diff pager that expands hunks with the context you need to understand them.",
+    "deltoids is a smart diff toolkit: a pager and terminal TUI that expand hunks to the enclosing scope, plus edit tools that trace every change your coding agent makes.",
   statusNote:
     "Beta: diff output may still be broken. Verify important changes.",
   repo: {
@@ -27,7 +27,7 @@ export const SITE = {
 
 export const NAV_LINKS = [
   { href: "/#pager", label: "Pager" },
-  { href: "/#agents", label: "Agents" },
+  { href: "/#review", label: "Review" },
   { href: "/#install", label: "Install" },
   { href: "/#faq", label: "FAQ" },
   { href: "/docs/", label: "Docs" },
@@ -151,11 +151,19 @@ export const INSTALL_CARDS: InstallCard[] = [
 /** FAQ. */
 export const FAQ: { q: string; a: string }[] = [
   {
-    q: "Are diffs guaranteed correct?",
-    a: "No. `deltoids` is beta; diff output may still be broken. Verify important changes with `git diff`.",
+    q: "Is `deltoids` just a pager?",
+    a: "No. Piped a diff, it's a pager. Run in a terminal, `deltoids` opens a TUI that browses your working tree and your coding agent's edits. It also ships `edit`, `write`, `hashread`, and `hashedit` tools for agents.",
   },
   {
     q: "How is this different from `git diff -W`?",
     a: "`git diff -W` finds scope with regex. `deltoids` parses the file with tree-sitter.",
+  },
+  {
+    q: "Which languages get syntax highlighting?",
+    a: "Any syntax bundled with syntect (e.g. Dockerfile), independent of tree-sitter scope support. Scope expansion covers the tree-sitter languages.",
+  },
+  {
+    q: "Are diffs guaranteed correct?",
+    a: "No. `deltoids` is beta; diff output may still be broken. Verify important changes with `git diff`.",
   },
 ];

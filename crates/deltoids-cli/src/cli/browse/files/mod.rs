@@ -35,7 +35,7 @@ use crate::sidebar::Sidebar;
 use super::mode::{AppCommand, Mode, ReloadViewport, TabStrip};
 
 mod diff_pane;
-mod model;
+pub(in crate::cli::browse) mod model;
 mod reload;
 mod sidebar_pane;
 #[cfg(test)]

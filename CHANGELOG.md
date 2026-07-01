@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TUI: New **Live** tab shows a running feed of working-tree edits as they happen, one entry per change, each diffing the file against its last-known state. Works for any tool that writes files (agents, editors, scripts) with no setup; the feed is in-memory only.
 - diff: Syntax highlighting now works for any bundled syntect syntax (e.g. Dockerfile), independent of tree-sitter scope support.
 
 ### Changed
 
-- The `review` and `traces` UIs are unified into a single `deltoids tui` (also opened by running `deltoids` in a terminal); `[` / `]` switch between the working-tree diff and the trace browser.
+- The `review` and `traces` UIs are unified into a single `deltoids tui` (also opened by running `deltoids` in a terminal); `]` / `[` cycle the left panel between the working-tree diff, the trace browser, and the live edit feed.
 - TUI: Long diff lines wrap onto continuation rows instead of being cut off at the pane edge.
 - TUI: Mouse-wheel scrolling moves in proportion to the gesture instead of jumping too far.
 - TUI: The sidebar resizes with `<`/`>` or by dragging the divider, opens a bit wider by default, scales with the terminal, and never disappears on narrow terminals.

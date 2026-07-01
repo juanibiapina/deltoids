@@ -429,6 +429,43 @@ mod tests {
     }
 
     #[test]
+    fn draw_renders_feed_and_diff() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::{Constraint, Direction, Layout};
+
+        let mut mode = LiveMode::empty();
+        mode.feed.entries.push(FeedEntry {
+            path: "src/app.rs".to_string(),
+            timestamp: "08:15:00".to_string(),
+            diff: Diff::compute("one\n", "one\ntwo\n", "src/app.rs"),
+        });
+        mode.select(0);
+
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(30), Constraint::Min(10)])
+                .split(area);
+            mode.draw(f, cols[0], cols[1], TabStrip { active: 2 }, &theme);
+        })
+        .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Live"), "tab strip missing Live: {text}");
+        assert!(text.contains("app.rs"), "feed row missing file: {text}");
+        assert!(text.contains("two"), "diff pane missing added line: {text}");
+    }
+
+    #[test]
     fn reload_preserves_selection_when_not_at_tail() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());

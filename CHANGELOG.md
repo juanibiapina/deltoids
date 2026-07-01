@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The `review` and `traces` UIs are unified into a single `deltoids tui` (also opened by running `deltoids` in a terminal); `]` / `[` cycle the left panel between the working-tree diff and the trace browser, or click a tab in the panel title to switch directly.
+- The `review` and `traces` UIs are unified into a single `deltoids tui` (also opened by running `deltoids` in a terminal), showing the working-tree diff and the trace browser.
 - TUI: Long diff lines wrap onto continuation rows instead of being cut off at the pane edge.
 - TUI: Mouse-wheel scrolling moves in proportion to the gesture instead of jumping too far.
 - TUI: The sidebar resizes with `<`/`>` or by dragging the divider, opens a bit wider by default, scales with the terminal, and never disappears on narrow terminals.

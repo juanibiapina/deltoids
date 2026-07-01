@@ -19,7 +19,7 @@ use std::sync::mpsc::Receiver;
 use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use deltoids::Theme;
@@ -92,14 +92,17 @@ fn strip_pieces() -> Vec<StripPiece> {
 impl TabStrip {
     /// Build the styled title line for the top-left panel in lazygit's
     /// style: `─[1]─Files - Traces─`. The pane badge `[1]` and the active
-    /// label use the bold accent; inactive labels and separators are
-    /// muted; the surrounding rule is the border colour.
-    pub(crate) fn title_line(self, theme: &Theme) -> Line<'static> {
-        let border = Style::default().fg(rgb_to_color(theme.border));
+    /// label use the bold accent; inactive labels and separators use the
+    /// terminal's default foreground (white on dark themes), matching
+    /// lazygit; the surrounding `─` rules use `rule_color`, which callers
+    /// set to the pane's own block-border colour so the strip stays
+    /// continuous with the border (accent when focused, plain otherwise).
+    pub(crate) fn title_line(self, rule_color: Color, theme: &Theme) -> Line<'static> {
+        let border = Style::default().fg(rule_color);
         let active = Style::default()
             .fg(rgb_to_color(theme.border_active))
             .add_modifier(Modifier::BOLD);
-        let muted = Style::default().fg(rgb_to_color(theme.muted));
+        let inactive = Style::default().fg(Color::Reset);
 
         let spans = strip_pieces()
             .into_iter()
@@ -109,10 +112,10 @@ impl TabStrip {
                     None if piece.text == "[1]" => active,
                     None if piece.text == "─" => border,
                     // Separators.
-                    None => muted,
-                    // Labels: active bold-accent, others muted.
+                    None => inactive,
+                    // Labels: active bold-accent, others default fg.
                     Some(index) if index == self.active => active,
-                    Some(_) => muted,
+                    Some(_) => inactive,
                 };
                 Span::styled(piece.text.to_string(), style)
             })
@@ -176,7 +179,8 @@ mod tests {
     #[test]
     fn tab_strip_highlights_active_label() {
         let theme = Theme::default();
-        let line = TabStrip { active: 1 }.title_line(&theme);
+        let rule_color = rgb_to_color(theme.border_active);
+        let line = TabStrip { active: 1 }.title_line(rule_color, &theme);
         // Spans: ─ [1] ─ Files " - " Traces ─
         let find = |c: &str| line.spans.iter().find(|s| s.content == c).unwrap();
         let badge = find("[1]");
@@ -185,10 +189,29 @@ mod tests {
         // The pane badge is always the bold accent.
         assert_eq!(badge.style.fg, Some(rgb_to_color(theme.border_active)));
         assert!(badge.style.add_modifier.contains(Modifier::BOLD));
-        // Active (Traces) is the bold accent; inactive (Files) is muted.
+        // Active (Traces) is the bold accent; inactive (Files) uses the
+        // terminal default foreground (white on dark themes).
         assert_eq!(traces.style.fg, Some(rgb_to_color(theme.border_active)));
         assert!(traces.style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(files.style.fg, Some(rgb_to_color(theme.muted)));
+        assert_eq!(files.style.fg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn tab_strip_rules_follow_passed_border_color() {
+        let theme = Theme::default();
+        // A focused pane hands its accent border colour in; the connecting
+        // `─` rules must match it, not the default (blue) theme border.
+        let rule_color = rgb_to_color(theme.border_active);
+        let line = TabStrip { active: 0 }.title_line(rule_color, &theme);
+        let rule = line.spans.iter().find(|s| s.content == "─").unwrap();
+        assert_eq!(rule.style.fg, Some(rule_color));
+        assert_ne!(rule.style.fg, Some(rgb_to_color(theme.border)));
+
+        // An unfocused pane hands the plain border colour; rules track it.
+        let rule_color = rgb_to_color(theme.border);
+        let line = TabStrip { active: 0 }.title_line(rule_color, &theme);
+        let rule = line.spans.iter().find(|s| s.content == "─").unwrap();
+        assert_eq!(rule.style.fg, Some(rule_color));
     }
 }
 

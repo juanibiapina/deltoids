@@ -33,7 +33,9 @@ use ratatui::{
 
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use deltoids::Theme;
-use deltoids::render_tui::{pane_block, pane_block_with_footer, position_footer, rgb_to_color};
+use deltoids::render_tui::{
+    pane_block, pane_block_with_footer, pane_border_color, position_footer, rgb_to_color,
+};
 
 use super::mode::{AppCommand, Mode, ReloadViewport, TabStrip};
 
@@ -415,10 +417,11 @@ impl Mode for TracesMode {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(left);
 
-        let title = tabs.title_line(theme);
+        let border = pane_border_color(self.state.focus == Focus::Entries, theme);
+        let title = tabs.title_line(border, theme);
 
         if self.traces.is_empty() {
-            render_empty(frame, &sidebar, right, title, theme);
+            render_empty(frame, &sidebar, right, title, border, theme);
             return;
         }
 
@@ -497,13 +500,14 @@ fn render_empty(
     sidebar: &[Rect],
     right: Rect,
     title: ratatui::text::Line<'static>,
+    entries_border: ratatui::style::Color,
     theme: &Theme,
 ) {
     let message = Paragraph::new("No traces found for this directory.")
         .style(Style::default().fg(rgb_to_color(theme.muted)))
         .block(deltoids::render_tui::pane_block_with_tabs(
             title,
-            rgb_to_color(theme.border),
+            entries_border,
             Some(position_footer(0, 0)),
         ));
     frame.render_widget(message, sidebar[0]);

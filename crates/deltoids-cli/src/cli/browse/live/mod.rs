@@ -263,14 +263,16 @@ impl Mode for LiveMode {
         self.feed_rect = left;
         self.diff_rect = right;
 
-        let title: Line<'static> = tabs.title_line(theme);
+        let feed_focused = self.focus == Focus::Feed;
+        let border = deltoids::render_tui::pane_border_color(feed_focused, theme);
+        let title: Line<'static> = tabs.title_line(border, theme);
         render_feed_pane(
             frame,
             left,
             &self.feed.entries,
             self.selected,
             &mut self.feed_list_state,
-            self.focus == Focus::Feed,
+            feed_focused,
             title,
             theme,
         );

@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- TUI: A focused panel's tab-strip border is now a single continuous colour instead of showing stray blue segments between the tab labels.
 - pager: Hunks with no enclosing function now get a line-number box, so consecutive hunks are visibly separated (e.g. in lazygit).
 
 ## [0.9.0] - 2026-06-23

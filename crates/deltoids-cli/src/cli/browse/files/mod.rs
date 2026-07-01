@@ -377,13 +377,15 @@ impl Mode for FilesMode {
         self.diff_rect = right;
 
         let dr = self.sidebar.selection_display_range();
+        let sidebar_focused = self.focus == Focus::Sidebar;
+        let border = deltoids::render_tui::pane_border_color(sidebar_focused, theme);
         sidebar_pane::draw_sidebar(
             frame,
             left,
             &self.sidebar,
             &self.diff.display_order,
-            self.focus == Focus::Sidebar,
-            tabs.title_line(theme),
+            sidebar_focused,
+            tabs.title_line(border, theme),
             theme,
         );
         self.diff

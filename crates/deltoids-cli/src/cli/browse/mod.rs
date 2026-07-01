@@ -545,7 +545,11 @@ fn draw_loading(
             .block(block)
     };
     frame.render_widget(
-        loading(pane_block_with_tabs(tabs.title_line(theme), border, None)),
+        loading(pane_block_with_tabs(
+            tabs.title_line(border, theme),
+            border,
+            None,
+        )),
         left,
     );
     frame.render_widget(loading(pane_block("─Diff─", border)), right);

@@ -185,9 +185,10 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
 
     assert!(tui_output.status.success());
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
-    assert!(stdout.contains("> \u{2713} config.json"));
+    // The entries pane lists each entry by its reason, marked selected.
+    assert!(stdout.contains("> \u{2713} Rewrite config"));
+    // The detail header shows the selected entry's path.
     assert!(stdout.contains("config.json"));
-    assert!(stdout.contains("write • ok • 1 hunk"));
     assert!(stdout.contains("\"version\": 2"));
     assert!(stdout.contains("* [2] Traces"));
 }

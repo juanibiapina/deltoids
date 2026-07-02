@@ -256,8 +256,9 @@ fn hashedit_trace_is_visible_in_traces_subcommand() {
     );
     assert!(traces_output.status.success());
     let stdout = String::from_utf8(traces_output.stdout).unwrap();
+    // The reason from the hashedit entry is visible in the traces TUI.
+    // The tool name is no longer surfaced after the traces header rework.
     assert!(stdout.contains("Upper beta"), "{stdout}");
-    assert!(stdout.contains("hashedit"), "{stdout}");
 }
 
 #[test]

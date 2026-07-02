@@ -75,6 +75,7 @@ pub(super) fn render_entries_pane(
         entries_count,
         state.entry_index(),
         pane_inner_height(area),
+        state.focus == Focus::Entries,
         theme,
     );
 }

@@ -338,6 +338,7 @@ impl DiffPane {
             self.window_rows,
             scroll,
             pane_inner_height(area),
+            focused,
             theme,
         );
     }

@@ -131,6 +131,7 @@ pub(super) fn render_diff_pane(
                 detail_row_count,
                 state.diff_scroll,
                 diff_viewport,
+                state.focus == Focus::Diff,
                 theme,
             );
         }

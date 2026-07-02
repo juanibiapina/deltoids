@@ -95,6 +95,7 @@ pub(super) fn draw_sidebar(
         total,
         sidebar.selected(),
         pane_inner_height(area),
+        focused,
         theme,
     );
 }

@@ -824,8 +824,9 @@ pub fn position_footer(position: usize, total: usize) -> String {
 }
 
 /// Render a vertical scrollbar inside the right border of `area`,
-/// styled with the theme's border colour. No-op when the content fits
-/// the viewport.
+/// coloured to match the pane border: the active accent when `active`,
+/// the plain border colour otherwise (see [`pane_border_color`]). No-op
+/// when the content fits the viewport.
 ///
 /// `content_length` is the number of logical rows of content;
 /// `position` is the current top-row index (or selected-row index in a
@@ -838,16 +839,18 @@ pub fn render_pane_scrollbar(
     content_length: usize,
     position: usize,
     viewport: usize,
+    active: bool,
     theme: &Theme,
 ) {
     if content_length <= viewport.max(1) {
         return;
     }
+    let color = pane_border_color(active, theme);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .symbols(scrollbar_symbols::VERTICAL)
         .thumb_symbol("\u{2590}")
-        .track_style(Style::default().fg(rgb_to_color(theme.border)))
-        .thumb_style(Style::default().fg(rgb_to_color(theme.border)))
+        .track_style(Style::default().fg(color))
+        .thumb_style(Style::default().fg(color))
         .begin_symbol(None)
         .end_symbol(None);
     // Ratatui only puts the thumb at the track bottom when position ==
@@ -1342,5 +1345,56 @@ mod tests {
                 "adjacent ancestors should not produce a `...` row"
             );
         }
+    }
+
+    fn scrollbar_fg_colors(active: bool, theme: &Theme) -> Vec<Color> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut term = Terminal::new(TestBackend::new(6, 8)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            render_pane_scrollbar(f, area, 100, 0, 4, active, theme);
+        })
+        .unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.fg)
+            .filter(|fg| *fg != Color::Reset)
+            .collect()
+    }
+
+    #[test]
+    fn scrollbar_uses_active_border_color_when_focused() {
+        let theme = Theme::default();
+        let colors = scrollbar_fg_colors(true, &theme);
+        let active = rgb_to_color(theme.border_active);
+        let inactive = rgb_to_color(theme.border);
+        assert!(
+            colors.contains(&active),
+            "focused scrollbar should use border_active, got: {colors:?}"
+        );
+        assert!(
+            !colors.contains(&inactive),
+            "focused scrollbar must not use the inactive border color"
+        );
+    }
+
+    #[test]
+    fn scrollbar_uses_border_color_when_inactive() {
+        let theme = Theme::default();
+        let colors = scrollbar_fg_colors(false, &theme);
+        let active = rgb_to_color(theme.border_active);
+        let inactive = rgb_to_color(theme.border);
+        assert!(
+            colors.contains(&inactive),
+            "inactive scrollbar should use the border color, got: {colors:?}"
+        );
+        assert!(
+            !colors.contains(&active),
+            "inactive scrollbar must not use the active border color"
+        );
     }
 }

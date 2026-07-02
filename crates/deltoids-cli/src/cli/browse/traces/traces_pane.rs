@@ -69,6 +69,7 @@ pub(super) fn render_traces_pane(
         traces_count,
         state.trace_index,
         pane_inner_height(area),
+        state.focus == Focus::Traces,
         theme,
     );
 }

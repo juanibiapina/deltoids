@@ -11,7 +11,7 @@ use syntect::highlighting::FontStyle;
 
 use crate::config::{SyntaxAssets, Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader, display_width};
-use crate::intraline::{EmphKind, LineEmphasis, compute_subhunk_emphasis};
+use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 use crate::{Hunk, HunkRun, LineKind};
 
 const TAB_WIDTH: usize = 4;
@@ -19,6 +19,9 @@ const TAB_WIDTH: usize = 4;
 // ANSI control sequences.
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
+/// Clears only the bold/italic/underline attributes (22/23/24), leaving
+/// foreground and background intact.
+const FONT_STYLE_RESET: &str = "\x1b[22;23;24m";
 const ERASE_EOL: &str = "\x1b[0K";
 const DEFAULT_FG: &str = "\x1b[38;2;220;223;228m";
 
@@ -240,19 +243,19 @@ fn render_diff_line_with_emphasis(
     match emphasis {
         LineEmphasis::Plain => render_diff_line(kind, content, highlight, width, fill, theme),
         LineEmphasis::Paired(sections) => {
+            let section_ranges = build_section_byte_ranges(sections);
+            let body = highlight_line_emphasized(
+                content,
+                highlight,
+                sections,
+                &section_ranges,
+                &plain_bg,
+                &emph_bg,
+            );
+
             let mut result = String::new();
             result.push_str(&plain_bg);
-
-            for section in sections {
-                let bg = match section.kind {
-                    EmphKind::Emph => &emph_bg,
-                    EmphKind::NonEmph => &plain_bg,
-                };
-                let highlighted = highlight_line(&section.text, highlight);
-                result.push_str(bg);
-                result.push_str(&highlighted);
-            }
-
+            result.push_str(&body);
             result.push_str(&plain_bg);
             if content.is_empty() {
                 result.push_str(DEFAULT_FG);
@@ -347,16 +350,164 @@ fn highlight_line(line: &str, highlight: Option<&str>) -> String {
                 let text = text.replace('\t', &" ".repeat(TAB_WIDTH));
                 let fg = syntect_color_to_ansi_fg(style.foreground);
 
-                if style.font_style.contains(FontStyle::BOLD) {
-                    result.push_str(BOLD);
-                }
+                result.push_str(&font_style_sgr(style.font_style));
                 result.push_str(&fg);
                 result.push_str(&text);
             }
+            // Clear the three font-style attributes so a trailing italic/bold/
+            // underline token cannot bleed into whatever the caller appends
+            // next (breadcrumb border, background padding). Not a full reset:
+            // callers own the background.
+            result.push_str(FONT_STYLE_RESET);
             result
         }
         Err(_) => line.replace('\t', &" ".repeat(TAB_WIDTH)),
     }
+}
+
+/// Map a syntect [`FontStyle`] to an SGR attribute sequence, emitting an
+/// explicit on/off code for each of bold, italic, and underline so no
+/// attribute bleeds across tokens. The off-codes (22/23/24) clear only their
+/// own attribute and leave foreground (3x) and background (4x) untouched.
+fn font_style_sgr(font_style: FontStyle) -> String {
+    let bold = if font_style.contains(FontStyle::BOLD) {
+        "1"
+    } else {
+        "22"
+    };
+    let italic = if font_style.contains(FontStyle::ITALIC) {
+        "3"
+    } else {
+        "23"
+    };
+    let underline = if font_style.contains(FontStyle::UNDERLINE) {
+        "4"
+    } else {
+        "24"
+    };
+    format!("\x1b[{bold};{italic};{underline}m")
+}
+
+/// Highlight the whole line once, then overlay per-character emphasis
+/// backgrounds.
+///
+/// Highlighting the entire line (rather than each emphasis section on its own)
+/// keeps multi-token scopes like line comments and strings intact: a section
+/// starting mid-comment would otherwise be re-tokenized from scratch, losing
+/// the enclosing comment scope and coloring identifiers as code. This mirrors
+/// the ratatui renderer, where emphasis only changes the background.
+fn highlight_line_emphasized(
+    content: &str,
+    highlight: Option<&str>,
+    sections: &[EmphSection],
+    section_ranges: &[(usize, usize)],
+    plain_bg: &str,
+    emph_bg: &str,
+) -> String {
+    let assets = SyntaxAssets::load();
+    let syntax = assets.syntax_for_name(highlight);
+    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
+
+    let mut result = String::new();
+    let mut byte_offset = 0usize;
+    match highlighter.highlight_line(content, assets.syntax_set) {
+        Ok(ranges) => {
+            for (style, text) in ranges {
+                let fg = syntect_color_to_ansi_fg(style.foreground);
+                let sgr = font_style_sgr(style.font_style);
+                emit_emphasized_segment(
+                    &mut result,
+                    text,
+                    &mut byte_offset,
+                    &sgr,
+                    &fg,
+                    sections,
+                    section_ranges,
+                    plain_bg,
+                    emph_bg,
+                );
+            }
+            // Clear font-style attributes so a trailing styled token cannot
+            // bleed into the caller's background padding.
+            result.push_str(FONT_STYLE_RESET);
+        }
+        Err(_) => {
+            emit_emphasized_segment(
+                &mut result,
+                content,
+                &mut byte_offset,
+                "",
+                "",
+                sections,
+                section_ranges,
+                plain_bg,
+                emph_bg,
+            );
+        }
+    }
+    result
+}
+
+/// Emit one syntect segment with per-character emphasis backgrounds, coalescing
+/// consecutive characters that share a background into one run. `sgr` and `fg`
+/// are constant for the segment; only the background varies across emphasis
+/// section boundaries. Advances `byte_offset` by each character's source byte
+/// length (tabs expand to spaces in the output but count as one source byte).
+#[allow(clippy::too_many_arguments)]
+fn emit_emphasized_segment(
+    out: &mut String,
+    segment: &str,
+    byte_offset: &mut usize,
+    sgr: &str,
+    fg: &str,
+    sections: &[EmphSection],
+    section_ranges: &[(usize, usize)],
+    plain_bg: &str,
+    emph_bg: &str,
+) {
+    let bg_at = |offset: usize| -> &str {
+        match section_index_at(offset, section_ranges) {
+            Some(i) if matches!(sections[i].kind, EmphKind::Emph) => emph_bg,
+            _ => plain_bg,
+        }
+    };
+
+    let mut current_bg: Option<&str> = None;
+    for ch in segment.chars() {
+        let bg = bg_at(*byte_offset);
+        if current_bg != Some(bg) {
+            out.push_str(bg);
+            out.push_str(sgr);
+            out.push_str(fg);
+            current_bg = Some(bg);
+        }
+        if ch == '\t' {
+            out.push_str(&" ".repeat(TAB_WIDTH));
+        } else {
+            out.push(ch);
+        }
+        *byte_offset += ch.len_utf8();
+    }
+}
+
+/// For each emphasis section, compute its byte range in the original line.
+fn build_section_byte_ranges(sections: &[EmphSection]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::with_capacity(sections.len());
+    let mut offset = 0;
+    for section in sections {
+        let start = offset;
+        let end = start + section.text.len();
+        ranges.push((start, end));
+        offset = end;
+    }
+    ranges
+}
+
+/// Find which emphasis section a byte offset falls in.
+fn section_index_at(byte_offset: usize, ranges: &[(usize, usize)]) -> Option<usize> {
+    ranges
+        .iter()
+        .position(|&(start, end)| byte_offset >= start && byte_offset < end)
 }
 
 /// Convert a syntect color to an ANSI foreground escape sequence.
@@ -389,6 +540,108 @@ fn bg_fill_string(content: &str, width: usize, fill: BgFill) -> String {
 mod tests {
     use super::*;
     use crate::{Diff, DiffLine, Language, ScopeNode};
+
+    /// Collect foreground color escapes (`38;2;...`, `38;5;...`, `39`) in
+    /// order, ignoring background and attribute codes.
+    fn fg_codes(s: &str) -> Vec<String> {
+        // Each SGR sequence is `ESC [ <codes> m`; splitting on `ESC [` yields
+        // `<codes>m<text>` parts, so the code runs up to the first `m`.
+        s.split('\x1b')
+            .filter_map(|part| part.strip_prefix('['))
+            .filter_map(|part| part.split_once('m').map(|(seq, _)| seq))
+            .filter(|seq| seq.starts_with("38;") || *seq == "39")
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn emphasis_does_not_fragment_syntax_highlighting() {
+        // A changed comment line gets intraline emphasis. The emphasis must
+        // only change the background; it must never re-tokenize a mid-line
+        // section on its own (which would drop the enclosing comment scope and
+        // color `identifiers` as code). The set of syntax foreground colors
+        // applied to an emphasized line must equal those applied to the same
+        // line highlighted whole as context.
+        let theme = Theme::default();
+        let content = "// foo `bar` baz";
+        let sections = vec![
+            EmphSection {
+                kind: EmphKind::NonEmph,
+                text: "// foo ".to_string(),
+            },
+            EmphSection {
+                kind: EmphKind::Emph,
+                text: "`bar`".to_string(),
+            },
+            EmphSection {
+                kind: EmphKind::NonEmph,
+                text: " baz".to_string(),
+            },
+        ];
+        let emph = LineEmphasis::Paired(sections);
+        let emphasized = render_diff_line_with_emphasis(
+            &LineKind::Added,
+            content,
+            &emph,
+            Some("TypeScriptReact"),
+            80,
+            BgFill::Spaces,
+            &theme,
+        );
+        let context = render_diff_line(
+            &LineKind::Context,
+            content,
+            Some("TypeScriptReact"),
+            80,
+            BgFill::Spaces,
+            &theme,
+        );
+        let mut e = fg_codes(&emphasized);
+        e.sort();
+        e.dedup();
+        let mut c = fg_codes(&context);
+        c.sort();
+        c.dedup();
+        assert_eq!(e, c, "emphasis changed which syntax colors were applied");
+    }
+
+    #[test]
+    fn font_style_sgr_maps_all_combinations() {
+        // Each attribute emits an explicit on/off code so state never bleeds
+        // across tokens: bold 1/22, italic 3/23, underline 4/24.
+        assert_eq!(font_style_sgr(FontStyle::empty()), "\x1b[22;23;24m");
+        assert_eq!(font_style_sgr(FontStyle::BOLD), "\x1b[1;23;24m");
+        assert_eq!(font_style_sgr(FontStyle::ITALIC), "\x1b[22;3;24m");
+        assert_eq!(font_style_sgr(FontStyle::UNDERLINE), "\x1b[22;23;4m");
+        assert_eq!(
+            font_style_sgr(FontStyle::BOLD | FontStyle::ITALIC),
+            "\x1b[1;3;24m"
+        );
+        assert_eq!(
+            font_style_sgr(FontStyle::BOLD | FontStyle::UNDERLINE),
+            "\x1b[1;23;4m"
+        );
+        assert_eq!(
+            font_style_sgr(FontStyle::ITALIC | FontStyle::UNDERLINE),
+            "\x1b[22;3;4m"
+        );
+        assert_eq!(
+            font_style_sgr(FontStyle::BOLD | FontStyle::ITALIC | FontStyle::UNDERLINE),
+            "\x1b[1;3;4m"
+        );
+    }
+
+    #[test]
+    fn highlight_line_appends_font_style_reset() {
+        // Regardless of theme, the Ok path clears bold/italic/underline at the
+        // end so a trailing styled token cannot bleed into the caller's border
+        // or background padding.
+        let out = highlight_line("let x = 1;", Some("Rust"));
+        assert!(
+            out.ends_with(FONT_STYLE_RESET),
+            "expected trailing font-style reset, got {out:?}"
+        );
+    }
 
     #[test]
     fn file_header_contains_path() {

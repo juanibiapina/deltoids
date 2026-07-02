@@ -59,7 +59,6 @@ interface ExternalWriteInput {
 
 interface ExternalHashEditOp {
   op: "replace" | "insert_before" | "insert_after" | "delete";
-  reason: string;
   pos: string;
   end?: string;
   lines?: string[];
@@ -137,7 +136,6 @@ const externalWriteSchema = Type.Object(
 const hashEditReplaceSchema = Type.Object(
   {
     op: Type.Literal("replace"),
-    reason: Type.String({ description: "Why this specific replacement is being made." }),
     pos: Type.String({ description: "Anchor (LINEhh) from hashread output, e.g. \"42sr\"." }),
     end: Type.Optional(
       Type.String({ description: "Inclusive end anchor for a range replace." }),
@@ -150,7 +148,6 @@ const hashEditReplaceSchema = Type.Object(
 const hashEditInsertBeforeSchema = Type.Object(
   {
     op: Type.Literal("insert_before"),
-    reason: Type.String({ description: "Why this insert is being made." }),
     pos: Type.String({ description: "Anchor (LINEhh) or \"BOF\"." }),
     lines: Type.Array(Type.String(), { description: "Lines to insert before pos." }),
   },
@@ -160,7 +157,6 @@ const hashEditInsertBeforeSchema = Type.Object(
 const hashEditInsertAfterSchema = Type.Object(
   {
     op: Type.Literal("insert_after"),
-    reason: Type.String({ description: "Why this insert is being made." }),
     pos: Type.String({ description: "Anchor (LINEhh) or \"EOF\"." }),
     lines: Type.Array(Type.String(), { description: "Lines to insert after pos." }),
   },
@@ -170,7 +166,6 @@ const hashEditInsertAfterSchema = Type.Object(
 const hashEditDeleteSchema = Type.Object(
   {
     op: Type.Literal("delete"),
-    reason: Type.String({ description: "Why this delete is being made." }),
     pos: Type.String({ description: "Anchor (LINEhh) to delete." }),
     end: Type.Optional(
       Type.String({ description: "Inclusive end anchor for a range delete." }),
@@ -651,7 +646,7 @@ export default function (pi: ExtensionAPI) {
         "Edit a text file via line+hash anchors obtained from `hashread`. First call `hashread` to obtain `LINEhh` anchors, then issue ops referencing those anchors. Ops: `replace`, `insert_before`, `insert_after`, `delete`. Anchors are validated against the current file before any change; one stale anchor rejects the whole batch and the file is untouched. On stale anchor, the error reprints the affected region with fresh anchors so you can retry without re-reading.",
       promptGuidelines: [
         "First call `hashread` to obtain LINEhh anchors. Copy the LINEhh token (e.g. \"42sr\") verbatim into pos/end.",
-        "Each op carries its own reason. Be specific about why each block changes.",
+        "Provide one reason for the whole edit; ops carry only anchors and lines.",
         "Use insert_before with pos=\"BOF\" to prepend, insert_after with pos=\"EOF\" to append.",
         "Prefer narrow ops: replace for in-place changes, insert_before/insert_after to add, delete to remove.",
         "Never shift anchors for prior ops; the engine applies them bottom-up against the original file.",

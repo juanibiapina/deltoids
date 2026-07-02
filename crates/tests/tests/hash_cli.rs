@@ -141,7 +141,6 @@ fn hashedit_applies_replace_using_anchor_from_hashread() {
         "edits": [
             {
                 "op": "replace",
-                "reason": "Bump y to 99",
                 "pos": anchor,
                 "lines": ["const y = 99;"]
             }
@@ -187,7 +186,6 @@ fn hashedit_rejects_stale_anchor_and_leaves_file_untouched() {
         "edits": [
             {
                 "op": "replace",
-                "reason": "Bump x to 2",
                 "pos": "1zz",
                 "lines": ["const x = 2;"]
             }
@@ -235,7 +233,6 @@ fn hashedit_trace_is_visible_in_traces_subcommand() {
         "edits": [
             {
                 "op": "replace",
-                "reason": "Capitalize beta",
                 "pos": anchor,
                 "lines": ["BETA"]
             }
@@ -260,6 +257,47 @@ fn hashedit_trace_is_visible_in_traces_subcommand() {
     assert!(traces_output.status.success());
     let stdout = String::from_utf8(traces_output.stdout).unwrap();
     assert!(stdout.contains("Upper beta"), "{stdout}");
-    assert!(stdout.contains("Capitalize beta"), "{stdout}");
     assert!(stdout.contains("hashedit"), "{stdout}");
+}
+
+#[test]
+fn hashedit_rejects_a_per_op_reason() {
+    // Ops no longer carry a `reason`; a stray one is rejected by
+    // `deny_unknown_fields` before anything is applied.
+    let dir = tempdir().unwrap();
+    let data_home = tempdir().unwrap();
+    let path = dir.path().join("app.txt");
+    fs::write(&path, "const x = 1;\n").unwrap();
+
+    let edit_request = serde_json::json!({
+        "reason": "Bump x",
+        "path": path,
+        "edits": [
+            {
+                "op": "replace",
+                "reason": "Bump x to 2",
+                "pos": "1zz",
+                "lines": ["const x = 2;"]
+            }
+        ]
+    });
+    let edit_output = run_command_in_dir(
+        "hashedit",
+        &[],
+        &[("XDG_DATA_HOME", data_home.path())],
+        edit_request.to_string().as_bytes(),
+        Some(dir.path()),
+    );
+
+    assert!(!edit_output.status.success());
+    let json: Value = serde_json::from_slice(&edit_output.stderr).unwrap();
+    assert_eq!(json["ok"], false);
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid request JSON"),
+        "{json}"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "const x = 1;\n");
 }

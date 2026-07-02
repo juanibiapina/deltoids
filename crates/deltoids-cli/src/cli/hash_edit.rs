@@ -23,16 +23,16 @@ Input (JSON on stdin):
 - edits: one or more operations. Each op is one of:
 
   {"op": "replace",
-   "reason": "...", "pos": "LINEhh", "end": "LINEhh"?, "lines": [...]}
+   "pos": "LINEhh", "end": "LINEhh"?, "lines": [...]}
 
   {"op": "insert_before",
-   "reason": "...", "pos": "LINEhh" | "BOF", "lines": [...]}
+   "pos": "LINEhh" | "BOF", "lines": [...]}
 
   {"op": "insert_after",
-   "reason": "...", "pos": "LINEhh" | "EOF", "lines": [...]}
+   "pos": "LINEhh" | "EOF", "lines": [...]}
 
   {"op": "delete",
-   "reason": "...", "pos": "LINEhh", "end": "LINEhh"?}
+   "pos": "LINEhh", "end": "LINEhh"?}
 
 Rules:
 - Every anchor is validated against the current file before any change.
@@ -40,7 +40,6 @@ Rules:
 - Multiple ops are applied bottom-up against the *original* file. Do not
   shift later anchors after earlier ops.
 - Op regions must not overlap.
-- Each edit must carry a non-empty reason.
 - If you pass a trace id, it must reference an existing trace; omit it
   to start a new trace.
 
@@ -55,7 +54,6 @@ printf '%s' '{
   "edits": [
     {
       "op": "replace",
-      "reason": "Rename x to count",
       "pos": "4sr",
       "lines": ["const count = 1;"]
     }

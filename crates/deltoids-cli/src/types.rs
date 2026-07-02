@@ -34,16 +34,14 @@ pub struct WriteRequest {
     pub content: String,
 }
 
-/// A single hashline edit operation as it arrives over JSON. Each
-/// variant carries its own `reason` so the trace entry can preserve
-/// per-op intent.
+/// A single hashline edit operation as it arrives over JSON. Intent is
+/// carried by the request's top-level `reason`; ops hold only mechanics.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HashEditOp {
     /// Replace one anchored line, or the inclusive range `pos..=end` if
     /// `end` is provided, with `lines`.
     Replace {
-        reason: String,
         pos: String,
         #[serde(default)]
         end: Option<String>,
@@ -51,21 +49,12 @@ pub enum HashEditOp {
         lines: Vec<String>,
     },
     /// Insert `lines` before the anchored line. `pos` may be `"BOF"`.
-    InsertBefore {
-        reason: String,
-        pos: String,
-        lines: Vec<String>,
-    },
+    InsertBefore { pos: String, lines: Vec<String> },
     /// Insert `lines` after the anchored line. `pos` may be `"EOF"`.
-    InsertAfter {
-        reason: String,
-        pos: String,
-        lines: Vec<String>,
-    },
+    InsertAfter { pos: String, lines: Vec<String> },
     /// Delete one anchored line, or the inclusive range `pos..=end` if
     /// `end` is provided.
     Delete {
-        reason: String,
         pos: String,
         #[serde(default)]
         end: Option<String>,

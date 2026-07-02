@@ -85,7 +85,8 @@ fn try_execute_hash_edit(
     fs::write(path, &applied.text)
         .map_err(|err| format!("Failed to write {}: {}", request.path, err))?;
 
-    let synthesised_edits = synthesise_text_edits(&original, &request.edits, &engine_edits);
+    let synthesised_edits =
+        synthesise_text_edits(&original, &request.reason, &request.edits, &engine_edits);
     store.append(
         trace_id,
         &EditHistoryEntry {
@@ -128,31 +129,22 @@ fn op_to_engine(index: usize, op: &HashEditOp) -> Result<hashline::HashEdit, Str
         hashline::AnchorOrBoundary::parse(token).map_err(|err| format!("edits[{index}].pos: {err}"))
     };
     match op {
-        HashEditOp::Replace {
-            reason,
-            pos,
-            end,
-            lines,
-        } => Ok(hashline::HashEdit::Replace {
-            reason: reason.clone(),
+        HashEditOp::Replace { pos, end, lines } => Ok(hashline::HashEdit::Replace {
             pos: parse_anchor(pos)?,
             end: parse_end(end)?,
             lines: lines.clone(),
         }),
-        HashEditOp::InsertBefore { reason, pos, lines } => Ok(hashline::HashEdit::Insert {
-            reason: reason.clone(),
+        HashEditOp::InsertBefore { pos, lines } => Ok(hashline::HashEdit::Insert {
             side: hashline::InsertSide::Before,
             pos: parse_anchor_or_boundary(pos)?,
             lines: lines.clone(),
         }),
-        HashEditOp::InsertAfter { reason, pos, lines } => Ok(hashline::HashEdit::Insert {
-            reason: reason.clone(),
+        HashEditOp::InsertAfter { pos, lines } => Ok(hashline::HashEdit::Insert {
             side: hashline::InsertSide::After,
             pos: parse_anchor_or_boundary(pos)?,
             lines: lines.clone(),
         }),
-        HashEditOp::Delete { reason, pos, end } => Ok(hashline::HashEdit::Delete {
-            reason: reason.clone(),
+        HashEditOp::Delete { pos, end } => Ok(hashline::HashEdit::Delete {
             pos: parse_anchor(pos)?,
             end: parse_end(end)?,
         }),
@@ -160,13 +152,15 @@ fn op_to_engine(index: usize, op: &HashEditOp) -> Result<hashline::HashEdit, Str
 }
 
 /// Synthesise one `TextEdit` per hashline op so the existing trace UI
-/// (which renders `EditHistoryEntry.edits`) shows per-op reasons with
-/// the actual before/after lines. The synthesised oldText/newText are
-/// for display only — they are NOT guaranteed to be re-appliable
-/// because ranges may overlap or refer to shifted line numbers if you
-/// tried to replay.
+/// (which renders `EditHistoryEntry.edits`) shows the actual before/after
+/// lines. Each edit carries the request's top-level `reason` (ops no
+/// longer have their own). The synthesised oldText/newText are for
+/// display only — they are NOT guaranteed to be re-appliable because
+/// ranges may overlap or refer to shifted line numbers if you tried to
+/// replay.
 fn synthesise_text_edits(
     original: &str,
+    reason: &str,
     ops: &[HashEditOp],
     engine_edits: &[hashline::HashEdit],
 ) -> Vec<TextEdit> {
@@ -196,50 +190,39 @@ fn synthesise_text_edits(
         .zip(engine_edits.iter())
         .map(|(op, engine)| match (op, engine) {
             (
-                HashEditOp::Replace { reason, .. },
+                HashEditOp::Replace { .. },
                 hashline::HashEdit::Replace {
                     pos, end, lines, ..
                 },
             ) => TextEdit {
-                reason: reason.clone(),
+                reason: reason.to_string(),
                 old_text: range_text(pos.line, end.map_or(pos.line, |e| e.line)),
                 new_text: join(lines),
             },
-            (HashEditOp::Delete { reason, .. }, hashline::HashEdit::Delete { pos, end, .. }) => {
-                TextEdit {
-                    reason: reason.clone(),
-                    old_text: range_text(pos.line, end.map_or(pos.line, |e| e.line)),
-                    new_text: String::new(),
-                }
-            }
-            (HashEditOp::InsertBefore { reason, pos, lines }, _) => TextEdit {
-                reason: reason.clone(),
+            (HashEditOp::Delete { .. }, hashline::HashEdit::Delete { pos, end, .. }) => TextEdit {
+                reason: reason.to_string(),
+                old_text: range_text(pos.line, end.map_or(pos.line, |e| e.line)),
+                new_text: String::new(),
+            },
+            (HashEditOp::InsertBefore { pos, lines }, _) => TextEdit {
+                reason: reason.to_string(),
                 old_text: format!("<insert before {pos}>"),
                 new_text: join(lines),
             },
-            (HashEditOp::InsertAfter { reason, pos, lines }, _) => TextEdit {
-                reason: reason.clone(),
+            (HashEditOp::InsertAfter { pos, lines }, _) => TextEdit {
+                reason: reason.to_string(),
                 old_text: format!("<insert after {pos}>"),
                 new_text: join(lines),
             },
             // Unreachable: op variants and engine variants are produced
             // together by op_to_engine; the pairing is one-to-one.
             _ => TextEdit {
-                reason: op_reason(op).to_string(),
+                reason: reason.to_string(),
                 old_text: String::new(),
                 new_text: String::new(),
             },
         })
         .collect()
-}
-
-fn op_reason(op: &HashEditOp) -> &str {
-    match op {
-        HashEditOp::Replace { reason, .. }
-        | HashEditOp::InsertBefore { reason, .. }
-        | HashEditOp::InsertAfter { reason, .. }
-        | HashEditOp::Delete { reason, .. } => reason,
-    }
 }
 
 fn log_hash_edit_failure(
@@ -249,14 +232,14 @@ fn log_hash_edit_failure(
     reused_trace: bool,
     error: String,
 ) -> ToolError {
-    // Best-effort: surface each op's reason in the failure entry. We
-    // don't synthesise old/new text for failures since we may not have a
-    // valid hashline parse to anchor against.
+    // Best-effort: one placeholder edit per op carrying the request's
+    // top-level reason. We don't synthesise old/new text for failures
+    // since we may not have a valid hashline parse to anchor against.
     let placeholder_edits = request
         .edits
         .iter()
-        .map(|op| TextEdit {
-            reason: op_reason(op).to_string(),
+        .map(|_op| TextEdit {
+            reason: request.reason.clone(),
             old_text: String::new(),
             new_text: String::new(),
         })
@@ -309,7 +292,6 @@ mod tests {
                 reason: "Bump x".to_string(),
                 path: path.to_string_lossy().into_owned(),
                 edits: vec![HashEditOp::Replace {
-                    reason: "Bump x to 2".to_string(),
                     pos: anchor_token(1, "const x = 1;"),
                     end: None,
                     lines: vec!["const x = 2;".to_string()],
@@ -340,7 +322,6 @@ mod tests {
                 reason: "Bump x".to_string(),
                 path: path.to_string_lossy().into_owned(),
                 edits: vec![HashEditOp::Replace {
-                    reason: "Bump x to 2".to_string(),
                     pos: "1zz".to_string(),
                     end: None,
                     lines: vec!["const x = 2;".to_string()],
@@ -370,7 +351,6 @@ mod tests {
                 reason: "  ".to_string(),
                 path: path.to_string_lossy().into_owned(),
                 edits: vec![HashEditOp::Replace {
-                    reason: "r".to_string(),
                     pos: anchor_token(1, "x"),
                     end: None,
                     lines: vec!["y".to_string()],
@@ -398,13 +378,11 @@ mod tests {
                 path: path.to_string_lossy().into_owned(),
                 edits: vec![
                     HashEditOp::Replace {
-                        reason: "Upper beta".to_string(),
                         pos: anchor_token(2, "beta"),
                         end: None,
                         lines: vec!["BETA".to_string()],
                     },
                     HashEditOp::InsertAfter {
-                        reason: "Append footer".to_string(),
                         pos: "EOF".to_string(),
                         lines: vec!["# end".to_string()],
                     },
@@ -420,10 +398,11 @@ mod tests {
         assert_eq!(entry.tool, "hashedit");
         assert!(entry.ok);
         assert_eq!(entry.edits.len(), 2);
-        assert_eq!(entry.edits[0].reason, "Upper beta");
+        // Every synthesised edit carries the request's top-level reason.
+        assert_eq!(entry.edits[0].reason, "Mass update");
         assert_eq!(entry.edits[0].old_text, "beta");
         assert_eq!(entry.edits[0].new_text, "BETA");
-        assert_eq!(entry.edits[1].reason, "Append footer");
+        assert_eq!(entry.edits[1].reason, "Mass update");
         assert!(entry.edits[1].old_text.contains("<insert after EOF>"));
         assert_eq!(entry.edits[1].new_text, "# end");
     }

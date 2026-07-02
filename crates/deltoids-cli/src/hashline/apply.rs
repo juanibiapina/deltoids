@@ -17,7 +17,6 @@ pub enum HashEdit {
     /// Replace the inclusive range `[pos, end]` (where `end` defaults to
     /// `pos`) with `lines`. An empty `lines` deletes the range.
     Replace {
-        reason: String,
         pos: Anchor,
         end: Option<Anchor>,
         lines: Vec<String>,
@@ -25,27 +24,12 @@ pub enum HashEdit {
     /// Insert `lines` before or after the given position (anchor or
     /// `BOF`/`EOF`).
     Insert {
-        reason: String,
         side: InsertSide,
         pos: AnchorOrBoundary,
         lines: Vec<String>,
     },
     /// Delete the inclusive range `[pos, end]` (defaults to single line).
-    Delete {
-        reason: String,
-        pos: Anchor,
-        end: Option<Anchor>,
-    },
-}
-
-impl HashEdit {
-    fn reason(&self) -> &str {
-        match self {
-            HashEdit::Replace { reason, .. }
-            | HashEdit::Insert { reason, .. }
-            | HashEdit::Delete { reason, .. } => reason,
-        }
-    }
+    Delete { pos: Anchor, end: Option<Anchor> },
 }
 
 /// A line whose anchor failed validation.
@@ -187,13 +171,6 @@ pub fn apply_hash_edits(text: &str, edits: &[HashEdit]) -> Result<Applied, Apply
         return Err(ApplyError::InvalidEdit(
             "edits must contain at least one operation".to_string(),
         ));
-    }
-    for (idx, edit) in edits.iter().enumerate() {
-        if edit.reason().trim().is_empty() {
-            return Err(ApplyError::InvalidEdit(format!(
-                "edits[{idx}].reason must not be empty"
-            )));
-        }
     }
 
     // Split into logical content lines, keeping the trailing-newline
@@ -484,7 +461,6 @@ mod tests {
     fn replace_single_line_with_matching_anchor() {
         let original = "alpha\nbeta\ngamma\n";
         let edit = HashEdit::Replace {
-            reason: "uppercase beta".into(),
             pos: anchor_for(2, original),
             end: None,
             lines: vec!["BETA".into()],
@@ -498,7 +474,6 @@ mod tests {
     fn replace_range_with_matching_anchors() {
         let original = "a\nb\nc\nd\n";
         let edit = HashEdit::Replace {
-            reason: "swap middle".into(),
             pos: anchor_for(2, original),
             end: Some(anchor_for(3, original)),
             lines: vec!["B".into(), "C".into()],
@@ -512,7 +487,6 @@ mod tests {
     fn delete_range_with_matching_anchors() {
         let original = "keep1\ndrop1\ndrop2\nkeep2\n";
         let edit = HashEdit::Delete {
-            reason: "remove drops".into(),
             pos: anchor_for(2, original),
             end: Some(anchor_for(3, original)),
         };
@@ -524,7 +498,6 @@ mod tests {
     fn delete_single_line_with_matching_anchor() {
         let original = "keep this\ndelete this\nkeep that too\n";
         let edit = HashEdit::Delete {
-            reason: "remove middle".into(),
             pos: anchor_for(2, original),
             end: None,
         };
@@ -537,7 +510,6 @@ mod tests {
     fn insert_before_anchor() {
         let original = "a\nb\nc\n";
         let edit = HashEdit::Insert {
-            reason: "header".into(),
             side: InsertSide::Before,
             pos: AnchorOrBoundary::Anchor(anchor_for(2, original)),
             lines: vec!["INSERTED".into()],
@@ -550,7 +522,6 @@ mod tests {
     fn insert_after_anchor() {
         let original = "a\nb\nc\n";
         let edit = HashEdit::Insert {
-            reason: "after".into(),
             side: InsertSide::After,
             pos: AnchorOrBoundary::Anchor(anchor_for(2, original)),
             lines: vec!["INSERTED".into()],
@@ -563,7 +534,6 @@ mod tests {
     fn insert_before_bof_prepends() {
         let original = "a\nb\n";
         let edit = HashEdit::Insert {
-            reason: "prepend".into(),
             side: InsertSide::Before,
             pos: AnchorOrBoundary::BeginningOfFile,
             lines: vec!["# header".into()],
@@ -577,7 +547,6 @@ mod tests {
     fn insert_after_eof_appends() {
         let original = "a\nb\n";
         let edit = HashEdit::Insert {
-            reason: "append".into(),
             side: InsertSide::After,
             pos: AnchorOrBoundary::EndOfFile,
             lines: vec!["# footer".into()],
@@ -595,18 +564,15 @@ mod tests {
             "keep header\nto-delete\nto-replace\nkeep middle\nto-prepend-above\nkeep footer\n";
         let edits = vec![
             HashEdit::Delete {
-                reason: "drop line 2".into(),
                 pos: anchor_for(2, original),
                 end: None,
             },
             HashEdit::Replace {
-                reason: "rewrite line 3".into(),
                 pos: anchor_for(3, original),
                 end: None,
                 lines: vec!["replaced line 3".into()],
             },
             HashEdit::Insert {
-                reason: "insert above line 5".into(),
                 side: InsertSide::Before,
                 pos: AnchorOrBoundary::Anchor(anchor_for(5, original)),
                 lines: vec!["inserted before 5".into()],
@@ -627,13 +593,11 @@ mod tests {
         let original = "a\nb\nc\nd\n";
         let edits = vec![
             HashEdit::Replace {
-                reason: "upper a".into(),
                 pos: anchor_for(1, original),
                 end: None,
                 lines: vec!["A".into()],
             },
             HashEdit::Replace {
-                reason: "upper d".into(),
                 pos: anchor_for(4, original),
                 end: None,
                 lines: vec!["D".into()],
@@ -651,7 +615,6 @@ mod tests {
         // Flip the hash so it definitely doesn't match.
         wrong.hash = [b'z', b'z'];
         let edit = HashEdit::Replace {
-            reason: "stale".into(),
             pos: wrong,
             end: None,
             lines: vec!["BETA".into()],
@@ -674,7 +637,6 @@ mod tests {
         let mut wrong = anchor_for(3, original);
         wrong.hash = [b'z', b'z'];
         let edit = HashEdit::Replace {
-            reason: "stale".into(),
             pos: wrong,
             end: None,
             lines: vec!["THREE".into()],
@@ -693,7 +655,6 @@ mod tests {
     fn out_of_range_line_returns_out_of_range_error() {
         let original = "only line\n";
         let edit = HashEdit::Delete {
-            reason: "del".into(),
             pos: Anchor {
                 line: 99,
                 hash: *b"aa",
@@ -709,13 +670,11 @@ mod tests {
         let original = "a\nb\nc\nd\n";
         let edits = vec![
             HashEdit::Replace {
-                reason: "first".into(),
                 pos: anchor_for(2, original),
                 end: Some(anchor_for(3, original)),
                 lines: vec!["X".into()],
             },
             HashEdit::Replace {
-                reason: "second".into(),
                 pos: anchor_for(3, original),
                 end: Some(anchor_for(4, original)),
                 lines: vec!["Y".into()],
@@ -732,23 +691,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_reason_is_rejected() {
-        let original = "a\n";
-        let edit = HashEdit::Replace {
-            reason: " ".into(),
-            pos: anchor_for(1, original),
-            end: None,
-            lines: vec!["A".into()],
-        };
-        let err = apply_hash_edits(original, &[edit]).unwrap_err();
-        assert!(matches!(err, ApplyError::InvalidEdit(_)));
-    }
-
-    #[test]
     fn no_change_is_rejected() {
         let original = "alpha\n";
         let edit = HashEdit::Replace {
-            reason: "noop".into(),
             pos: anchor_for(1, original),
             end: None,
             lines: vec!["alpha".into()],
@@ -761,7 +706,6 @@ mod tests {
     fn range_with_end_before_start_is_rejected() {
         let original = "a\nb\nc\n";
         let edit = HashEdit::Replace {
-            reason: "bad range".into(),
             pos: anchor_for(3, original),
             end: Some(anchor_for(2, original)),
             lines: vec!["X".into()],

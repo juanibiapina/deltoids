@@ -5,10 +5,38 @@
 
 use std::path::Path;
 
-use git2::{DiffFormat, DiffOptions, ObjectType, Oid, Repository};
+use git2::{DiffFormat, DiffOptions, ObjectType, Oid, Repository, Status, StatusOptions};
 
 /// A discovered git repository, used to look up blobs by hash.
 pub struct Repo(Repository);
+
+/// One change column of a file's `git status --porcelain` XY code:
+/// either the staged column (HEAD → index) or the worktree column
+/// (index → workdir). `Untracked` only appears in the worktree column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageChange {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    TypeChanged,
+    Untracked,
+}
+
+/// Per-file staging status mirroring `git status --porcelain` XY codes.
+///
+/// `staged` is column X (HEAD → index), `unstaged` is column Y (index →
+/// workdir). A staged-new-then-edited file has `staged: Some(Added)` and
+/// `unstaged: Some(Modified)` (porcelain `AM`); an untracked file has
+/// `staged: None` and `unstaged: Some(Untracked)` (porcelain `??`). The
+/// `path` is workdir-relative, matching the paths in
+/// [`Repo::working_tree_diff`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStageStatus {
+    pub path: String,
+    pub staged: Option<StageChange>,
+    pub unstaged: Option<StageChange>,
+}
 
 impl Repo {
     /// Discover git repository from current directory.
@@ -109,6 +137,104 @@ impl Repo {
         .map_err(|e| format!("failed to format diff: {e}"))?;
 
         Ok(out)
+    }
+
+    /// Per-file staging status for the working tree, mirroring
+    /// `git status --porcelain` XY codes. Each path is workdir-relative,
+    /// matching the paths in [`Repo::working_tree_diff`].
+    ///
+    /// Splits git2's `Status` bitflags into two columns: the `INDEX_*`
+    /// flags (HEAD → index) become the `staged` column, the `WT_*` flags
+    /// (index → workdir) become the `unstaged` column. Untracked files
+    /// report `unstaged: Some(Untracked)` with `staged: None`. Rename
+    /// detection is enabled for both columns so a staged/worktree rename
+    /// reports `Renamed` rather than a delete + add pair.
+    pub fn working_tree_status(&self) -> Result<Vec<FileStageStatus>, String> {
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .renames_head_to_index(true)
+            .renames_index_to_workdir(true);
+
+        let statuses = self
+            .0
+            .statuses(Some(&mut opts))
+            .map_err(|e| format!("failed to read status: {e}"))?;
+
+        let mut out = Vec::new();
+        for entry in statuses.iter() {
+            let flags = entry.status();
+            let staged = staged_change(flags);
+            let unstaged = unstaged_change(flags);
+            if staged.is_none() && unstaged.is_none() {
+                continue;
+            }
+            // Prefer the post-image path so renames join to the diff by
+            // their new name (the diff's `new_path`); fall back to the
+            // entry path.
+            let Some(path) = entry_new_path(&entry) else {
+                continue;
+            };
+            out.push(FileStageStatus {
+                path,
+                staged,
+                unstaged,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Workdir-relative path of a status entry, preferring the post-image
+/// (`new_file`) path from whichever delta exists so a rename reports its
+/// new name. Falls back to the entry's own path.
+fn entry_new_path(entry: &git2::StatusEntry<'_>) -> Option<String> {
+    let from_delta = entry
+        .head_to_index()
+        .or_else(|| entry.index_to_workdir())
+        .and_then(|delta| {
+            delta
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned())
+        });
+    from_delta.or_else(|| entry.path().ok().map(str::to_string))
+}
+
+/// Map the `INDEX_*` (staged column) bits of a [`Status`] to a
+/// [`StageChange`], or `None` when nothing is staged.
+fn staged_change(flags: Status) -> Option<StageChange> {
+    if flags.contains(Status::INDEX_NEW) {
+        Some(StageChange::Added)
+    } else if flags.contains(Status::INDEX_MODIFIED) {
+        Some(StageChange::Modified)
+    } else if flags.contains(Status::INDEX_DELETED) {
+        Some(StageChange::Deleted)
+    } else if flags.contains(Status::INDEX_RENAMED) {
+        Some(StageChange::Renamed)
+    } else if flags.contains(Status::INDEX_TYPECHANGE) {
+        Some(StageChange::TypeChanged)
+    } else {
+        None
+    }
+}
+
+/// Map the `WT_*` (worktree column) bits of a [`Status`] to a
+/// [`StageChange`], or `None` when the worktree matches the index.
+/// `WT_NEW` (an untracked file) maps to [`StageChange::Untracked`].
+fn unstaged_change(flags: Status) -> Option<StageChange> {
+    if flags.contains(Status::WT_NEW) {
+        Some(StageChange::Untracked)
+    } else if flags.contains(Status::WT_MODIFIED) {
+        Some(StageChange::Modified)
+    } else if flags.contains(Status::WT_DELETED) {
+        Some(StageChange::Deleted)
+    } else if flags.contains(Status::WT_RENAMED) {
+        Some(StageChange::Renamed)
+    } else if flags.contains(Status::WT_TYPECHANGE) {
+        Some(StageChange::TypeChanged)
+    } else {
+        None
     }
 }
 
@@ -255,6 +381,132 @@ mod tests {
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(patch.contains("a.txt"), "missing path in: {patch}");
         assert!(patch.contains("+first"), "missing added line in: {patch}");
+    }
+
+    /// Look up one path's stage status from a `working_tree_status` result.
+    fn status_of<'a>(statuses: &'a [FileStageStatus], path: &str) -> Option<&'a FileStageStatus> {
+        statuses.iter().find(|s| s.path == path)
+    }
+
+    #[test]
+    fn working_tree_status_staged_add() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::write(dir.path().join("new.txt"), "brand new\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "new.txt").expect("new.txt in status");
+        assert_eq!(s.staged, Some(StageChange::Added));
+        assert_eq!(s.unstaged, None);
+    }
+
+    #[test]
+    fn working_tree_status_unstaged_modify() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "a.txt").expect("a.txt in status");
+        assert_eq!(s.staged, None);
+        assert_eq!(s.unstaged, Some(StageChange::Modified));
+    }
+
+    #[test]
+    fn working_tree_status_staged_then_edited() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Stage a modification, then edit again without staging.
+        fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
+        stage_all(&repo);
+        fs::write(dir.path().join("a.txt"), "staged then edited\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "a.txt").expect("a.txt in status");
+        assert_eq!(s.staged, Some(StageChange::Modified));
+        assert_eq!(s.unstaged, Some(StageChange::Modified));
+    }
+
+    #[test]
+    fn working_tree_status_untracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::write(dir.path().join("new.txt"), "brand new\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "new.txt").expect("new.txt in status");
+        assert_eq!(s.staged, None);
+        assert_eq!(s.unstaged, Some(StageChange::Untracked));
+    }
+
+    #[test]
+    fn working_tree_status_staged_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "a.txt").expect("a.txt in status");
+        assert_eq!(s.staged, Some(StageChange::Deleted));
+        assert_eq!(s.unstaged, None);
+    }
+
+    #[test]
+    fn working_tree_status_staged_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("old.txt"), "some content here\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Rename by moving the file, then stage both the delete and add
+        // so git detects the rename in the index.
+        fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "new.txt").expect("new.txt in status");
+        assert_eq!(s.staged, Some(StageChange::Renamed));
+    }
+
+    #[test]
+    fn working_tree_status_empty_when_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        assert!(wrapper.working_tree_status().unwrap().is_empty());
     }
 
     #[test]

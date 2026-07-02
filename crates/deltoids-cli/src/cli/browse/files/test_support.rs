@@ -48,6 +48,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
     let model = Model {
         files: owned,
         diffs,
+        stages: Default::default(),
     };
     let sidebar_files: Vec<SidebarFile<'_>> = model
         .files
@@ -59,6 +60,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
                 file: &f.file,
                 added,
                 deleted,
+                stage: None,
             }
         })
         .collect();
@@ -99,7 +101,11 @@ pub(super) fn resolved(path: &str) -> ResolvedFile {
 pub(super) fn model_of(paths: &[&str]) -> Model {
     let files: Vec<ResolvedFile> = paths.iter().map(|p| resolved(p)).collect();
     let diffs = precompute_diffs(&files);
-    Model { files, diffs }
+    Model {
+        files,
+        diffs,
+        stages: Default::default(),
+    }
 }
 
 /// Input index of the file owning the current sidebar selection.

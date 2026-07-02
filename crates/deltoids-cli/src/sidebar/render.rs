@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::FileRowMeta;
-use super::icons::{ICON_DIR_OPEN, IconMode, file_icon};
+use super::icons::{ICON_DIR, IconMode, file_icon};
 use super::status::{FileMode, FileStatus, ModeChange};
 use super::tree::Row;
 
@@ -76,8 +76,8 @@ pub(super) fn render_row(
             spans.push(Span::styled(indent(*depth), base));
             if icons == IconMode::On {
                 spans.push(Span::styled(
-                    format!("{} ", ICON_DIR_OPEN),
-                    base.fg(rgb_to_color(theme.border)),
+                    format!("{} ", ICON_DIR.glyph),
+                    base.fg(rgb_to_color(ICON_DIR.color)),
                 ));
             }
             spans.push(Span::styled(
@@ -89,19 +89,32 @@ pub(super) fn render_row(
         Row::File { name, depth, .. } => {
             spans.push(Span::styled(indent(*depth), base));
 
-            if let Some(status) = meta.status {
-                let badge = format!("{} ", status.badge());
-                spans.push(Span::styled(
-                    badge,
-                    base.fg(status_color(status)).add_modifier(Modifier::BOLD),
-                ));
+            match meta.stage {
+                // Two-column stage field (lazygit parity): staged column
+                // then worktree column, each in its own colour.
+                Some(stage) => {
+                    spans.push(stage_char_span(stage.staged, StageColumn::Staged, base));
+                    spans.push(stage_char_span(stage.unstaged, StageColumn::Worktree, base));
+                    spans.push(Span::styled(" ".to_string(), base));
+                }
+                // Fallback: single change-type letter from the combined
+                // diff (piped diff / no repo).
+                None => {
+                    if let Some(status) = meta.status {
+                        let badge = format!("{} ", status.badge());
+                        spans.push(Span::styled(
+                            badge,
+                            base.fg(status_color(status)).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                }
             }
 
             if icons == IconMode::On {
                 let icon = file_icon(name);
                 spans.push(Span::styled(
-                    format!("{} ", icon),
-                    base.fg(rgb_to_color(theme.border)),
+                    format!("{} ", icon.glyph),
+                    base.fg(rgb_to_color(icon.color)),
                 ));
             }
 
@@ -109,7 +122,21 @@ pub(super) fn render_row(
                 Some((old, new)) => format!("{old} \u{2192} {new}"),
                 None => name.clone(),
             };
-            spans.push(Span::styled(display_name, base));
+            // Filename colour. With stage data, follow lazygit's
+            // `getFileLine`: green when fully staged, yellow when
+            // partially staged, default otherwise. Without stage data
+            // (piped diff / no repo) fall back to greening a fully-added
+            // file, matching lazygit's staged-add treatment.
+            let name_style = match meta.stage {
+                Some(stage) => match (stage.is_staged(), stage.is_unstaged()) {
+                    (true, false) => base.fg(Color::Green),
+                    (true, true) => base.fg(Color::Yellow),
+                    _ => base,
+                },
+                None if meta.status == Some(FileStatus::Added) => base.fg(Color::Green),
+                None => base,
+            };
+            spans.push(Span::styled(display_name, name_style));
 
             if let Some((added, deleted)) = meta.deltas {
                 if added > 0 || deleted > 0 {
@@ -152,12 +179,52 @@ fn indent(depth: usize) -> String {
     "  ".repeat(depth)
 }
 
+/// Which porcelain column a stage character belongs to. The column
+/// governs the default colour (staged = green, worktree = red).
+#[derive(Clone, Copy)]
+enum StageColumn {
+    Staged,
+    Worktree,
+}
+
+/// One character of the two-column stage field: the change letter (or a
+/// space when the column is empty), coloured by lazygit's rule. The
+/// staged column is green, the worktree column red; an untracked `?` is
+/// red regardless of column; an empty column takes the name colour.
+fn stage_char_span(
+    change: Option<super::status::ChangeKind>,
+    column: StageColumn,
+    base: Style,
+) -> Span<'static> {
+    match change {
+        None => Span::styled(" ".to_string(), base),
+        Some(kind) => {
+            let color = if kind == super::status::ChangeKind::Untracked {
+                Color::Red
+            } else {
+                match column {
+                    StageColumn::Staged => Color::Green,
+                    StageColumn::Worktree => Color::Red,
+                }
+            };
+            Span::styled(
+                kind.letter().to_string(),
+                base.fg(color).add_modifier(Modifier::BOLD),
+            )
+        }
+    }
+}
+
+// Status-letter colours mirror lazygit's working-tree Files panel, where the
+// worktree column is red: a modified or deleted file shows a red letter, an
+// added file green. deltoids has no staged/unstaged axis, so it collapses
+// lazygit's two porcelain columns into this single change-type letter.
 fn status_color(status: FileStatus) -> Color {
     match status {
         FileStatus::Added => Color::Green,
         FileStatus::Deleted => Color::Red,
-        FileStatus::Modified => Color::Yellow,
-        FileStatus::Renamed => Color::Cyan,
+        FileStatus::Modified => Color::Red,
+        FileStatus::Renamed => Color::Yellow,
         FileStatus::Copied => Color::Cyan,
         FileStatus::TypeChanged => Color::Magenta,
     }
@@ -179,6 +246,7 @@ mod tests {
             file: &f,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let combined = sidebar
@@ -200,6 +268,7 @@ mod tests {
             file: &f,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let combined = sidebar
@@ -226,6 +295,7 @@ mod tests {
             file: &f,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let combined = sidebar
@@ -248,6 +318,7 @@ mod tests {
             file: &f,
             added: 12,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let rows = sidebar.rows();
@@ -268,6 +339,7 @@ mod tests {
             file: &f,
             added: 1,
             deleted: 1,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let combined = sidebar
@@ -289,6 +361,7 @@ mod tests {
             file: &f,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let rows = sidebar.rows();
@@ -303,12 +376,13 @@ mod tests {
             file: &f,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let row = &sidebar.rows()[0];
         let text = line_text(row);
         assert!(
-            !text.contains('\u{e7a8}') && !text.contains('\u{f15b}'),
+            !text.contains('\u{e68b}') && !text.contains('\u{f15b}'),
             "expected no file icon, got {text:?}"
         );
     }
@@ -320,6 +394,7 @@ mod tests {
             file: &f,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::On);
         let combined = sidebar
@@ -328,6 +403,146 @@ mod tests {
             .map(line_text)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(combined.contains('\u{e7a8}'), "missing rust icon");
+        assert!(combined.contains('\u{e68b}'), "missing rust icon");
+    }
+
+    #[test]
+    fn rust_file_row_uses_rust_icon_color() {
+        let f = fd("a.rs");
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+            stage: None,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::On);
+        let row = &sidebar.rows()[0];
+        // The icon span carries the rust glyph in lazygit's rust colour,
+        // not the flat theme.border colour.
+        let icon_span = row
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{e68b}'))
+            .expect("rust icon span");
+        assert_eq!(icon_span.style.fg, Some(Color::Rgb(0xFF, 0x70, 0x43)));
+    }
+
+    use super::super::{ChangeKind, StageStatus};
+
+    /// Build a one-file sidebar with an explicit stage status and return
+    /// its single file row's spans.
+    fn stage_row(f: &FileDiff, stage: StageStatus) -> Vec<Span<'static>> {
+        let files = vec![SidebarFile {
+            file: f,
+            added: 0,
+            deleted: 0,
+            stage: Some(stage),
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        sidebar.rows()[0].spans.clone()
+    }
+
+    /// The first two spans after the leading indent are the stage
+    /// characters (staged, worktree). Return them as (char, fg).
+    fn stage_chars(spans: &[Span<'static>]) -> [(char, Option<Color>); 2] {
+        // spans[0] is the indent (empty for a top-level file).
+        let staged = &spans[1];
+        let worktree = &spans[2];
+        [
+            (staged.content.chars().next().unwrap(), staged.style.fg),
+            (worktree.content.chars().next().unwrap(), worktree.style.fg),
+        ]
+    }
+
+    fn name_span<'a>(spans: &'a [Span<'static>], name: &str) -> &'a Span<'static> {
+        spans.iter().find(|s| s.content == name).expect("name span")
+    }
+
+    #[test]
+    fn stage_field_staged_add_shows_a_space() {
+        let f = fd("added.rs");
+        let spans = stage_row(
+            &f,
+            StageStatus {
+                staged: Some(ChangeKind::Added),
+                unstaged: None,
+            },
+        );
+        let [(sc, sfg), (wc, _)] = stage_chars(&spans);
+        assert_eq!(sc, 'A');
+        assert_eq!(sfg, Some(Color::Green));
+        assert_eq!(wc, ' ');
+        // Fully staged: filename is green.
+        assert_eq!(name_span(&spans, "added.rs").style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn stage_field_unstaged_modify_shows_space_m() {
+        let f = fd("mod.rs");
+        let spans = stage_row(
+            &f,
+            StageStatus {
+                staged: None,
+                unstaged: Some(ChangeKind::Modified),
+            },
+        );
+        let [(sc, _), (wc, wfg)] = stage_chars(&spans);
+        assert_eq!(sc, ' ');
+        assert_eq!(wc, 'M');
+        assert_eq!(wfg, Some(Color::Red));
+        // Not staged: default filename colour (no explicit fg).
+        assert_eq!(name_span(&spans, "mod.rs").style.fg, None);
+    }
+
+    #[test]
+    fn stage_field_staged_then_edited_shows_mm_yellow_name() {
+        let f = fd("both.rs");
+        let spans = stage_row(
+            &f,
+            StageStatus {
+                staged: Some(ChangeKind::Modified),
+                unstaged: Some(ChangeKind::Modified),
+            },
+        );
+        let [(sc, sfg), (wc, wfg)] = stage_chars(&spans);
+        assert_eq!((sc, wc), ('M', 'M'));
+        assert_eq!(sfg, Some(Color::Green));
+        assert_eq!(wfg, Some(Color::Red));
+        // Partially staged: filename is yellow.
+        assert_eq!(name_span(&spans, "both.rs").style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn stage_field_untracked_shows_question_red() {
+        let f = fd("new.rs");
+        let spans = stage_row(
+            &f,
+            StageStatus {
+                staged: None,
+                unstaged: Some(ChangeKind::Untracked),
+            },
+        );
+        let [(sc, _), (wc, wfg)] = stage_chars(&spans);
+        assert_eq!(sc, ' ');
+        assert_eq!(wc, '?');
+        assert_eq!(wfg, Some(Color::Red));
+    }
+
+    #[test]
+    fn stage_none_uses_single_letter_fallback() {
+        // No stage data: the piped-diff path keeps the single change-type
+        // letter derived from the diff (here an added file → 'A').
+        let f = fd_added("a.rs");
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+            stage: None,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let spans = &sidebar.rows()[0].spans;
+        // Second span (after indent) is the "A " badge, not a 1-char col.
+        assert_eq!(spans[1].content.as_ref(), "A ");
+        assert_eq!(spans[1].style.fg, Some(Color::Green));
     }
 }

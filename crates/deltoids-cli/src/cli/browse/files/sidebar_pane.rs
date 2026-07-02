@@ -15,7 +15,7 @@ use deltoids::render_tui::{
     pane_block_with_tabs, pane_border_color, pane_inner_height, render_pane_scrollbar, rgb_to_color,
 };
 
-use crate::sidebar::{Sidebar, SidebarFile};
+use crate::sidebar::{Sidebar, SidebarFile, display_path};
 
 use super::model::{Model, count_deltas};
 
@@ -27,10 +27,12 @@ pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
         .zip(model.diffs.iter())
         .map(|(f, d)| {
             let (added, deleted) = count_deltas(d);
+            let stage = model.stages.get(display_path(&f.file)).copied();
             SidebarFile {
                 file: &f.file,
                 added,
                 deleted,
+                stage,
             }
         })
         .collect();

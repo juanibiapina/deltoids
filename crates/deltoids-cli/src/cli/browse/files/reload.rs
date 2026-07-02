@@ -197,6 +197,7 @@ mod tests {
         let empty = Model {
             files: Vec::new(),
             diffs: Vec::new(),
+            stages: Default::default(),
         };
         reload_view(
             &mut state.diff,

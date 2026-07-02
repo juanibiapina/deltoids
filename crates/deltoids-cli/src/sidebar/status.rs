@@ -14,6 +14,60 @@ pub struct SidebarFile<'a> {
     pub file: &'a FileDiff,
     pub added: usize,
     pub deleted: usize,
+    /// Two-column git staging status, mirroring `git status --porcelain`
+    /// XY codes. `None` for piped diffs or when no repo is available, in
+    /// which case the sidebar falls back to the single change-type letter
+    /// derived from the combined diff.
+    pub stage: Option<StageStatus>,
+}
+
+/// Sidebar-facing mirror of `deltoids::git::FileStageStatus`: the two
+/// staging columns of a file. Kept as a sidebar type so this module
+/// stays free of the `git2` dependency; `files/model.rs` maps the git
+/// value into this one when building the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageStatus {
+    /// Staged column (HEAD → index).
+    pub staged: Option<ChangeKind>,
+    /// Worktree column (index → workdir).
+    pub unstaged: Option<ChangeKind>,
+}
+
+impl StageStatus {
+    /// True when there are staged changes.
+    pub fn is_staged(self) -> bool {
+        self.staged.is_some()
+    }
+
+    /// True when there are worktree (unstaged) changes.
+    pub fn is_unstaged(self) -> bool {
+        self.unstaged.is_some()
+    }
+}
+
+/// One change column's kind, mirroring `deltoids::git::StageChange`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    TypeChanged,
+    Untracked,
+}
+
+impl ChangeKind {
+    /// Single-letter porcelain code for this change.
+    pub fn letter(self) -> char {
+        match self {
+            ChangeKind::Added => 'A',
+            ChangeKind::Modified => 'M',
+            ChangeKind::Deleted => 'D',
+            ChangeKind::Renamed => 'R',
+            ChangeKind::TypeChanged => 'T',
+            ChangeKind::Untracked => '?',
+        }
+    }
 }
 
 /// Whether the sidebar treats the file as added, deleted, modified, or

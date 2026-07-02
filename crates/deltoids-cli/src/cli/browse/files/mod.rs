@@ -127,6 +127,7 @@ impl FilesMode {
         let model = Model {
             files: Vec::new(),
             diffs: Vec::new(),
+            stages: Default::default(),
         };
         Self::new(model, String::new(), None, true, theme, width)
     }

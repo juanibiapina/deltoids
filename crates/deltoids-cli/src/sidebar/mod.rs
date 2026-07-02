@@ -43,8 +43,8 @@ mod tree;
 
 pub use icons::IconMode;
 pub use status::{
-    FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, display_path, file_metadata,
-    file_status,
+    ChangeKind, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
+    display_path, file_metadata, file_status,
 };
 
 use render::{copy_origin, rename_leaf, render_row};
@@ -89,6 +89,10 @@ pub struct Sidebar {
 pub(super) struct FileRowMeta {
     /// `None` for directory rows.
     pub(super) status: Option<FileStatus>,
+    /// Two-column git staging status. `None` for directory rows and for
+    /// piped-diff / non-repo files, where the single-letter `status`
+    /// badge is used instead.
+    pub(super) stage: Option<StageStatus>,
     /// `None` for directory rows.
     pub(super) deltas: Option<(usize, usize)>,
     /// `Some((old, new))` for renamed *and* copied files; the row
@@ -114,6 +118,7 @@ impl Sidebar {
             .map(|row| match row {
                 Row::Dir { .. } => FileRowMeta {
                     status: None,
+                    stage: None,
                     deltas: None,
                     rename: None,
                     extra: FileMetadata::default(),
@@ -133,6 +138,7 @@ impl Sidebar {
                     };
                     FileRowMeta {
                         status: Some(status),
+                        stage: f.stage,
                         deltas: Some((f.added, f.deleted)),
                         rename,
                         extra: file_metadata(f.file),
@@ -414,6 +420,7 @@ mod tests {
             file: &a,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         // rows: src/ , a.rs — selected should be 1
@@ -436,11 +443,13 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
@@ -472,6 +481,7 @@ mod tests {
             file: &a,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let before = sidebar.selected();
@@ -488,6 +498,7 @@ mod tests {
             file: &a,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let before = sidebar.selected();
@@ -505,16 +516,19 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &c,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
@@ -541,16 +555,19 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &c,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
@@ -577,6 +594,7 @@ mod tests {
             file: &a,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         sidebar.top(20);
@@ -594,6 +612,7 @@ mod tests {
             file: &a,
             added: 0,
             deleted: 0,
+            stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         assert!(!sidebar.selected_is_dir());
@@ -617,16 +636,19 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &c,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
@@ -667,11 +689,13 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
@@ -697,6 +721,7 @@ mod tests {
                 file: f,
                 added: 0,
                 deleted: 0,
+                stage: None,
             })
             .collect();
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
@@ -721,6 +746,7 @@ mod tests {
                 file: f,
                 added: 0,
                 deleted: 0,
+                stage: None,
             })
             .collect();
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);

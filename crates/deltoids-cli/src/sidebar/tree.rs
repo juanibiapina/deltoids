@@ -152,11 +152,13 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let rows = build_rows(&files);
@@ -190,11 +192,13 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let rows = build_rows(&files);
@@ -219,11 +223,13 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let rows = build_rows(&files);
@@ -244,11 +250,13 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let rows = build_rows(&files);
@@ -271,16 +279,19 @@ mod tests {
                 file: &a,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &b,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
             SidebarFile {
                 file: &c,
                 added: 0,
                 deleted: 0,
+                stage: None,
             },
         ];
         let rows = build_rows(&files);

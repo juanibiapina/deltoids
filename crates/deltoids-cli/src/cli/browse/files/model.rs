@@ -2,11 +2,13 @@
 //! content against the repo, and compute per-file [`Diff`]s. The owned
 //! [`Model`] is rebuilt wholesale on each working-tree reload.
 
+use std::collections::HashMap;
+
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::{Diff, LineKind, content, git};
 
-use crate::sidebar::display_path;
+use crate::sidebar::{ChangeKind, StageStatus, display_path};
 
 /// Describes whether and how the diff can be refreshed mid-session.
 pub(super) enum DiffSource<'a> {
@@ -21,6 +23,10 @@ pub(super) enum DiffSource<'a> {
 pub(super) struct Model {
     pub(super) files: Vec<ResolvedFile>,
     pub(super) diffs: Vec<Diff>,
+    /// Per-file two-column staging status, keyed by workdir-relative
+    /// path (matching `display_path`). Empty for piped diffs / no repo,
+    /// in which case the sidebar falls back to single-letter status.
+    pub(super) stages: HashMap<String, StageStatus>,
 }
 
 /// Parse `input`, resolve every file's before/after content against
@@ -29,7 +35,48 @@ pub(super) fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model
     let parsed = GitDiff::parse(input);
     let files = resolve(parsed, repo)?;
     let diffs = precompute_diffs(&files);
-    Ok(Model { files, diffs })
+    let stages = stage_map(repo);
+    Ok(Model {
+        files,
+        diffs,
+        stages,
+    })
+}
+
+/// Query the repo's per-file staging status and index it by path for
+/// the sidebar join. Returns an empty map with no repo or on any git
+/// error (the sidebar then falls back to single-letter status).
+pub(super) fn stage_map(repo: Option<&git::Repo>) -> HashMap<String, StageStatus> {
+    let Some(repo) = repo else {
+        return HashMap::new();
+    };
+    let Ok(statuses) = repo.working_tree_status() else {
+        return HashMap::new();
+    };
+    statuses
+        .into_iter()
+        .map(|s| {
+            (
+                s.path,
+                StageStatus {
+                    staged: s.staged.map(map_change),
+                    unstaged: s.unstaged.map(map_change),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Map a `deltoids::git::StageChange` to the sidebar's [`ChangeKind`].
+fn map_change(change: git::StageChange) -> ChangeKind {
+    match change {
+        git::StageChange::Added => ChangeKind::Added,
+        git::StageChange::Modified => ChangeKind::Modified,
+        git::StageChange::Deleted => ChangeKind::Deleted,
+        git::StageChange::Renamed => ChangeKind::Renamed,
+        git::StageChange::TypeChanged => ChangeKind::TypeChanged,
+        git::StageChange::Untracked => ChangeKind::Untracked,
+    }
 }
 
 /// One file's resolved content, ready for rendering. Owns its
@@ -150,6 +197,40 @@ mod tests {
         };
         assert!(err.contains("missing index blob"), "got: {err}");
         assert!(err.contains("foo.txt"), "got: {err}");
+    }
+
+    #[test]
+    fn stage_map_joins_stage_status_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // a.txt: unstaged modify. b.txt: staged add.
+        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(std::path::Path::new("b.txt")).unwrap();
+            index.write().unwrap();
+        }
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let stages = stage_map(Some(&wrapper));
+
+        let a = stages.get("a.txt").expect("a.txt staged entry");
+        assert_eq!(a.staged, None);
+        assert_eq!(a.unstaged, Some(ChangeKind::Modified));
+
+        let b = stages.get("b.txt").expect("b.txt staged entry");
+        assert_eq!(b.staged, Some(ChangeKind::Added));
+        assert_eq!(b.unstaged, None);
+    }
+
+    #[test]
+    fn stage_map_empty_without_repo() {
+        assert!(stage_map(None).is_empty());
     }
 
     #[test]

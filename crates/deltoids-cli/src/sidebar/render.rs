@@ -66,113 +66,152 @@ pub(super) fn render_row(
     } else {
         None
     };
-    let base = match bg {
+    let mut base = match bg {
         Some(c) => Style::default().bg(c),
         None => Style::default(),
     };
+    // Bold the whole selected row (lazygit parity): every span derives
+    // from `base`, so the modifier carries through icons, status, and
+    // name.
+    if selected {
+        base = base.add_modifier(Modifier::BOLD);
+    }
 
     match row {
         Row::Dir { label, depth } => {
-            spans.push(Span::styled(indent(*depth), base));
-            if icons == IconMode::On {
-                spans.push(Span::styled(
-                    format!("{} ", ICON_DIR.glyph),
-                    base.fg(rgb_to_color(ICON_DIR.color)),
-                ));
-            }
-            spans.push(Span::styled(
-                label.clone(),
-                base.fg(rgb_to_color(theme.muted))
-                    .add_modifier(Modifier::BOLD),
-            ));
+            dir_row_spans(&mut spans, label, *depth, meta, icons, theme, base)
         }
         Row::File { name, depth, .. } => {
-            spans.push(Span::styled(indent(*depth), base));
-
-            match meta.stage {
-                // Two-column stage field (lazygit parity): staged column
-                // then worktree column, each in its own colour.
-                Some(stage) => {
-                    spans.push(stage_char_span(stage.staged, StageColumn::Staged, base));
-                    spans.push(stage_char_span(stage.unstaged, StageColumn::Worktree, base));
-                    spans.push(Span::styled(" ".to_string(), base));
-                }
-                // Fallback: single change-type letter from the combined
-                // diff (piped diff / no repo).
-                None => {
-                    if let Some(status) = meta.status {
-                        let badge = format!("{} ", status.badge());
-                        spans.push(Span::styled(
-                            badge,
-                            base.fg(status_color(status)).add_modifier(Modifier::BOLD),
-                        ));
-                    }
-                }
-            }
-
-            if icons == IconMode::On {
-                let icon = file_icon(name);
-                spans.push(Span::styled(
-                    format!("{} ", icon.glyph),
-                    base.fg(rgb_to_color(icon.color)),
-                ));
-            }
-
-            let display_name = match &meta.rename {
-                Some((old, new)) => format!("{old} \u{2192} {new}"),
-                None => name.clone(),
-            };
-            // Filename colour. With stage data, follow lazygit's
-            // `getFileLine`: green when fully staged, yellow when
-            // partially staged, default otherwise. Without stage data
-            // (piped diff / no repo) fall back to greening a fully-added
-            // file, matching lazygit's staged-add treatment.
-            let name_style = match meta.stage {
-                Some(stage) => match (stage.is_staged(), stage.is_unstaged()) {
-                    (true, false) => base.fg(Color::Green),
-                    (true, true) => base.fg(Color::Yellow),
-                    _ => base,
-                },
-                None if meta.status == Some(FileStatus::Added) => base.fg(Color::Green),
-                None => base,
-            };
-            spans.push(Span::styled(display_name, name_style));
-
-            if let Some((added, deleted)) = meta.deltas {
-                if added > 0 || deleted > 0 {
-                    spans.push(Span::styled(" ".to_string(), base));
-                }
-                if added > 0 {
-                    spans.push(Span::styled(format!("+{added}"), base.fg(Color::Green)));
-                }
-                if added > 0 && deleted > 0 {
-                    spans.push(Span::styled(" ".to_string(), base));
-                }
-                if deleted > 0 {
-                    spans.push(Span::styled(format!("-{deleted}"), base.fg(Color::Red)));
-                }
-            }
-
-            // Trailing badges: binary, mode change, submodule. These
-            // sit at the right of the row in the muted/border colour
-            // so they don't compete with the status badge.
-            let muted = base.fg(rgb_to_color(theme.muted));
-            if meta.extra.binary {
-                spans.push(Span::styled(" (binary)".to_string(), muted));
-            }
-            if let Some(change) = meta.extra.mode_change {
-                spans.push(Span::styled(
-                    format!(" ({})", mode_change_label(change)),
-                    muted,
-                ));
-            }
-            if meta.extra.is_submodule {
-                spans.push(Span::styled(" (submodule)".to_string(), muted));
-            }
+            file_row_spans(&mut spans, name, *depth, meta, icons, theme, base)
         }
     }
 
     Line::from(spans)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dir_row_spans(
+    spans: &mut Vec<Span<'static>>,
+    label: &str,
+    depth: usize,
+    meta: &FileRowMeta,
+    icons: IconMode,
+    theme: &Theme,
+    base: Style,
+) {
+    spans.push(Span::styled(indent(depth), base));
+    if icons == IconMode::On {
+        spans.push(Span::styled(
+            format!("{} ", ICON_DIR.glyph),
+            base.fg(rgb_to_color(ICON_DIR.color)),
+        ));
+    }
+    // With stage data, tint the label green/yellow/default by the
+    // subtree's aggregate staging state (lazygit parity). Without it
+    // (piped diff / no repo) keep the muted, bold directory styling.
+    let label_style = match meta.dir_stage {
+        Some(agg) => match stage_tint(agg.has_staged, agg.has_unstaged) {
+            Some(color) => base.fg(color),
+            None => base,
+        },
+        None => base
+            .fg(rgb_to_color(theme.muted))
+            .add_modifier(Modifier::BOLD),
+    };
+    spans.push(Span::styled(label.to_string(), label_style));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn file_row_spans(
+    spans: &mut Vec<Span<'static>>,
+    name: &str,
+    depth: usize,
+    meta: &FileRowMeta,
+    icons: IconMode,
+    theme: &Theme,
+    base: Style,
+) {
+    spans.push(Span::styled(indent(depth), base));
+
+    match meta.stage {
+        // Two-column stage field (lazygit parity): staged column then
+        // worktree column, each in its own colour.
+        Some(stage) => {
+            spans.push(stage_char_span(stage.staged, StageColumn::Staged, base));
+            spans.push(stage_char_span(stage.unstaged, StageColumn::Worktree, base));
+            spans.push(Span::styled(" ".to_string(), base));
+        }
+        // Fallback: single change-type letter from the combined diff
+        // (piped diff / no repo).
+        None => {
+            if let Some(status) = meta.status {
+                let badge = format!("{} ", status.badge());
+                spans.push(Span::styled(
+                    badge,
+                    base.fg(status_color(status)).add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+    }
+
+    if icons == IconMode::On {
+        let icon = file_icon(name);
+        spans.push(Span::styled(
+            format!("{} ", icon.glyph),
+            base.fg(rgb_to_color(icon.color)),
+        ));
+    }
+
+    let display_name = match &meta.rename {
+        Some((old, new)) => format!("{old} \u{2192} {new}"),
+        None => name.to_string(),
+    };
+    // Filename colour. With stage data, follow lazygit's `getFileLine`:
+    // green when fully staged, yellow when partially staged, default
+    // otherwise. Without stage data (piped diff / no repo) fall back to
+    // greening a fully-added file, matching lazygit's staged-add
+    // treatment.
+    let name_style = match meta.stage {
+        Some(stage) => match stage_tint(stage.is_staged(), stage.is_unstaged()) {
+            Some(color) => base.fg(color),
+            None => base,
+        },
+        None if meta.status == Some(FileStatus::Added) => base.fg(Color::Green),
+        None => base,
+    };
+    spans.push(Span::styled(display_name, name_style));
+
+    if let Some((added, deleted)) = meta.deltas {
+        if added > 0 || deleted > 0 {
+            spans.push(Span::styled(" ".to_string(), base));
+        }
+        if added > 0 {
+            spans.push(Span::styled(format!("+{added}"), base.fg(Color::Green)));
+        }
+        if added > 0 && deleted > 0 {
+            spans.push(Span::styled(" ".to_string(), base));
+        }
+        if deleted > 0 {
+            spans.push(Span::styled(format!("-{deleted}"), base.fg(Color::Red)));
+        }
+    }
+
+    // Trailing badges: binary, mode change, submodule. These sit at the
+    // right of the row in the muted/border colour so they don't compete
+    // with the status badge.
+    let muted = base.fg(rgb_to_color(theme.muted));
+    if meta.extra.binary {
+        spans.push(Span::styled(" (binary)".to_string(), muted));
+    }
+    if let Some(change) = meta.extra.mode_change {
+        spans.push(Span::styled(
+            format!(" ({})", mode_change_label(change)),
+            muted,
+        ));
+    }
+    if meta.extra.is_submodule {
+        spans.push(Span::styled(" (submodule)".to_string(), muted));
+    }
 }
 
 fn indent(depth: usize) -> String {
@@ -212,6 +251,18 @@ fn stage_char_span(
                 base.fg(color).add_modifier(Modifier::BOLD),
             )
         }
+    }
+}
+
+/// Lazygit's label-tint rule, shared by file rows and directory rows.
+/// Green when fully staged, yellow when partially staged, `None`
+/// (terminal default) otherwise. For a directory the inputs are the
+/// OR-fold over its subtree; for a file they're its own two columns.
+fn stage_tint(has_staged: bool, has_unstaged: bool) -> Option<Color> {
+    match (has_staged, has_unstaged) {
+        (true, false) => Some(Color::Green),
+        (true, true) => Some(Color::Yellow),
+        _ => None,
     }
 }
 
@@ -544,5 +595,182 @@ mod tests {
         // Second span (after indent) is the "A " badge, not a 1-char col.
         assert_eq!(spans[1].content.as_ref(), "A ");
         assert_eq!(spans[1].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn selected_row_is_bold_and_unselected_is_not() {
+        // Two top-level files; the first is selected on build.
+        let a = fd_added("a.rs");
+        let b = fd_added("b.rs");
+        let files = vec![
+            SidebarFile {
+                file: &a,
+                added: 0,
+                deleted: 0,
+                stage: None,
+            },
+            SidebarFile {
+                file: &b,
+                added: 0,
+                deleted: 0,
+                stage: None,
+            },
+        ];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let selected = &sidebar.rows()[sidebar.selected()];
+        let other_idx = if sidebar.selected() == 0 { 1 } else { 0 };
+        let other = &sidebar.rows()[other_idx];
+        // The name span is not otherwise bold (added-file name is a plain
+        // green span), so it isolates the selection modifier.
+        assert!(
+            name_span(&selected.spans, "a.rs")
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "selected row name should be bold"
+        );
+        assert!(
+            !name_span(&other.spans, "b.rs")
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "unselected row name should not be bold"
+        );
+    }
+
+    #[test]
+    fn stage_tint_matches_lazygit_rule() {
+        assert_eq!(stage_tint(true, false), Some(Color::Green));
+        assert_eq!(stage_tint(true, true), Some(Color::Yellow));
+        assert_eq!(stage_tint(false, true), None);
+        assert_eq!(stage_tint(false, false), None);
+    }
+
+    /// A `SidebarFile` at `path` with an explicit stage status.
+    fn staged_file<'a>(f: &'a FileDiff, stage: StageStatus) -> SidebarFile<'a> {
+        SidebarFile {
+            file: f,
+            added: 0,
+            deleted: 0,
+            stage: Some(stage),
+        }
+    }
+
+    /// The fg of the directory label span (the span carrying `label`).
+    fn dir_label_span<'a>(row: &'a Line<'static>, label: &str) -> &'a Span<'static> {
+        row.spans
+            .iter()
+            .find(|s| s.content.as_ref() == label)
+            .expect("dir label span")
+    }
+
+    #[test]
+    fn dir_with_only_staged_children_is_green() {
+        let a = fd("src/a.rs");
+        let b = fd("src/b.rs");
+        let files = vec![
+            staged_file(
+                &a,
+                StageStatus {
+                    staged: Some(ChangeKind::Added),
+                    unstaged: None,
+                },
+            ),
+            staged_file(
+                &b,
+                StageStatus {
+                    staged: Some(ChangeKind::Modified),
+                    unstaged: None,
+                },
+            ),
+        ];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let span = dir_label_span(&sidebar.rows()[0], "src/");
+        assert_eq!(span.style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn dir_with_mixed_staged_and_unstaged_children_is_yellow() {
+        let a = fd("src/a.rs");
+        let b = fd("src/b.rs");
+        let files = vec![
+            staged_file(
+                &a,
+                StageStatus {
+                    staged: Some(ChangeKind::Modified),
+                    unstaged: None,
+                },
+            ),
+            staged_file(
+                &b,
+                StageStatus {
+                    staged: None,
+                    unstaged: Some(ChangeKind::Modified),
+                },
+            ),
+        ];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let span = dir_label_span(&sidebar.rows()[0], "src/");
+        assert_eq!(span.style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn dir_with_only_unstaged_children_is_default_not_muted() {
+        let a = fd("src/a.rs");
+        let files = vec![staged_file(
+            &a,
+            StageStatus {
+                staged: None,
+                unstaged: Some(ChangeKind::Untracked),
+            },
+        )];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let span = dir_label_span(&sidebar.rows()[0], "src/");
+        // Default text: no explicit fg, no bold.
+        assert_eq!(span.style.fg, None);
+        assert!(!span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn dir_without_stage_data_keeps_muted_bold_fallback() {
+        let a = fd("src/a.rs");
+        let files = vec![SidebarFile {
+            file: &a,
+            added: 0,
+            deleted: 0,
+            stage: None,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let span = dir_label_span(&sidebar.rows()[0], "src/");
+        assert_eq!(span.style.fg, Some(rgb_to_color(theme().muted)));
+        assert!(span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn nested_dir_aggregates_over_full_subtree() {
+        // crates/deltoids/src/{lib.rs,parse.rs}: lib.rs staged-only,
+        // parse.rs unstaged-only. The collapsed `crates/deltoids/src/`
+        // header sees both → yellow.
+        let a = fd("crates/deltoids/src/lib.rs");
+        let b = fd("crates/deltoids/src/parse.rs");
+        let files = vec![
+            staged_file(
+                &a,
+                StageStatus {
+                    staged: Some(ChangeKind::Modified),
+                    unstaged: None,
+                },
+            ),
+            staged_file(
+                &b,
+                StageStatus {
+                    staged: None,
+                    unstaged: Some(ChangeKind::Modified),
+                },
+            ),
+        ];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let span = dir_label_span(&sidebar.rows()[0], "crates/deltoids/src/");
+        assert_eq!(span.style.fg, Some(Color::Yellow));
     }
 }

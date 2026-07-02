@@ -43,7 +43,7 @@ mod tree;
 
 pub use icons::IconMode;
 pub use status::{
-    ChangeKind, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
+    ChangeKind, DirStage, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
     display_path, file_metadata, file_status,
 };
 
@@ -93,6 +93,11 @@ pub(super) struct FileRowMeta {
     /// piped-diff / non-repo files, where the single-letter `status`
     /// badge is used instead.
     pub(super) stage: Option<StageStatus>,
+    /// Aggregate staging state across a directory's subtree. `Some` only
+    /// for directory rows that have stage data; `None` for file rows and
+    /// for directories with no stage data (piped diff / no repo), which
+    /// keep the muted directory styling.
+    pub(super) dir_stage: Option<DirStage>,
     /// `None` for directory rows.
     pub(super) deltas: Option<(usize, usize)>,
     /// `Some((old, new))` for renamed *and* copied files; the row
@@ -115,10 +120,12 @@ impl Sidebar {
         let rows = build_rows(files);
         let file_meta = rows
             .iter()
-            .map(|row| match row {
+            .enumerate()
+            .map(|(idx, row)| match row {
                 Row::Dir { .. } => FileRowMeta {
                     status: None,
                     stage: None,
+                    dir_stage: dir_aggregate(&rows, files, idx),
                     deltas: None,
                     rename: None,
                     extra: FileMetadata::default(),
@@ -139,6 +146,7 @@ impl Sidebar {
                     FileRowMeta {
                         status: Some(status),
                         stage: f.stage,
+                        dir_stage: None,
                         deltas: Some((f.added, f.deleted)),
                         rename,
                         extra: file_metadata(f.file),
@@ -405,6 +413,47 @@ impl Sidebar {
             })
             .collect();
     }
+}
+
+/// Fold the staging state of every file beneath the directory row at
+/// `dir_idx` into a single [`DirStage`], mirroring lazygit's per-node
+/// `hasStagedChanges` / `hasUnstagedChanges`. Walks rows after the
+/// header while their depth stays greater than the directory's, so it
+/// covers the whole subtree (nested dirs included). Returns `None` when
+/// no subtree file carries stage data (piped diff / no repo), which
+/// keeps the directory's muted styling.
+fn dir_aggregate(rows: &[Row], files: &[SidebarFile<'_>], dir_idx: usize) -> Option<DirStage> {
+    let Row::Dir {
+        depth: dir_depth, ..
+    } = &rows[dir_idx]
+    else {
+        return None;
+    };
+    let mut any = false;
+    let mut has_staged = false;
+    let mut has_unstaged = false;
+    for row in &rows[dir_idx + 1..] {
+        let (row_depth, file_index) = match row {
+            Row::Dir { depth, .. } => (*depth, None),
+            Row::File {
+                depth, file_index, ..
+            } => (*depth, Some(*file_index)),
+        };
+        if row_depth <= *dir_depth {
+            break;
+        }
+        if let Some(file_index) = file_index
+            && let Some(stage) = files[file_index].stage
+        {
+            any = true;
+            has_staged |= stage.is_staged();
+            has_unstaged |= stage.is_unstaged();
+        }
+    }
+    any.then_some(DirStage {
+        has_staged,
+        has_unstaged,
+    })
 }
 
 #[cfg(test)]

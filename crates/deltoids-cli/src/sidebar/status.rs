@@ -45,6 +45,20 @@ impl StageStatus {
     }
 }
 
+/// Aggregate staging state of a directory's subtree, mirroring
+/// lazygit's `hasStagedChanges` / `hasUnstagedChanges` OR-folded across
+/// every file beneath a directory node. Drives the directory label's
+/// green/yellow/default tint. `None` (on a row) means no stage data was
+/// available for any subtree file (piped diff / no repo), in which case
+/// the sidebar keeps its muted directory styling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirStage {
+    /// Any file in the subtree has staged changes.
+    pub has_staged: bool,
+    /// Any file in the subtree has worktree (unstaged) changes.
+    pub has_unstaged: bool,
+}
+
 /// One change column's kind, mirroring `deltoids::git::StageChange`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {

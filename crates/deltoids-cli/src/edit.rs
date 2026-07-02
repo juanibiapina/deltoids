@@ -10,14 +10,6 @@ use crate::{
     current_working_directory, success_message, tool_error, validate_target_path,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MatchedEdit {
-    index: usize,
-    start: usize,
-    end: usize,
-    new_text: String,
-}
-
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
     let store = TraceStore::from_env().map_err(|error| ToolError {
         error,
@@ -68,7 +60,12 @@ fn try_execute_edit(
 
     let original = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {}", request.path, err))?;
-    let updated = apply_edits(&original, &request.edits, &request.path)?;
+    let updated = apply_edit(
+        &original,
+        &request.old_text,
+        &request.new_text,
+        &request.path,
+    )?;
     let computed = deltoids::Diff::compute(&original, &updated, &request.path);
     let hunks = computed.hunks().to_vec();
     let diff = computed.text().to_string();
@@ -89,7 +86,7 @@ fn try_execute_edit(
             path: request.path.clone(),
             reason: request.reason.clone(),
             ok: true,
-            edits: request.edits.clone(),
+            edits: vec![trace_edit(request)],
             diff: diff.clone(),
             hunks,
             language,
@@ -122,10 +119,10 @@ fn log_edit_failure(
                 trace_id: trace_id.clone(),
                 timestamp: current_timestamp(),
                 cwd: current_working_directory().unwrap_or_else(|_| String::new()),
-                path: request.path,
-                reason: request.reason,
+                path: request.path.clone(),
+                reason: request.reason.clone(),
                 ok: false,
-                edits: request.edits,
+                edits: vec![trace_edit(&request)],
                 error: error.clone(),
             },
         )
@@ -139,21 +136,22 @@ fn validate_request(request: &EditRequest) -> Result<(), String> {
         return Err("reason must not be empty".to_string());
     }
 
-    if request.edits.is_empty() {
-        return Err("edits must contain at least one replacement".to_string());
-    }
-
-    for (index, edit) in request.edits.iter().enumerate() {
-        if edit.reason.trim().is_empty() {
-            return Err(format!("edits[{index}].reason must not be empty"));
-        }
-
-        if edit.old_text.is_empty() {
-            return Err(format!("edits[{index}].oldText must not be empty"));
-        }
+    if request.old_text.is_empty() {
+        return Err("oldText must not be empty".to_string());
     }
 
     Ok(())
+}
+
+/// The one-element trace representation of a flat edit request. The
+/// per-edit `reason` mirrors the top-level `reason` so old multi-edit
+/// trace renderers keep working.
+fn trace_edit(request: &EditRequest) -> TextEdit {
+    TextEdit {
+        reason: request.reason.clone(),
+        old_text: request.old_text.clone(),
+        new_text: request.new_text.clone(),
+    }
 }
 
 pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
@@ -162,54 +160,33 @@ pub fn render_diff(original: &str, updated: &str, path: &str) -> String {
         .to_string()
 }
 
-pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<String, String> {
-    let mut matches = Vec::with_capacity(edits.len());
-
-    for (index, edit) in edits.iter().enumerate() {
-        let occurrences = original.match_indices(&edit.old_text).collect::<Vec<_>>();
-        match occurrences.len() {
-            0 => {
-                return Err(format!(
-                    "Could not find edits[{index}] in {path}. The oldText must match exactly."
-                ));
-            }
-            1 => {
-                let (start, matched) = occurrences[0];
-                matches.push(MatchedEdit {
-                    index,
-                    start,
-                    end: start + matched.len(),
-                    new_text: edit.new_text.clone(),
-                });
-            }
-            count => {
-                return Err(format!(
-                    "Found {count} occurrences of edits[{index}] in {path}. Each oldText must be unique."
-                ));
-            }
-        }
-    }
-
-    matches.sort_by_key(|m| m.start);
-    for pair in matches.windows(2) {
-        let previous = &pair[0];
-        let current = &pair[1];
-        if previous.end > current.start {
+pub fn apply_edit(
+    original: &str,
+    old_text: &str,
+    new_text: &str,
+    path: &str,
+) -> Result<String, String> {
+    let occurrences = original.match_indices(old_text).collect::<Vec<_>>();
+    let (start, matched) = match occurrences.len() {
+        0 => {
             return Err(format!(
-                "edits[{}] and edits[{}] overlap in {}. Merge them into one edit or target disjoint regions.",
-                previous.index, current.index, path
+                "Could not find oldText in {path}. The oldText must match exactly."
             ));
         }
-    }
+        1 => occurrences[0],
+        count => {
+            return Err(format!(
+                "Found {count} occurrences of oldText in {path}. The oldText must be unique."
+            ));
+        }
+    };
 
     let mut result = original.to_string();
-    for matched in matches.iter().rev() {
-        result.replace_range(matched.start..matched.end, &matched.new_text);
-    }
+    result.replace_range(start..start + matched.len(), new_text);
 
     if result == original {
         return Err(format!(
-            "No changes made to {path}. The replacements produced identical content."
+            "No changes made to {path}. The replacement produced identical content."
         ));
     }
 
@@ -220,231 +197,59 @@ pub fn apply_edits(original: &str, edits: &[TextEdit], path: &str) -> Result<Str
 mod tests {
     use super::*;
 
+    fn edit_request(reason: &str, old_text: &str, new_text: &str) -> EditRequest {
+        EditRequest {
+            reason: reason.to_string(),
+            path: "test.txt".to_string(),
+            old_text: old_text.to_string(),
+            new_text: new_text.to_string(),
+        }
+    }
+
     #[test]
     fn applies_single_exact_edit() {
-        let result = apply_edits(
-            "Hello, world!",
-            &[TextEdit {
-                reason: "Replace world".to_string(),
-                old_text: "world".to_string(),
-                new_text: "pi".to_string(),
-            }],
-            "test.txt",
-        )
-        .unwrap();
+        let result = apply_edit("Hello, world!", "world", "pi", "test.txt").unwrap();
 
         assert_eq!(result, "Hello, pi!");
     }
 
     #[test]
-    fn applies_multiple_disjoint_edits_against_original_content() {
-        let result = apply_edits(
-            "foo\nbar\nbaz\n",
-            &[
-                TextEdit {
-                    reason: "Expand foo".to_string(),
-                    old_text: "foo\n".to_string(),
-                    new_text: "foo bar\n".to_string(),
-                },
-                TextEdit {
-                    reason: "Uppercase bar".to_string(),
-                    old_text: "bar\n".to_string(),
-                    new_text: "BAR\n".to_string(),
-                },
-            ],
-            "test.txt",
-        )
-        .unwrap();
-
-        assert_eq!(result, "foo bar\nBAR\nbaz\n");
-    }
-
-    #[test]
     fn rejects_missing_text() {
-        let error = apply_edits(
-            "hello\n",
-            &[TextEdit {
-                reason: "Replace missing".to_string(),
-                old_text: "missing".to_string(),
-                new_text: "x".to_string(),
-            }],
-            "test.txt",
-        )
-        .unwrap_err();
+        let error = apply_edit("hello\n", "missing", "x", "test.txt").unwrap_err();
 
         assert!(error.contains("Could not find"));
     }
 
     #[test]
     fn rejects_duplicate_text() {
-        let error = apply_edits(
-            "foo foo foo",
-            &[TextEdit {
-                reason: "Replace foo".to_string(),
-                old_text: "foo".to_string(),
-                new_text: "bar".to_string(),
-            }],
-            "test.txt",
-        )
-        .unwrap_err();
+        let error = apply_edit("foo foo foo", "foo", "bar", "test.txt").unwrap_err();
 
         assert!(error.contains("Found 3 occurrences"));
     }
 
     #[test]
-    fn rejects_overlapping_regions() {
-        let error = apply_edits(
-            "one\ntwo\nthree\n",
-            &[
-                TextEdit {
-                    reason: "Uppercase first block".to_string(),
-                    old_text: "one\ntwo\n".to_string(),
-                    new_text: "ONE\nTWO\n".to_string(),
-                },
-                TextEdit {
-                    reason: "Uppercase second block".to_string(),
-                    old_text: "two\nthree\n".to_string(),
-                    new_text: "TWO\nTHREE\n".to_string(),
-                },
-            ],
-            "test.txt",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("overlap"));
-    }
-
-    #[test]
     fn rejects_no_op_replacement() {
-        let error = apply_edits(
-            "same",
-            &[TextEdit {
-                reason: "No-op replace".to_string(),
-                old_text: "same".to_string(),
-                new_text: "same".to_string(),
-            }],
-            "test.txt",
-        )
-        .unwrap_err();
+        let error = apply_edit("same", "same", "same", "test.txt").unwrap_err();
 
         assert!(error.contains("No changes made"));
     }
 
     #[test]
-    fn rejects_empty_edits_request() {
-        let request = EditRequest {
-            reason: "Test edit".to_string(),
-            path: "test.txt".to_string(),
-            edits: Vec::new(),
-        };
-
-        let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("edits must contain at least one replacement"));
-    }
-
-    #[test]
-    fn rejects_empty_edit_reason() {
-        let request = EditRequest {
-            reason: "Test edit".to_string(),
-            path: "test.txt".to_string(),
-            edits: vec![TextEdit {
-                reason: String::new(),
-                old_text: "before".to_string(),
-                new_text: "after".to_string(),
-            }],
-        };
-
-        let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("edits[0].reason must not be empty"));
-    }
-
-    #[test]
-    fn rejects_whitespace_only_edit_reason() {
-        let request = EditRequest {
-            reason: "Test edit".to_string(),
-            path: "test.txt".to_string(),
-            edits: vec![TextEdit {
-                reason: " \n\t ".to_string(),
-                old_text: "before".to_string(),
-                new_text: "after".to_string(),
-            }],
-        };
-
-        let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("edits[0].reason must not be empty"));
-    }
-
-    #[test]
     fn rejects_empty_old_text() {
-        let request = EditRequest {
-            reason: "Test edit".to_string(),
-            path: "test.txt".to_string(),
-            edits: vec![TextEdit {
-                reason: "Replace text".to_string(),
-                old_text: String::new(),
-                new_text: "replacement".to_string(),
-            }],
-        };
-
-        let error = validate_request(&request).unwrap_err();
-        assert!(error.contains("edits[0].oldText must not be empty"));
+        let error = validate_request(&edit_request("Test edit", "", "replacement")).unwrap_err();
+        assert!(error.contains("oldText must not be empty"));
     }
 
     #[test]
     fn rejects_empty_reason() {
-        let request = EditRequest {
-            reason: String::new(),
-            path: "test.txt".to_string(),
-            edits: vec![TextEdit {
-                reason: "Replace before".to_string(),
-                old_text: "before".to_string(),
-                new_text: "after".to_string(),
-            }],
-        };
-
-        let error = validate_request(&request).unwrap_err();
+        let error = validate_request(&edit_request("", "before", "after")).unwrap_err();
         assert!(error.contains("reason must not be empty"));
     }
 
     #[test]
     fn rejects_whitespace_only_reason() {
-        let request = EditRequest {
-            reason: " \n\t ".to_string(),
-            path: "test.txt".to_string(),
-            edits: vec![TextEdit {
-                reason: "Replace before".to_string(),
-                old_text: "before".to_string(),
-                new_text: "after".to_string(),
-            }],
-        };
-
-        let error = validate_request(&request).unwrap_err();
+        let error = validate_request(&edit_request(" \n\t ", "before", "after")).unwrap_err();
         assert!(error.contains("reason must not be empty"));
-    }
-
-    #[test]
-    fn does_not_partially_apply_when_one_multi_edit_fails() {
-        let original = "alpha\nbeta\ngamma\n";
-        let error = apply_edits(
-            original,
-            &[
-                TextEdit {
-                    reason: "Uppercase alpha".to_string(),
-                    old_text: "alpha\n".to_string(),
-                    new_text: "ALPHA\n".to_string(),
-                },
-                TextEdit {
-                    reason: "Try missing line".to_string(),
-                    old_text: "missing\n".to_string(),
-                    new_text: "MISSING\n".to_string(),
-                },
-            ],
-            "test.txt",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("Could not find"));
-        assert_eq!(original, "alpha\nbeta\ngamma\n");
     }
 
     #[test]

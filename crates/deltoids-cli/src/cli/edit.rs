@@ -5,45 +5,35 @@ use std::process::ExitCode;
 
 use clap::Args as ClapArgs;
 
-use crate::{
-    EditRequest, ErrorResponse, TextEdit, execute_request_with_trace, trace_store::TraceStore,
-};
+use crate::{EditRequest, ErrorResponse, execute_request_with_trace, trace_store::TraceStore};
 
 const OVERVIEW: &str = r#"CLI for agents to edit files.
 
-Input:
+Input (a single exact replacement):
 - reason: why this change is being made. Required. Must not be empty.
 - path: UTF-8 text file to edit. Must exist and be a file.
-- edits: one or more replacements.
-
-Each edit must use:
-- reason: why this specific edit is being made. Required. Must not be empty.
-- oldText
-- newText
+- oldText: exact text to replace. Required. Must not be empty.
+- newText: replacement text.
 
 Rules:
 - oldText must match exactly, including whitespace and newlines.
-- Each oldText must match exactly once in the original file.
-- All edits are matched against the original file, not after earlier edits are applied.
-- Edit regions must not overlap.
+- oldText must match exactly once in the file.
+- To make several changes, call `edit` once per change. Each call
+  matches against the file's current text, so target text as it exists
+  after any earlier edit.
 - Unknown JSON fields are rejected.
 - If you pass a trace id, it must reference an existing trace.
 - Omit the trace id to start a new trace.
 - If the path does not exist, the error is: Path does not exist: <path>
 - If the path is not a file, the error is: Path is not a file: <path>
-- If any edit fails, nothing is written.
+- If the edit fails, nothing is written.
 
 Examples:
 printf '%s' '{
-  "reason": "Rename variable for clarity",
+  "reason": "Rename x to count to reflect what it tracks",
   "path": "src/app.ts",
-  "edits": [
-    {
-      "reason": "Rename x to count to reflect what it tracks",
-      "oldText": "const x = 1;",
-      "newText": "const count = 1;"
-    }
-  ]
+  "oldText": "const x = 1;",
+  "newText": "const count = 1;"
 }' | deltoids edit
 
 deltoids edit [trace-id] --path src/app.ts --reason "Rename x" --old "const x = 1;" --new "const count = 1;"
@@ -158,13 +148,10 @@ fn edit_request_from_shorthand(args: &Args) -> Result<EditRequest, String> {
         .ok_or_else(|| "--path, --reason, --old, and --new are required together".to_string())?;
 
     Ok(EditRequest {
-        reason: reason.clone(),
+        reason,
         path,
-        edits: vec![TextEdit {
-            reason,
-            old_text,
-            new_text,
-        }],
+        old_text,
+        new_text,
     })
 }
 

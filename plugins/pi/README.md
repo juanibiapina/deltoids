@@ -35,8 +35,12 @@ pi. This keeps the system prompt static (so pi's prompt caching stays
 warm) and the tool surface deterministic.
 
 - **`text`** (default): overrides pi's built-in `edit` with a
-  `deltoids edit` pass-through (`oldText` / `newText` replacement).
-  Pi's built-in `read` is used for everything.
+  `deltoids edit` pass-through. Each call replaces one exact region
+  (`{ reason, path, oldText, newText }`); `oldText` must match the
+  file's current text exactly and appear exactly once. To make several
+  changes, the model issues several `edit` calls; each call matches
+  against the file's current text. Pi's built-in `read` is used for
+  everything.
 
 - **`hash`**: overrides pi's built-in `edit` with a `deltoids hashedit`
   pass-through. The model still sees the tool as `edit`; only the
@@ -47,7 +51,8 @@ warm) and the tool surface deterministic.
   `read` is not overridden — it remains the right choice for skill files
   (read-only reference you won't edit), images, directories, URLs,
   archives, SQLite, and other non-text content `hashread` cannot handle;
-  `hashread` for text-file reads.
+  `hashread` for text-file reads. Hash mode batches multiple ops into a
+  single reviewable trace entry, unlike text mode's one-entry-per-call.
 
 `write` is overridden in both modes (full-file rewrites land in the
 trace either way).

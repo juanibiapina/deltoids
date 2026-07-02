@@ -62,13 +62,8 @@ fn starts_a_trace_and_logs_successful_edits() {
     let request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
 
     let output = run_edit_with_args_and_env(
@@ -102,7 +97,9 @@ fn starts_a_trace_and_logs_successful_edits() {
     assert_eq!(entry["ok"], true);
     assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
     assert_eq!(entry["reason"], "Update x constant");
-    assert_eq!(entry["edits"][0]["reason"], "Edit change");
+    // The single edit records one trace edit whose reason mirrors the
+    // top-level reason.
+    assert_eq!(entry["edits"][0]["reason"], "Update x constant");
     assert!(entry["diff"].as_str().unwrap().contains("+const x = 2;"));
 }
 
@@ -115,13 +112,8 @@ fn edits_a_file_from_stdin_json() {
     let request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -140,43 +132,6 @@ fn edits_a_file_from_stdin_json() {
 }
 
 #[test]
-fn applies_multiple_edits_in_one_invocation() {
-    let dir = tempdir().unwrap();
-    let file_path = dir.path().join("multi.txt");
-    fs::write(&file_path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
-
-    let request = serde_json::json!({
-        "reason": "Uppercase two lines",
-        "path": file_path,
-        "edits": [
-            { "reason": "Edit change",
-                "oldText": "alpha\n", "newText": "ALPHA\n" },
-            { "reason": "Edit change",
-                "oldText": "gamma\n", "newText": "GAMMA\n" }
-        ]
-    });
-
-    let output = run_edit(request.to_string().as_bytes());
-
-    assert!(output.status.success());
-    assert_eq!(
-        fs::read_to_string(&file_path).unwrap(),
-        "ALPHA\nbeta\nGAMMA\ndelta\n"
-    );
-
-    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["ok"], true);
-    assert_eq!(json["path"], file_path.to_string_lossy().as_ref());
-    assert!(json["traceId"].as_str().unwrap().len() >= 10);
-    assert!(json["message"].as_str().unwrap().contains("Started trace"));
-    let diff = json["diff"].as_str().unwrap();
-    assert!(diff.contains("-alpha"));
-    assert!(diff.contains("+ALPHA"));
-    assert!(diff.contains("-gamma"));
-    assert!(diff.contains("+GAMMA"));
-}
-
-#[test]
 fn logs_failed_edits_and_returns_trace_id() {
     let dir = tempdir().unwrap();
     let data_home = tempdir().unwrap();
@@ -187,13 +142,8 @@ fn logs_failed_edits_and_returns_trace_id() {
     let request = serde_json::json!({
         "reason": "Try a missing edit",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "nope",
-                "newText": "yep"
-            }
-        ]
+        "oldText": "nope",
+        "newText": "yep"
     });
 
     let output = run_edit_with_args_and_env(
@@ -224,7 +174,7 @@ fn logs_failed_edits_and_returns_trace_id() {
     assert_eq!(entry["ok"], false);
     assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
     assert_eq!(entry["reason"], "Try a missing edit");
-    assert_eq!(entry["edits"][0]["reason"], "Edit change");
+    assert_eq!(entry["edits"][0]["reason"], "Try a missing edit");
     assert!(entry["error"].as_str().unwrap().contains("Could not find"));
 }
 
@@ -238,13 +188,8 @@ fn fails_without_changing_the_file_when_text_is_missing() {
     let request = serde_json::json!({
         "reason": "Try a missing edit",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "nope",
-                "newText": "yep"
-            }
-        ]
+        "oldText": "nope",
+        "newText": "yep"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -341,32 +286,6 @@ fn fails_on_invalid_json() {
 }
 
 #[test]
-fn fails_when_edits_is_empty() {
-    let dir = tempdir().unwrap();
-    let file_path = dir.path().join("empty-edits.txt");
-    let original = "hello\n";
-    fs::write(&file_path, original).unwrap();
-
-    let request = serde_json::json!({
-        "reason": "Empty edit list",
-        "path": file_path,
-        "edits": []
-    });
-
-    let output = run_edit(request.to_string().as_bytes());
-
-    assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
-    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("edits must contain at least one replacement")
-    );
-}
-
-#[test]
 fn fails_when_old_text_is_empty() {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("empty-old-text.txt");
@@ -376,13 +295,8 @@ fn fails_when_old_text_is_empty() {
     let request = serde_json::json!({
         "reason": "Reject empty oldText",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "",
-                "newText": "world"
-            }
-        ]
+        "oldText": "",
+        "newText": "world"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -394,7 +308,7 @@ fn fails_when_old_text_is_empty() {
         json["error"]
             .as_str()
             .unwrap()
-            .contains("edits[0].oldText must not be empty")
+            .contains("oldText must not be empty")
     );
 }
 
@@ -402,13 +316,8 @@ fn fails_when_old_text_is_empty() {
 fn fails_when_request_is_missing_path() {
     let request = serde_json::json!({
         "reason": "Missing path",
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "a",
-                "newText": "b"
-            }
-        ]
+        "oldText": "a",
+        "newText": "b"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -431,13 +340,8 @@ fn fails_when_target_path_does_not_exist() {
     let request = serde_json::json!({
         "reason": "Missing target file",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "a",
-                "newText": "b"
-            }
-        ]
+        "oldText": "a",
+        "newText": "b"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -458,13 +362,8 @@ fn fails_when_target_path_is_a_directory() {
     let request = serde_json::json!({
         "reason": "Directory target",
         "path": dir.path(),
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "a",
-                "newText": "b"
-            }
-        ]
+        "oldText": "a",
+        "newText": "b"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -483,7 +382,8 @@ fn fails_when_request_has_unknown_field() {
     let request = serde_json::json!({
         "reason": "Unknown top-level field",
         "path": "file.txt",
-        "edits": [],
+        "oldText": "a",
+        "newText": "b",
         "extra": true
     });
 
@@ -504,12 +404,8 @@ fn fails_when_edit_uses_snake_case_keys() {
     let request = serde_json::json!({
         "reason": "Snake case keys",
         "path": "file.txt",
-        "edits": [
-            {
-                "old_text": "a",
-                "new_text": "b"
-            }
-        ]
+        "old_text": "a",
+        "new_text": "b"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -534,13 +430,8 @@ fn fails_when_match_is_duplicated() {
     let request = serde_json::json!({
         "reason": "Duplicate match",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "foo",
-                "newText": "bar"
-            }
-        ]
+        "oldText": "foo",
+        "newText": "bar"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -552,53 +443,16 @@ fn fails_when_match_is_duplicated() {
         json["error"]
             .as_str()
             .unwrap()
-            .contains("Each oldText must be unique")
+            .contains("The oldText must be unique")
     );
-}
-
-#[test]
-fn fails_when_edits_overlap() {
-    let dir = tempdir().unwrap();
-    let file_path = dir.path().join("overlap.txt");
-    let original = "one\ntwo\nthree\n";
-    fs::write(&file_path, original).unwrap();
-
-    let request = serde_json::json!({
-        "reason": "Overlapping edits",
-        "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "one\ntwo\n",
-                "newText": "ONE\nTWO\n"
-            },
-            {
-                "reason": "Edit change",
-                "oldText": "two\nthree\n",
-                "newText": "TWO\nTHREE\n"
-            }
-        ]
-    });
-
-    let output = run_edit(request.to_string().as_bytes());
-
-    assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
-    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("overlap"));
 }
 
 #[test]
 fn fails_when_request_is_missing_reason() {
     let request = serde_json::json!({
         "path": "file.txt",
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "a",
-                "newText": "b"
-            }
-        ]
+        "oldText": "a",
+        "newText": "b"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -623,13 +477,8 @@ fn fails_when_reason_is_empty() {
     let request = serde_json::json!({
         "reason": "",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "hello",
-                "newText": "world"
-            }
-        ]
+        "oldText": "hello",
+        "newText": "world"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -655,13 +504,8 @@ fn fails_when_reason_is_whitespace_only() {
     let request = serde_json::json!({
         "reason": " \n\t ",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "hello",
-                "newText": "world"
-            }
-        ]
+        "oldText": "hello",
+        "newText": "world"
     });
 
     let output = run_edit(request.to_string().as_bytes());
@@ -674,69 +518,5 @@ fn fails_when_reason_is_whitespace_only() {
             .as_str()
             .unwrap()
             .contains("reason must not be empty")
-    );
-}
-
-#[test]
-fn does_not_partially_apply_multi_edit_when_one_edit_fails() {
-    let dir = tempdir().unwrap();
-    let file_path = dir.path().join("no-partial-multi.txt");
-    let original = "alpha\nbeta\ngamma\n";
-    fs::write(&file_path, original).unwrap();
-
-    let request = serde_json::json!({
-        "reason": "One edit fails",
-        "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "alpha\n",
-                "newText": "ALPHA\n"
-            },
-            {
-                "reason": "Edit change",
-                "oldText": "missing\n",
-                "newText": "MISSING\n"
-            }
-        ]
-    });
-
-    let output = run_edit(request.to_string().as_bytes());
-
-    assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
-    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("Could not find"));
-}
-
-#[test]
-fn fails_when_edit_reason_is_empty() {
-    let dir = tempdir().unwrap();
-    let file_path = dir.path().join("empty-edit-reason.txt");
-    let original = "hello\n";
-    fs::write(&file_path, original).unwrap();
-
-    let request = serde_json::json!({
-        "reason": "Reject empty edit reason",
-        "path": file_path,
-        "edits": [
-            {
-                "reason": "",
-                "oldText": "hello",
-                "newText": "world"
-            }
-        ]
-    });
-
-    let output = run_edit(request.to_string().as_bytes());
-
-    assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(&file_path).unwrap(), original);
-    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("edits[0].reason must not be empty")
     );
 }

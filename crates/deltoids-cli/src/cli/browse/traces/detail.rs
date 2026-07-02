@@ -214,31 +214,58 @@ fn detail_items(entry: &HistoryEntry) -> Vec<DetailItem<'_>> {
             items.push(DetailItem::HunkSpacer);
         }
 
-        if !entry.edits.is_empty() {
-            let remaining_hunks = hunk_count.saturating_sub(hunk_index);
-            let remaining_edits = entry.edits.len().saturating_sub(next_edit_index);
-            let edits_for_this_hunk = if remaining_edits == 0 {
-                0
-            } else if remaining_edits <= remaining_hunks {
-                1
-            } else {
-                remaining_edits - (remaining_hunks - 1)
-            };
-            if edits_for_this_hunk > 0 {
-                let reasons: Vec<&str> = entry.edits
-                    [next_edit_index..next_edit_index + edits_for_this_hunk]
-                    .iter()
-                    .map(|edit| edit.reason.as_str())
-                    .collect();
-                items.push(DetailItem::EditBlock(reasons));
-                next_edit_index += edits_for_this_hunk;
-            }
+        if let Some(reasons) =
+            edit_block_for_hunk(entry, hunk_count, hunk_index, &mut next_edit_index)
+        {
+            items.push(DetailItem::EditBlock(reasons));
         }
 
         items.push(DetailItem::Hunk(hunk));
     }
 
     items
+}
+
+/// Reasons to label the hunk at `hunk_index`, or `None` when the hunk
+/// gets no edit block. Advances `next_edit_index` past the edits it
+/// consumes so the distribution stays in sync across hunks.
+///
+/// Only surfaces a reason that adds something the header does not
+/// already say: a single text edit's reason mirrors the top-level
+/// reason, so its block is pure duplication and is dropped; hash-mode
+/// and legacy multi-edit entries carry distinct per-op reasons and keep
+/// theirs.
+fn edit_block_for_hunk<'a>(
+    entry: &'a HistoryEntry,
+    hunk_count: usize,
+    hunk_index: usize,
+    next_edit_index: &mut usize,
+) -> Option<Vec<&'a str>> {
+    if entry.edits.is_empty() {
+        return None;
+    }
+
+    let remaining_hunks = hunk_count.saturating_sub(hunk_index);
+    let remaining_edits = entry.edits.len().saturating_sub(*next_edit_index);
+    let edits_for_this_hunk = if remaining_edits == 0 {
+        0
+    } else if remaining_edits <= remaining_hunks {
+        1
+    } else {
+        remaining_edits - (remaining_hunks - 1)
+    };
+    if edits_for_this_hunk == 0 {
+        return None;
+    }
+
+    let reasons: Vec<&str> = entry.edits[*next_edit_index..*next_edit_index + edits_for_this_hunk]
+        .iter()
+        .map(|edit| edit.reason.as_str())
+        .filter(|reason| *reason != entry.reason)
+        .collect();
+    *next_edit_index += edits_for_this_hunk;
+
+    (!reasons.is_empty()).then_some(reasons)
 }
 
 fn diff_hunk_count(entry: &HistoryEntry) -> usize {
@@ -613,6 +640,79 @@ mod tests {
             }
             other => panic!("expected Hunk, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn detail_items_suppresses_edit_block_when_reason_mirrors_top_level() {
+        use deltoids::{DiffLine, Hunk, LineKind};
+
+        // A single text edit records a per-edit reason equal to the
+        // top-level reason. The header already shows it, so no per-hunk
+        // edit block should render.
+        let mut entry = edit_entry();
+        entry.edits[0].reason = entry.reason.clone();
+        entry.hunks = vec![Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: "new".to_string(),
+            }],
+            ancestors: Vec::new(),
+        }];
+
+        let items = detail_items(&entry);
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], DetailItem::Hunk(_)));
+    }
+
+    #[test]
+    fn detail_items_renders_legacy_multi_edit_entry() {
+        use crate::TextEdit;
+        use deltoids::{DiffLine, Hunk, LineKind};
+
+        // An old multi-edit trace entry (two edits, two hunks) must still
+        // load and render: one EditBlock label per hunk, no panic.
+        let mut entry = edit_entry();
+        entry.edits = vec![
+            TextEdit {
+                reason: "First edit".to_string(),
+                old_text: "a".to_string(),
+                new_text: "A".to_string(),
+            },
+            TextEdit {
+                reason: "Second edit".to_string(),
+                old_text: "b".to_string(),
+                new_text: "B".to_string(),
+            },
+        ];
+        let hunk = |content: &str| Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![DiffLine {
+                kind: LineKind::Added,
+                content: content.to_string(),
+            }],
+            ancestors: Vec::new(),
+        };
+        entry.hunks = vec![hunk("A"), hunk("B")];
+
+        let items = detail_items(&entry);
+
+        // EditBlock, Hunk, HunkSpacer, EditBlock, Hunk = 5 items.
+        assert_eq!(items.len(), 5);
+        match &items[0] {
+            DetailItem::EditBlock(reasons) => assert_eq!(reasons, &["First edit"]),
+            other => panic!("expected EditBlock, got {other:?}"),
+        }
+        assert!(matches!(items[1], DetailItem::Hunk(_)));
+        assert!(matches!(items[2], DetailItem::HunkSpacer));
+        match &items[3] {
+            DetailItem::EditBlock(reasons) => assert_eq!(reasons, &["Second edit"]),
+            other => panic!("expected EditBlock, got {other:?}"),
+        }
+        assert!(matches!(items[4], DetailItem::Hunk(_)));
     }
 
     #[test]

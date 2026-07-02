@@ -39,11 +39,8 @@ import { isAbsolute, resolve } from "node:path";
 interface ExternalEditInput {
   reason: string;
   path: string;
-  edits: Array<{
-    reason: string;
-    oldText: string;
-    newText: string;
-  }>;
+  oldText: string;
+  newText: string;
 }
 
 interface ExternalEditSuccess {
@@ -114,28 +111,14 @@ interface TraceState {
 const externalEditSchema = Type.Object(
   {
     reason: Type.String({
-      description: "Why this change is being made. One short sentence explaining the intent behind the overall edit.",
+      description: "Why this change is being made. One short sentence explaining the intent behind the edit.",
     }),
     path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
-    edits: Type.Array(
-      Type.Object(
-        {
-          reason: Type.String({
-            description: "Why this specific replacement is being made. One short sentence explaining the intent behind this edit block.",
-          }),
-          oldText: Type.String({
-            description:
-              "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
-          }),
-          newText: Type.String({ description: "Replacement text for this targeted edit." }),
-        },
-        { additionalProperties: false },
-      ),
-      {
-        description:
-          "One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
-      },
-    ),
+    oldText: Type.String({
+      description:
+        "Exact text to replace. It must match the file's current text exactly and appear exactly once.",
+    }),
+    newText: Type.String({ description: "Replacement text." }),
   },
   { additionalProperties: false },
 );
@@ -242,10 +225,6 @@ function fallbackReason(_path: string): string {
   return "Edit file";
 }
 
-function fallbackEditReason(_path: string): string {
-  return "Edit block";
-}
-
 function fallbackWriteReason(_path: string): string {
   return "Write file";
 }
@@ -256,31 +235,13 @@ function prepareArguments(input: unknown): ExternalEditInput {
   const args = input as {
     reason?: unknown;
     path?: unknown;
-    edits?: unknown;
-    oldText?: unknown;
-    newText?: unknown;
   };
   const path = typeof args.path === "string" ? args.path : "file";
   const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason : fallbackReason(path);
 
-  let edits = Array.isArray(args.edits) ? args.edits : [];
-  if (typeof args.oldText === "string" && typeof args.newText === "string") {
-    edits = [...edits, { oldText: args.oldText, newText: args.newText }];
-  }
-
   return {
     ...(args as object),
     reason,
-    edits: edits.map((edit) => {
-      const record = (edit && typeof edit === "object" ? edit : {}) as Record<string, unknown>;
-      return {
-        ...record,
-        reason:
-          typeof record.reason === "string" && record.reason.trim()
-            ? record.reason
-            : fallbackEditReason(path),
-      };
-    }),
   } as ExternalEditInput;
 }
 
@@ -564,11 +525,11 @@ export default function (pi: ExtensionAPI) {
       renderResult: undefined,
       renderShell: undefined,
       description:
-        "Edit a single file using exact text replacement. Provide a reason for the overall change and for each edit block, explaining why the change is being made.",
+        "Replace one exact region of a file. `oldText` must match the file's current text exactly and appear exactly once. To make several changes, call `edit` once per change; each call matches against the file's current text, so target text as it exists after any earlier edit. Provide a reason explaining why the change is being made.",
       promptGuidelines: [
         ...(builtinEdit.promptGuidelines ?? []),
-        "Include reason: why the overall file change is being made.",
-        "Include edits[].reason: why each replacement block is being made.",
+        "Include reason: why this change is being made.",
+        "To make several changes, issue several `edit` calls, each replacing one exact region.",
       ],
       parameters: externalEditSchema,
       prepareArguments,
@@ -579,7 +540,8 @@ export default function (pi: ExtensionAPI) {
           const payload = {
             reason: params.reason,
             path: resolvedPath,
-            edits: params.edits,
+            oldText: params.oldText,
+            newText: params.newText,
           };
           const initialTraceId = traceState.traceId;
           let result: ExternalEditSuccess | undefined;

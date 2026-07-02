@@ -46,13 +46,8 @@ fn rejects_a_nonexistent_explicit_trace_id_for_edit() {
     let request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
 
     let trace_id = "01JTESTTRACE00000000000000";
@@ -116,13 +111,8 @@ fn rejects_an_invalid_explicit_trace_id_for_edit() {
     let request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
 
     // Trace ids must be safe directory names. A slash is rejected
@@ -154,13 +144,8 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     let first_request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
     let first_output = run_command(
         "edit",
@@ -175,13 +160,8 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     let second_request = serde_json::json!({
         "reason": "Try a missing edit",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Missing change",
-                "oldText": "nope",
-                "newText": "yep"
-            }
-        ]
+        "oldText": "nope",
+        "newText": "yep"
     });
     let second_output = run_command(
         "edit",
@@ -212,7 +192,7 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     assert_eq!(second["tool"], "edit");
     assert_eq!(second["ok"], false);
     assert_eq!(second["reason"], "Try a missing edit");
-    assert_eq!(second["edits"][0]["reason"], "Missing change");
+    assert_eq!(second["edits"][0]["reason"], "Try a missing edit");
     assert!(second["error"].as_str().unwrap().contains("Could not find"));
 }
 
@@ -228,13 +208,8 @@ fn reuses_an_explicit_trace_id_across_edit_and_write() {
     let edit_request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
     let edit_output = run_command(
         "edit",

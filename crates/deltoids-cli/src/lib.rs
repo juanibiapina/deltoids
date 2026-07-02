@@ -24,7 +24,7 @@ use std::path::Path;
 
 use chrono::{SecondsFormat, Utc};
 
-pub use edit::{apply_edits, execute_request, execute_request_with_trace, render_diff};
+pub use edit::{apply_edit, execute_request, execute_request_with_trace, render_diff};
 pub use hash_edit::{execute_hash_edit_request, execute_hash_edit_request_with_trace};
 pub use hash_read::execute_hash_read;
 pub use trace_store::{HistoryEntry, TraceSummary, trace_root_directory};

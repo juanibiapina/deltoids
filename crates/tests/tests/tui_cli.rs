@@ -84,13 +84,8 @@ fn renders_traces_and_entries_for_current_directory() {
     let edit_request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
     let edit_output = run_command_in_dir(
         "edit",
@@ -134,7 +129,7 @@ fn renders_traces_and_entries_for_current_directory() {
     assert!(stdout.contains(&trace_id[..10]));
     assert!(stdout.contains("app.txt"));
     assert!(stdout.contains("edit • ok • 1 edit • 1 hunk"));
-    assert!(stdout.contains("Edit change"));
+    assert!(stdout.contains("Update x constant"));
 }
 
 #[test]
@@ -149,13 +144,8 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
     let edit_request = serde_json::json!({
         "reason": "Update x constant",
         "path": file_path,
-        "edits": [
-            {
-                "reason": "Edit change",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
     let edit_output = run_command_in_dir(
         "edit",
@@ -213,13 +203,8 @@ fn shows_only_traces_for_the_current_directory() {
     let first_request = serde_json::json!({
         "reason": "Update first app",
         "path": first_file,
-        "edits": [
-            {
-                "reason": "Edit first app",
-                "oldText": "const x = 1;",
-                "newText": "const x = 2;"
-            }
-        ]
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
     });
     let first_output = run_command_in_dir(
         "edit",
@@ -239,13 +224,8 @@ fn shows_only_traces_for_the_current_directory() {
     let second_request = serde_json::json!({
         "reason": "Update second app",
         "path": second_file,
-        "edits": [
-            {
-                "reason": "Edit second app",
-                "oldText": "const y = 1;",
-                "newText": "const y = 2;"
-            }
-        ]
+        "oldText": "const y = 1;",
+        "newText": "const y = 2;"
     });
     let second_output = run_command_in_dir(
         "edit",

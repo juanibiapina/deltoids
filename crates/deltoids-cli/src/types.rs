@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 pub struct EditRequest {
     pub reason: String,
     pub path: String,
-    pub edits: Vec<TextEdit>,
+    #[serde(rename = "oldText")]
+    pub old_text: String,
+    #[serde(rename = "newText")]
+    pub new_text: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

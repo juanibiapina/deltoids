@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- edit: The text-mode `edit` tool now takes a single replacement instead of an array.
+
 ### Fixed
 
 - pager: Syntax highlighting now matches the TUI Files tab.

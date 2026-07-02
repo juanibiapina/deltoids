@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - edit: The text-mode `edit` tool now takes a single replacement instead of an array.
 - hashedit: Ops no longer take a per-op reason; give one reason for the whole edit.
+- traces TUI: Reworked the entry list, header, and diff view for a cleaner layout.
 
 ### Fixed
 

@@ -167,16 +167,24 @@ fn render_detail_placeholder(
     lines
 }
 
-fn diff_hunk_count(entry: &HistoryEntry) -> usize {
-    entry.hunks.len()
-}
-
-fn count_label(count: usize, singular: &str, plural: &str) -> String {
-    if count == 1 {
-        format!("1 {singular}")
-    } else {
-        format!("{count} {plural}")
+/// Display `path` relative to the entry's `cwd`.
+///
+/// Traces are filtered to the current directory, so `cwd` is where the
+/// TUI is running; stripping it yields the path the user typed. Falls
+/// back to collapsing `$HOME` to `~` when the path is not under `cwd`
+/// (e.g. an absolute path outside the tree).
+fn display_path(path: &str, cwd: &str) -> String {
+    // Only treat as relative on a real path boundary, so a sibling that
+    // merely shares the prefix (`/a/project-2` vs `/a/project`) is not
+    // mistaken for a child.
+    if !cwd.is_empty()
+        && let Some(rest) = path.strip_prefix(cwd)
+        && let Some(rel) = rest.strip_prefix('/')
+        && !rel.is_empty()
+    {
+        return rel.to_string();
     }
+    collapse_home(path)
 }
 
 fn collapse_home(path: &str) -> String {
@@ -234,23 +242,8 @@ pub(super) fn render_detail_for(
 }
 
 fn render_detail_header(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let path = collapse_home(&entry.path);
-    let metadata = header_metadata_line(entry);
-    render_header_block(&entry.reason, &path, &metadata, width, theme)
-}
-
-fn header_metadata_line(entry: &HistoryEntry) -> String {
-    let mut parts = vec![
-        entry.tool.clone(),
-        if entry.ok {
-            "ok".to_string()
-        } else {
-            "error".to_string()
-        },
-    ];
-
-    parts.push(count_label(diff_hunk_count(entry), "hunk", "hunks"));
-    parts.join(" • ")
+    let path = display_path(&entry.path, &entry.cwd);
+    render_header_block(&entry.reason, &path, width, theme)
 }
 
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
@@ -358,7 +351,6 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
 fn render_header_block(
     reason: &str,
     path: &str,
-    metadata: &str,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -373,8 +365,11 @@ fn render_header_block(
         ))];
     }
 
-    let path_style = Style::default().fg(rgb_to_color(theme.border));
-    let metadata_style = Style::default().fg(rgb_to_color(theme.muted));
+    // Terminal default foreground (white on dark), bold, matching the
+    // Files tab's file header.
+    let path_style = Style::default()
+        .fg(Color::Reset)
+        .add_modifier(Modifier::BOLD);
     let border = Style::default().fg(rgb_to_color(theme.border));
     let bot = format!("─{}", "─".repeat(width.saturating_sub(1)));
 
@@ -383,10 +378,6 @@ fn render_header_block(
         lines.push(Line::from(Span::styled(wrapped, reason_style)));
     }
     lines.push(Line::from(Span::styled(fit_line(path, width), path_style)));
-    lines.push(Line::from(Span::styled(
-        fit_line(metadata, width),
-        metadata_style,
-    )));
     lines.push(Line::from(Span::styled(bot, border)));
     lines
 }
@@ -602,20 +593,55 @@ mod tests {
     }
 
     #[test]
-    fn render_detail_header_uses_reason_path_metadata_and_rule() {
+    fn display_path_strips_cwd_prefix() {
+        assert_eq!(
+            display_path("/tmp/project/app.txt", "/tmp/project"),
+            "app.txt"
+        );
+        assert_eq!(
+            display_path("/tmp/project/src/main.rs", "/tmp/project"),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn display_path_falls_back_to_home_outside_cwd() {
+        // SAFETY: single-threaded test module; HOME is only read here.
+        unsafe { std::env::set_var("HOME", "/home/alice") };
+        // Not under cwd: collapse HOME instead.
+        assert_eq!(
+            display_path("/home/alice/other/x.rs", "/tmp/project"),
+            "~/other/x.rs"
+        );
+        // A sibling that merely shares a prefix is not treated as relative.
+        assert_eq!(
+            display_path("/tmp/project-2/x.rs", "/tmp/project"),
+            "/tmp/project-2/x.rs"
+        );
+    }
+
+    #[test]
+    fn render_detail_header_uses_reason_path_and_rule() {
         let theme = test_theme();
         let lines = render_detail_header(&edit_entry(), 80, &theme);
-        assert_eq!(lines.len(), 4);
+        // Header is reason, path, bottom rule; no tool/status metadata line.
+        assert_eq!(lines.len(), 3);
         assert!(lines[0].to_string().starts_with("Update x constant"));
         assert_eq!(
             lines[0].spans[0].style.fg,
             Some(rgb_to_color(theme.border_active))
         );
-        assert!(lines[1].to_string().starts_with("/tmp/project/app.txt"));
-        assert_eq!(lines[1].spans[0].style.fg, Some(rgb_to_color(theme.border)));
-        // v1 entries have 0 hunks; the edit count is no longer shown.
-        assert!(lines[2].to_string().starts_with("edit • ok • 0 hunks"));
-        let bottom = lines[3].to_string();
+        // Path shown relative to the entry cwd (/tmp/project), in the
+        // terminal default foreground, bold.
+        assert!(lines[1].to_string().starts_with("app.txt"));
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Reset));
+        assert!(
+            lines[1].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        let bottom = lines[2].to_string();
         assert!(bottom.starts_with('─'));
         assert!(!bottom.contains('╯'), "bottom rule should have no corner");
         assert!(!bottom.contains('│'), "no right border");
@@ -627,10 +653,10 @@ mod tests {
         let mut entry = edit_entry();
         entry.reason = "This is a long reason that should wrap onto multiple lines".to_string();
         let lines = render_detail_header(&entry, 30, &theme);
-        // Reason wraps into multiple lines, then path, metadata, rule.
+        // Reason wraps into multiple lines, then path, rule.
         assert!(
-            lines.len() > 4,
-            "long reason should produce more than 4 lines, got {}",
+            lines.len() > 3,
+            "long reason should produce more than 3 lines, got {}",
             lines.len()
         );
         // All reason lines are border_active (orange) bold.
@@ -638,7 +664,8 @@ mod tests {
             .iter()
             .position(|l| l.to_string().starts_with('─'))
             .expect("should have a bottom rule");
-        for line in &lines[..rule_index - 2] {
+        // Lines before the path line (rule_index - 1) are the reason.
+        for line in &lines[..rule_index - 1] {
             assert_eq!(
                 line.spans[0].style.fg,
                 Some(rgb_to_color(theme.border_active)),

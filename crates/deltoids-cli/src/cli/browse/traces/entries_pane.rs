@@ -1,17 +1,15 @@
 //! Entries pane slice: selection movement within the active trace's
 //! entries, the entry-row labels, and the pane render.
 
-use ratatui::{
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{List, ListItem},
-};
-use std::path::Path;
-
 use deltoids::Theme;
 use deltoids::render_tui::{
     pane_block_with_tabs, pane_border_color, pane_inner_height, position_footer,
     render_pane_scrollbar, rgb_to_color,
+};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{List, ListItem},
 };
 
 use crate::HistoryEntry;
@@ -89,26 +87,17 @@ fn entry_icon(ok: bool) -> (&'static str, Color) {
     }
 }
 
-fn file_basename(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string())
-}
-
 fn entry_label_line(entry: &HistoryEntry) -> Line<'static> {
     let (icon, icon_color) = entry_icon(entry.ok);
-    let basename = file_basename(&entry.path);
     Line::from(vec![
         Span::styled(icon.to_string(), Style::default().fg(icon_color)),
-        Span::raw(format!(" {basename} ")),
-        Span::styled(entry.reason.clone(), Style::default().fg(Color::DarkGray)),
+        Span::raw(format!(" {}", entry.reason)),
     ])
 }
 
 pub(super) fn entry_label_plain(entry: &HistoryEntry) -> String {
     let (icon, _) = entry_icon(entry.ok);
-    format!("{icon} {} {}", file_basename(&entry.path), entry.reason)
+    format!("{icon} {}", entry.reason)
 }
 
 #[cfg(test)]

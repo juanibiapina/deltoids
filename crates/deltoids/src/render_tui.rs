@@ -106,6 +106,28 @@ pub fn render_hunk(
     output
 }
 
+/// Render a blank-separated list of hunks as the diff body.
+///
+/// Each hunk is emitted preceded by a blank separator line: for N hunks
+/// this yields `[blank, hunk_0, blank, hunk_1, …]`. Empty `hunks` yields an
+/// empty vec. The per-hunk leading blank makes the helper self-contained:
+/// prepend it to any header and the hunks are correctly separated from the
+/// header and from each other. Both the Files and Traces TUIs render their
+/// diff body through this one helper.
+pub fn render_hunk_list(
+    hunks: &[Hunk],
+    highlight: Option<&str>,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut output = Vec::new();
+    for hunk in hunks {
+        output.push(Line::from(""));
+        output.extend(render_hunk(hunk, highlight, width, theme));
+    }
+    output
+}
+
 // ---------------------------------------------------------------------------
 // Hunk header (breadcrumb box or line-number-only box)
 // ---------------------------------------------------------------------------
@@ -1060,6 +1082,33 @@ mod tests {
             .collect();
         assert_eq!(scope_rows.len(), 1, "ancestor text must not wrap");
         assert!(line_width(scope_rows[0]) <= width);
+    }
+
+    #[test]
+    fn render_hunk_list_empty_input_yields_empty_vec() {
+        let theme = Theme::default();
+        let lines = render_hunk_list(&[], None, 80, &theme);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn render_hunk_list_prefixes_each_hunk_with_a_blank() {
+        let theme = Theme::default();
+        let hunks = vec![context_hunk("first"), context_hunk("second")];
+        let single_0 = render_hunk(&hunks[0], None, 80, &theme);
+        let single_1 = render_hunk(&hunks[1], None, 80, &theme);
+
+        let lines = render_hunk_list(&hunks, None, 80, &theme);
+
+        // First emitted line is blank (separates the body from any header).
+        assert_eq!(line_text(&lines[0]), "");
+        // Layout: [blank, hunk_0.., blank, hunk_1..].
+        assert_eq!(lines.len(), 2 + single_0.len() + single_1.len());
+        assert_eq!(line_text(&lines[1 + single_0.len()]), "");
+        // Each group reproduces the standalone render_hunk output.
+        let group_0: Vec<String> = lines[1..1 + single_0.len()].iter().map(line_text).collect();
+        let expect_0: Vec<String> = single_0.iter().map(line_text).collect();
+        assert_eq!(group_0, expect_0);
     }
 
     #[test]

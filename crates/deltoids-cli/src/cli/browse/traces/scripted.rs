@@ -191,7 +191,7 @@ mod tests {
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
         assert!(output.contains("/tmp/project/app.txt"));
-        assert!(output.contains("edit • ok • 1 edit • 0 hunks"));
+        assert!(output.contains("edit • ok • 0 hunks"));
         // v1 entries show deprecation message instead of diff content
         assert!(output.contains("(old format, cannot display)"));
     }

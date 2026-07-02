@@ -210,8 +210,7 @@ fn record_payload(
     // Edit variants: in the Claude Code hook path we always have the
     // full post-edit content but no structured `edits[]` blocks, so a
     // write-shaped entry (with `tool` set to the appropriate label) is
-    // the closest match. The TUI's metadata line skips the "N edits"
-    // chunk when `edits` is empty, so the display reads e.g.
+    // the closest match. The TUI's metadata line reads e.g.
     // `edit • ok • 1 hunk`.
     if let Err(error) = store.append(
         trace_id,

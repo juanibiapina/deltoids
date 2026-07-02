@@ -1,6 +1,7 @@
-//! Detail/diff pane slice: the cached rendered diff, the structured
-//! detail model ([`DetailItem`]), all the header/edit-block/wrapping
-//! renderers, and the pane render itself.
+//! Detail/diff pane slice: the cached rendered diff, the header/wrapping
+//! renderers, and the pane render itself. The diff body is rendered by the
+//! shared [`deltoids::render_tui::render_hunk_list`], the same helper the
+//! Files TUI uses.
 
 use std::collections::HashMap;
 
@@ -11,10 +12,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
+use deltoids::Theme;
 use deltoids::render_tui::{
     self, pane_block, pane_border_color, render_pane_scrollbar, rgb_to_color,
 };
-use deltoids::{Hunk, Theme};
 
 use crate::HistoryEntry;
 use crate::cli::browse::mode::{DrawBudget, should_build_body};
@@ -166,108 +167,6 @@ fn render_detail_placeholder(
     lines
 }
 
-/// One unit of the entry detail view, ready to be rendered.
-///
-/// Built once per visible entry; `render_detail_for` walks the items and
-/// dispatches each variant to the right renderer. Lifetimes borrow from
-/// the originating `HistoryEntry`, so building this list is allocation
-/// light.
-#[derive(Debug)]
-enum DetailItem<'a> {
-    /// v1 trace entry: hunks were not recorded, only legacy diff text.
-    OldFormatNotice,
-    /// Failure entry's error message.
-    ErrorLine(&'a str),
-    /// Edit-tool reasons to render before the next hunk.
-    EditBlock(Vec<&'a str>),
-    /// Blank line between hunks.
-    HunkSpacer,
-    /// One full hunk (header + context + subhunks). Rendered via
-    /// [`deltoids::render_tui::render_hunk`].
-    Hunk(&'a Hunk),
-}
-
-/// Build the structured detail view for a history entry.
-///
-/// Walks `entry.hunks` directly; emits edit reasons, hunk headers,
-/// context, and subhunks in the order the renderer needs them.
-fn detail_items(entry: &HistoryEntry) -> Vec<DetailItem<'_>> {
-    if !entry.ok {
-        return entry
-            .error
-            .as_deref()
-            .map(|err| vec![DetailItem::ErrorLine(err)])
-            .unwrap_or_default();
-    }
-
-    if entry.hunks.is_empty() {
-        // v1 entries have no hunks; show deprecation notice.
-        return vec![DetailItem::OldFormatNotice];
-    }
-
-    let mut items = Vec::new();
-    let hunk_count = entry.hunks.len();
-    let mut next_edit_index = 0usize;
-
-    for (hunk_index, hunk) in entry.hunks.iter().enumerate() {
-        if hunk_index > 0 {
-            items.push(DetailItem::HunkSpacer);
-        }
-
-        if let Some(reasons) =
-            edit_block_for_hunk(entry, hunk_count, hunk_index, &mut next_edit_index)
-        {
-            items.push(DetailItem::EditBlock(reasons));
-        }
-
-        items.push(DetailItem::Hunk(hunk));
-    }
-
-    items
-}
-
-/// Reasons to label the hunk at `hunk_index`, or `None` when the hunk
-/// gets no edit block. Advances `next_edit_index` past the edits it
-/// consumes so the distribution stays in sync across hunks.
-///
-/// Only surfaces a reason that adds something the header does not
-/// already say: a single text edit's reason mirrors the top-level
-/// reason, so its block is pure duplication and is dropped; hash-mode
-/// and legacy multi-edit entries carry distinct per-op reasons and keep
-/// theirs.
-fn edit_block_for_hunk<'a>(
-    entry: &'a HistoryEntry,
-    hunk_count: usize,
-    hunk_index: usize,
-    next_edit_index: &mut usize,
-) -> Option<Vec<&'a str>> {
-    if entry.edits.is_empty() {
-        return None;
-    }
-
-    let remaining_hunks = hunk_count.saturating_sub(hunk_index);
-    let remaining_edits = entry.edits.len().saturating_sub(*next_edit_index);
-    let edits_for_this_hunk = if remaining_edits == 0 {
-        0
-    } else if remaining_edits <= remaining_hunks {
-        1
-    } else {
-        remaining_edits - (remaining_hunks - 1)
-    };
-    if edits_for_this_hunk == 0 {
-        return None;
-    }
-
-    let reasons: Vec<&str> = entry.edits[*next_edit_index..*next_edit_index + edits_for_this_hunk]
-        .iter()
-        .map(|edit| edit.reason.as_str())
-        .filter(|reason| *reason != entry.reason)
-        .collect();
-    *next_edit_index += edits_for_this_hunk;
-
-    (!reasons.is_empty()).then_some(reasons)
-}
-
 fn diff_hunk_count(entry: &HistoryEntry) -> usize {
     entry.hunks.len()
 }
@@ -309,36 +208,26 @@ pub(super) fn render_detail_for(
         return Vec::new();
     };
 
-    let items = detail_items(entry);
     let mut rendered = render_detail_header(entry, width, theme);
 
-    if !rendered.is_empty() && !items.is_empty() {
-        rendered.push(Line::from(""));
-    }
-
-    for item in items {
-        match item {
-            DetailItem::OldFormatNotice => {
-                rendered.push(Line::from("(old format, cannot display)"));
-            }
-            DetailItem::ErrorLine(err) => {
-                rendered.push(labeled_line("error", err, Color::Red));
-            }
-            DetailItem::EditBlock(reasons) => {
-                rendered.extend(render_edit_block(&reasons, width, theme));
-            }
-            DetailItem::HunkSpacer => {
-                rendered.push(Line::from(""));
-            }
-            DetailItem::Hunk(hunk) => {
-                rendered.extend(render_tui::render_hunk(
-                    hunk,
-                    entry.highlight.as_deref(),
-                    width,
-                    theme,
-                ));
-            }
+    if !entry.ok {
+        if let Some(err) = entry.error.as_deref() {
+            rendered.push(Line::from(""));
+            rendered.push(labeled_line("error", err, Color::Red));
         }
+    } else if entry.hunks.is_empty() {
+        // v1 entries have no hunks; show deprecation notice.
+        rendered.push(Line::from(""));
+        rendered.push(Line::from("(old format, cannot display)"));
+    } else {
+        // The hunk body carries its own leading blank separator, so the
+        // header/body gap comes from render_hunk_list.
+        rendered.extend(render_tui::render_hunk_list(
+            &entry.hunks,
+            entry.highlight.as_deref(),
+            width,
+            theme,
+        ));
     }
 
     rendered
@@ -359,10 +248,6 @@ fn header_metadata_line(entry: &HistoryEntry) -> String {
             "error".to_string()
         },
     ];
-
-    if !entry.edits.is_empty() {
-        parts.push(count_label(entry.edits.len(), "edit", "edits"));
-    }
 
     parts.push(count_label(diff_hunk_count(entry), "hunk", "hunks"));
     parts.join(" • ")
@@ -506,33 +391,6 @@ fn render_header_block(
     lines
 }
 
-fn render_edit_block(lines: &[&str], width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let border = Style::default().fg(rgb_to_color(theme.border_active));
-    let content_width = lines
-        .iter()
-        .map(|line| display_width(line))
-        .max()
-        .unwrap_or(0)
-        .min(width.saturating_sub(2));
-
-    let top = format!("{}╮", "─".repeat(content_width + 1));
-    let bot = format!("{}╯", "─".repeat(content_width + 1));
-    let mut rendered = vec![Line::from(Span::styled(top, border))];
-
-    for line in lines {
-        let fitted = fit_line(line, content_width);
-        let padding = content_width.saturating_sub(display_width(&fitted));
-        rendered.push(Line::from(vec![
-            Span::styled(fitted, border),
-            Span::styled(" ".repeat(padding), border),
-            Span::styled(" │", border),
-        ]));
-    }
-
-    rendered.push(Line::from(Span::styled(bot, border)));
-    rendered
-}
-
 pub(super) fn fit_line(line: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -596,11 +454,29 @@ mod tests {
         assert!(state.diff_cache.contains(80, (0, 0)));
     }
 
+    /// Concatenate the visible text of a `Line<'static>` (ignoring styles).
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn render_entry(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![entry.clone()],
+        };
+        render_detail_for(&trace, 0, width, theme)
+    }
+
     #[test]
-    fn detail_items_renders_hunk_with_header_context_and_change() {
+    fn render_detail_for_text_single_edit_shows_pure_hunk_body() {
         use deltoids::{DiffLine, Hunk, LineKind, ScopeNode};
 
+        // A single text edit whose per-edit reason mirrors the top-level
+        // reason: the header shows the reason and the body is a pure hunk,
+        // no edit box.
+        let theme = test_theme();
         let mut entry = edit_entry();
+        entry.edits[0].reason = entry.reason.clone();
         entry.hunks = vec![Hunk {
             old_start: 5,
             new_start: 5,
@@ -627,53 +503,27 @@ mod tests {
             }],
         }];
 
-        let items = detail_items(&entry);
+        let lines = render_entry(&entry, 80, &theme);
+        let header = render_detail_header(&entry, 80, &theme);
+        let body = render_tui::render_hunk_list(&entry.hunks, None, 80, &theme);
 
-        // EditBlock (1 edit on 1 hunk) + Hunk (header+body rendered as one
-        // unit by deltoids::render_tui::render_hunk) = 2 items.
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], DetailItem::EditBlock(_)));
-        match &items[1] {
-            DetailItem::Hunk(h) => {
-                assert_eq!(h.lines.len(), 3);
-                assert_eq!(h.ancestors.len(), 1);
-            }
-            other => panic!("expected Hunk, got {other:?}"),
-        }
+        // Header first, then exactly the shared hunk body (no edit box in
+        // between).
+        assert_eq!(lines.len(), header.len() + body.len());
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(texts.iter().any(|t| t.starts_with("Update x constant")));
+        assert!(texts.iter().any(|t| t.contains("new line")));
     }
 
     #[test]
-    fn detail_items_suppresses_edit_block_when_reason_mirrors_top_level() {
-        use deltoids::{DiffLine, Hunk, LineKind};
-
-        // A single text edit records a per-edit reason equal to the
-        // top-level reason. The header already shows it, so no per-hunk
-        // edit block should render.
-        let mut entry = edit_entry();
-        entry.edits[0].reason = entry.reason.clone();
-        entry.hunks = vec![Hunk {
-            old_start: 1,
-            new_start: 1,
-            lines: vec![DiffLine {
-                kind: LineKind::Added,
-                content: "new".to_string(),
-            }],
-            ancestors: Vec::new(),
-        }];
-
-        let items = detail_items(&entry);
-
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], DetailItem::Hunk(_)));
-    }
-
-    #[test]
-    fn detail_items_renders_legacy_multi_edit_entry() {
+    fn render_detail_for_legacy_multi_edit_shows_only_top_level_reason() {
         use crate::TextEdit;
         use deltoids::{DiffLine, Hunk, LineKind};
 
-        // An old multi-edit trace entry (two edits, two hunks) must still
-        // load and render: one EditBlock label per hunk, no panic.
+        // An old multi-edit trace entry (two edits, two hunks) renders with
+        // the top-level reason in the header and a pure hunk body; the
+        // distinct per-edit reasons are not shown anywhere.
+        let theme = test_theme();
         let mut entry = edit_entry();
         entry.edits = vec![
             TextEdit {
@@ -698,29 +548,40 @@ mod tests {
         };
         entry.hunks = vec![hunk("A"), hunk("B")];
 
-        let items = detail_items(&entry);
+        let lines = render_entry(&entry, 80, &theme);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
 
-        // EditBlock, Hunk, HunkSpacer, EditBlock, Hunk = 5 items.
-        assert_eq!(items.len(), 5);
-        match &items[0] {
-            DetailItem::EditBlock(reasons) => assert_eq!(reasons, &["First edit"]),
-            other => panic!("expected EditBlock, got {other:?}"),
-        }
-        assert!(matches!(items[1], DetailItem::Hunk(_)));
-        assert!(matches!(items[2], DetailItem::HunkSpacer));
-        match &items[3] {
-            DetailItem::EditBlock(reasons) => assert_eq!(reasons, &["Second edit"]),
-            other => panic!("expected EditBlock, got {other:?}"),
-        }
-        assert!(matches!(items[4], DetailItem::Hunk(_)));
+        assert!(texts.iter().any(|t| t.starts_with("Update x constant")));
+        // Per-edit reasons are gone from the body.
+        assert!(!texts.iter().any(|t| t.contains("First edit")));
+        assert!(!texts.iter().any(|t| t.contains("Second edit")));
+        // Both hunks still render.
+        assert!(texts.iter().any(|t| t.contains('A')));
+        assert!(texts.iter().any(|t| t.contains('B')));
     }
 
     #[test]
-    fn detail_items_v1_entry_yields_old_format_notice() {
+    fn render_detail_for_v1_entry_shows_old_format_notice() {
+        let theme = test_theme();
         let entry = edit_entry(); // v1 entry with empty hunks
-        let items = detail_items(&entry);
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], DetailItem::OldFormatNotice));
+        let lines = render_entry(&entry, 80, &theme);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("old format, cannot display"))
+        );
+    }
+
+    #[test]
+    fn render_detail_for_error_entry_shows_error_line() {
+        let theme = test_theme();
+        let mut entry = edit_entry();
+        entry.ok = false;
+        entry.error = Some("something failed".to_string());
+        let lines = render_entry(&entry, 80, &theme);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(texts.iter().any(|t| t.contains("something failed")));
     }
 
     #[test]
@@ -752,12 +613,8 @@ mod tests {
         );
         assert!(lines[1].to_string().starts_with("/tmp/project/app.txt"));
         assert_eq!(lines[1].spans[0].style.fg, Some(rgb_to_color(theme.border)));
-        // v1 entries have 0 hunks
-        assert!(
-            lines[2]
-                .to_string()
-                .starts_with("edit • ok • 1 edit • 0 hunks")
-        );
+        // v1 entries have 0 hunks; the edit count is no longer shown.
+        assert!(lines[2].to_string().starts_with("edit • ok • 0 hunks"));
         let bottom = lines[3].to_string();
         assert!(bottom.starts_with('─'));
         assert!(!bottom.contains('╯'), "bottom rule should have no corner");
@@ -849,19 +706,5 @@ mod tests {
             wrap_text("hi abcdefgh there", 6),
             vec!["hi", "abcdef", "gh", "there"]
         );
-    }
-
-    #[test]
-    fn render_edit_block_uses_border_active_box() {
-        let theme = test_theme();
-        let lines = render_edit_block(&["Rename renderer"], 80, &theme);
-        assert_eq!(lines.len(), 3);
-        assert!(lines[0].to_string().starts_with('─'));
-        assert!(lines[1].to_string().starts_with("Rename renderer"));
-        assert_eq!(
-            lines[1].spans[0].style.fg,
-            Some(rgb_to_color(theme.border_active))
-        );
-        assert!(lines[2].to_string().ends_with('╯'));
     }
 }

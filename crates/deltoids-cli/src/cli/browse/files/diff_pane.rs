@@ -102,15 +102,12 @@ fn render_file_block(
         ));
     }
 
-    for hunk in diff.hunks() {
-        lines.push(Line::from(""));
-        lines.extend(render_tui::render_hunk(
-            hunk,
-            diff.highlight(),
-            width,
-            theme,
-        ));
-    }
+    lines.extend(render_tui::render_hunk_list(
+        diff.hunks(),
+        diff.highlight(),
+        width,
+        theme,
+    ));
 
     lines
 }

@@ -128,7 +128,7 @@ fn renders_traces_and_entries_for_current_directory() {
     assert!(stdout.contains("\u{2713} config.json"));
     assert!(stdout.contains(&trace_id[..10]));
     assert!(stdout.contains("app.txt"));
-    assert!(stdout.contains("edit • ok • 1 edit • 1 hunk"));
+    assert!(stdout.contains("edit • ok • 1 hunk"));
     assert!(stdout.contains("Update x constant"));
 }
 

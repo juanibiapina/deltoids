@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - diff: New functions or tests added right next to an edit are no longer dropped from the diff. Each brand-new function, method, or labeled test block (Jest/Mocha `it(...)`, Go `t.Run(...)`, RSpec `it "…" do`) now renders in its own hunk, even when several are added at once.
+- diff: An edit on an outer block alongside edits in a nested inner block no longer duplicates the shared lines across two overlapping hunks; they now render as a single hunk.
 
 ## [0.11.0] - 2026-07-02
 

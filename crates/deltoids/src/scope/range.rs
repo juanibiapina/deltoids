@@ -673,8 +673,15 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
             (Some(a), Some(b)) => a == b,
             _ => true,
         };
-        // Merge if overlapping or adjacent (end + 1 >= start)
-        if can_merge_flags && scope_compatible && last.end + 1 >= range.start {
+        // Overlapping ranges share at least one line, which only happens
+        // when one scope is nested inside the other (siblings clamp to
+        // disjoint bounds). Merge those regardless of scope identity so a
+        // nested inner hunk is never rendered on top of its outer hunk.
+        // Adjacent ranges abut without sharing a line; merge those only
+        // when scope-compatible so adjacent siblings stay separate.
+        let overlap = last.end >= range.start;
+        let adjacent = last.end + 1 == range.start;
+        if can_merge_flags && (overlap || (adjacent && scope_compatible)) {
             last.end = last.end.max(range.end);
             // If the absorbing range had no scope_id, take the new one.
             if last.scope_id.is_none() {
@@ -941,5 +948,42 @@ fn new_function() {
                 .any(|r| r.start <= deleted_fn_line && r.end >= deleted_fn_line),
             "expected at least one range to cover line {deleted_fn_line} (`fn deleted()`); got: {ranges:?}"
         );
+    }
+
+    fn range_with_scope(start: usize, end: usize, scope: (usize, usize)) -> ContextRange {
+        ContextRange {
+            start,
+            end,
+            ancestor_source: AncestorSource::Old,
+            scope_line: start,
+            prevent_merge: false,
+            scope_id: Some(scope),
+            render_new_scope_span: false,
+        }
+    }
+
+    #[test]
+    fn overlapping_ranges_with_different_scopes_merge_into_one() {
+        // An outer scope's range and a nested inner scope's range overlap
+        // (the inner is contained in the outer). Even though their scope
+        // ids differ, they must collapse into a single range so the inner
+        // hunk is never rendered on top of the outer one.
+        let outer = range_with_scope(1, 27, (1, 27));
+        let inner = range_with_scope(4, 26, (4, 26));
+        let merged = merge_ranges(vec![outer, inner]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].start, 1);
+        assert_eq!(merged[0].end, 27);
+    }
+
+    #[test]
+    fn adjacent_ranges_with_different_scopes_stay_separate() {
+        // Two sibling structures abut (end + 1 == start) but do not share a
+        // line. Different scope ids means they stay two hunks so each keeps
+        // its own breadcrumb.
+        let first = range_with_scope(1, 5, (1, 5));
+        let second = range_with_scope(6, 10, (6, 10));
+        let merged = merge_ranges(vec![first, second]);
+        assert_eq!(merged.len(), 2);
     }
 }

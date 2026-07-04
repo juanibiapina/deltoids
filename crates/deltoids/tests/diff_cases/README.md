@@ -159,6 +159,7 @@ Current cases:
 | `100-python-multiline-dict-context`                 | Multi-line Python dict literal expands hunk to cover the whole literal    |
 | `110-go-composite-literal-context`                  | Multi-line Go composite literal expands hunk to cover the whole literal   |
 | `120-ruby-multiline-hash-context`                   | Multi-line Ruby hash literal expands hunk to cover the whole literal      |
+| `121-ruby-nested-scope-no-duplicate-hunk`           | Nested outer/inner scope edits collapse into one hunk (no duplicated lines)|
 | `130-c-initializer-list-context`                    | Multi-line C `{ … }` initializer expands hunk to cover the whole literal  |
 | `140-cpp-initializer-list-context`                  | Multi-line C++ `{ … }` initializer expands hunk to cover the whole literal|
 | `150-lua-table-constructor-context`                 | Multi-line Lua table constructor expands hunk to cover the whole literal  |

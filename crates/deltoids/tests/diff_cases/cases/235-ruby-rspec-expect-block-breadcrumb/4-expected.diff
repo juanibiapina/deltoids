@@ -1,0 +1,7 @@
+@@ -4,4 +4,4 @@ [call RSpec.describe] [call it("raises on repeated failure")]
+     expect {
+-      collect_pages(max)
+-      finalize
++      collect_pages(limit)
++      finalize!
+     }.to raise_error(RetryError)

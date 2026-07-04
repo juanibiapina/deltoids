@@ -503,20 +503,17 @@ fn ancestors_at_line(
     old_parsed: &crate::syntax::ParsedFile,
     new_parsed: &crate::syntax::ParsedFile,
 ) -> Vec<ScopeNode> {
-    let (parsed, scopes) = match ancestor_source {
-        AncestorSource::Old => (old_parsed, old_parsed.enclosing_scopes(line)),
-        AncestorSource::New => (new_parsed, new_parsed.enclosing_scopes(line)),
-    };
     // Hunk breadcrumbs show named code structures only. Data containers
     // (JSON/TS objects and arrays, YAML mappings) have no name and would
     // just add noise. Anchor-only callbacks (anonymous arrow functions /
-    // function expressions) are anchors but have no name to display —
-    // their call signature is already visible as the first context line
-    // of the hunk.
-    scopes
-        .into_iter()
-        .filter(|s| parsed.is_structure(s) && !parsed.is_anchor_only(s))
-        .collect()
+    // function expressions) and block-only call-promoted wrappers
+    // (`expect { … }`) are anchors but have no name to display — their
+    // call signature is already visible as the first context line of the
+    // hunk. `breadcrumb_scopes` applies both drops.
+    match ancestor_source {
+        AncestorSource::Old => old_parsed.breadcrumb_scopes(line),
+        AncestorSource::New => new_parsed.breadcrumb_scopes(line),
+    }
 }
 
 /// First NEW line at which a brand-new **named** scope begins inside a

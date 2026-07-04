@@ -90,6 +90,19 @@ impl ParsedFile {
     /// promoted scopes nested inside another function body (local helpers)
     /// are excluded.
     pub fn enclosing_scopes(&self, line: usize) -> Vec<ScopeNode> {
+        self.enclosing_scope_nodes(line)
+            .into_iter()
+            .map(|n| self.scope_node_from(n))
+            .collect()
+    }
+
+    /// Collect the enclosing *boundary* tree-sitter nodes at `line`,
+    /// outermost first. This is the shared walk behind
+    /// [`Self::enclosing_scopes`] (which maps each node to a [`ScopeNode`])
+    /// and [`Self::breadcrumb_scopes`] (which additionally drops nodes that
+    /// carry no breadcrumb-worthy name). Keeping both callers on one walk
+    /// keeps the enclosing and breadcrumb chains in lockstep.
+    fn enclosing_scope_nodes(&self, line: usize) -> Vec<Node<'_>> {
         let Some(node) = self.resolve_start_node(line) else {
             return Vec::new();
         };
@@ -118,13 +131,39 @@ impl ParsedFile {
                     || kind_is_call_promoted)
                     && self.is_nested_in_function(n));
             if include {
-                ancestors.push(self.scope_node_from(n));
+                ancestors.push(n);
             }
             current = n.parent();
         }
 
         ancestors.reverse();
         ancestors
+    }
+
+    /// Enclosing scopes filtered down to breadcrumb boundaries at `line`,
+    /// outermost first. Starts from the same boundary chain as
+    /// [`Self::enclosing_scopes`], then drops nodes that carry no name to
+    /// display:
+    ///
+    /// - anchor-only callbacks (anonymous `do_block` / `arrow_function`):
+    ///   their identity is the call signature already visible as the hunk's
+    ///   first context line.
+    /// - block-only call-promoted wrappers (`expect { … }`, `subject { … }`,
+    ///   `beforeEach(() => {})`, `withDORetry(() => {})`, `xs.map(x => …)`):
+    ///   the block/callback is their only argument, so they are restructured
+    ///   expressions, not named units. See [`Self::is_block_only_call`].
+    ///
+    /// Call-promoted wrappers that carry an identifying argument
+    /// (`it "…" do`, `namespace :github do`, `task sync: :environment do`,
+    /// `RSpec.describe UserService do`) are kept. This is a looser rule than
+    /// [`Self::named_scope_at`]'s string-literal label: breadcrumbs want any
+    /// non-block argument, not just a string.
+    pub fn breadcrumb_scopes(&self, line: usize) -> Vec<ScopeNode> {
+        self.enclosing_scope_nodes(line)
+            .into_iter()
+            .filter(|n| !self.anchor_only_kinds.contains(&n.kind()) && !self.is_block_only_call(*n))
+            .map(|n| self.scope_node_from(n))
+            .collect()
     }
 
     /// Build a [`ScopeNode`] from a tree-sitter node, resolving its
@@ -496,6 +535,35 @@ impl ParsedFile {
             && self.call_first_string_label(node).is_some()
     }
 
+    /// True when `node`'s `arguments` field carries at least one named
+    /// child that is not itself a function body. This is the looser
+    /// "breadcrumb-worthy" test for a call-promoted node: any identifying
+    /// positional/keyword argument (string, symbol, keyword pair,
+    /// constant) marks the call as a named unit.
+    ///
+    /// `expect { … }` has no `arguments` field (its block sits on the
+    /// `block` field), so this is false. `beforeEach(() => {})` has an
+    /// `arguments` list whose only named child is the arrow — a function
+    /// body — so this is also false.
+    fn call_has_identifying_argument(&self, node: Node) -> bool {
+        let Some(args) = node.child_by_field_name("arguments") else {
+            return false;
+        };
+        let mut cursor = args.walk();
+        args.named_children(&mut cursor)
+            .any(|c| !self.function_body_kinds.contains(&c.kind()))
+    }
+
+    /// True when `node` is a call-promoted wrapper whose only argument is
+    /// a block/callback (`expect { … }`, `subject { … }`,
+    /// `beforeEach(() => {})`, `withDORetry(() => {})`, `xs.map(x => …)`).
+    /// Such wrappers are restructured expressions, not named units, and
+    /// must not appear as breadcrumb boundaries. See
+    /// [`Self::breadcrumb_scopes`].
+    fn is_block_only_call(&self, node: Node) -> bool {
+        self.call_promoted_kinds.contains(&node.kind()) && !self.call_has_identifying_argument(node)
+    }
+
     fn point_at_first_non_whitespace(&self, line: usize) -> Point {
         let column = self
             .source_line_raw(line)
@@ -720,6 +788,85 @@ withDORetry(() => {
         // `withDORetry(() => {…})` is an unlabeled call-promoted wrapper.
         // Its body is a restructured expression, not a named unit.
         assert!(parsed.named_scope_at(1).is_none());
+    }
+
+    #[test]
+    fn breadcrumb_scopes_drops_block_only_expect() {
+        let source = "\
+RSpec.describe Client do
+  it \"raises on repeated failure\" do
+    expect {
+      collect_pages(max)
+    }.to raise_error(RetryError)
+  end
+end
+";
+        let parsed = ParsedFile::parse("spec.rb", source).expect("parse");
+        // Line 3 (0-indexed) is `collect_pages(max)` inside the block-only
+        // `expect { … }`. The chain must end at the labeled `it("…")`, with
+        // no `[call expect]`.
+        let scopes = parsed.breadcrumb_scopes(3);
+        let names: Vec<&str> = scopes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["RSpec.describe", "it(\"raises on repeated failure\")"]
+        );
+    }
+
+    #[test]
+    fn breadcrumb_scopes_keeps_symbol_and_keyword_labeled_calls() {
+        let source = "\
+namespace :github do
+  task sync: :environment do
+    run_sync
+  end
+end
+";
+        let parsed = ParsedFile::parse("tasks.rake", source).expect("parse");
+        // Line 2 (0-indexed) is `run_sync` inside `task sync: :environment`
+        // inside `namespace :github`. Both carry an identifying argument
+        // (a symbol / keyword pair), so both stay in the breadcrumb.
+        let scopes = parsed.breadcrumb_scopes(2);
+        let kinds: Vec<&str> = scopes.iter().map(|s| s.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["call", "call"]);
+        assert_eq!(scopes[0].name, "namespace");
+        assert_eq!(scopes[1].name, "task");
+    }
+
+    #[test]
+    fn breadcrumb_scopes_keeps_string_and_constant_labeled_calls() {
+        let source = "\
+RSpec.describe UserService do
+  it \"does a thing\" do
+    perform
+  end
+end
+";
+        let parsed = ParsedFile::parse("spec.rb", source).expect("parse");
+        // Line 2 (0-indexed) is `perform` inside `it "…"` inside
+        // `RSpec.describe UserService`. A string label and a constant
+        // argument both keep their call in the breadcrumb.
+        let scopes = parsed.breadcrumb_scopes(2);
+        let names: Vec<&str> = scopes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["RSpec.describe", "it(\"does a thing\")"]);
+    }
+
+    #[test]
+    fn breadcrumb_scopes_drops_js_block_only_callback_keeps_labeled() {
+        let source = "\
+describe(\"suite\", () => {
+  beforeEach(() => {
+    setup();
+  });
+});
+";
+        let parsed = ParsedFile::parse("suite.test.js", source).expect("parse");
+        // Line 2 (0-indexed) is `setup()` inside `beforeEach(() => {})`
+        // (block-only callback) inside `describe("suite", …)` (labeled).
+        // The block-only `beforeEach` drops; the labeled `describe` stays.
+        let scopes = parsed.breadcrumb_scopes(2);
+        let names: Vec<&str> = scopes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["describe(\"suite\")"]);
     }
 
     #[test]

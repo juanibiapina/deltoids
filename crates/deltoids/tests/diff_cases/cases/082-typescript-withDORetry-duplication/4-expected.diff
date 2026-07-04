@@ -1,4 +1,4 @@
-@@ -1,12 +1,14 @@ [variable_declarator getUserDO]
+@@ -1,12 +1,14 @@
 -// Returns a typed UserDO stub from env. Centralised so callers don't
 -// repeat the idFromName + get dance.
 +// Returns a typed UserDO stub from env with automatic retry on transient

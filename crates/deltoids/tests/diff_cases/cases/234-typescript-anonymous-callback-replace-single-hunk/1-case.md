@@ -16,3 +16,6 @@ ghost hunk for the anonymous callback.
 
 - The expression rewrite renders as a single hunk.
 - No add-only "new scope" hunk is produced for the anonymous callback.
+- The hunk has no breadcrumb: the rewrite is a top-level `const`
+  statement, so the lowest common ancestor of the changed lines is the
+  file root.

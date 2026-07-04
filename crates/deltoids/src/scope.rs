@@ -123,7 +123,7 @@ impl<'a> Iterator for HunkRunsIter<'a> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeNode {
     pub kind: String,
     pub name: String,

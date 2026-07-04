@@ -1,4 +1,4 @@
-@@ -1,13 +1,12 @@ [class_declaration TaskService] [method_definition processTask]
+@@ -1,13 +1,12 @@
 -import { OLD_A, OLD_B, OLD_C } from './constants';
 +import { NEW } from './constants';
  

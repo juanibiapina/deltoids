@@ -22,6 +22,9 @@ parent `variable_declarator` hunk.
 
 - The diff should produce **one** hunk covering the whole file, not two.
 - The `withDORetry` body must not appear twice.
+- The hunk has no breadcrumb: it mixes top-level comment and import
+  edits with the `getUserDO` body rewrite, so the lowest common
+  ancestor of the changed lines is the file root.
 
 ## Notes
 

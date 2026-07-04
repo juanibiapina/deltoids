@@ -1,0 +1,11 @@
+@@ -1,8 +1,8 @@ [mod_item outer]
+ mod outer {
+-    const LIMIT: u32 = 1;
++    const LIMIT: u32 = 5;
+ 
+     fn run() {
+-        let total = LIMIT * 2;
++        let total = LIMIT * 3;
+         println!("{total}");
+     }
+ }

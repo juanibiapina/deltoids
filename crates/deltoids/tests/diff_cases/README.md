@@ -142,6 +142,7 @@ Current cases:
 | `042-rust-add-new-function`                         | Adding a new top-level fn anchors the hunk on the new scope               |
 | `043-rust-delete-entire-function`                   | Deleting a fn anchors the hunk on the deleted scope                       |
 | `045-rust-nested-impl-method`                       | `impl` + `fn` produces a two-level breadcrumb                             |
+| `047-rust-merged-hunk-lca-breadcrumb`                | Merged hunk spanning a `mod`'s const + inner fn names the LCA (`[mod_item outer]`), not the inner fn |
 | `048-rust-large-function-falls-back-to-default-context` | Bodies > `MAX_SCOPE_LINES` use 3-line context with full breadcrumb    |
 | `050-rust-top-level-statement`                      | Top-level statement → no breadcrumb                                       |
 | `055-rust-add-helper-no-duplication`                | New helper appears in exactly one hunk, not duplicated as context         |
@@ -154,6 +155,7 @@ Current cases:
 | `077-typescript-call-arg-object-context`            | Edit inside a multi-line object passed as a call arg expands through the call to the whole statement |
 | `078-typescript-call-arg-array-context`             | Edit to an array arg of `const … = call(…)` expands to the whole statement (no breadcrumb) |
 | `080-typescript-method-modification`                | Class method change → `[class_declaration X] [method_definition Y]`       |
+| `082-typescript-merged-hunk-lca-breadcrumb`         | Merged hunk spanning a class field + method body names the LCA (`[class_declaration Outer]`), not the inner method |
 | `085-typescript-multi-pair-replace`                 | Multi-pair `Replace` stays in a single hunk                               |
 | `090-yaml-property-change`                          | YAML change → no breadcrumb, scope-expanded context                       |
 | `100-python-multiline-dict-context`                 | Multi-line Python dict literal expands hunk to cover the whole literal    |

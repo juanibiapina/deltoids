@@ -53,8 +53,6 @@ hunk that showed only removals — the entire added region vanished.
 - The renamed/edited example renders as one hunk (removals + adds).
 - The brand-new `it "raises when recovery returns nothing"` example
   appears as its own add-only hunk — it is not dropped.
-
-The trailing `[call expect]` breadcrumb in the second hunk is the
-pre-existing unlabeled-call-promoted breadcrumb noise (see the
-out-of-scope note in the fix plan); the load-bearing assertion is that
-the new test's lines are all present.
+- The second hunk's breadcrumb stops at the new `it` block. The LCA of
+  its changed lines is the `it` example, so the `expect(...)` line does
+  not push a spurious `[call expect]` onto the breadcrumb.

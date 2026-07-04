@@ -1,4 +1,4 @@
-@@ -1,8 +1,8 @@ [call namespace] [call task]
+@@ -1,8 +1,8 @@ [call namespace]
  namespace :github do
 -  desc "Sync (MAX_PAGES=1)"
 +  desc "Sync (MAX_PAGES=5)"

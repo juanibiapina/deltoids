@@ -19,11 +19,7 @@ single hunk regardless of scope identity, so no line is rendered twice.
 - Nested outer/inner scope edits produce exactly **one** hunk.
 - The hunk covers the whole outer block, and every changed line appears
   once (no duplicated task body).
-
-## Note
-
-The merged hunk's breadcrumb still names the inner scope
-(`[call namespace] [call task]`) even though the `desc` change is not
-inside `task`. That is a separate defect (breadcrumb should be the
-lowest common ancestor of the changed lines) tracked as a follow-up and
-intentionally left unchanged here.
+- The merged hunk's breadcrumb is the lowest common ancestor of the
+  changed lines (`[call namespace]`), not the inner `[call task]`. The
+  `desc` change is a direct child of `namespace` and lives outside
+  `task`, so `task` must not appear in the breadcrumb.

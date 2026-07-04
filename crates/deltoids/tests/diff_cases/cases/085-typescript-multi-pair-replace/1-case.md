@@ -16,9 +16,12 @@ the enclosing method.
 
 - All four removed lines (`OLD_A`, `OLD_B`, the two-line `TYPE_C`)
   appear together with all three added lines.
-- The body change lives in a single hunk anchored on
-  `[class_declaration TaskService]` `[method_definition mapPriority]`.
-- A separate hunk covers the import change at the top of the file.
+- The import change and the body change collapse into one hunk spanning
+  lines 1-13. Because that hunk mixes a top-level import edit with edits
+  inside `processTask`, the lowest common ancestor of the changed lines
+  is the file root, so the breadcrumb is empty. The
+  `class TaskService` / `processTask` headers still appear as context
+  lines inside the hunk.
 
 ## Notes
 

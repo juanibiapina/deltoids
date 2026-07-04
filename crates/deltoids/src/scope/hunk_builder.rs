@@ -292,20 +292,15 @@ fn build_new_scope_span_hunk(range: &ContextRange, ctx: &HunkBuildContext<'_>) -
         return None;
     }
 
-    let ancestors = select_hunk_ancestors(
-        &builder.anchor_candidates,
-        AncestorSource::New,
-        ctx.old_parsed,
-        ctx.new_parsed,
-    )
-    .unwrap_or_else(|| {
-        ancestors_at_line(
-            AncestorSource::New,
-            range.scope_line,
-            ctx.old_parsed,
-            ctx.new_parsed,
-        )
-    });
+    let ancestors = select_hunk_ancestors(&builder.anchor_candidates, AncestorSource::New, ctx)
+        .unwrap_or_else(|| {
+            ancestors_at_line(
+                AncestorSource::New,
+                range.scope_line,
+                ctx.old_parsed,
+                ctx.new_parsed,
+            )
+        });
 
     Some(Hunk {
         old_start: range.start + 1,
@@ -388,20 +383,15 @@ fn build_hunk_from_range(
         return None;
     }
 
-    let ancestors = select_hunk_ancestors(
-        &builder.anchor_candidates,
-        range.ancestor_source,
-        ctx.old_parsed,
-        ctx.new_parsed,
-    )
-    .unwrap_or_else(|| {
-        ancestors_at_line(
-            range.ancestor_source,
-            range.scope_line,
-            ctx.old_parsed,
-            ctx.new_parsed,
-        )
-    });
+    let ancestors = select_hunk_ancestors(&builder.anchor_candidates, range.ancestor_source, ctx)
+        .unwrap_or_else(|| {
+            ancestors_at_line(
+                range.ancestor_source,
+                range.scope_line,
+                ctx.old_parsed,
+                ctx.new_parsed,
+            )
+        });
 
     Some(Hunk {
         old_start: range.start + 1,
@@ -441,8 +431,7 @@ pub(super) fn build(
 fn select_hunk_ancestors(
     candidates: &[(AncestorSource, usize)],
     preferred_source: AncestorSource,
-    old_parsed: &crate::syntax::ParsedFile,
-    new_parsed: &crate::syntax::ParsedFile,
+    ctx: &HunkBuildContext<'_>,
 ) -> Option<Vec<ScopeNode>> {
     let alternate_source = match preferred_source {
         AncestorSource::Old => AncestorSource::New,
@@ -450,28 +439,62 @@ fn select_hunk_ancestors(
     };
 
     for source in [preferred_source, alternate_source] {
-        let mut best_ancestors = None;
+        let chains: Vec<Vec<ScopeNode>> = candidates
+            .iter()
+            .filter(|(candidate_source, line)| {
+                // Blank lines carry no scope signal; excluding them keeps the
+                // LCA anchored on the lines that actually name a structure.
+                *candidate_source == source && !candidate_line_is_blank(source, *line, ctx)
+            })
+            .map(|(candidate_source, line)| {
+                ancestors_at_line(*candidate_source, *line, ctx.old_parsed, ctx.new_parsed)
+            })
+            .collect();
 
-        for (candidate_source, line) in candidates {
-            if *candidate_source != source {
-                continue;
-            }
-
-            let ancestors = ancestors_at_line(*candidate_source, *line, old_parsed, new_parsed);
-
-            if ancestors.len() > best_ancestors.as_ref().map_or(0, Vec::len) {
-                best_ancestors = Some(ancestors);
-            }
-        }
-
-        if let Some(ancestors) = best_ancestors
-            && !ancestors.is_empty()
-        {
+        let ancestors = common_ancestor_prefix(&chains);
+        if !ancestors.is_empty() {
             return Some(ancestors);
         }
     }
 
     None
+}
+
+/// Longest common prefix (lowest common ancestor) of the given ancestor
+/// chains. Scopes are compared by identity within a single tree, so this
+/// must only be called on chains from one source.
+fn common_ancestor_prefix(chains: &[Vec<ScopeNode>]) -> Vec<ScopeNode> {
+    let Some((first, rest)) = chains.split_first() else {
+        return Vec::new();
+    };
+    let mut len = first.len();
+    for chain in rest {
+        len = len.min(chain.len());
+        let mut i = 0;
+        while i < len && same_scope(&first[i], &chain[i]) {
+            i += 1;
+        }
+        len = i;
+    }
+    first[..len].to_vec()
+}
+
+/// True when a candidate line is blank in its source tree.
+fn candidate_line_is_blank(
+    source: AncestorSource,
+    line: usize,
+    ctx: &HunkBuildContext<'_>,
+) -> bool {
+    let lines = match source {
+        AncestorSource::Old => ctx.old_lines,
+        AncestorSource::New => ctx.new_lines,
+    };
+    lines.get(line).is_none_or(|l| l.trim().is_empty())
+}
+
+/// Compare two scopes by identity within a single parse tree.
+fn same_scope(a: &ScopeNode, b: &ScopeNode) -> bool {
+    a.kind == b.kind && a.name == b.name && a.start_line == b.start_line && a.end_line == b.end_line
 }
 
 fn ancestors_at_line(
@@ -545,6 +568,39 @@ fn first_different_new_scope_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scope(name: &str) -> ScopeNode {
+        ScopeNode {
+            kind: "kind".to_string(),
+            name: name.to_string(),
+            start_line: 1,
+            end_line: 2,
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn common_ancestor_prefix_stops_at_divergence() {
+        let a = scope("A");
+        let b = scope("B");
+        let c = scope("C");
+
+        assert_eq!(
+            common_ancestor_prefix(&[vec![a.clone(), b.clone()], vec![a.clone(), c.clone()]]),
+            vec![a.clone()]
+        );
+        assert_eq!(
+            common_ancestor_prefix(&[
+                vec![a.clone(), b.clone()],
+                vec![a.clone(), b.clone(), c.clone()]
+            ]),
+            vec![a.clone(), b.clone()]
+        );
+        assert_eq!(
+            common_ancestor_prefix(&[vec![a.clone()], vec![b.clone()]]),
+            Vec::<ScopeNode>::new()
+        );
+    }
 
     #[test]
     fn collect_equal_lines_adds_context_and_sets_new_start() {

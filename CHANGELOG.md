@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- diff: New functions or tests added right next to an edit are no longer dropped from the diff. Each brand-new function, method, or labeled test block (Jest/Mocha `it(...)`, Go `t.Run(...)`, RSpec `it "…" do`) now renders in its own hunk, even when several are added at once.
+
 ## [0.11.0] - 2026-07-02
 
 ### Changed

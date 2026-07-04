@@ -1,0 +1,6 @@
+@@ -1 +1,4 @@ [call_expression compute]
+-const total = compute(items, (x) => x.value);
++const total = compute(items, (x) => {
++  const doubled = x.value * 2;
++  return doubled;
++});

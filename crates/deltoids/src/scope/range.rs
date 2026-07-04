@@ -52,6 +52,7 @@ fn default_context_range(
         scope_line,
         prevent_merge: false,
         scope_id: None,
+        render_new_scope_span: false,
     }
 }
 
@@ -76,6 +77,7 @@ fn structure_context_range(
         scope_line,
         prevent_merge: false,
         scope_id: Some((s_start, s_end)),
+        render_new_scope_span: false,
     }
 }
 
@@ -192,24 +194,6 @@ pub(super) fn insert_forms_new_scope(
     false
 }
 
-fn find_replace_scope_line(
-    parsed: &crate::syntax::ParsedFile,
-    new_start: usize,
-    new_end: usize,
-    total_new: usize,
-) -> Option<usize> {
-    for line in new_start..new_end.min(total_new) {
-        let Some(scope) = scope_at(parsed, line) else {
-            continue;
-        };
-        let (scope_start, _, scope_lines) = scope_bounds(&scope);
-        if scope_lines <= MAX_SCOPE_LINES && scope_start >= new_start {
-            return Some(scope_start + 1);
-        }
-    }
-    None
-}
-
 fn context_ranges_for_insert(
     old_index: usize,
     new_index: usize,
@@ -233,6 +217,7 @@ fn context_ranges_for_insert(
             scope_line,
             prevent_merge: true,
             scope_id,
+            render_new_scope_span: false,
         }];
     }
 
@@ -250,6 +235,7 @@ fn context_ranges_for_insert(
                 scope_line,
                 prevent_merge: false,
                 scope_id: Some((scope_start, scope_end)),
+                render_new_scope_span: false,
             }];
         }
         return vec![structure_context_range(
@@ -273,6 +259,7 @@ fn context_ranges_for_insert(
             scope_line,
             prevent_merge: false,
             scope_id: Some((scope_start, scope_end)),
+            render_new_scope_span: false,
         }];
     }
 
@@ -333,6 +320,7 @@ fn context_ranges_for_delete(
                 scope_line: scope_start,
                 prevent_merge: true,
                 scope_id: Some((scope_start, scope_end)),
+                render_new_scope_span: false,
             });
             last_pushed_end = Some(range_end);
             cursor = old_end;
@@ -346,6 +334,7 @@ fn context_ranges_for_delete(
             scope_line: cursor,
             prevent_merge: false,
             scope_id: Some((scope_start, scope_end)),
+            render_new_scope_span: false,
         });
         last_pushed_end = Some(scope_end);
         cursor = scope_end + 1;
@@ -372,6 +361,7 @@ fn context_ranges_for_delete(
                 scope_line: old_start,
                 prevent_merge: false,
                 scope_id: Some((scope_start, scope_end)),
+                render_new_scope_span: false,
             });
         } else {
             ranges.push(default_context_range(
@@ -418,6 +408,7 @@ fn old_replace_context_range(
                 scope_line: old_start,
                 prevent_merge: false,
                 scope_id: Some((scope_start, scope_end)),
+                render_new_scope_span: false,
             };
         }
         // Innermost structure too large: a budget-sized window inside it.
@@ -444,6 +435,7 @@ fn old_replace_context_range(
             scope_line: old_start,
             prevent_merge: false,
             scope_id: Some((scope_start, scope_end)),
+            render_new_scope_span: false,
         };
     }
 
@@ -492,61 +484,106 @@ pub(super) fn same_slot(old_scope: &ScopeNode, new_scope: &ScopeNode, ops: &[Dif
     false
 }
 
-fn new_replace_scope_range(
+/// True when a brand-new NEW-side named scope should NOT get its own hunk
+/// because it is the same logical member as an OLD scope (a rename or
+/// structural conversion of an existing member), or is nested inside a
+/// NEW-tree ancestor that occupies that same slot (a wrapped body, e.g.
+/// `const x = old()` rewritten to `const x = wrap(() => { … })`).
+///
+/// Every OLD line that maps (through the diff) into the new scope's span is
+/// a candidate for the member being edited. We take the **named** scope at
+/// each such OLD line and test it for same-slot with the new scope (and
+/// with the new scope's ancestors, for the wrapped-body case). Probing
+/// interior lines — not just the declaration's first line, where the query
+/// would resolve to the `export`/`const` keyword outside the declarator
+/// subtree — is what makes this robust.
+fn new_scope_is_same_slot(
+    new_scope: &ScopeNode,
+    ctx: &ScopeRangeContext<'_>,
+    ops: &[DiffOp],
+) -> bool {
+    let (new_start, new_end, _) = scope_bounds(new_scope);
+    let new_ancestors = ctx.new_parsed.enclosing_scopes(new_end);
+    for old_line in 0..ctx.total_old {
+        match align_old_to_new(old_line, ops) {
+            Some(mapped) if mapped >= new_start && mapped <= new_end => {}
+            _ => continue,
+        }
+        let Some(old_scope) = ctx.old_parsed.named_scope_at(old_line) else {
+            continue;
+        };
+        if same_slot(&old_scope, new_scope, ops)
+            || new_ancestors
+                .iter()
+                .any(|ancestor| same_slot(&old_scope, ancestor, ops))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Plan one range per brand-new **named** scope embedded in a Replace's
+/// new content. Mirrors the cursor discipline of
+/// [`context_ranges_for_delete`]: scan `[new_index, new_index + new_len)`,
+/// and at each named scope decide whether it is a fresh unit (its own
+/// add-only hunk) or part of the aligned edit / a same-slot rewrite (skip).
+fn new_replace_scope_ranges(
     old_index: usize,
     old_len: usize,
     new_index: usize,
     new_len: usize,
     ctx: &ScopeRangeContext<'_>,
     ops: &[DiffOp],
-) -> Option<ContextRange> {
+) -> Vec<ContextRange> {
     let new_start = new_index;
     let new_end = new_index + new_len;
 
-    let scope_line = find_replace_scope_line(ctx.new_parsed, new_start, new_end, ctx.total_new)?;
+    let mut ranges = Vec::new();
+    let mut cursor = new_start;
+    while cursor < new_end.min(ctx.total_new) {
+        let Some(new_scope) = ctx.new_parsed.named_scope_at(cursor) else {
+            cursor += 1;
+            continue;
+        };
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&new_scope);
 
-    let new_scope = scope_at(ctx.new_parsed, scope_line)?;
-    let (new_scope_start, new_scope_end, _) = scope_bounds(&new_scope);
-
-    // Anchor-only scopes (anonymous arrow functions, function expressions)
-    // passed as arguments) are not named code structures. When they appear
-    // inside a Replace's new content they are restructured expressions, not
-    // brand-new scopes that deserve their own hunk.
-    if ctx.new_parsed.is_anchor_only(&new_scope) {
-        return None;
-    }
-
-    // Same slot: the OLD scope at `old_index` aligns with the NEW scope
-    // through the diff. This catches both pure renames and structural
-    // conversions (arrow-property -> method) of the same logical member,
-    // even when earlier edits in the file shifted line numbers.
-    if let Some(old_scope) = scope_at(ctx.old_parsed, old_index) {
-        if same_slot(&old_scope, &new_scope, ops) {
-            return None;
+        // A scope that starts before the Replace's new content is either
+        // the aligned-edit member (the OLD-anchored range covers it) or an
+        // enclosing container (a class holding the new method). Step inside
+        // by one line to find nested fresh scopes rather than jumping past
+        // the container's whole span.
+        if scope_start < new_start {
+            cursor += 1;
+            continue;
         }
 
-        // If the new scope is nested inside a NEW-tree ancestor that
-        // occupies the same slot as the old scope, it's a child
-        // expression (e.g. a call_expression wrapped inside a
-        // variable_declarator that was rewritten). The old-anchored
-        // range already covers these lines — don't emit a duplicate.
-        let new_ancestors = ctx.new_parsed.enclosing_scopes(scope_line);
-        if new_ancestors
-            .iter()
-            .any(|ancestor| same_slot(&old_scope, ancestor, ops))
-        {
-            return None;
+        // Fresh but too large to expand: skip its body.
+        if scope_lines > MAX_SCOPE_LINES {
+            cursor = (scope_end + 1).max(cursor + 1);
+            continue;
         }
+
+        // A same-slot rename / conversion of an existing member, or a
+        // wrapped body, is not a brand-new scope.
+        if new_scope_is_same_slot(&new_scope, ctx, ops) {
+            cursor = (scope_end + 1).max(cursor + 1);
+            continue;
+        }
+
+        ranges.push(ContextRange {
+            start: old_index + old_len,
+            end: old_index + old_len,
+            ancestor_source: AncestorSource::New,
+            scope_line: scope_start,
+            prevent_merge: true,
+            scope_id: Some((scope_start, scope_end)),
+            render_new_scope_span: true,
+        });
+        cursor = (scope_end + 1).max(cursor + 1);
     }
 
-    Some(ContextRange {
-        start: old_index + old_len,
-        end: old_index + old_len,
-        ancestor_source: AncestorSource::New,
-        scope_line,
-        prevent_merge: true,
-        scope_id: Some((new_scope_start, new_scope_end)),
-    })
+    ranges
 }
 
 fn context_ranges_for_replace(
@@ -558,9 +595,9 @@ fn context_ranges_for_replace(
     ops: &[DiffOp],
 ) -> Vec<ContextRange> {
     let mut ranges = vec![old_replace_context_range(old_index, old_len, ctx)];
-    if let Some(range) = new_replace_scope_range(old_index, old_len, new_index, new_len, ctx, ops) {
-        ranges.push(range);
-    }
+    ranges.extend(new_replace_scope_ranges(
+        old_index, old_len, new_index, new_len, ctx, ops,
+    ));
     ranges
 }
 
@@ -660,6 +697,68 @@ mod tests {
         crate::engine::Snapshot::compute(original, updated)
             .ops()
             .to_vec()
+    }
+
+    fn new_scope_span_ranges(original: &str, updated: &str, path: &str) -> usize {
+        let ops = ops_for(original, updated);
+        let old_parsed = crate::syntax::ParsedFile::parse(path, original).unwrap();
+        let new_parsed = crate::syntax::ParsedFile::parse(path, updated).unwrap();
+        let ranges = compute_context_ranges(
+            &ops,
+            &old_parsed,
+            &new_parsed,
+            original.lines().count(),
+            updated.lines().count(),
+        );
+        ranges.iter().filter(|r| r.render_new_scope_span).count()
+    }
+
+    #[test]
+    fn replace_with_two_new_labeled_callbacks_emits_two_new_scope_ranges() {
+        let original = "\
+RSpec.describe Thing do
+  it \"first\" do
+    expect(a).to eq(1)
+  end
+end
+";
+        let updated = "\
+RSpec.describe Thing do
+  it \"first changed\" do
+    expect(a).to eq(2)
+  end
+
+  it \"second\" do
+    expect(b).to eq(3)
+  end
+
+  it \"third\" do
+    expect(c).to eq(4)
+  end
+end
+";
+        assert_eq!(new_scope_span_ranges(original, updated, "spec.rb"), 2);
+    }
+
+    #[test]
+    fn replace_same_slot_rename_emits_no_new_scope_range() {
+        // Renaming a method and rewriting its body is a same-slot edit,
+        // not a brand-new scope.
+        let original = "\
+class Foo {
+  getById(id) {
+    return this.db.find(id);
+  }
+}
+";
+        let updated = "\
+class Foo {
+  fetchById(id) {
+    return this.db.findFirst(id);
+  }
+}
+";
+        assert_eq!(new_scope_span_ranges(original, updated, "foo.ts"), 0);
     }
 
     #[test]

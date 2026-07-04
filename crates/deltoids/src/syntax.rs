@@ -118,26 +118,71 @@ impl ParsedFile {
                     || kind_is_call_promoted)
                     && self.is_nested_in_function(n));
             if include {
-                let start_line = leading_adjusted_start(n, self.leading_comment_kinds) + 1;
-                let end_line = node_end_line(n);
-                let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
-                let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
-                let text = self
-                    .source_line_raw(n.start_position().row)
-                    .unwrap_or_default();
-                ancestors.push(ScopeNode {
-                    kind: n.kind().to_string(),
-                    name,
-                    start_line,
-                    end_line,
-                    text,
-                });
+                ancestors.push(self.scope_node_from(n));
             }
             current = n.parent();
         }
 
         ancestors.reverse();
         ancestors
+    }
+
+    /// Build a [`ScopeNode`] from a tree-sitter node, resolving its
+    /// breadcrumb name, leading-comment-adjusted start, and end line the
+    /// same way [`Self::enclosing_scopes`] does.
+    fn scope_node_from(&self, n: Node) -> ScopeNode {
+        let start_line = leading_adjusted_start(n, self.leading_comment_kinds) + 1;
+        let end_line = node_end_line(n);
+        let kind_is_call_promoted = self.call_promoted_kinds.contains(&n.kind());
+        let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
+        let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
+        let text = self
+            .source_line_raw(n.start_position().row)
+            .unwrap_or_default();
+        ScopeNode {
+            kind: n.kind().to_string(),
+            name,
+            start_line,
+            end_line,
+            text,
+        }
+    }
+
+    /// Innermost **named** scope at `line`: the shared "named boundary"
+    /// definition for new-scope detection. A named scope is either a real
+    /// structure (`structure_kinds`, or a `promoted_kinds` wrapper whose
+    /// value is a function body) or a **labeled** call-promoted node
+    /// (`it("…", …)`, `t.Run("…", …)`, RSpec `it "…" do`).
+    ///
+    /// Explicitly excludes anchor-only blocks (anonymous `do_block` /
+    /// `arrow_function`) and **unlabeled** call-promoted wrappers
+    /// (`withDORetry(() => {})`, `expect { … }`, `xs.map(x => …)`): those
+    /// are restructured expressions, not brand-new named units, and must
+    /// not spawn their own hunk.
+    ///
+    /// Walks the tree-sitter node chain (same start resolution and
+    /// in-function demotion as [`Self::enclosing_scopes`]) so labeled-ness
+    /// is decided from the node via [`Self::is_labeled_call_promoted`]
+    /// rather than the synthesised name string. Returns the innermost
+    /// match, whose bounds are the labeled-call / structure bounds.
+    pub fn named_scope_at(&self, line: usize) -> Option<ScopeNode> {
+        let node = self.resolve_start_node(line)?;
+        let mut current = Some(node);
+        while let Some(n) = current {
+            let kind_is_structure = self.structure_kinds.contains(&n.kind());
+            let kind_is_promoted = self.promoted_kinds.contains(&n.kind());
+            let is_named = kind_is_structure
+                || (kind_is_promoted && self.has_function_value(&n))
+                || self.is_labeled_call_promoted(n);
+            // Apply the same local-helper demotion as `enclosing_scopes`;
+            // a labeled call-promoted node is never demoted (see
+            // `is_nested_in_function`).
+            if is_named && !self.is_nested_in_function(n) {
+                return Some(self.scope_node_from(n));
+            }
+            current = n.parent();
+        }
+        None
     }
 
     /// True when `scope`'s kind belongs to this language's structure tier.
@@ -629,6 +674,66 @@ mod tests {
             .find(|s| s.kind == "function_item")
             .expect("function_item scope");
         assert!(parsed.is_structure(func));
+    }
+
+    #[test]
+    fn named_scope_at_returns_labeled_call_for_rspec_it_block() {
+        let source = "\
+RSpec.describe Thing do
+  it \"raises when nothing\" do
+    expect { run }.to raise_error(Boom)
+  end
+end
+";
+        let parsed = ParsedFile::parse("spec.rb", source).expect("parse");
+        // Line 2 (0-indexed) is the `expect { run }` body of the `it` block.
+        // The innermost named unit is the labeled `it("…")` call, not the
+        // anonymous `do_block`.
+        let scope = parsed.named_scope_at(2).expect("named scope");
+        assert_eq!(scope.name, "it(\"raises when nothing\")");
+        assert_eq!(scope.start_line, 2);
+    }
+
+    #[test]
+    fn named_scope_at_returns_promoted_arrow_const() {
+        let source = "\
+export const getUserDO = (env) => {
+  return env.get();
+};
+";
+        let parsed = ParsedFile::parse("do.ts", source).expect("parse");
+        // Line 1 is inside the arrow body; the named unit is the promoted
+        // `getUserDO` variable declarator.
+        let scope = parsed.named_scope_at(1).expect("named scope");
+        assert_eq!(scope.name, "getUserDO");
+        assert_eq!(scope.kind, "variable_declarator");
+    }
+
+    #[test]
+    fn named_scope_at_none_for_unlabeled_call_wrapper() {
+        let source = "\
+withDORetry(() => {
+  doThing();
+});
+";
+        let parsed = ParsedFile::parse("wrap.ts", source).expect("parse");
+        // `withDORetry(() => {…})` is an unlabeled call-promoted wrapper.
+        // Its body is a restructured expression, not a named unit.
+        assert!(parsed.named_scope_at(1).is_none());
+    }
+
+    #[test]
+    fn named_scope_at_none_for_bare_anonymous_callback() {
+        let source = "\
+const ys = xs.map((x) => {
+  return x + 1;
+});
+";
+        let parsed = ParsedFile::parse("map.ts", source).expect("parse");
+        // `xs.map(x => …)` is an unlabeled callback; the innermost named
+        // unit at the body is... the `ys` declarator is NOT function-valued
+        // (its value is a call, not an arrow), so there is no named scope.
+        assert!(parsed.named_scope_at(1).is_none());
     }
 
     #[test]

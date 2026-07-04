@@ -1,0 +1,19 @@
+@@ -6,6 +6,6 @@ [function_declaration TestClient] [call_expression t.Run("falls back to a default")]
+-	t.Run("falls back to a default", func(t *testing.T) {
++	t.Run("recovers via the slow path", func(t *testing.T) {
+ 		setupStub()
+-		if got := result(); got != "default" {
++		if got := result(); got != "ghost" {
+ 			t.Fatalf("got %q", got)
+ 		}
+ 	})
+
+@@ -13 +13,8 @@ [function_declaration TestClient] [call_expression t.Run("raises when recovery returns nothing")]
++	t.Run("raises when recovery returns nothing", func(t *testing.T) {
++		setupStub()
++		if err := run(); err == nil {
++			t.Fatal("expected error")
++		}
++	})
++
+ 	t.Run("exposes the total count", func(t *testing.T) {

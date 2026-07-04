@@ -1,4 +1,4 @@
-@@ -7,25 +7,37 @@ [class_declaration ItemService] [method_definition getById]
+@@ -7,25 +7,26 @@ [class_declaration ItemService] [method_definition getById]
 -  async getById(id: string): Promise<ItemResult> {
 +  private async fetchById(id: string): Promise<ItemResult> {
      const where = isUuid(id)
@@ -26,7 +26,9 @@
 -    return ok(res.value).map(toItem);
 +    return ok(toItem(res.value));
 +  }
-+
+   }
+
+@@ -31,0 +33,11 @@ [class_declaration ItemService] [method_definition getById]
 +  async getById(id: string): Promise<ItemResult> {
 +    const result = await this.fetchById(id);
 +
@@ -37,4 +39,4 @@
 +    const flags = await this.features.resolve(id);
 +
 +    return ok({ ...result.value, flags });
-   }
++  }

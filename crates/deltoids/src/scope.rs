@@ -40,6 +40,11 @@ struct ContextRange {
     /// stay separate hunks instead of producing one hunk with a misleading
     /// breadcrumb.
     scope_id: Option<(usize, usize)>,
+    /// When true, this range renders a brand-new named scope embedded in a
+    /// `Replace`'s new content. The builder emits the scope's whole
+    /// new-file line span (`scope_id`, NEW-space bounds) as added lines,
+    /// independent of op boundaries, instead of walking the op stream.
+    render_new_scope_span: bool,
 }
 
 // ---------------------------------------------------------------------------

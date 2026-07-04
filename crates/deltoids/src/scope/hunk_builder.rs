@@ -205,64 +205,6 @@ struct ReplaceOpData {
     new_len: usize,
 }
 
-fn collect_replace_new_scope_lines(
-    builder: &mut HunkBuilder,
-    range: &ContextRange,
-    old_index: usize,
-    new_index: usize,
-    new_len: usize,
-    ctx: &HunkBuildContext<'_>,
-) {
-    if range.ancestor_source != AncestorSource::New || range.start != old_index {
-        return;
-    }
-
-    let new_scope = ctx
-        .new_parsed
-        .enclosing_scopes(range.scope_line)
-        .last()
-        .cloned();
-    let old_scope = ctx.old_parsed.enclosing_scopes(old_index).last().cloned();
-
-    let Some(new_scope) = new_scope else {
-        return;
-    };
-    let is_same_scope = old_scope.as_ref().is_some_and(|old_scope| {
-        old_scope.kind == new_scope.kind && old_scope.name == new_scope.name
-    });
-    if is_same_scope {
-        return;
-    }
-
-    let scope_start = new_scope.start_line.saturating_sub(1);
-    let scope_end = new_scope.end_line.saturating_sub(1);
-    for i in 0..new_len {
-        let new_line = new_index + i;
-        if new_line > scope_end {
-            break;
-        }
-
-        let content = ctx
-            .new_lines
-            .get(new_line)
-            .copied()
-            .unwrap_or("")
-            .to_string();
-        let include = new_line >= scope_start || content.trim().is_empty();
-        if !include {
-            continue;
-        }
-
-        builder
-            .anchor_candidates
-            .push((AncestorSource::New, new_line));
-        builder.lines.push(DiffLine {
-            kind: LineKind::Added,
-            content,
-        });
-    }
-}
-
 fn collect_replace_lines(
     builder: &mut HunkBuilder,
     range: &ContextRange,
@@ -288,17 +230,7 @@ fn collect_replace_lines(
             ctx,
             ops,
         );
-        return;
     }
-
-    collect_replace_new_scope_lines(
-        builder,
-        range,
-        replace.old_index + replace.old_len,
-        replace.new_index,
-        replace.new_len,
-        ctx,
-    );
 }
 
 fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Option<ScopeNode> {
@@ -312,11 +244,86 @@ fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Opti
         .cloned()
 }
 
+/// Render a brand-new named scope embedded in a `Replace`'s new content.
+///
+/// The scope's whole new-file line span (`scope_id`, NEW-space inclusive
+/// bounds) is emitted as added lines straight from `new_lines`, with
+/// leading/trailing blank lines trimmed. This is independent of op
+/// boundaries, so a scope whose lines straddle several `Replace`/`Equal`
+/// ops still renders in full instead of fragmenting.
+fn build_new_scope_span_hunk(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Option<Hunk> {
+    let (scope_start, scope_end) = range.scope_id?;
+
+    let mut start = scope_start;
+    let mut end = scope_end.min(ctx.new_lines.len().saturating_sub(1));
+    // Trim leading/trailing blank lines from the span.
+    while start < end
+        && ctx
+            .new_lines
+            .get(start)
+            .is_some_and(|l| l.trim().is_empty())
+    {
+        start += 1;
+    }
+    while end > start && ctx.new_lines.get(end).is_some_and(|l| l.trim().is_empty()) {
+        end -= 1;
+    }
+
+    let mut builder = HunkBuilder {
+        new_start: Some(start + 1),
+        ..Default::default()
+    };
+    for new_line in start..=end {
+        builder
+            .anchor_candidates
+            .push((AncestorSource::New, new_line));
+        builder.lines.push(DiffLine {
+            kind: LineKind::Added,
+            content: ctx
+                .new_lines
+                .get(new_line)
+                .copied()
+                .unwrap_or("")
+                .to_string(),
+        });
+    }
+
+    if builder.lines.is_empty() {
+        return None;
+    }
+
+    let ancestors = select_hunk_ancestors(
+        &builder.anchor_candidates,
+        AncestorSource::New,
+        ctx.old_parsed,
+        ctx.new_parsed,
+    )
+    .unwrap_or_else(|| {
+        ancestors_at_line(
+            AncestorSource::New,
+            range.scope_line,
+            ctx.old_parsed,
+            ctx.new_parsed,
+        )
+    });
+
+    Some(Hunk {
+        old_start: range.start + 1,
+        new_start: builder.new_start.unwrap_or(1),
+        lines: builder.lines,
+        ancestors,
+    })
+}
+
 fn build_hunk_from_range(
     ops: &[DiffOp],
     range: &ContextRange,
     ctx: &HunkBuildContext<'_>,
 ) -> Option<Hunk> {
+    if range.render_new_scope_span {
+        return build_new_scope_span_hunk(range, ctx);
+    }
+
     let mut builder = HunkBuilder::default();
     let old_scope = old_scope_for_range(range, ctx);
 
@@ -489,6 +496,14 @@ fn ancestors_at_line(
         .collect()
 }
 
+/// First NEW line at which a brand-new **named** scope begins inside a
+/// Replace's new content. This is the cutoff for the OLD-anchored aligned
+/// edit hunk: the aligned edit stops exactly where the first fresh named
+/// scope starts, so the two sides never overlap or double-render.
+///
+/// Uses the same [`crate::syntax::ParsedFile::named_scope_at`] primitive
+/// and same-slot guards as [`super::range::new_replace_scope_ranges`], so
+/// planner and builder agree on where a new scope begins.
 fn first_different_new_scope_start(
     old_scope: &ScopeNode,
     new_start: usize,
@@ -497,40 +512,31 @@ fn first_different_new_scope_start(
     ops: &[DiffOp],
 ) -> Option<usize> {
     for line in new_start..new_end {
-        let new_scopes = new_parsed.enclosing_scopes(line);
-        let Some(innermost) = new_scopes.last() else {
+        let Some(scope) = new_parsed.named_scope_at(line) else {
             continue;
         };
-
-        // Only a named structure starts a new hunk. Non-structure nodes
-        // (objects, arrays, bare statements) never get their own hunk, so
-        // they must not cut off the enclosing hunk either.
-        if !new_parsed.is_structure(innermost) {
-            continue;
-        }
-
-        // If old_scope's equivalent appears anywhere in the enclosing scope
-        // chain at this line, the line is still inside old_scope. Any scope
-        // here (anonymous callback, call expression, etc.) is a nested
-        // expression — not a separate new scope that deserves its own hunk.
-        if new_scopes.iter().any(|s| same_slot(old_scope, s, ops)) {
-            continue;
-        }
-
-        let scope_start = innermost.start_line.saturating_sub(1);
+        let scope_start = scope.start_line.saturating_sub(1);
         if scope_start < new_start || scope_start >= new_end {
             continue;
         }
 
         // Same logical slot in the diff alignment? Then it's a rename or a
         // structural conversion of the same member, not a brand-new scope.
-        if same_slot(old_scope, innermost, ops) {
+        if same_slot(old_scope, &scope, ops) {
             continue;
         }
 
-        if innermost.kind != old_scope.kind || innermost.name != old_scope.name {
-            return Some(scope_start);
+        // Nested inside a NEW-tree ancestor that occupies the same slot as
+        // the old scope (a wrapped body): still part of the aligned edit.
+        if new_parsed
+            .enclosing_scopes(scope_start)
+            .iter()
+            .any(|s| same_slot(old_scope, s, ops))
+        {
+            continue;
         }
+
+        return Some(scope_start);
     }
 
     None
@@ -550,6 +556,7 @@ mod tests {
             scope_line: 1,
             prevent_merge: false,
             scope_id: None,
+            render_new_scope_span: false,
         };
         let old_lines = ["zero", "one", "two"];
 

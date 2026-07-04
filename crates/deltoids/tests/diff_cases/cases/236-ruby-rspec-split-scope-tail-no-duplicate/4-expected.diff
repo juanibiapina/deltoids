@@ -1,0 +1,29 @@
+@@ -2,8 +2,6 @@ [call RSpec.describe] [call it("old name here")]
+-  it "old name here" do
+     stub_request(:post, "https://example.test/graphql")
+       .to_return(json_response(fixture("null_author.json")))
+     stub_request(:get, "https://example.test/issues/2")
+       .to_return(json_response({ "number" => 2, "user" => nil }.to_json))
+ 
+-    expect(result).to include(login: "ghost")
+   end
+
+@@ -3,0 +2,8 @@ [call RSpec.describe] [call it("recovers the ghost author")]
++  it "recovers the ghost author" do
++    stub_request(:post, "https://example.test/graphql")
++      .to_return(json_response(fixture("null_author.json")))
++    stub_request(:get, "https://example.test/issues/2")
++      .to_return(json_response(fixture("rest_ghost.json")))
++
++    expect(result).to include(github_id: 10137, login: "ghost")
++  end
+
+@@ -3,0 +11,8 @@ [call RSpec.describe] [call it("raises on a userless success")]
++  it "raises on a userless success" do
++    stub_request(:post, "https://example.test/graphql")
++      .to_return(json_response(fixture("null_author.json")))
++    stub_request(:get, "https://example.test/issues/2")
++      .to_return(json_response({ "number" => 2, "user" => nil }.to_json))
++
++    expect { collect }.to raise_error(RecoveryError)
++  end

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - diff: An edit on an outer block alongside edits in a nested inner block no longer duplicates the shared lines across two overlapping hunks; they now render as a single hunk.
 - diff: A hunk that merges changes at different nesting depths now names the lowest common ancestor of the changed lines in its breadcrumb instead of the deepest inner scope, so a scope that does not contain every change is no longer shown.
 - diff: Breadcrumbs no longer include block-only wrapper calls such as RSpec `expect { … }`/`subject { … }` or JS `beforeEach(() => {})`. Named test blocks and rake `namespace`/`task` still show.
+- diff: A new function or test whose body matches an edited neighbour's no longer has its tail lines rendered twice; each new block renders exactly once.
 
 ## [0.11.0] - 2026-07-02
 

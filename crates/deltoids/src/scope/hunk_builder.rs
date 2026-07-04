@@ -8,7 +8,7 @@
 //!
 //! Entry point: [`build`].
 
-use super::range::{insert_forms_new_scope, same_slot};
+use super::range::insert_forms_new_scope;
 use super::{AncestorSource, ContextRange, DiffLine, Hunk, LineKind, ScopeNode};
 use crate::engine::DiffOp;
 
@@ -17,6 +17,12 @@ struct HunkBuildContext<'a> {
     new_parsed: &'a crate::syntax::ParsedFile,
     old_lines: &'a [&'a str],
     new_lines: &'a [&'a str],
+    /// NEW-space inclusive spans claimed by new-scope-span hunks, as
+    /// planned by [`super::range::new_replace_scope_ranges`]. The single
+    /// source of truth for "which NEW lines belong to a fresh scope's own
+    /// hunk"; the aligned-edit added side reads these instead of
+    /// re-deriving ownership per op.
+    new_scope_spans: &'a [(usize, usize)],
 }
 
 #[derive(Default)]
@@ -155,27 +161,23 @@ fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
 
 fn collect_replace_added_lines(
     builder: &mut HunkBuilder,
-    old_scope: Option<&ScopeNode>,
     new_index: usize,
     new_len: usize,
     ctx: &HunkBuildContext<'_>,
-    ops: &[DiffOp],
 ) {
-    let new_scope_cutoff = old_scope.and_then(|old_scope| {
-        first_different_new_scope_start(
-            old_scope,
-            new_index,
-            new_index + new_len,
-            ctx.new_parsed,
-            ops,
-        )
-    });
-
     let mut added_lines = Vec::new();
     for i in 0..new_len {
         let new_line = new_index + i;
-        if new_scope_cutoff.is_some_and(|cutoff| new_line >= cutoff) {
-            break;
+        // Skip any NEW line owned by a new-scope-span hunk. The planner
+        // records each fresh scope's full span, so a scope whose tail is
+        // carried by this op (its start sat in an earlier op) is still
+        // recognised and never re-rendered here.
+        if ctx
+            .new_scope_spans
+            .iter()
+            .any(|&(start, end)| (start..=end).contains(&new_line))
+        {
+            continue;
         }
         builder
             .anchor_candidates
@@ -209,9 +211,7 @@ fn collect_replace_lines(
     builder: &mut HunkBuilder,
     range: &ContextRange,
     replace: ReplaceOpData,
-    old_scope: Option<&ScopeNode>,
     ctx: &HunkBuildContext<'_>,
-    ops: &[DiffOp],
 ) {
     let added_in_range = collect_replace_removed_lines(
         builder,
@@ -222,26 +222,8 @@ fn collect_replace_lines(
         ctx.old_lines,
     );
     if added_in_range {
-        collect_replace_added_lines(
-            builder,
-            old_scope,
-            replace.new_index,
-            replace.new_len,
-            ctx,
-            ops,
-        );
+        collect_replace_added_lines(builder, replace.new_index, replace.new_len, ctx);
     }
-}
-
-fn old_scope_for_range(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Option<ScopeNode> {
-    if range.ancestor_source != AncestorSource::Old {
-        return None;
-    }
-
-    ctx.old_parsed
-        .enclosing_scopes(range.scope_line)
-        .last()
-        .cloned()
 }
 
 /// Render a brand-new named scope embedded in a `Replace`'s new content.
@@ -320,7 +302,6 @@ fn build_hunk_from_range(
     }
 
     let mut builder = HunkBuilder::default();
-    let old_scope = old_scope_for_range(range, ctx);
 
     for op in ops {
         match op {
@@ -367,9 +348,7 @@ fn build_hunk_from_range(
                     new_index: *new_index,
                     new_len: *new_len,
                 },
-                old_scope.as_ref(),
                 ctx,
-                ops,
             ),
         }
     }
@@ -415,11 +394,21 @@ pub(super) fn build(
     old_lines: &[&str],
     new_lines: &[&str],
 ) -> Vec<Hunk> {
+    // The planner's new-scope-span ranges carry each fresh scope's full
+    // NEW-space bounds. Collect them once so the aligned-edit added side
+    // can skip every line a new-scope-span hunk owns.
+    let new_scope_spans: Vec<(usize, usize)> = ranges
+        .iter()
+        .filter(|r| r.render_new_scope_span)
+        .filter_map(|r| r.scope_id)
+        .collect();
+
     let ctx = HunkBuildContext {
         old_parsed,
         new_parsed,
         old_lines,
         new_lines,
+        new_scope_spans: &new_scope_spans,
     };
 
     ranges
@@ -514,52 +503,6 @@ fn ancestors_at_line(
         AncestorSource::Old => old_parsed.breadcrumb_scopes(line),
         AncestorSource::New => new_parsed.breadcrumb_scopes(line),
     }
-}
-
-/// First NEW line at which a brand-new **named** scope begins inside a
-/// Replace's new content. This is the cutoff for the OLD-anchored aligned
-/// edit hunk: the aligned edit stops exactly where the first fresh named
-/// scope starts, so the two sides never overlap or double-render.
-///
-/// Uses the same [`crate::syntax::ParsedFile::named_scope_at`] primitive
-/// and same-slot guards as [`super::range::new_replace_scope_ranges`], so
-/// planner and builder agree on where a new scope begins.
-fn first_different_new_scope_start(
-    old_scope: &ScopeNode,
-    new_start: usize,
-    new_end: usize,
-    new_parsed: &crate::syntax::ParsedFile,
-    ops: &[DiffOp],
-) -> Option<usize> {
-    for line in new_start..new_end {
-        let Some(scope) = new_parsed.named_scope_at(line) else {
-            continue;
-        };
-        let scope_start = scope.start_line.saturating_sub(1);
-        if scope_start < new_start || scope_start >= new_end {
-            continue;
-        }
-
-        // Same logical slot in the diff alignment? Then it's a rename or a
-        // structural conversion of the same member, not a brand-new scope.
-        if same_slot(old_scope, &scope, ops) {
-            continue;
-        }
-
-        // Nested inside a NEW-tree ancestor that occupies the same slot as
-        // the old scope (a wrapped body): still part of the aligned edit.
-        if new_parsed
-            .enclosing_scopes(scope_start)
-            .iter()
-            .any(|s| same_slot(old_scope, s, ops))
-        {
-            continue;
-        }
-
-        return Some(scope_start);
-    }
-
-    None
 }
 
 #[cfg(test)]

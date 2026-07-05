@@ -24,11 +24,25 @@ use ratatui::text::{Line, Span};
 use deltoids::Theme;
 use deltoids::render_tui::rgb_to_color;
 
+/// A request to run a custom command, bubbled up to the `run()` loop
+/// (which owns the `Terminal`). Carries the fully-expanded shell line and
+/// which run path to take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CustomRun {
+    /// The expanded shell command (`{{filename}}` already substituted).
+    pub(crate) command: String,
+    /// `true` to suspend the TUI and run in the foreground.
+    pub(crate) subprocess: bool,
+}
+
 /// The result of handling one input event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AppCommand {
     Continue,
     Quit,
+    /// Run a custom command; handled by the `run()` loop since it may need
+    /// the `Terminal`.
+    Run(CustomRun),
 }
 
 /// How much work a mode may spend on this frame.
@@ -306,4 +320,10 @@ pub(crate) trait Mode {
     /// Reload from disk in place, preserving navigation state. Returns
     /// `true` when the visible content actually changed.
     fn reload(&mut self, viewport: ReloadViewport, theme: &Theme) -> Result<bool, String>;
+
+    /// Absolute path of the file the active selection points at, or
+    /// `None` when nothing selectable is on disk (empty state, piped
+    /// diff, directory-only selection with no file underneath). Custom
+    /// commands expand their `{{filename}}` against this.
+    fn selected_path(&self) -> Option<PathBuf>;
 }

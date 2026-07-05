@@ -434,6 +434,17 @@ impl Mode for FilesMode {
             viewport.right_viewport,
         )
     }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        // The selected file's workdir-relative path, joined onto the
+        // repo's working directory. `None` for a piped/static source (no
+        // repo on disk) or when there is no file under the selection.
+        let idx = self.sidebar.nearest_file_index()?;
+        let file = &self.model.files.get(idx)?.file;
+        let rel = crate::sidebar::display_path(file);
+        let workdir = self.repo.as_ref()?.workdir()?;
+        Some(workdir.join(rel))
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +512,37 @@ mod tests {
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
         handle_mouse(&mut state, mouse, 18, 18);
         assert_eq!(state.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn selected_path_none_without_repo() {
+        let resolved = vec![ResolvedFile {
+            file: file_diff("a.txt"),
+            before: "a\n".to_string(),
+            after: "b\n".to_string(),
+        }];
+        let state = make_state(&resolved);
+        // Static/piped source (no repo on disk) has no on-disk path.
+        assert_eq!(Mode::selected_path(&state), None);
+    }
+
+    #[test]
+    fn selected_path_joins_workdir_for_selected_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let expected = wrapper.workdir().unwrap().join("a.txt");
+        let state = FilesMode::new(model, input, Some(wrapper), false, &Theme::default(), 80);
+
+        assert_eq!(Mode::selected_path(&state), Some(expected));
     }
 
     #[test]

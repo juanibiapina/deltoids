@@ -299,7 +299,12 @@ fn parse_theme_config(text: &str) -> Option<(Option<ColorMode>, ThemeConfig)> {
     Some((mode, overlay))
 }
 
-fn config_file_path() -> Option<PathBuf> {
+/// Path to the deltoids `config.toml`, following XDG resolution
+/// (`$XDG_CONFIG_HOME/deltoids/config.toml`, falling back to
+/// `~/.config/deltoids/config.toml`). `None` when no config home can be
+/// resolved. Exposed so the CLI reads the same file for its own sections
+/// (e.g. `[[commands]]`) without duplicating the resolution logic.
+pub fn config_file_path() -> Option<PathBuf> {
     let config_home = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

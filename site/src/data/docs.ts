@@ -24,4 +24,8 @@ export const DOCS_NAV: readonly DocsNavGroup[] = [
     label: "Getting started",
     items: [{ label: "Install", href: "/docs/" }],
   },
+  {
+    label: "Reference",
+    items: [{ label: "Configuration", href: "/docs/configuration/" }],
+  },
 ] as const;

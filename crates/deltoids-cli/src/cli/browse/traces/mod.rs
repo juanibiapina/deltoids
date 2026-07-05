@@ -503,6 +503,20 @@ impl Mode for TracesMode {
         reload_traces(&mut self.traces, &mut self.state, &self.cwd)?;
         Ok(true)
     }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        // The selected entry's path, made absolute by joining its `cwd`
+        // when the recorded path is relative. `None` when there are no
+        // traces/entries.
+        let trace = self.traces.get(self.state.trace_index)?;
+        let entry = trace.entries.get(self.state.entry_index())?;
+        let path = PathBuf::from(&entry.path);
+        if path.is_absolute() {
+            Some(path)
+        } else {
+            Some(PathBuf::from(&entry.cwd).join(path))
+        }
+    }
 }
 
 /// Render the empty-state panes (no traces for this directory) while
@@ -719,5 +733,50 @@ mod tests {
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
         handle_mouse(&mut state, &traces, mouse, 20, 10);
         assert_eq!(state.focus, Focus::Entries);
+    }
+
+    #[test]
+    fn selected_path_returns_absolute_entry_path() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![edit_entry()],
+        }];
+        let mode = TracesMode {
+            state: AppState::new(traces.len()),
+            traces,
+            cwd: "/tmp/project".to_string(),
+            _watcher: None,
+        };
+        // edit_entry's path is already absolute.
+        assert_eq!(
+            Mode::selected_path(&mode),
+            Some(PathBuf::from("/tmp/project/app.txt"))
+        );
+    }
+
+    #[test]
+    fn selected_path_joins_cwd_for_relative_entry() {
+        let mut entry = edit_entry();
+        entry.cwd = "/tmp/project".to_string();
+        entry.path = "src/app.txt".to_string();
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![entry],
+        }];
+        let mode = TracesMode {
+            state: AppState::new(traces.len()),
+            traces,
+            cwd: "/tmp/project".to_string(),
+            _watcher: None,
+        };
+        assert_eq!(
+            Mode::selected_path(&mode),
+            Some(PathBuf::from("/tmp/project/src/app.txt"))
+        );
+    }
+
+    #[test]
+    fn selected_path_none_when_empty() {
+        assert_eq!(Mode::selected_path(&TracesMode::empty()), None);
     }
 }

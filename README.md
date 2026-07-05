@@ -92,6 +92,40 @@ git:
     pager: deltoids
 ```
 
+## Configuration
+
+Deltoids reads `$XDG_CONFIG_HOME/deltoids/config.toml` (falling back to
+`~/.config/deltoids/config.toml`).
+
+### Custom commands
+
+Bind a key in `deltoids tui` to a shell command that runs against the
+selected file. `{{filename}}` expands to the selected file's absolute
+path (shell-quoted, so paths with spaces work):
+
+```toml
+# Background (default): dispatches elsewhere and returns immediately.
+# The TUI never touches the terminal, so there is no flicker.
+[[commands]]
+key = "e"
+command = "dev tmux edit {{filename}}"
+description = "edit file in a tmux pane"
+
+# Subprocess: takes over the terminal for an inline editor. The TUI
+# suspends, hands the terminal to the child, then restores and repaints.
+[[commands]]
+key = "E"
+command = "nvim {{filename}}"
+subprocess = true
+description = "edit file inline in neovim"
+```
+
+`subprocess` defaults to `false`. `command` is a shell line (run via
+`sh -c`), not an argv. Custom keys work in both Files and Traces mode
+against the current selection; they cannot override the built-in keys
+(`q`, `[`, `]`, `<`, `>`, `?`) but can shadow a mode's own keys. Press
+`?` to see the configured bindings in the help popup.
+
 ## Coding Agent Integrations
 
 ### pi

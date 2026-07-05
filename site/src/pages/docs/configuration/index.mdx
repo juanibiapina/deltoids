@@ -1,0 +1,50 @@
+---
+layout: "../../../layouts/DocsLayout.astro"
+title: "Configuration"
+description: "Configure deltoids: config file location, theme, and custom key commands."
+---
+
+import Note from "../../../components/docs/Note.astro";
+
+# Configuration
+
+deltoids reads `$XDG_CONFIG_HOME/deltoids/config.toml`, falling back to
+`~/.config/deltoids/config.toml`.
+
+## Custom commands
+
+Bind a key in `deltoids tui` to a shell command that runs against the
+selected file. Each `[[commands]]` entry maps one `key` to a `command`.
+`{{filename}}` expands to the selected file's absolute path, shell-quoted
+so paths with spaces work.
+
+```toml
+# Background (default): dispatches elsewhere and returns immediately.
+# The TUI never touches the terminal, so there is no flicker.
+[[commands]]
+key = "e"
+command = "dev tmux edit {{filename}}"
+description = "edit file in a tmux pane"
+
+# Subprocess: takes over the terminal for an inline editor. The TUI
+# suspends, hands the terminal to the child, then restores and repaints.
+[[commands]]
+key = "E"
+command = "nvim {{filename}}"
+subprocess = true
+description = "edit file inline in neovim"
+```
+
+`command` is a shell line (run via `sh -c`), not an argv. Custom keys
+work in both Files and Traces mode against the current selection.
+
+<Note>
+  `subprocess` defaults to `false`. Background commands must return
+  quickly and must not write to the terminal (their output is
+  discarded). Set `subprocess = true` only for a command that takes
+  over the screen, such as an inline editor.
+</Note>
+
+Custom keys cannot override the built-in bindings (`q`, `[`, `]`, `<`,
+`>`, `?`) but can shadow a mode's own keys. Press `?` in the TUI to see
+the configured bindings in the help popup.

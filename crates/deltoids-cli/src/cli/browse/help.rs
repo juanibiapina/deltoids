@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use deltoids::Theme;
 use deltoids::render_tui::{pane_block, pane_border_color, rgb_to_color};
 
+use super::command::CustomCommand;
 use super::mode::AppCommand;
 
 /// Single source of truth for the help popup. Each entry is
@@ -49,11 +50,18 @@ pub(super) fn handle_key_help(help_visible: &mut bool, key: KeyCode) -> AppComma
 /// content (capped at 80% of the terminal in each axis), cleared
 /// underneath so the panes don't bleed through. Pane chrome reuses
 /// [`pane_block`] for visual consistency with the rest of the UI.
-pub(super) fn draw_help_popup(frame: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
-    let rows = build_help_lines(theme);
-    let content_width = HELP_KEYS
+pub(super) fn draw_help_popup(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    theme: &Theme,
+    commands: &[CustomCommand],
+) {
+    let entries = help_entries(commands);
+    let key_w = help_key_column_width(&entries);
+    let rows = build_help_lines(&entries, key_w, theme);
+    let content_width = entries
         .iter()
-        .map(|(_k, d)| help_key_column_width().saturating_add(d.width()) + 2)
+        .map(|(_k, d)| key_w.saturating_add(d.width()) + 2)
         .max()
         .unwrap_or(40);
     let want_w = (content_width as u16).saturating_add(4); // 2 borders + 2 padding
@@ -81,27 +89,50 @@ pub(super) fn draw_help_popup(frame: &mut ratatui::Frame<'_>, area: Rect, theme:
     frame.render_widget(Paragraph::new(rows), inner);
 }
 
+/// The full list of help rows: the built-in bindings followed by one row
+/// per configured custom command (`(key, description)`). Subprocess
+/// commands get a trailing marker so the two run modes are
+/// distinguishable.
+fn help_entries(commands: &[CustomCommand]) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = HELP_KEYS
+        .iter()
+        .map(|(k, d)| ((*k).to_string(), (*d).to_string()))
+        .collect();
+    for cmd in commands {
+        let desc = if cmd.subprocess {
+            format!("{} (subprocess)", cmd.description)
+        } else {
+            cmd.description.clone()
+        };
+        entries.push((cmd.key.to_string(), desc));
+    }
+    entries
+}
+
 /// Width reserved for the key column in the help popup so the
 /// description column lines up.
-fn help_key_column_width() -> usize {
-    HELP_KEYS.iter().map(|(k, _)| k.width()).max().unwrap_or(0)
+fn help_key_column_width(entries: &[(String, String)]) -> usize {
+    entries.iter().map(|(k, _)| k.width()).max().unwrap_or(0)
 }
 
 /// Build the help popup's body as ratatui [`Line`]s. Two columns:
 /// keys (theme-accent) and description (default).
-fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
-    let key_w = help_key_column_width();
+fn build_help_lines(
+    entries: &[(String, String)],
+    key_w: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let key_style = Style::default().fg(rgb_to_color(theme.border_active));
     let desc_style = Style::default().fg(rgb_to_color(theme.muted));
-    HELP_KEYS
+    entries
         .iter()
         .map(|(k, d)| {
             let pad = key_w.saturating_sub(k.width());
             Line::from(vec![
-                Span::styled((*k).to_string(), key_style),
+                Span::styled(k.clone(), key_style),
                 Span::raw(" ".repeat(pad)),
                 Span::raw("  "),
-                Span::styled((*d).to_string(), desc_style),
+                Span::styled(d.clone(), desc_style),
             ])
         })
         .collect()
@@ -144,5 +175,33 @@ mod tests {
         let mut visible = true;
         handle_key_help(&mut visible, KeyCode::Char('j'));
         assert!(visible, "unrelated keys must not close the popup");
+    }
+
+    #[test]
+    fn help_entries_append_custom_commands() {
+        let commands = vec![
+            CustomCommand {
+                key: 'e',
+                command: "dev tmux edit {{filename}}".into(),
+                subprocess: false,
+                description: "edit in a tmux pane".into(),
+            },
+            CustomCommand {
+                key: 'E',
+                command: "nvim {{filename}}".into(),
+                subprocess: true,
+                description: "edit inline".into(),
+            },
+        ];
+        let entries = help_entries(&commands);
+        // Built-in rows come first, then the custom rows.
+        assert_eq!(entries.len(), HELP_KEYS.len() + 2);
+        let (k, d) = &entries[HELP_KEYS.len()];
+        assert_eq!(k, "e");
+        assert_eq!(d, "edit in a tmux pane");
+        // Subprocess commands are marked.
+        let (k, d) = &entries[HELP_KEYS.len() + 1];
+        assert_eq!(k, "E");
+        assert_eq!(d, "edit inline (subprocess)");
     }
 }

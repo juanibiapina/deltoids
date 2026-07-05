@@ -60,14 +60,17 @@ use crate::events::read_event_burst;
 use crate::sidebar_width::{self, Preference};
 use crate::terminal::TerminalSession;
 
+mod command;
 pub mod files;
 mod help;
 pub mod mode;
+mod suspend;
 pub mod traces;
 mod watch;
 
+use command::{CustomCommand, load_commands};
 use files::FilesMode;
-use mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TAB_LABELS, TabStrip};
+use mode::{AppCommand, CustomRun, DrawBudget, Mode, ReloadViewport, TAB_LABELS, TabStrip};
 use traces::TracesMode;
 
 /// Active-mode index for the Files panel.
@@ -132,11 +135,13 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     ];
 
     let mut shell = Shell::new(active_mode, sidebar_pref, total_width);
+    shell.commands = load_commands();
 
     loop {
         let active = shell.active;
         let help_visible = shell.help_visible;
         let pref = shell.sidebar_pref;
+        let commands = &shell.commands;
         // When the active mode hasn't been built yet (just toggled to), draw
         // a loading frame instead. The tab strip already shows the switch,
         // so the UI feels responsive while the (possibly slow) build runs.
@@ -163,7 +168,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
                     );
                 }
                 if help_visible {
-                    help::draw_help_popup(frame, area, &theme);
+                    help::draw_help_popup(frame, area, &theme, commands);
                 }
             })
             .map_err(|err| format!("failed to render screen: {err}"))?
@@ -199,8 +204,21 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         // burst means the user is actively navigating, so the next frame
         // draws Fast (deferring expensive rendering).
         shell.note_input(burst.is_empty());
-        if shell.apply_events(&mut modes, burst, vp, &theme)? == AppCommand::Quit {
-            break;
+        match shell.apply_events(&mut modes, burst, vp, &theme)? {
+            AppCommand::Quit => break,
+            // A custom command runs here, in the loop that owns the
+            // terminal. Background: run without touching the terminal, so
+            // the next draw is unchanged (no flicker). Subprocess: suspend,
+            // hand the terminal to the child, restore. Errors are ignored
+            // in v1 (the screen is intact / rebuilt regardless).
+            AppCommand::Run(run) => {
+                if run.subprocess {
+                    let _ = suspend::run_foreground(&mut terminal, &run.command);
+                } else {
+                    let _ = suspend::run_background(&run.command);
+                }
+            }
+            AppCommand::Continue => {}
         }
 
         // Drain armed watchers; mark the owning mode dirty.
@@ -256,6 +274,8 @@ struct Shell {
     /// false, the user is actively navigating and the next frame draws
     /// `Fast`; when true, it draws `Full`.
     input_idle: bool,
+    /// User-configured custom key commands (from `config.toml`).
+    commands: Vec<CustomCommand>,
 }
 
 impl Shell {
@@ -275,6 +295,7 @@ impl Shell {
             toggle_pending: false,
             last_poll: Instant::now(),
             input_idle: true,
+            commands: Vec::new(),
         }
     }
 
@@ -476,8 +497,27 @@ impl Shell {
                 self.sidebar_pref.narrow();
                 AppCommand::Continue
             }
+            // Custom commands take priority over a mode's own keys (but not
+            // over the shell globals above). A bound key with a selectable
+            // file expands and bubbles up a Run request; with nothing
+            // selected it is a silent no-op.
+            KeyCode::Char(c) if self.command_for(c).is_some() => {
+                let cmd = self.command_for(c).expect("checked by guard");
+                match modes[self.active].selected_path() {
+                    Some(path) => AppCommand::Run(CustomRun {
+                        command: command::expand(&cmd.command, &path),
+                        subprocess: cmd.subprocess,
+                    }),
+                    None => AppCommand::Continue,
+                }
+            }
             other => modes[self.active].handle_key(other, left_viewport, right_viewport),
         }
+    }
+
+    /// The custom command bound to `key`, if any.
+    fn command_for(&self, key: char) -> Option<&CustomCommand> {
+        self.commands.iter().find(|c| c.key == key)
     }
 
     /// Handle a mouse event. Divider drag is resolved here; everything
@@ -541,8 +581,10 @@ impl Shell {
             // A toggle may have armed a lazy reload mid-burst; service it
             // before the next draw so the now-active mode is fresh.
             self.reload_active_if_due(modes, vp, theme)?;
-            if cmd == AppCommand::Quit {
-                return Ok(AppCommand::Quit);
+            // Bubble Quit and Run up to the run() loop (which owns the
+            // terminal); keep draining the burst only on Continue.
+            if cmd != AppCommand::Continue {
+                return Ok(cmd);
             }
         }
         Ok(AppCommand::Continue)

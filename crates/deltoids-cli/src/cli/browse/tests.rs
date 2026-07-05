@@ -24,12 +24,19 @@ struct Recorder {
 
 struct RecordingMode {
     rec: Rc<RefCell<Recorder>>,
+    selected: Option<PathBuf>,
 }
 
 impl RecordingMode {
     fn new() -> (Self, Rc<RefCell<Recorder>>) {
         let rec = Rc::new(RefCell::new(Recorder::default()));
-        (Self { rec: rec.clone() }, rec)
+        (
+            Self {
+                rec: rec.clone(),
+                selected: None,
+            },
+            rec,
+        )
     }
 }
 
@@ -70,6 +77,10 @@ impl Mode for RecordingMode {
     fn reload(&mut self, _viewport: ReloadViewport, _theme: &Theme) -> Result<bool, String> {
         self.rec.borrow_mut().reloads += 1;
         Ok(true)
+    }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.selected.clone()
     }
 }
 
@@ -404,6 +415,109 @@ fn loading_frame_shows_tab_strip_and_message() {
         text.contains("Traces"),
         "tab strip missing Traces: {text:?}"
     );
+}
+
+fn custom_command(key: char, command: &str, subprocess: bool) -> CustomCommand {
+    CustomCommand {
+        key,
+        command: command.to_string(),
+        subprocess,
+        description: String::new(),
+    }
+}
+
+#[test]
+fn custom_key_with_selected_path_returns_run() {
+    let (mut modes, _, _) = two_modes();
+    // Give Files mode a selected file.
+    let (files, files_rec) = RecordingMode::new();
+    modes[FILES_MODE] = Box::new(RecordingMode {
+        rec: files_rec.clone(),
+        selected: Some(PathBuf::from("/tmp/a.txt")),
+    });
+    let _ = files;
+    let mut s = shell();
+    s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
+
+    let cmd = s.handle_key(&mut modes, KeyCode::Char('e'), 4, 4);
+    assert_eq!(
+        cmd,
+        AppCommand::Run(CustomRun {
+            command: "nvim '/tmp/a.txt'".to_string(),
+            subprocess: false,
+        })
+    );
+    // The key never reached the mode's own handler.
+    assert!(files_rec.borrow().keys.is_empty());
+}
+
+#[test]
+fn custom_key_preserves_subprocess_flag() {
+    let (mut modes, _, _) = two_modes();
+    let (_, files_rec) = RecordingMode::new();
+    modes[FILES_MODE] = Box::new(RecordingMode {
+        rec: files_rec,
+        selected: Some(PathBuf::from("/tmp/a.txt")),
+    });
+    let mut s = shell();
+    s.commands = vec![custom_command('E', "nvim {{filename}}", true)];
+
+    let cmd = s.handle_key(&mut modes, KeyCode::Char('E'), 4, 4);
+    assert_eq!(
+        cmd,
+        AppCommand::Run(CustomRun {
+            command: "nvim '/tmp/a.txt'".to_string(),
+            subprocess: true,
+        })
+    );
+}
+
+#[test]
+fn custom_key_with_no_selection_is_noop() {
+    // Default mock modes have no selected path.
+    let (mut modes, files_rec, _) = two_modes();
+    let mut s = shell();
+    s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
+
+    let cmd = s.handle_key(&mut modes, KeyCode::Char('e'), 4, 4);
+    assert_eq!(cmd, AppCommand::Continue);
+    // Silent no-op: the key is consumed, not routed to the mode.
+    assert!(files_rec.borrow().keys.is_empty());
+}
+
+#[test]
+fn unconfigured_key_routes_to_mode() {
+    let (mut modes, files_rec, _) = two_modes();
+    let mut s = shell();
+    s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
+    s.handle_key(&mut modes, KeyCode::Char('x'), 4, 4);
+    assert_eq!(files_rec.borrow().keys, vec![KeyCode::Char('x')]);
+}
+
+#[test]
+fn global_builtins_beat_colliding_custom_binding() {
+    let (mut modes, _, _) = two_modes();
+    let (_, files_rec) = RecordingMode::new();
+    modes[FILES_MODE] = Box::new(RecordingMode {
+        rec: files_rec,
+        selected: Some(PathBuf::from("/tmp/a.txt")),
+    });
+    let mut s = shell();
+    // Bind the same keys as the `q` quit and `[` cycle globals.
+    s.commands = vec![
+        custom_command('q', "echo q", false),
+        custom_command('[', "echo bracket", false),
+    ];
+    // `q` still quits.
+    assert_eq!(
+        s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
+        AppCommand::Quit
+    );
+    // `[` still cycles, does not run the custom command.
+    assert_eq!(s.active, FILES_MODE);
+    let cmd = s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
+    assert_eq!(cmd, AppCommand::Continue);
+    assert_eq!(s.active, TRACES_MODE);
 }
 
 #[test]

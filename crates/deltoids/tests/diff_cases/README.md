@@ -186,4 +186,5 @@ Current cases:
 | `220-toml-comment-only-edit-above-table`            | TOML `#` comment-only edit above a table anchors on the table |
 | `095-typescript-large-fn-no-hunk-overlap`          | Insert beside object literal in 200+ line fn → no overlapping hunks       |
 | `096-typescript-large-fn-nearby-changes-merge`     | Three replaces in adjacent objects in 200+ line fn → one merged hunk      |
-| `097-typescript-method-rename-split`             | Method rename + body change stays in one hunk, not split by brace cross-match |
+| `097-typescript-method-rename-split`             | Method rename + body change + new wrapper render faithfully in one hunk, `+/-` counts match git |
+| `237-rust-replace-adds-multiple-new-functions`      | A Replace that edits one fn and appends new fns renders every line by op kind, `+/-` counts match git |

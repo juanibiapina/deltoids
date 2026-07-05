@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: Reworked the Files sidebar styling.
 
+### Fixed
+
+- diff: Diffs now show the same added and removed lines as `git diff`; an edit plus new functions or tests beside it renders as one hunk that names their shared parent scope in the breadcrumb.
+
 ## [0.11.1] - 2026-07-04
 
 ### Fixed

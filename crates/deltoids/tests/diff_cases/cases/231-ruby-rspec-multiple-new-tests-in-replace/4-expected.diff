@@ -1,25 +1,21 @@
-@@ -2,4 +2,5 @@ [call RSpec.describe] [call it("falls back to a default")]
+@@ -2,4 +2,18 @@ [call RSpec.describe]
 -  it "falls back to a default" do
 +  it "recovers via the slow path" do
      setup_stub
 -    expect(result).to eq("default")
 +    expect(result).to eq(github_id: 1, login: "ghost")
 +  end
-   end
-
-@@ -5,0 +7,4 @@ [call RSpec.describe] [call it("raises when recovery returns nothing")]
++
 +  it "raises when recovery returns nothing" do
 +    setup_stub
 +    expect { run }.to raise_error(RecoveryError)
 +  end
-
-@@ -5,0 +12,4 @@ [call RSpec.describe] [call it("retries on transient errors")]
++
 +  it "retries on transient errors" do
 +    setup_stub
 +    expect(client.retries).to eq(3)
 +  end
-
-@@ -5,0 +17,3 @@ [call RSpec.describe] [call it("logs the recovery attempt")]
++
 +  it "logs the recovery attempt" do
 +    expect(logger).to have_received(:info)
-+  end
+   end

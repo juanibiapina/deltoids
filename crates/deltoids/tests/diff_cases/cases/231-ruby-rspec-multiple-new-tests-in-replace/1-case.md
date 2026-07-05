@@ -7,17 +7,19 @@ first exposed the bug: one edited example plus **three** brand-new
 examples, all fused by the line-level diff into a single `Replace` whose
 new content carries every new test.
 
-A single-range Replace planner could only ever recover the first new
-scope, dropping the rest. This case pins the per-scope cursor loop: the
-planner must emit one add-only hunk **per** brand-new labeled callback,
-and each hunk must contain the whole test (no header-only fragments, no
-duplicated lines, no stray leading blanks).
+The builder renders the `Replace` faithfully — every new line as `+`,
+every removed line as `-`, matched lines as context — so all three new
+examples plus the edit render in one hunk whose `+/-` counts match git.
+Nothing is dropped, nothing is duplicated, and the unchanged closing
+`end` renders as context. The changed lines span several sibling `it`
+blocks, so the breadcrumb is their shared parent `[call RSpec.describe]`.
 
 ## Behaviours pinned
 
-- The edited `it "recovers via the slow path"` example renders as one
-  hunk (removals + adds).
-- Each of the three new examples (`raises when recovery returns
+- The edit and all three new examples (`raises when recovery returns
   nothing`, `retries on transient errors`, `logs the recovery attempt`)
-  renders as its own complete add-only hunk.
-- The unchanged `it "exposes the total count"` example does not appear.
+  render together in one hunk whose `+/-` counts match `git diff`.
+- Every added line appears exactly once; none is dropped or duplicated.
+- The unchanged `it "exposes the total count"` example stays out of the
+  hunk (it renders only the closing `end` as context).
+- The breadcrumb names the shared parent `[call RSpec.describe]`.

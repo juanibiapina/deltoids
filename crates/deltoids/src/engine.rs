@@ -311,7 +311,7 @@ mod tests {
         // Replace { old=10..15 (5 lines), new=20..23 (3 lines) }.
         // Inside the replace, lines map to ni + min(local_offset, new_len-1).
         // This keeps the LAST old line mapped to the LAST new line, which
-        // is what `same_slot` needs for `scope.end` of asymmetric replaces
+        // callers rely on for `scope.end` of asymmetric replaces
         // (e.g. `};` -> `}` where the closing brace IS the replace).
         let ops = vec![DiffOp::Replace {
             old_index: 10,

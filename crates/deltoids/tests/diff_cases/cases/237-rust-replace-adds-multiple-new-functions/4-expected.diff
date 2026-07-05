@@ -1,0 +1,16 @@
+@@ -2,4 +2,14 @@ [mod_item tests]
+     #[test]
+     fn one() {
+-        assert_eq!(work(1), 1);
++        assert_eq!(work(1), 2);
++    }
++
++    #[test]
++    fn two() {
++        assert_eq!(work(2), 2);
++    }
++
++    #[test]
++    fn three() {
++        assert_eq!(work(3), 3);
+     }

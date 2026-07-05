@@ -17,12 +17,6 @@ struct HunkBuildContext<'a> {
     new_parsed: &'a crate::syntax::ParsedFile,
     old_lines: &'a [&'a str],
     new_lines: &'a [&'a str],
-    /// NEW-space inclusive spans claimed by new-scope-span hunks, as
-    /// planned by [`super::range::new_replace_scope_ranges`]. The single
-    /// source of truth for "which NEW lines belong to a fresh scope's own
-    /// hunk"; the aligned-edit added side reads these instead of
-    /// re-deriving ownership per op.
-    new_scope_spans: &'a [(usize, usize)],
 }
 
 #[derive(Default)]
@@ -153,49 +147,29 @@ fn collect_replace_removed_lines(
     added_in_range
 }
 
-fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
-    }
-}
-
 fn collect_replace_added_lines(
     builder: &mut HunkBuilder,
     new_index: usize,
     new_len: usize,
     ctx: &HunkBuildContext<'_>,
 ) {
-    let mut added_lines = Vec::new();
+    // Render every NEW line the Replace introduces, faithfully, so the
+    // displayed `+` count matches the raw op stream (and git). Grouping
+    // and context are the planner's job; the builder never drops or
+    // reclassifies a line.
     for i in 0..new_len {
         let new_line = new_index + i;
-        // Skip any NEW line owned by a new-scope-span hunk. The planner
-        // records each fresh scope's full span, so a scope whose tail is
-        // carried by this op (its start sat in an earlier op) is still
-        // recognised and never re-rendered here.
-        if ctx
-            .new_scope_spans
-            .iter()
-            .any(|&(start, end)| (start..=end).contains(&new_line))
-        {
-            continue;
-        }
         builder
             .anchor_candidates
             .push((AncestorSource::New, new_line));
-        added_lines.push(
-            ctx.new_lines
+        builder.lines.push(DiffLine {
+            kind: LineKind::Added,
+            content: ctx
+                .new_lines
                 .get(new_line)
                 .copied()
                 .unwrap_or("")
                 .to_string(),
-        );
-    }
-
-    trim_trailing_blank_lines(&mut added_lines);
-    for content in added_lines {
-        builder.lines.push(DiffLine {
-            kind: LineKind::Added,
-            content,
         });
     }
 }
@@ -226,81 +200,11 @@ fn collect_replace_lines(
     }
 }
 
-/// Render a brand-new named scope embedded in a `Replace`'s new content.
-///
-/// The scope's whole new-file line span (`scope_id`, NEW-space inclusive
-/// bounds) is emitted as added lines straight from `new_lines`, with
-/// leading/trailing blank lines trimmed. This is independent of op
-/// boundaries, so a scope whose lines straddle several `Replace`/`Equal`
-/// ops still renders in full instead of fragmenting.
-fn build_new_scope_span_hunk(range: &ContextRange, ctx: &HunkBuildContext<'_>) -> Option<Hunk> {
-    let (scope_start, scope_end) = range.scope_id?;
-
-    let mut start = scope_start;
-    let mut end = scope_end.min(ctx.new_lines.len().saturating_sub(1));
-    // Trim leading/trailing blank lines from the span.
-    while start < end
-        && ctx
-            .new_lines
-            .get(start)
-            .is_some_and(|l| l.trim().is_empty())
-    {
-        start += 1;
-    }
-    while end > start && ctx.new_lines.get(end).is_some_and(|l| l.trim().is_empty()) {
-        end -= 1;
-    }
-
-    let mut builder = HunkBuilder {
-        new_start: Some(start + 1),
-        ..Default::default()
-    };
-    for new_line in start..=end {
-        builder
-            .anchor_candidates
-            .push((AncestorSource::New, new_line));
-        builder.lines.push(DiffLine {
-            kind: LineKind::Added,
-            content: ctx
-                .new_lines
-                .get(new_line)
-                .copied()
-                .unwrap_or("")
-                .to_string(),
-        });
-    }
-
-    if builder.lines.is_empty() {
-        return None;
-    }
-
-    let ancestors = select_hunk_ancestors(&builder.anchor_candidates, AncestorSource::New, ctx)
-        .unwrap_or_else(|| {
-            ancestors_at_line(
-                AncestorSource::New,
-                range.scope_line,
-                ctx.old_parsed,
-                ctx.new_parsed,
-            )
-        });
-
-    Some(Hunk {
-        old_start: range.start + 1,
-        new_start: builder.new_start.unwrap_or(1),
-        lines: builder.lines,
-        ancestors,
-    })
-}
-
 fn build_hunk_from_range(
     ops: &[DiffOp],
     range: &ContextRange,
     ctx: &HunkBuildContext<'_>,
 ) -> Option<Hunk> {
-    if range.render_new_scope_span {
-        return build_new_scope_span_hunk(range, ctx);
-    }
-
     let mut builder = HunkBuilder::default();
 
     for op in ops {
@@ -362,15 +266,14 @@ fn build_hunk_from_range(
         return None;
     }
 
-    let ancestors = select_hunk_ancestors(&builder.anchor_candidates, range.ancestor_source, ctx)
-        .unwrap_or_else(|| {
-            ancestors_at_line(
-                range.ancestor_source,
-                range.scope_line,
-                ctx.old_parsed,
-                ctx.new_parsed,
-            )
-        });
+    let ancestors = select_hunk_ancestors(&builder.anchor_candidates, ctx).unwrap_or_else(|| {
+        ancestors_at_line(
+            range.ancestor_source,
+            range.scope_line,
+            ctx.old_parsed,
+            ctx.new_parsed,
+        )
+    });
 
     Some(Hunk {
         old_start: range.start + 1,
@@ -394,21 +297,11 @@ pub(super) fn build(
     old_lines: &[&str],
     new_lines: &[&str],
 ) -> Vec<Hunk> {
-    // The planner's new-scope-span ranges carry each fresh scope's full
-    // NEW-space bounds. Collect them once so the aligned-edit added side
-    // can skip every line a new-scope-span hunk owns.
-    let new_scope_spans: Vec<(usize, usize)> = ranges
-        .iter()
-        .filter(|r| r.render_new_scope_span)
-        .filter_map(|r| r.scope_id)
-        .collect();
-
     let ctx = HunkBuildContext {
         old_parsed,
         new_parsed,
         old_lines,
         new_lines,
-        new_scope_spans: &new_scope_spans,
     };
 
     ranges
@@ -419,34 +312,44 @@ pub(super) fn build(
 
 fn select_hunk_ancestors(
     candidates: &[(AncestorSource, usize)],
-    preferred_source: AncestorSource,
     ctx: &HunkBuildContext<'_>,
 ) -> Option<Vec<ScopeNode>> {
-    let alternate_source = match preferred_source {
-        AncestorSource::Old => AncestorSource::New,
-        AncestorSource::New => AncestorSource::Old,
-    };
-
-    for source in [preferred_source, alternate_source] {
-        let chains: Vec<Vec<ScopeNode>> = candidates
-            .iter()
-            .filter(|(candidate_source, line)| {
-                // Blank lines carry no scope signal; excluding them keeps the
-                // LCA anchored on the lines that actually name a structure.
-                *candidate_source == source && !candidate_line_is_blank(source, *line, ctx)
-            })
-            .map(|(candidate_source, line)| {
-                ancestors_at_line(*candidate_source, *line, ctx.old_parsed, ctx.new_parsed)
-            })
-            .collect();
-
-        let ancestors = common_ancestor_prefix(&chains);
-        if !ancestors.is_empty() {
-            return Some(ancestors);
-        }
+    // Breadcrumb = the lowest common ancestor of the hunk's changed lines,
+    // anchored on the NEW tree (where the change lands in the resulting
+    // file). When the added lines all sit in one new scope the breadcrumb
+    // names it — even if it was renamed. When they span several new sibling
+    // scopes (an edited scope plus brand-new siblings fused into one
+    // Replace) the LCA is their shared parent, so the breadcrumb climbs to
+    // the `describe` / class / mod instead of over-naming the first scope.
+    //
+    // Fall back to the OLD tree only when there are no added lines (a pure
+    // deletion), so a deleted scope still names itself.
+    let new_lca = source_lca(candidates, AncestorSource::New, ctx);
+    if !new_lca.is_empty() {
+        return Some(new_lca);
     }
+    let old_lca = source_lca(candidates, AncestorSource::Old, ctx);
+    (!old_lca.is_empty()).then_some(old_lca)
+}
 
-    None
+/// LCA of the (non-blank) candidate lines belonging to one source tree.
+fn source_lca(
+    candidates: &[(AncestorSource, usize)],
+    source: AncestorSource,
+    ctx: &HunkBuildContext<'_>,
+) -> Vec<ScopeNode> {
+    let chains: Vec<Vec<ScopeNode>> = candidates
+        .iter()
+        .filter(|(candidate_source, line)| {
+            // Blank lines carry no scope signal; excluding them keeps the
+            // LCA anchored on the lines that actually name a structure.
+            *candidate_source == source && !candidate_line_is_blank(source, *line, ctx)
+        })
+        .map(|(candidate_source, line)| {
+            ancestors_at_line(*candidate_source, *line, ctx.old_parsed, ctx.new_parsed)
+        })
+        .collect();
+    common_ancestor_prefix(&chains)
 }
 
 /// Longest common prefix (lowest common ancestor) of the given ancestor
@@ -552,7 +455,6 @@ mod tests {
             scope_line: 1,
             prevent_merge: false,
             scope_id: None,
-            render_new_scope_span: false,
         };
         let old_lines = ["zero", "one", "two"];
 

@@ -1,4 +1,4 @@
-@@ -6,6 +6,6 @@ [function_declaration TestClient] [call_expression t.Run("falls back to a default")]
+@@ -6,6 +6,6 @@ [function_declaration TestClient] [call_expression t.Run("recovers via the slow path")]
 -	t.Run("falls back to a default", func(t *testing.T) {
 +	t.Run("recovers via the slow path", func(t *testing.T) {
  		setupStub()

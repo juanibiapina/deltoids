@@ -40,11 +40,6 @@ struct ContextRange {
     /// stay separate hunks instead of producing one hunk with a misleading
     /// breadcrumb.
     scope_id: Option<(usize, usize)>,
-    /// When true, this range renders a brand-new named scope embedded in a
-    /// `Replace`'s new content. The builder emits the scope's whole
-    /// new-file line span (`scope_id`, NEW-space bounds) as added lines,
-    /// independent of op boundaries, instead of walking the op stream.
-    render_new_scope_span: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +405,100 @@ mod tests {
     fn compute_empty_returns_empty() {
         let diff = Diff::compute("", "", "test.rs");
         assert!(diff.hunks().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Line-count fidelity
+    //
+    // The displayed `+`/`-` lines must equal what the raw line engine
+    // produces (which matches `git diff`). The scope layer only groups
+    // lines and expands context; it must never drop, invent, or
+    // reclassify a changed line. Asserting equality with the raw op-stream
+    // totals is a git-free proxy for git parity.
+    // -----------------------------------------------------------------------
+
+    /// Sum the raw op stream's added/removed line counts.
+    fn raw_op_add_remove(original: &str, updated: &str) -> (usize, usize) {
+        let mut added = 0;
+        let mut removed = 0;
+        for op in Snapshot::compute(original, updated).ops() {
+            match *op {
+                DiffOp::Insert { new_len, .. } => added += new_len,
+                DiffOp::Delete { old_len, .. } => removed += old_len,
+                DiffOp::Replace {
+                    old_len, new_len, ..
+                } => {
+                    added += new_len;
+                    removed += old_len;
+                }
+                DiffOp::Equal { .. } => {}
+            }
+        }
+        (added, removed)
+    }
+
+    /// Sum the added/removed lines actually displayed across all hunks.
+    fn hunk_add_remove(diff: &Diff) -> (usize, usize) {
+        let lines = diff.hunks().iter().flat_map(|h| &h.lines);
+        let added = lines.clone().filter(|l| l.kind == LineKind::Added).count();
+        let removed = diff
+            .hunks()
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.kind == LineKind::Removed)
+            .count();
+        (added, removed)
+    }
+
+    fn assert_line_counts_faithful(original: &str, updated: &str, path: &str) {
+        let diff = Diff::compute(original, updated, path);
+        assert_eq!(
+            hunk_add_remove(&diff),
+            raw_op_add_remove(original, updated),
+            "displayed +/- must equal the raw op stream (git parity) for {path}"
+        );
+    }
+
+    #[test]
+    fn replace_adding_multiple_new_functions_matches_git_line_counts() {
+        // The icons.rs shape: edit one function's body and append two new
+        // sibling functions, fused into one Replace. Every added line must
+        // show once; the last function's cross-matched `}` is context.
+        let original = "mod tests {\n\
+             \x20   #[test]\n\
+             \x20   fn one() {\n\
+             \x20       assert_eq!(work(1), 1);\n\
+             \x20   }\n\
+             }\n";
+        let updated = "mod tests {\n\
+             \x20   #[test]\n\
+             \x20   fn one() {\n\
+             \x20       assert_eq!(work(1), 2);\n\
+             \x20   }\n\
+             \n\
+             \x20   #[test]\n\
+             \x20   fn two() {\n\
+             \x20       assert_eq!(work(2), 2);\n\
+             \x20   }\n\
+             \n\
+             \x20   #[test]\n\
+             \x20   fn three() {\n\
+             \x20       assert_eq!(work(3), 3);\n\
+             \x20   }\n\
+             }\n";
+        assert_line_counts_faithful(original, updated, "tests.rs");
+    }
+
+    #[test]
+    fn rename_plus_new_wrapper_matches_git_line_counts() {
+        let original = "class Foo {\n  getById(id) {\n    return this.db.find(id);\n  }\n}\n";
+        let updated = "class Foo {\n  fetchById(id) {\n    return this.db.findFirst(id);\n  }\n\n  getById(id) {\n    return this.fetchById(id);\n  }\n}\n";
+        assert_line_counts_faithful(original, updated, "foo.ts");
+    }
+
+    #[test]
+    fn plain_append_matches_git_line_counts() {
+        assert_line_counts_faithful("a\nb\n", "a\nb\nc\nd\n", "notes.txt");
     }
 
     // -----------------------------------------------------------------------
@@ -1559,8 +1648,12 @@ fn process() {
     }
 
     #[test]
-    fn new_function_and_modified_sibling_separate() {
-        // Adding a new function AND modifying a sibling should produce two hunks.
+    fn modify_and_append_fused_replace_renders_faithfully() {
+        // Modifying a line in `existing()` and appending a new function
+        // fuses into one `Replace` op (the trailing `}` matches as
+        // context). git renders this as a single hunk with +5/-1, and so
+        // must deltoids: the builder renders every op line by its kind, so
+        // displayed line counts match git.
         let original = "\
 fn existing() {
     let x = 1;
@@ -1578,14 +1671,18 @@ fn new_function() {
         let diff = Diff::compute(original, updated, "test.rs");
         let hunks = diff.hunks();
 
-        // Should have two hunks: one for modification, one for addition
-        assert_eq!(hunks.len(), 2, "modify + add should produce 2 hunks");
-
-        // First hunk should be the modification to existing()
-        assert!(hunks[0].ancestors.iter().any(|a| a.name == "existing"));
-
-        // Second hunk should be the new function
-        assert!(hunks[1].ancestors.iter().any(|a| a.name == "new_function"));
+        assert_eq!(hunks.len(), 1, "fused Replace renders as one hunk");
+        let added = hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Added)
+            .count();
+        let removed = hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::Removed)
+            .count();
+        assert_eq!((added, removed), (5, 1), "line counts match git (+5 -1)");
     }
 
     #[test]

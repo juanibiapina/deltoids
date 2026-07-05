@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- TUI: File sidebar shows staged/unstaged status in two columns, colors files and folders by staging state, bolds the selected row, and adds per-type file icons and colors.
+- TUI: Reworked the Files sidebar styling.
 
 ## [0.11.1] - 2026-07-04
 

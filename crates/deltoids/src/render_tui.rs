@@ -17,6 +17,16 @@
 //!
 //! All three accept `&Theme` for colours and load syntax assets internally
 //! via [`SyntaxAssets::load`] (cached). Callers do not pass syntax assets.
+//!
+//! Diff-body lines are highlighted through a per-hunk [`HunkHighlighter`]
+//! whose syntect state carries across the lines of a hunk, so multi-line
+//! scopes (block comments, multi-line strings, template literals, heredocs)
+//! keep their color on every line instead of line 2+ being re-tokenized as
+//! code. State is seeded fresh at the first line of each hunk, so a hunk that
+//! begins *inside* a multi-line construct (its opening delimiter not part of
+//! the hunk) may still mis-highlight the leading lines. The breadcrumb box
+//! highlights a single opening scope line in isolation, which is never
+//! mid-construct.
 
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
@@ -27,10 +37,11 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use syntect::easy::HighlightLines;
-use syntect::highlighting::FontStyle;
+use syntect::highlighting::{FontStyle, Style as SyntectStyle};
 use unicode_width::UnicodeWidthChar;
 
 use crate::config::{SyntaxAssets, Theme};
+use crate::highlight::HunkHighlighter;
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 use crate::{Hunk, HunkRun, LineKind};
@@ -86,19 +97,22 @@ pub fn render_hunk(
         }
     }
 
+    let mut highlighter = HunkHighlighter::new(highlight);
+
     for run in hunk.runs() {
         match run {
             HunkRun::Context(line) => {
+                let ranges = highlighter.context(&line.content);
                 output.extend(syntax_diff_line(
                     &line.content,
                     Color::Reset,
-                    highlight,
+                    &ranges,
                     width,
                     theme,
                 ));
             }
             HunkRun::Change(slice) => {
-                render_subhunk(slice, highlight, width, theme, &mut output);
+                render_subhunk(slice, &mut highlighter, width, theme, &mut output);
             }
         }
     }
@@ -214,7 +228,7 @@ fn render_breadcrumb_box(
 /// lines; pairing the two pools drives intraline emphasis.
 fn render_subhunk(
     lines: &[crate::DiffLine],
-    highlight: Option<&str>,
+    highlighter: &mut HunkHighlighter,
     width: usize,
     theme: &Theme,
     rendered: &mut Vec<Line<'static>>,
@@ -238,22 +252,24 @@ fn render_subhunk(
     for line in lines {
         match line.kind {
             LineKind::Removed => {
+                let ranges = highlighter.removed(&line.content);
                 rendered.extend(render_emphasized_line(
                     &line.content,
                     &minus_emphasis[mi],
                     LineKind::Removed,
-                    highlight,
+                    &ranges,
                     width,
                     theme,
                 ));
                 mi += 1;
             }
             LineKind::Added => {
+                let ranges = highlighter.added(&line.content);
                 rendered.extend(render_emphasized_line(
                     &line.content,
                     &plus_emphasis[pi],
                     LineKind::Added,
-                    highlight,
+                    &ranges,
                     width,
                     theme,
                 ));
@@ -277,7 +293,7 @@ fn render_emphasized_line(
     content: &str,
     emphasis: &LineEmphasis,
     kind: LineKind,
-    highlight: Option<&str>,
+    ranges: &[(SyntectStyle, &str)],
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -295,7 +311,7 @@ fn render_emphasized_line(
     };
 
     match emphasis {
-        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, highlight, width, theme),
+        LineEmphasis::Plain => syntax_diff_line(content, plain_bg, ranges, width, theme),
         LineEmphasis::Paired(sections) => {
             if width == 0 {
                 return vec![Line::from(Vec::new())];
@@ -310,8 +326,7 @@ fn render_emphasized_line(
             let mut sink = WrapSink::new(width, plain_bg);
             produce_emphasized(
                 &mut sink,
-                highlight,
-                content,
+                ranges,
                 sections,
                 &section_ranges,
                 &bg_for_section,
@@ -328,17 +343,18 @@ fn render_emphasized_line(
 fn syntax_diff_line(
     content: &str,
     bg: Color,
-    highlight: Option<&str>,
+    ranges: &[(SyntectStyle, &str)],
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let _ = theme;
+    let _ = content;
     if width == 0 {
         return vec![Line::from(Vec::new())];
     }
     let base_style = Style::default().bg(bg);
     let mut sink = WrapSink::new(width, bg);
-    produce_highlighted(&mut sink, highlight, content, base_style);
+    produce_highlighted(&mut sink, ranges, base_style);
     sink.finish()
 }
 
@@ -585,30 +601,18 @@ fn feed_segment<S: CharSink>(sink: &mut S, segment: &str, style: Style) -> bool 
     true
 }
 
-/// Feed `line`'s syntax-highlighted chars into `sink`, with a constant
-/// background from `base_style`. Falls back to plain (single style) when the
-/// highlighter errors.
+/// Feed precomputed syntect `ranges` into `sink`, with a constant background
+/// from `base_style`. The ranges come from the hunk's [`HunkHighlighter`] so
+/// multi-line scopes stay in color across the hunk.
 fn produce_highlighted<S: CharSink>(
     sink: &mut S,
-    highlight: Option<&str>,
-    line: &str,
+    ranges: &[(SyntectStyle, &str)],
     base_style: Style,
 ) {
-    let assets = SyntaxAssets::load();
-    let syntax = assets.syntax_for_name(highlight);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
-
-    match highlighter.highlight_line(line, assets.syntax_set) {
-        Ok(ranges) => {
-            for (syn_style, segment) in ranges {
-                let style = to_ratatui_style(base_style, syn_style);
-                if !feed_segment(sink, segment, style) {
-                    break;
-                }
-            }
-        }
-        Err(_) => {
-            feed_segment(sink, line, base_style);
+    for (syn_style, segment) in ranges {
+        let style = to_ratatui_style(base_style, *syn_style);
+        if !feed_segment(sink, segment, style) {
+            break;
         }
     }
 }
@@ -645,47 +649,27 @@ fn feed_emphasized_segment<S: CharSink>(
     true
 }
 
-/// Feed `line`'s syntax-highlighted chars into `sink`, choosing each char's
+/// Feed precomputed syntect `ranges` into `sink`, choosing each char's
 /// background from its emphasis section. Syntax foreground colours are kept.
 fn produce_emphasized<S: CharSink>(
     sink: &mut S,
-    highlight: Option<&str>,
-    line: &str,
+    ranges: &[(SyntectStyle, &str)],
     sections: &[EmphSection],
     section_ranges: &[(usize, usize)],
     bg_for_section: &impl Fn(&EmphSection) -> Color,
 ) {
-    let assets = SyntaxAssets::load();
-    let syntax = assets.syntax_for_name(highlight);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
-
     let mut byte_offset = 0usize;
-    match highlighter.highlight_line(line, assets.syntax_set) {
-        Ok(ranges) => {
-            for (syn_style, segment) in ranges {
-                if !feed_emphasized_segment(
-                    sink,
-                    segment,
-                    &mut byte_offset,
-                    Some(syn_style),
-                    sections,
-                    section_ranges,
-                    bg_for_section,
-                ) {
-                    break;
-                }
-            }
-        }
-        Err(_) => {
-            feed_emphasized_segment(
-                sink,
-                line,
-                &mut byte_offset,
-                None,
-                sections,
-                section_ranges,
-                bg_for_section,
-            );
+    for (syn_style, segment) in ranges {
+        if !feed_emphasized_segment(
+            sink,
+            segment,
+            &mut byte_offset,
+            Some(*syn_style),
+            sections,
+            section_ranges,
+            bg_for_section,
+        ) {
+            break;
         }
     }
 }
@@ -703,8 +687,16 @@ fn highlighted_spans(
     if max_width == 0 {
         return (Vec::new(), 0);
     }
+    // The breadcrumb paints a single opening scope line in isolation (never
+    // mid-construct), so a fresh one-off highlighter is correct here.
+    let assets = SyntaxAssets::load();
+    let syntax = assets.syntax_for_name(highlight);
+    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
+    let ranges = highlighter
+        .highlight_line(line, assets.syntax_set)
+        .unwrap_or_else(|_| vec![(SyntectStyle::default(), line)]);
     let mut sink = TruncateSink::new(max_width);
-    produce_highlighted(&mut sink, highlight, line, base_style);
+    produce_highlighted(&mut sink, &ranges, base_style);
     sink.finish()
 }
 
@@ -929,6 +921,98 @@ mod tests {
     /// Body rows (everything after the 3-line header box).
     fn body_rows(lines: &[Line<'static>]) -> Vec<Line<'static>> {
         lines[3..].to_vec()
+    }
+
+    /// Unique foreground colors on a row (order-independent).
+    fn fg_colors(line: &Line<'static>) -> std::collections::HashSet<Color> {
+        line.spans.iter().filter_map(|s| s.style.fg).collect()
+    }
+
+    fn ctx_line(content: &str) -> DiffLine {
+        DiffLine {
+            kind: LineKind::Context,
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn multiline_block_comment_stays_comment_colored() {
+        // A `/** … */` JSDoc block whose interior lines contain code-looking
+        // words. State carried across the hunk keeps every interior line in
+        // the comment color instead of re-tokenizing it as code.
+        let theme = Theme::default();
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                ctx_line("/**"),
+                ctx_line(" * VAPID event fetch return 404 const class"),
+                ctx_line(" * another import function while true line"),
+                ctx_line(" */"),
+            ],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, Some("TypeScriptReact"), 80, &theme);
+        let body = body_rows(&lines);
+        let first = fg_colors(&body[0]); // "/**"
+        let second = fg_colors(&body[1]); // interior comment line
+        assert_eq!(
+            second, first,
+            "interior comment line must share the opener's comment color"
+        );
+        assert_eq!(
+            second.len(),
+            1,
+            "interior comment line should be a single uniform color, got {second:?}"
+        );
+
+        // Rendered on its own (fresh state), the same interior line is
+        // tokenized as code and gets several distinct colors.
+        let standalone = render_hunk(
+            &context_hunk(" * VAPID event fetch return 404 const class"),
+            Some("TypeScriptReact"),
+            80,
+            &theme,
+        );
+        let standalone_set = fg_colors(&body_rows(&standalone)[0]);
+        assert_ne!(
+            standalone_set, second,
+            "state carry across the hunk should change the interior line's colors"
+        );
+    }
+
+    #[test]
+    fn multiline_change_inside_comment_keeps_state() {
+        // A changed line inside a multi-line comment: both removed and added
+        // lines stay comment-colored because the two-sided state carries the
+        // enclosing comment scope on each side.
+        let theme = Theme::default();
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                ctx_line("/**"),
+                ctx_line(" * intro line"),
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: " * old VAPID event fetch return".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: " * new VAPID event fetch return".to_string(),
+                },
+                ctx_line(" */"),
+            ],
+            ancestors: Vec::new(),
+        };
+        let lines = render_hunk(&hunk, Some("TypeScriptReact"), 80, &theme);
+        let body = body_rows(&lines);
+        let comment = fg_colors(&body[1]); // intro context line
+        assert_eq!(comment.len(), 1, "context comment line is uniform");
+        let removed = fg_colors(&body[2]);
+        let added = fg_colors(&body[3]);
+        assert_eq!(removed, comment, "removed line lost comment scope");
+        assert_eq!(added, comment, "added line lost comment scope");
     }
 
     #[test]

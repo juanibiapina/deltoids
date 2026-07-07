@@ -44,6 +44,7 @@ use crate::config::{SyntaxAssets, Theme};
 use crate::highlight::HunkHighlighter;
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
+use crate::symlink::SymlinkView;
 use crate::{Hunk, HunkRun, LineKind};
 
 const TAB_WIDTH: usize = 4;
@@ -76,6 +77,50 @@ pub fn render_rename_header(old_path: &str, new_path: &str, theme: &Theme) -> Li
         format!("renamed: {old_path} ⟶ {new_path}"),
         muted,
     ))
+}
+
+/// Render a symlink change as ratatui rows: a small icon box, a muted
+/// description, and a one-line `old → new` body. Mirrors the ANSI
+/// `render::render_symlink` row-for-row (rounded box corners here, sharp
+/// there, matching the hunk-box convention). `icon` is the glyph (or text
+/// fallback) the caller chose based on the icon toggle.
+pub fn render_symlink(view: &SymlinkView, icon: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let border = Style::default().fg(rgb_to_color(theme.border));
+    let muted = Style::default().fg(rgb_to_color(theme.muted));
+    let inner = display_width(icon) + 1;
+    let top = format!("{}╮", "─".repeat(inner));
+    let bot = format!("{}╯", "─".repeat(inner));
+
+    vec![
+        Line::from(Span::styled(top, border)),
+        Line::from(vec![
+            Span::styled(format!("{icon} │"), border),
+            Span::raw(" "),
+            Span::styled(view.description.clone(), muted),
+        ]),
+        Line::from(Span::styled(bot, border)),
+        symlink_body_line(view, theme),
+    ]
+}
+
+/// Paint the `old → new` body row: present sides carry the diff
+/// backgrounds; the arrow is muted.
+fn symlink_body_line(view: &SymlinkView, theme: &Theme) -> Line<'static> {
+    let muted = Style::default().fg(rgb_to_color(theme.muted));
+    let deleted_bg = Style::default().bg(rgb_to_color(theme.diff_deleted_bg));
+    let added_bg = Style::default().bg(rgb_to_color(theme.diff_added_bg));
+
+    let mut spans = Vec::new();
+    if let Some(old) = &view.old_target {
+        spans.push(Span::styled(old.clone(), deleted_bg));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled("\u{2192}", muted));
+    if let Some(new) = &view.new_target {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(new.clone(), added_bg));
+    }
+    Line::from(spans)
 }
 
 /// Render a full hunk: breadcrumb / line-number box followed by the diff
@@ -1169,6 +1214,61 @@ mod tests {
             .collect();
         assert_eq!(scope_rows.len(), 1, "ancestor text must not wrap");
         assert!(line_width(scope_rows[0]) <= width);
+    }
+
+    #[test]
+    fn render_symlink_retargeted_has_box_description_and_body() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink retargeted".to_string(),
+            old_target: Some("a.txt".to_string()),
+            new_target: Some("b.txt".to_string()),
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        assert_eq!(lines.len(), 4);
+        assert!(line_text(&lines[0]).contains("╮"), "top box corner");
+        assert!(line_text(&lines[2]).contains("╯"), "bottom box corner");
+        assert!(line_text(&lines[1]).contains("@"), "icon in middle row");
+        assert!(line_text(&lines[1]).contains("symlink retargeted"));
+        assert_eq!(line_text(&lines[3]), "a.txt \u{2192} b.txt");
+    }
+
+    #[test]
+    fn render_symlink_created_body_omits_old_side() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink created".to_string(),
+            old_target: None,
+            new_target: Some("b.txt".to_string()),
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        assert_eq!(line_text(&lines[3]), "\u{2192} b.txt");
+    }
+
+    #[test]
+    fn render_symlink_deleted_body_omits_new_side() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink deleted".to_string(),
+            old_target: Some("a.txt".to_string()),
+            new_target: None,
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        assert_eq!(line_text(&lines[3]), "a.txt \u{2192}");
+    }
+
+    #[test]
+    fn render_symlink_body_carries_diff_backgrounds() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink retargeted".to_string(),
+            old_target: Some("a.txt".to_string()),
+            new_target: Some("b.txt".to_string()),
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        let bgs: Vec<Color> = lines[3].spans.iter().filter_map(|s| s.style.bg).collect();
+        assert!(bgs.contains(&rgb_to_color(theme.diff_deleted_bg)));
+        assert!(bgs.contains(&rgb_to_color(theme.diff_added_bg)));
     }
 
     #[test]

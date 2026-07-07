@@ -12,10 +12,15 @@ use std::process::ExitCode;
 use clap::Args as ClapArgs;
 
 use deltoids::Diff;
+use deltoids::SymlinkView;
 use deltoids::Theme;
 use deltoids::parse::{FileDiff, GitDiff};
-use deltoids::render::{BgFill, render_file_header, render_hunk, render_rename_header};
+use deltoids::render::{
+    BgFill, render_file_header, render_hunk, render_rename_header, render_symlink,
+};
 use deltoids::{content, git};
+
+use crate::sidebar::{IconMode, symlink_icon};
 
 const OVERVIEW: &str = r#"Read a unified diff on stdin, render it with deltoids, and write to stdout.
 
@@ -150,7 +155,15 @@ fn display_path(file: &FileDiff) -> &str {
 /// then consumed by `render`.
 struct ResolvedFile<'a> {
     file: &'a FileDiff,
-    content: content::FileContent,
+    body: FileBody,
+}
+
+/// Per-file body: either resolved before/after content (rendered as a
+/// normal diff) or a decided symlink change (rendered as a symlink view,
+/// bypassing content resolution entirely).
+enum FileBody {
+    Content(content::FileContent),
+    Symlink(SymlinkView),
 }
 
 /// Everything `render` needs from `resolve`: per-file resolved content
@@ -171,6 +184,17 @@ fn resolve<'a>(
     let mut missing = Vec::new();
 
     for file in &parsed.files {
+        // Symlink changes are decided straight from the parsed diff and
+        // never touch the ODB or the working tree, so they cannot go
+        // missing. Route them past content resolution.
+        if let Some(view) = SymlinkView::from_file_diff(file) {
+            files.push(ResolvedFile {
+                file,
+                body: FileBody::Symlink(view),
+            });
+            continue;
+        }
+
         let content = content::retrieve(file, repo);
         let path = display_path(file);
         if let content::SideContent::Missing { hash } = &content.before {
@@ -185,7 +209,10 @@ fn resolve<'a>(
                 path: path.to_string(),
             });
         }
-        files.push(ResolvedFile { file, content });
+        files.push(ResolvedFile {
+            file,
+            body: FileBody::Content(content),
+        });
     }
 
     if !missing.is_empty() {
@@ -226,9 +253,27 @@ fn render(resolved: &ResolvedDiff<'_>, width: usize, fill: BgFill, theme: &Theme
             output.push('\n');
         }
 
+        // Symlink change: render the dedicated symlink view and move on,
+        // skipping content resolution and `Diff::compute`.
+        let content = match &r.body {
+            FileBody::Symlink(view) => {
+                let path = display_path(file);
+                for line in render_file_header(path, width, theme) {
+                    output.push_str(&line);
+                    output.push('\n');
+                }
+                for line in render_symlink(view, symlink_icon(IconMode::from_env()), theme) {
+                    output.push_str(&line);
+                    output.push('\n');
+                }
+                continue;
+            }
+            FileBody::Content(content) => content,
+        };
+
         // Determine before/after text. After `resolve` succeeds we never
         // see `Missing`; both sides are either `Resolved` or `Absent`.
-        let (before_content, after_content) = match (&r.content.before, &r.content.after) {
+        let (before_content, after_content) = match (&content.before, &content.after) {
             (SideContent::Resolved(b), SideContent::Resolved(a)) => (b.clone(), a.clone()),
             (SideContent::Absent, SideContent::Resolved(a)) => (String::new(), a.clone()),
             (SideContent::Resolved(b), SideContent::Absent) => (b.clone(), String::new()),
@@ -350,6 +395,8 @@ mod tests {
             rename_from: None,
             old_hash: None,
             new_hash: None,
+            old_mode: None,
+            new_mode: None,
             hunks: vec![],
         }
     }

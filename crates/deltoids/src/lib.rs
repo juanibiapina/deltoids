@@ -14,6 +14,7 @@ pub mod render;
 pub mod render_tui;
 pub mod reverse;
 mod scope;
+pub mod symlink;
 pub mod syntax;
 
 pub use config::{ColorMode, SyntaxAssets, Theme};
@@ -21,3 +22,4 @@ pub use engine::{DiffOp, Snapshot};
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 pub use language::Language;
 pub use scope::{Diff, DiffLine, Hunk, HunkRun, LineKind, ScopeNode};
+pub use symlink::SymlinkView;

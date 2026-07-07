@@ -13,6 +13,7 @@ use crate::config::{SyntaxAssets, Theme, rgb_to_ansi_bg, rgb_to_ansi_fg};
 use crate::highlight::HunkHighlighter;
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader, display_width};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
+use crate::symlink::SymlinkView;
 use crate::{Hunk, HunkRun, LineKind};
 
 const TAB_WIDTH: usize = 4;
@@ -49,6 +50,54 @@ pub fn render_file_header(path: &str, width: usize, theme: &Theme) -> Vec<String
 pub fn render_rename_header(old_path: &str, new_path: &str, theme: &Theme) -> String {
     let muted_fg = rgb_to_ansi_fg(theme.muted.0, theme.muted.1, theme.muted.2);
     format!("{muted_fg}renamed: {old_path} ⟶ {new_path}{RESET}")
+}
+
+/// Render a symlink change as ANSI: a small icon box, a muted
+/// description to its right, and a one-line `old → new` body. `icon` is
+/// the glyph (or text fallback) the caller chose based on the icon
+/// toggle. The old target carries the deleted background, the new target
+/// the added background, and the arrow is muted; a missing side is simply
+/// omitted (created shows `→ new`, deleted shows `old →`).
+pub fn render_symlink(view: &SymlinkView, icon: &str, theme: &Theme) -> Vec<String> {
+    let border_fg = rgb_to_ansi_fg(theme.border.0, theme.border.1, theme.border.2);
+    let muted_fg = rgb_to_ansi_fg(theme.muted.0, theme.muted.1, theme.muted.2);
+    let inner = display_width(icon) + 1;
+
+    vec![
+        format!("{border_fg}{}┐{RESET}", "─".repeat(inner)),
+        format!(
+            "{border_fg}{icon} │{RESET} {muted_fg}{}{RESET}",
+            view.description
+        ),
+        format!("{border_fg}{}┘{RESET}", "─".repeat(inner)),
+        render_symlink_body(view, theme),
+    ]
+}
+
+/// Paint the `old → new` body line. Present sides carry the diff
+/// backgrounds; the arrow is muted.
+fn render_symlink_body(view: &SymlinkView, theme: &Theme) -> String {
+    let muted_fg = rgb_to_ansi_fg(theme.muted.0, theme.muted.1, theme.muted.2);
+    let deleted_bg = rgb_to_ansi_bg(
+        theme.diff_deleted_bg.0,
+        theme.diff_deleted_bg.1,
+        theme.diff_deleted_bg.2,
+    );
+    let added_bg = rgb_to_ansi_bg(
+        theme.diff_added_bg.0,
+        theme.diff_added_bg.1,
+        theme.diff_added_bg.2,
+    );
+
+    let mut body = String::new();
+    if let Some(old) = &view.old_target {
+        body.push_str(&format!("{deleted_bg}{DEFAULT_FG}{old}{RESET} "));
+    }
+    body.push_str(&format!("{muted_fg}\u{2192}{RESET}"));
+    if let Some(new) = &view.new_target {
+        body.push_str(&format!(" {added_bg}{DEFAULT_FG}{new}{RESET}"));
+    }
+    body
 }
 
 /// Render a full hunk: breadcrumb box (if any ancestors) followed by the
@@ -750,6 +799,82 @@ mod tests {
         assert_eq!(header.len(), 2);
         assert!(header[0].contains("src/main.rs"));
         assert!(header[1].contains("───"));
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+        re.replace_all(s, "").to_string()
+    }
+
+    #[test]
+    fn render_symlink_retargeted_shows_box_description_and_body() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink retargeted".to_string(),
+            old_target: Some("a.txt".to_string()),
+            new_target: Some("b.txt".to_string()),
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("┐"), "top box corner");
+        assert!(lines[2].contains("┘"), "bottom box corner");
+        assert!(lines[1].contains("@"), "icon in the middle row");
+        assert!(
+            lines[1].contains("symlink retargeted"),
+            "description to the right of the box"
+        );
+        let body = strip_ansi(&lines[3]);
+        assert_eq!(body, "a.txt \u{2192} b.txt");
+    }
+
+    #[test]
+    fn render_symlink_created_body_omits_old_side() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink created".to_string(),
+            old_target: None,
+            new_target: Some("b.txt".to_string()),
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        assert_eq!(strip_ansi(&lines[3]), "\u{2192} b.txt");
+    }
+
+    #[test]
+    fn render_symlink_deleted_body_omits_new_side() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink deleted".to_string(),
+            old_target: Some("a.txt".to_string()),
+            new_target: None,
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        assert_eq!(strip_ansi(&lines[3]), "a.txt \u{2192}");
+    }
+
+    #[test]
+    fn render_symlink_body_paints_old_and_new_backgrounds() {
+        let theme = Theme::default();
+        let view = SymlinkView {
+            description: "symlink retargeted".to_string(),
+            old_target: Some("a.txt".to_string()),
+            new_target: Some("b.txt".to_string()),
+        };
+        let lines = render_symlink(&view, "@", &theme);
+        let deleted_bg = rgb_to_ansi_bg(
+            theme.diff_deleted_bg.0,
+            theme.diff_deleted_bg.1,
+            theme.diff_deleted_bg.2,
+        );
+        let added_bg = rgb_to_ansi_bg(
+            theme.diff_added_bg.0,
+            theme.diff_added_bg.1,
+            theme.diff_added_bg.2,
+        );
+        assert!(
+            lines[3].contains(&deleted_bg),
+            "old target carries deleted bg"
+        );
+        assert!(lines[3].contains(&added_bg), "new target carries added bg");
     }
 
     #[test]

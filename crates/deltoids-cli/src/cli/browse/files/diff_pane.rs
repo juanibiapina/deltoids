@@ -19,16 +19,16 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use deltoids::Theme;
 use deltoids::render_tui::{
     self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
     rgb_to_color,
 };
-use deltoids::{Diff, Theme};
 
 use crate::cli::browse::mode::{DrawBudget, should_build_body};
-use crate::sidebar::display_path;
+use crate::sidebar::{IconMode, display_path, symlink_icon};
 
-use super::model::{Model, ResolvedFile};
+use super::model::{FileBody, Model, ResolvedFile};
 
 pub(super) const SCROLL_STEP_SMALL: usize = 1;
 pub(super) const SCROLL_STEP_LARGE: usize = 3;
@@ -81,12 +81,13 @@ impl DiffCache {
     }
 }
 
-/// Render one file's diff block: file header, an optional rename header,
-/// then each hunk (blank-separated). This is the syntax-highlighting cost
-/// (`render_hunk`) that lazy rendering defers.
+/// Render one file's block: file header, an optional rename header, then
+/// the body — either each hunk (blank-separated) for a text diff, or the
+/// symlink view for a symlink change. The text-diff path carries the
+/// syntax-highlighting cost (`render_hunk`) that lazy rendering defers.
 fn render_file_block(
     resolved: &ResolvedFile,
-    diff: &Diff,
+    body: &FileBody,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -102,12 +103,22 @@ fn render_file_block(
         ));
     }
 
-    lines.extend(render_tui::render_hunk_list(
-        diff.hunks(),
-        diff.highlight(),
-        width,
-        theme,
-    ));
+    match body {
+        FileBody::Diff(diff) => lines.extend(render_tui::render_hunk_list(
+            diff.hunks(),
+            diff.highlight(),
+            width,
+            theme,
+        )),
+        FileBody::Symlink(view) => {
+            lines.push(Line::from(""));
+            lines.extend(render_tui::render_symlink(
+                view,
+                symlink_icon(IconMode::from_env()),
+                theme,
+            ));
+        }
+    }
 
     lines
 }
@@ -217,7 +228,7 @@ impl DiffPane {
             if !cached {
                 let lines = render_file_block(
                     &model.files[input_idx],
-                    &model.diffs[input_idx],
+                    &model.bodies[input_idx],
                     width,
                     theme,
                 );
@@ -437,6 +448,48 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("world")),
             "expected added line in: {texts:#?}"
+        );
+    }
+
+    #[test]
+    fn assemble_window_renders_symlink_view_for_symlink_file() {
+        use deltoids::parse::{FileDiff, RawHunk, RawLine, RawLineKind};
+
+        let file = FileDiff {
+            preamble: Vec::new(),
+            old_path: "link.txt".to_string(),
+            new_path: "link.txt".to_string(),
+            rename_from: None,
+            old_hash: None,
+            new_hash: None,
+            old_mode: None,
+            new_mode: Some("120000".to_string()),
+            hunks: vec![RawHunk {
+                old_start: 0,
+                old_count: 0,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![RawLine {
+                    kind: RawLineKind::Added,
+                    content: "a.txt".to_string(),
+                }],
+            }],
+        };
+        let resolved = vec![ResolvedFile {
+            file,
+            before: String::new(),
+            after: String::new(),
+        }];
+        let mut state = make_state(&resolved);
+        let window = state.visible_diff_window(DrawBudget::Full);
+        let texts: Vec<String> = window.iter().map(line_text).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("symlink created")),
+            "expected the symlink view, got: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("\u{2192} a.txt")),
+            "expected the symlink body, got: {texts:#?}"
         );
     }
 

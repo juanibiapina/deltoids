@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - TUI: Add support for custom commands.
+- First-class support for symlinks.
 
 ### Changed
 
@@ -17,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A repointed symlink no longer aborts the pager or TUI with a "missing index blob" error.
 - diff: Diffs now show the same added and removed lines as `git diff`; an edit plus new functions or tests beside it renders as one hunk that names their shared parent scope in the breadcrumb.
 - diff: Syntax highlighting now carries across every line shown in a hunk, so multi-line constructs like block comments and strings stay correctly colored throughout.
 

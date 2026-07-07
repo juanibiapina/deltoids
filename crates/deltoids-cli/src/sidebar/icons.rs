@@ -34,6 +34,23 @@ impl IconMode {
     }
 }
 
+/// The nerd-font symlink glyph used by the symlink change view.
+const SYMLINK_GLYPH: &str = "\u{f481}";
+
+/// Text fallback used for a symlink when icons are disabled (matching
+/// `ls -F`'s `@` marker).
+const SYMLINK_TEXT: &str = "@";
+
+/// Icon (or text fallback) for the symlink change view, honoring the
+/// icon toggle. Returned as a plain `&str` so the deltoids renderers,
+/// which own no icon tables, can paint it.
+pub fn symlink_icon(mode: IconMode) -> &'static str {
+    match mode {
+        IconMode::On => SYMLINK_GLYPH,
+        IconMode::Off => SYMLINK_TEXT,
+    }
+}
+
 /// Fallback glyph/colour for files with no name or extension match.
 pub(super) const DEFAULT_FILE: IconSpec = IconSpec {
     glyph: "\u{f15b}",

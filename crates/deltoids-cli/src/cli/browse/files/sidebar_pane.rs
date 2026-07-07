@@ -17,16 +17,16 @@ use deltoids::render_tui::{
 
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
 
-use super::model::{Model, count_deltas};
+use super::model::{Model, body_deltas};
 
 /// Build the sidebar from a model plus per-file delta counts.
 pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
     let sidebar_files: Vec<SidebarFile<'_>> = model
         .files
         .iter()
-        .zip(model.diffs.iter())
-        .map(|(f, d)| {
-            let (added, deleted) = count_deltas(d);
+        .zip(model.bodies.iter())
+        .map(|(f, b)| {
+            let (added, deleted) = body_deltas(b);
             let stage = model.stages.get(display_path(&f.file)).copied();
             SidebarFile {
                 file: &f.file,

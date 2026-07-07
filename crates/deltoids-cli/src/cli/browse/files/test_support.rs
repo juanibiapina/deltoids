@@ -15,7 +15,7 @@ use crate::scroll::WheelScroll;
 use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
 
 use super::diff_pane::DiffPane;
-use super::model::{Model, ResolvedFile, count_deltas, precompute_diffs};
+use super::model::{Model, ResolvedFile, body_deltas, precompute_bodies};
 use super::{FilesMode, Focus};
 
 pub(super) fn theme() -> Theme {
@@ -33,6 +33,8 @@ pub(super) fn file_diff(path: &str) -> FileDiff {
         rename_from: None,
         old_hash: None,
         new_hash: None,
+        old_mode: None,
+        new_mode: None,
         hunks: Vec::new(),
     }
 }
@@ -44,18 +46,18 @@ pub(super) fn line_text(line: &Line<'static>) -> String {
 
 pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
     let owned: Vec<ResolvedFile> = files.to_vec();
-    let diffs = precompute_diffs(&owned);
+    let bodies = precompute_bodies(&owned);
     let model = Model {
         files: owned,
-        diffs,
+        bodies,
         stages: Default::default(),
     };
     let sidebar_files: Vec<SidebarFile<'_>> = model
         .files
         .iter()
-        .zip(model.diffs.iter())
-        .map(|(f, d)| {
-            let (added, deleted) = count_deltas(d);
+        .zip(model.bodies.iter())
+        .map(|(f, b)| {
+            let (added, deleted) = body_deltas(b);
             SidebarFile {
                 file: &f.file,
                 added,
@@ -100,10 +102,10 @@ pub(super) fn resolved(path: &str) -> ResolvedFile {
 
 pub(super) fn model_of(paths: &[&str]) -> Model {
     let files: Vec<ResolvedFile> = paths.iter().map(|p| resolved(p)).collect();
-    let diffs = precompute_diffs(&files);
+    let bodies = precompute_bodies(&files);
     Model {
         files,
-        diffs,
+        bodies,
         stages: Default::default(),
     }
 }

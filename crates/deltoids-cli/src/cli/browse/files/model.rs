@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
-use deltoids::{Diff, LineKind, content, git};
+use deltoids::{Diff, LineKind, SymlinkView, content, git};
 
 use crate::sidebar::{ChangeKind, StageStatus, display_path};
 
@@ -18,15 +18,24 @@ pub(super) enum DiffSource<'a> {
     WorkingTree(&'a git::Repo),
 }
 
-/// The owned data the TUI renders: resolved files plus their diffs.
-/// Rebuilt wholesale on each working-tree reload.
+/// The owned data the TUI renders: resolved files plus their per-file
+/// bodies. Rebuilt wholesale on each working-tree reload.
 pub(super) struct Model {
     pub(super) files: Vec<ResolvedFile>,
-    pub(super) diffs: Vec<Diff>,
+    pub(super) bodies: Vec<FileBody>,
     /// Per-file two-column staging status, keyed by workdir-relative
     /// path (matching `display_path`). Empty for piped diffs / no repo,
     /// in which case the sidebar falls back to single-letter status.
     pub(super) stages: HashMap<String, StageStatus>,
+}
+
+/// Per-file rendered representation, decided once at build time so the
+/// diff pane and the sidebar always agree: a computed text diff, or a
+/// symlink change view (which bypasses `Diff::compute` and content
+/// resolution entirely).
+pub(super) enum FileBody {
+    Diff(Diff),
+    Symlink(SymlinkView),
 }
 
 /// Parse `input`, resolve every file's before/after content against
@@ -34,11 +43,11 @@ pub(super) struct Model {
 pub(super) fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model, String> {
     let parsed = GitDiff::parse(input);
     let files = resolve(parsed, repo)?;
-    let diffs = precompute_diffs(&files);
+    let bodies = precompute_bodies(&files);
     let stages = stage_map(repo);
     Ok(Model {
         files,
-        diffs,
+        bodies,
         stages,
     })
 }
@@ -99,6 +108,19 @@ pub(super) fn resolve(
     let mut files = Vec::with_capacity(parsed.files.len());
 
     for file in parsed.files {
+        // Symlink changes are decided straight from the parsed diff and
+        // never touch the ODB or the working tree (reading a link would
+        // follow it to the target), so skip content resolution — they
+        // can never register as a missing blob.
+        if SymlinkView::from_file_diff(&file).is_some() {
+            files.push(ResolvedFile {
+                file,
+                before: String::new(),
+                after: String::new(),
+            });
+            continue;
+        }
+
         let resolved = content::retrieve(&file, repo);
         let before = match resolved.before {
             SideContent::Resolved(s) => s,
@@ -131,13 +153,32 @@ fn missing_blob_message(hash: &str, path: &str) -> String {
     )
 }
 
-/// Compute one [`Diff`] per resolved file. Done once at startup so the
-/// diff pane and the sidebar share the same line-count totals.
-pub(super) fn precompute_diffs(files: &[ResolvedFile]) -> Vec<Diff> {
+/// Decide one [`FileBody`] per resolved file. Done once at build time so
+/// the diff pane and the sidebar share one decision (and the same
+/// line-count totals). Symlink entries become a [`SymlinkView`]; every
+/// other file is a computed text [`Diff`].
+pub(super) fn precompute_bodies(files: &[ResolvedFile]) -> Vec<FileBody> {
     files
         .iter()
-        .map(|f| Diff::compute(&f.before, &f.after, display_path(&f.file)))
+        .map(|f| match SymlinkView::from_file_diff(&f.file) {
+            Some(view) => FileBody::Symlink(view),
+            None => FileBody::Diff(Diff::compute(&f.before, &f.after, display_path(&f.file))),
+        })
         .collect()
+}
+
+/// Added/deleted line counts for one file body. A text diff sums its
+/// hunk lines; a symlink counts one changed line per present side (an
+/// added new target, a deleted old target), matching what the symlink
+/// view paints.
+pub(super) fn body_deltas(body: &FileBody) -> (usize, usize) {
+    match body {
+        FileBody::Diff(diff) => count_deltas(diff),
+        FileBody::Symlink(view) => (
+            view.new_target.is_some() as usize,
+            view.old_target.is_some() as usize,
+        ),
+    }
 }
 
 /// Sum added/deleted line counts across all hunks of one diff.
@@ -165,7 +206,7 @@ mod tests {
     fn build_model_empty_input_yields_no_files() {
         let model = build_model("", None).expect("empty model");
         assert!(model.files.is_empty(), "expected zero files");
-        assert!(model.diffs.is_empty(), "expected zero diffs");
+        assert!(model.bodies.is_empty(), "expected zero bodies");
     }
 
     #[test]
@@ -176,10 +217,26 @@ mod tests {
             before: "old1\nold2\nshared\n".to_string(),
             after: "new1\nshared\nnew2\n".to_string(),
         }];
-        let diffs = precompute_diffs(&resolved);
-        let (added, deleted) = count_deltas(&diffs[0]);
+        let bodies = precompute_bodies(&resolved);
+        let (added, deleted) = body_deltas(&bodies[0]);
         assert!(added > 0, "expected adds");
         assert!(deleted > 0, "expected dels");
+    }
+
+    #[test]
+    fn precompute_bodies_decides_symlink_from_mode() {
+        let mut f = file_diff("link.txt");
+        f.new_mode = Some("120000".to_string());
+        let resolved = vec![ResolvedFile {
+            file: f,
+            before: String::new(),
+            after: String::new(),
+        }];
+        let bodies = precompute_bodies(&resolved);
+        assert!(
+            matches!(bodies[0], FileBody::Symlink(_)),
+            "symlink mode should yield a symlink body"
+        );
     }
 
     #[test]
@@ -253,6 +310,9 @@ mod tests {
         assert_eq!(display_path(&model.files[0].file), "a.txt");
         assert_eq!(model.files[0].before, "hello\n");
         assert_eq!(model.files[0].after, "world\n");
-        assert!(!model.diffs[0].hunks().is_empty());
+        match &model.bodies[0] {
+            FileBody::Diff(diff) => assert!(!diff.hunks().is_empty()),
+            FileBody::Symlink(_) => panic!("expected a text diff body"),
+        }
     }
 }

@@ -41,7 +41,7 @@ mod status;
 mod test_support;
 mod tree;
 
-pub use icons::IconMode;
+pub use icons::{IconMode, symlink_icon};
 pub use status::{
     ChangeKind, DirStage, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
     display_path, file_metadata, file_status,

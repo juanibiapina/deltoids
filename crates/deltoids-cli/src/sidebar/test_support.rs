@@ -17,6 +17,8 @@ pub(super) fn fd(path: &str) -> FileDiff {
         rename_from: None,
         old_hash: None,
         new_hash: None,
+        old_mode: None,
+        new_mode: None,
         hunks: Vec::new(),
     }
 }
@@ -29,6 +31,8 @@ pub(super) fn fd_added(path: &str) -> FileDiff {
         rename_from: None,
         old_hash: Some("0".repeat(40)),
         new_hash: Some("a".repeat(40)),
+        old_mode: None,
+        new_mode: None,
         hunks: Vec::new(),
     }
 }
@@ -41,6 +45,8 @@ pub(super) fn fd_deleted(path: &str) -> FileDiff {
         rename_from: None,
         old_hash: Some("a".repeat(40)),
         new_hash: Some("0".repeat(40)),
+        old_mode: None,
+        new_mode: None,
         hunks: Vec::new(),
     }
 }
@@ -53,6 +59,8 @@ pub(super) fn fd_renamed(old: &str, new: &str) -> FileDiff {
         rename_from: Some(old.to_string()),
         old_hash: Some("a".repeat(40)),
         new_hash: Some("b".repeat(40)),
+        old_mode: None,
+        new_mode: None,
         hunks: Vec::new(),
     }
 }

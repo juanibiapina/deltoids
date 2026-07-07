@@ -196,7 +196,7 @@ mod tests {
         let mut state = make_state(&m1.files);
         let empty = Model {
             files: Vec::new(),
-            diffs: Vec::new(),
+            bodies: Vec::new(),
             stages: Default::default(),
         };
         reload_view(

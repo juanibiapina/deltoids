@@ -25,6 +25,14 @@ pub struct FileDiff {
     pub old_hash: Option<String>,
     /// Hash of the new blob (from git index line).
     pub new_hash: Option<String>,
+    /// Git file mode of the old side (six octal digits, e.g. `120000`
+    /// for a symlink). Sourced from the `deleted file mode` preamble
+    /// line or the trailing field of an in-place `index a..b MODE` line.
+    pub old_mode: Option<String>,
+    /// Git file mode of the new side. Sourced from the `new file mode`
+    /// preamble line or the trailing field of an in-place `index a..b
+    /// MODE` line.
+    pub new_mode: Option<String>,
     pub hunks: Vec<RawHunk>,
 }
 
@@ -69,7 +77,8 @@ fn hunk_header_re() -> &'static Regex {
 }
 
 fn index_re() -> &'static Regex {
-    INDEX_RE.get_or_init(|| Regex::new(r"^index ([0-9a-f]+)\.\.([0-9a-f]+)").unwrap())
+    INDEX_RE
+        .get_or_init(|| Regex::new(r"^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: ([0-7]{6}))?").unwrap())
 }
 
 fn ansi_re() -> &'static Regex {
@@ -120,6 +129,8 @@ struct ParseState {
     pending_rename_to: Option<String>,
     pending_old_hash: Option<String>,
     pending_new_hash: Option<String>,
+    pending_old_mode: Option<String>,
+    pending_new_mode: Option<String>,
     pending_preamble: Vec<String>,
     /// Old/new paths captured from the last `diff --git a/X b/Y` header.
     /// Used as a fallback for diffs that never produce `--- a/X` /
@@ -139,6 +150,8 @@ impl ParseState {
             pending_rename_to: None,
             pending_old_hash: None,
             pending_new_hash: None,
+            pending_old_mode: None,
+            pending_new_mode: None,
             pending_preamble: Vec::new(),
             pending_diff_paths: None,
         }
@@ -176,6 +189,8 @@ impl ParseState {
             self.rename_from = None;
             self.pending_rename_to = None;
             self.pending_diff_paths = None;
+            self.pending_old_mode = None;
+            self.pending_new_mode = None;
             return;
         }
 
@@ -201,9 +216,23 @@ impl ParseState {
             rename_from,
             old_hash: self.pending_old_hash.take(),
             new_hash: self.pending_new_hash.take(),
+            old_mode: self.pending_old_mode.take(),
+            new_mode: self.pending_new_mode.take(),
             hunks: Vec::new(),
         });
         self.pending_diff_paths = None;
+    }
+
+    /// Record blob hashes and, for an in-place change, the trailing file
+    /// mode (which applies to both sides) from a captured `index` line.
+    fn record_index(&mut self, caps: &regex::Captures) {
+        self.pending_old_hash = Some(caps.get(1).unwrap().as_str().to_string());
+        self.pending_new_hash = Some(caps.get(2).unwrap().as_str().to_string());
+        if let Some(mode) = caps.get(3) {
+            let mode = mode.as_str().to_string();
+            self.pending_old_mode = Some(mode.clone());
+            self.pending_new_mode = Some(mode);
+        }
     }
 
     fn push_raw_line(&mut self, raw_line: RawLine) {
@@ -272,10 +301,24 @@ impl GitDiff {
                 continue;
             }
 
-            // Parse index line for blob hashes
+            // Parse index line for blob hashes and (for in-place
+            // changes) the trailing file mode, which applies to both
+            // sides.
             if let Some(caps) = index_re().captures(&stripped) {
-                state.pending_old_hash = Some(caps.get(1).unwrap().as_str().to_string());
-                state.pending_new_hash = Some(caps.get(2).unwrap().as_str().to_string());
+                state.record_index(&caps);
+                continue;
+            }
+            // `new file mode` / `deleted file mode` carry the mode for
+            // created / deleted entries. Capture the mode but keep the
+            // line in the preamble (the sidebar reads it there too).
+            if let Some(rest) = stripped.strip_prefix("new file mode ") {
+                state.pending_new_mode = Some(rest.trim().to_string());
+                state.pending_preamble.push(line.to_string());
+                continue;
+            }
+            if let Some(rest) = stripped.strip_prefix("deleted file mode ") {
+                state.pending_old_mode = Some(rest.trim().to_string());
+                state.pending_preamble.push(line.to_string());
                 continue;
             }
             if let Some(path) = stripped.strip_prefix("rename from ") {
@@ -298,6 +341,8 @@ impl GitDiff {
                     rename_from: state.rename_from.take(),
                     old_hash: state.pending_old_hash.take(),
                     new_hash: state.pending_new_hash.take(),
+                    old_mode: state.pending_old_mode.take(),
+                    new_mode: state.pending_new_mode.take(),
                     hunks: Vec::new(),
                 });
                 state.pending_diff_paths = None;
@@ -445,6 +490,8 @@ mod tests {
             rename_from: None,
             old_hash: None,
             new_hash: None,
+            old_mode: None,
+            new_mode: None,
             hunks: Vec::new(),
         });
         state.current_hunk = Some(RawHunk {
@@ -493,6 +540,8 @@ mod tests {
             rename_from: None,
             old_hash: None,
             new_hash: None,
+            old_mode: None,
+            new_mode: None,
             hunks: Vec::new(),
         });
         state.current_hunk = Some(RawHunk {
@@ -578,6 +627,54 @@ index abc1234..def5678
         assert_eq!(parsed.files.len(), 1);
         assert_eq!(parsed.files[0].old_hash, Some("abc1234".to_string()));
         assert_eq!(parsed.files[0].new_hash, Some("def5678".to_string()));
+    }
+
+    #[test]
+    fn parse_retargeted_symlink_captures_both_modes_from_index_line() {
+        let diff = r#"diff --git a/link.txt b/link.txt
+index 8d14cbf..19acdd8 120000
+--- a/link.txt
++++ b/link.txt
+@@ -1 +1 @@
+-a.txt
++b.txt
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].old_mode, Some("120000".to_string()));
+        assert_eq!(parsed.files[0].new_mode, Some("120000".to_string()));
+    }
+
+    #[test]
+    fn parse_created_symlink_captures_new_mode() {
+        let diff = r#"diff --git a/newlink.txt b/newlink.txt
+new file mode 120000
+index 0000000..8d14cbf
+--- /dev/null
++++ b/newlink.txt
+@@ -0,0 +1 @@
++a.txt
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].old_mode, None);
+        assert_eq!(parsed.files[0].new_mode, Some("120000".to_string()));
+    }
+
+    #[test]
+    fn parse_deleted_symlink_captures_old_mode() {
+        let diff = r#"diff --git a/newlink.txt b/newlink.txt
+deleted file mode 120000
+index 8d14cbf..0000000
+--- a/newlink.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-a.txt
+"#;
+        let parsed = GitDiff::parse(diff);
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].old_mode, Some("120000".to_string()));
+        assert_eq!(parsed.files[0].new_mode, None);
     }
 
     #[test]

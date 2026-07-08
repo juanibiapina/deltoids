@@ -6,6 +6,12 @@
 //! provided), the working tree (when no hash or matching hash exists), and
 //! finally reverse-applies the diff onto the resolved `after` to recover
 //! `before` when only that side is missing.
+//!
+//! ODB blobs are read through git's *filtered* view
+//! ([`Repo::blob_filtered`]), so files managed by a content filter
+//! (git-crypt, transcrypt, any clean/smudge filter) resolve to their
+//! working-tree-equivalent plaintext and render like any other file. On
+//! non-filtered files this is byte-identical to the raw blob content.
 
 use std::fs;
 
@@ -40,7 +46,11 @@ pub struct FileContent {
 /// detail. For each side, resolution proceeds:
 ///
 ///   1. Null hash (`0000…`) → `Absent` (creation/deletion marker).
-///   2. Look up the blob in the discovered repo's object database.
+///   2. Read the blob from the repo's object database through git's
+///      filtered view ([`Repo::blob_filtered`]). This resolves
+///      committed, staged, and history blobs, applying any content
+///      filter (git-crypt, transcrypt, custom clean/smudge) so filtered
+///      files yield their plaintext.
 ///   3. Verify a candidate against the expected blob hash:
 ///        - `after`: the working-tree file at `file.new_path`.
 ///        - `before`: the diff reverse-applied onto the resolved
@@ -76,7 +86,7 @@ fn retrieve_after(file: &FileDiff, repo: Option<&Repo>) -> SideContent {
     }
 
     if let Some(repo) = repo
-        && let Some(content) = repo.blob_text(hash)
+        && let Some(content) = repo.blob_filtered(hash, &file.new_path)
     {
         return SideContent::Resolved(content);
     }
@@ -105,7 +115,7 @@ fn retrieve_before(file: &FileDiff, repo: Option<&Repo>, after: Option<&str>) ->
     }
 
     if let Some(repo) = repo
-        && let Some(content) = repo.blob_text(hash)
+        && let Some(content) = repo.blob_filtered(hash, &file.old_path)
     {
         return SideContent::Resolved(content);
     }

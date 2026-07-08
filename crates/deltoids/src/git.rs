@@ -73,23 +73,26 @@ impl Repo {
         self.0.is_path_ignored(rel).unwrap_or(false)
     }
 
-    /// Read a blob's text content by hash (abbreviated or full).
-    /// Returns None if the hash is null, the blob is missing, or its
-    /// bytes are not valid UTF-8.
-    pub fn blob_text(&self, hash: &str) -> Option<String> {
+    /// Full working-tree-equivalent text of the blob named by `hash`, with
+    /// git content filters applied (clean/smudge, e.g. git-crypt
+    /// decryption), as `git cat-file --filters --path=<path> <hash>`
+    /// produces. `path` is a workdir-relative path used to resolve which
+    /// filter applies.
+    ///
+    /// On a non-filtered file this is byte-identical to the raw blob
+    /// content, so it is safe to apply to every ODB blob. libgit2 cannot
+    /// run external process filters, so this shells out to the git CLI.
+    ///
+    /// Returns `None` if the hash is null, git is unavailable, the blob is
+    /// not in the ODB, the command fails, or the result is not valid
+    /// UTF-8. Failing soft lets callers fall through to other resolution
+    /// paths.
+    pub fn blob_filtered(&self, hash: &str, path: &str) -> Option<String> {
         if is_null_hash(hash) {
             return None;
         }
-
-        // For full 40-char hashes, parse directly; for abbreviated, use revparse
-        let oid = if hash.len() == 40 {
-            Oid::from_str(hash).ok()
-        } else {
-            self.0.revparse_single(hash).ok().map(|obj| obj.id())
-        }?;
-
-        let blob = self.0.find_blob(oid).ok()?;
-        std::str::from_utf8(blob.content()).ok().map(String::from)
+        let workdir = self.0.workdir()?;
+        cat_file_filtered(workdir, hash, path)
     }
 
     /// Unified diff of the working tree against `HEAD`, as patch text
@@ -259,6 +262,30 @@ pub fn blob_hash_matches(content: &str, expected: &str) -> bool {
     }
 }
 
+/// Run `git cat-file --filters --path=<path> <hash>` in `workdir` and
+/// return its stdout as UTF-8 text. This is the one external git-CLI
+/// shell-out in the library; it stays private so the process dependency
+/// (argv, exit status, stderr, decoding) never leaks past
+/// [`Repo::blob_filtered`].
+///
+/// Returns `None` when git cannot be spawned, exits non-zero (blob
+/// missing, bad path), or emits non-UTF-8 bytes (a genuinely binary
+/// blob).
+fn cat_file_filtered(workdir: &Path, hash: &str, path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("cat-file")
+        .arg("--filters")
+        .arg(format!("--path={path}"))
+        .arg(hash)
+        .current_dir(workdir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +320,46 @@ mod tests {
         let parents: Vec<&git2::Commit> = parent.iter().collect();
         repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
             .unwrap();
+    }
+
+    /// Run `git` in `dir` via the CLI, asserting success. Needed for
+    /// operations that must run external content filters (clean/smudge),
+    /// which libgit2 does not apply.
+    fn git_cli(dir: &Path, args: &[&str]) -> std::process::Output {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    /// Set up a repo at `dir` with a reversible `rot13` content filter
+    /// bound to `<path>`, then commit `plaintext` at that path via the git
+    /// CLI so the ODB holds the cleaned (rot13) form while the working
+    /// tree holds `plaintext`. Returns the ODB blob hash of the committed
+    /// (cleaned) content. This models a git-crypt-style filter without
+    /// needing the git-crypt binary.
+    fn commit_filtered(dir: &Path, path: &str, plaintext: &str) -> String {
+        git_cli(dir, &["init", "-q"]);
+        let rot13 = "tr A-Za-z N-ZA-Mn-za-m";
+        git_cli(dir, &["config", "filter.rot13.clean", rot13]);
+        git_cli(dir, &["config", "filter.rot13.smudge", rot13]);
+        fs::write(dir.join(".gitattributes"), format!("{path} filter=rot13\n")).unwrap();
+        fs::write(dir.join(path), plaintext).unwrap();
+        git_cli(dir, &["add", "-A"]);
+        git_cli(dir, &["commit", "-qm", "init"]);
+        let out = git_cli(dir, &["rev-parse", &format!("HEAD:{path}")]);
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
     #[test]
@@ -556,6 +623,92 @@ mod tests {
     }
 
     #[test]
+    fn working_tree_diff_of_filtered_file_carries_resolvable_hashes() {
+        use crate::parse::GitDiff;
+
+        // The TUI feeds libgit2's `working_tree_diff` (not the git CLI)
+        // through content resolution. libgit2 cannot run an external clean
+        // filter, so for an unstaged change to a filtered file it hashes
+        // the working tree as plaintext: old_hash = the committed
+        // ("encrypted") ODB blob, new_hash = the plaintext hash. Both
+        // sides are then resolvable — old via `blob_filtered`, new via the
+        // working-tree read whose plaintext hashes to new_hash.
+        let dir = tempfile::tempdir().unwrap();
+        let old_hash = commit_filtered(dir.path(), "secret.txt", "hello\nworld\n");
+        fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        let parsed = GitDiff::parse(&patch);
+        assert_eq!(parsed.files.len(), 1);
+        let file = &parsed.files[0];
+
+        // old side resolves to plaintext through the filter. libgit2 may
+        // abbreviate the hash; it names the committed ODB blob either way.
+        let parsed_old = file.old_hash.as_deref().expect("old_hash present");
+        assert!(
+            old_hash.starts_with(parsed_old),
+            "parsed old_hash {parsed_old} should prefix {old_hash}"
+        );
+        assert_eq!(
+            wrapper.blob_filtered(parsed_old, "secret.txt").as_deref(),
+            Some("hello\nworld\n")
+        );
+        // new side is the plaintext working-tree hash (libgit2 applied no
+        // external filter), so the working-tree plaintext verifies against
+        // it.
+        let new_hash = file.new_hash.as_deref().expect("new_hash present");
+        assert!(
+            blob_hash_matches("hello\nplanet\n", new_hash),
+            "new_hash {new_hash} should match working-tree plaintext"
+        );
+    }
+
+    #[test]
+    fn filtered_diff_resolves_both_sides_through_cat_file() {
+        use crate::content::{self, SideContent};
+        use crate::parse::GitDiff;
+
+        // Commit plaintext v1 (ODB holds rot13 ciphertext), then commit a
+        // modified plaintext v2 (ODB holds ciphertext v2). Both index
+        // blobs are "encrypted"; resolution must smudge them back to
+        // plaintext. Committing both sides keeps the test independent of
+        // the process working directory (no working-tree read).
+        let dir = tempfile::tempdir().unwrap();
+        let old_hash = commit_filtered(dir.path(), "secret.txt", "hello\nworld\n");
+        fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
+        git_cli(dir.path(), &["add", "secret.txt"]);
+        git_cli(dir.path(), &["commit", "-qm", "change"]);
+        let out = git_cli(dir.path(), &["rev-parse", "HEAD:secret.txt"]);
+        let new_hash = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        // Model git's textconv view: plaintext hunks, ciphertext index
+        // hashes.
+        let diff = format!(
+            "diff --git a/secret.txt b/secret.txt\n\
+             index {old_hash}..{new_hash} 100644\n\
+             --- a/secret.txt\n\
+             +++ b/secret.txt\n\
+             @@ -1,2 +1,2 @@\n\
+             \x20hello\n\
+             -world\n\
+             +planet\n"
+        );
+        let parsed = GitDiff::parse(&diff);
+        assert_eq!(parsed.files.len(), 1);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let resolved = content::retrieve(&parsed.files[0], Some(&wrapper));
+        match (resolved.before, resolved.after) {
+            (SideContent::Resolved(before), SideContent::Resolved(after)) => {
+                assert_eq!(before, "hello\nworld\n");
+                assert_eq!(after, "hello\nplanet\n");
+            }
+            _ => panic!("expected both filtered sides resolved to plaintext"),
+        }
+    }
+
+    #[test]
     fn null_hash_detection() {
         assert!(is_null_hash("0000000"));
         assert!(is_null_hash("0000000000000000000000000000000000000000"));
@@ -577,32 +730,52 @@ mod tests {
     }
 
     #[test]
-    fn blob_lookup_abbreviated_hash() {
-        // This test requires running in a git repo
-        let repo = match Repo::discover() {
-            Some(r) => r,
-            None => return, // Skip if not in a git repo
-        };
+    fn blob_filtered_applies_smudge_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = commit_filtered(dir.path(), "secret.txt", "hello world\n");
 
-        // Get HEAD commit's tree to find a known blob (file, not directory)
-        let head = repo.0.head().unwrap().peel_to_commit().unwrap();
-        let tree = head.tree().unwrap();
-        let entry = tree
-            .iter()
-            .find(|e| e.kind() == Some(git2::ObjectType::Blob))
-            .expect("should have at least one blob in tree");
-        let full_hash = entry.id().to_string();
-        let abbrev_hash = &full_hash[..7];
-
-        // Both should resolve to the same content
-        let full_content = repo.blob_text(&full_hash);
-        let abbrev_content = repo.blob_text(abbrev_hash);
-
-        assert!(full_content.is_some(), "full hash should resolve");
-        assert!(abbrev_content.is_some(), "abbreviated hash should resolve");
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        // The ODB blob is the rot13-cleaned ciphertext; blob_filtered runs
+        // the smudge filter to recover the working-tree plaintext.
         assert_eq!(
-            full_content, abbrev_content,
-            "both should return same content"
+            wrapper.blob_filtered(&hash, "secret.txt").as_deref(),
+            Some("hello world\n")
+        );
+    }
+
+    #[test]
+    fn blob_filtered_matches_raw_for_unfiltered_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("plain.txt"), "no filter here\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = head.tree().unwrap();
+        let hash = tree.get_name("plain.txt").unwrap().id().to_string();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        // On a non-filtered file, cat-file --filters is byte-identical to
+        // the raw blob content (no clean/smudge transform applied).
+        assert_eq!(
+            wrapper.blob_filtered(&hash, "plain.txt").as_deref(),
+            Some("no filter here\n")
+        );
+    }
+
+    #[test]
+    fn blob_filtered_resolves_abbreviated_hash() {
+        // git may reference blobs by an abbreviated hash; blob_filtered
+        // must resolve those too.
+        let dir = tempfile::tempdir().unwrap();
+        let hash = commit_filtered(dir.path(), "secret.txt", "hello world\n");
+        let abbrev = &hash[..7];
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        assert_eq!(
+            wrapper.blob_filtered(abbrev, "secret.txt").as_deref(),
+            Some("hello world\n")
         );
     }
 }

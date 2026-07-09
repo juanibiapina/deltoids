@@ -104,6 +104,38 @@ pub(super) fn binary_resolved(path: &str) -> ResolvedFile {
     }
 }
 
+/// A resolved submodule commit bump: gitlink mode `160000` on both sides
+/// with distinct commit hashes, empty before/after (content resolution is
+/// skipped for submodules).
+pub(super) fn submodule_resolved(path: &str, old: &str, new: &str) -> ResolvedFile {
+    let mut file = file_diff(path);
+    file.old_mode = Some("160000".to_string());
+    file.new_mode = Some("160000".to_string());
+    file.old_hash = Some(old.to_string());
+    file.new_hash = Some(new.to_string());
+    ResolvedFile {
+        file,
+        before: String::new(),
+        after: String::new(),
+    }
+}
+
+/// A resolved regular→submodule type change: a preamble `old mode 100644`
+/// / `new mode 160000` so `file_metadata` reports both a type change and
+/// the submodule flag.
+pub(super) fn submodule_typechange_resolved(path: &str, new: &str) -> ResolvedFile {
+    let mut file = file_diff(path);
+    file.preamble = vec!["old mode 100644".to_string(), "new mode 160000".to_string()];
+    file.old_mode = Some("100644".to_string());
+    file.new_mode = Some("160000".to_string());
+    file.new_hash = Some(new.to_string());
+    ResolvedFile {
+        file,
+        before: String::new(),
+        after: String::new(),
+    }
+}
+
 /// A resolved file with distinct before/after so its diff is non-empty.
 pub(super) fn resolved(path: &str) -> ResolvedFile {
     ResolvedFile {
@@ -175,4 +207,68 @@ pub(super) fn commit_index(repo: &git2::Repository, msg: &str) {
     let parents: Vec<&git2::Commit> = parent.iter().collect();
     repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
         .unwrap();
+}
+
+/// Run `git` in `dir` via the CLI, asserting success. Submodule
+/// operations must run through the git CLI (libgit2 cannot `submodule
+/// add`), so submodule fixtures shell out here.
+pub(super) fn git_cli(dir: &Path, args: &[&str]) -> std::process::Output {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t.com")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// Build an outer repo at `dir` containing a submodule `sub` pinned at an
+/// older commit, then bump the working-tree checkout to a newer commit so
+/// the outer tree shows an unstaged submodule commit bump. Uses a nested
+/// source repo (built under `dir/../sub_src`) with two commits. Returns
+/// the outer repo path (`dir`).
+pub(super) fn setup_submodule_bump(dir: &Path) {
+    let src = dir.parent().unwrap().join("sub_src");
+    std::fs::create_dir_all(&src).unwrap();
+    git_cli(&src, &["init", "-q"]);
+    std::fs::write(src.join("file.txt"), "v1\n").unwrap();
+    git_cli(&src, &["add", "-A"]);
+    git_cli(&src, &["commit", "-qm", "sub v1"]);
+    let v1 = String::from_utf8(git_cli(&src, &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    std::fs::write(src.join("file.txt"), "v2\n").unwrap();
+    git_cli(&src, &["add", "-A"]);
+    git_cli(&src, &["commit", "-qm", "sub v2"]);
+
+    git_cli(dir, &["init", "-q"]);
+    std::fs::write(dir.join("readme.txt"), "hello\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "init"]);
+    git_cli(
+        dir,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            src.to_str().unwrap(),
+            "sub",
+        ],
+    );
+    // Pin the submodule to v1 and commit that pointer.
+    git_cli(&dir.join("sub"), &["checkout", "-q", &v1]);
+    git_cli(dir, &["add", "sub"]);
+    git_cli(dir, &["commit", "-qm", "add submodule at v1"]);
+    // Bump the working-tree checkout to v2: an unstaged commit bump.
+    git_cli(&dir.join("sub"), &["checkout", "-q", "-"]);
 }

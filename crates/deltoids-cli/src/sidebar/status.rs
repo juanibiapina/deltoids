@@ -234,8 +234,18 @@ pub fn file_metadata(file: &FileDiff) -> FileMetadata {
         }
     }
 
-    if matches!(old_mode, Some(FileMode::Submodule))
-        || matches!(new_mode, Some(FileMode::Submodule))
+    // Submodule detection also reads the parsed `old_mode`/`new_mode`
+    // fields, not just the preamble. A plain submodule *commit bump*
+    // carries `160000` only on the `index a..b 160000` line, which the
+    // parser captures into these fields and strips from the preamble; the
+    // preamble-only check above misses it. Add / delete / type-change do
+    // carry a preamble mode line, so both sources are folded together.
+    let field_old = file.old_mode.as_deref().map(FileMode::parse);
+    let field_new = file.new_mode.as_deref().map(FileMode::parse);
+    if [old_mode, new_mode, field_old, field_new]
+        .into_iter()
+        .flatten()
+        .any(|m| matches!(m, FileMode::Submodule))
     {
         out.is_submodule = true;
     }
@@ -398,5 +408,21 @@ mod tests {
         );
         let meta = file_metadata(&f);
         assert!(meta.is_submodule);
+    }
+
+    #[test]
+    fn file_metadata_detects_submodule_commit_bump_from_parsed_modes() {
+        // A plain commit bump: `160000` lives only on the `index` line,
+        // which the parser records into old_mode/new_mode and strips from
+        // the preamble. The preamble has no mode line, so detection must
+        // read the parsed fields.
+        let mut f = fd("sub");
+        f.old_mode = Some("160000".to_string());
+        f.new_mode = Some("160000".to_string());
+        let meta = file_metadata(&f);
+        assert!(
+            meta.is_submodule,
+            "commit-bump gitlink (mode only on index line) must be detected: {meta:?}"
+        );
     }
 }

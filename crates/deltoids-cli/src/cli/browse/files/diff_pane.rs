@@ -110,16 +110,33 @@ fn render_file_block(
     if let Some(note) = typechange_note(&resolved.file, theme) {
         lines.push(Line::from(""));
         lines.extend(note);
-        if let FileBody::Diff(diff) = body {
-            for hunk in diff.hunks() {
+        match body {
+            FileBody::Diff(diff) => {
+                for hunk in diff.hunks() {
+                    lines.push(Line::from(""));
+                    lines.extend(render_tui::render_hunk_body(
+                        hunk,
+                        diff.highlight(),
+                        width,
+                        theme,
+                    ));
+                }
+            }
+            // A type change *into* a submodule (regular → submodule) has no
+            // textual body; render the placeholder below the note box so the
+            // pane is not empty.
+            FileBody::Submodule {
+                old_commit,
+                new_commit,
+            } => {
                 lines.push(Line::from(""));
-                lines.extend(render_tui::render_hunk_body(
-                    hunk,
-                    diff.highlight(),
-                    width,
+                lines.push(submodule_placeholder(
+                    old_commit.as_deref(),
+                    new_commit.as_deref(),
                     theme,
                 ));
             }
+            _ => {}
         }
         return lines;
     }
@@ -146,9 +163,42 @@ fn render_file_block(
                 Style::default().fg(rgb_to_color(theme.muted)),
             )));
         }
+        FileBody::Submodule {
+            old_commit,
+            new_commit,
+        } => {
+            lines.push(Line::from(""));
+            lines.push(submodule_placeholder(
+                old_commit.as_deref(),
+                new_commit.as_deref(),
+                theme,
+            ));
+        }
     }
 
     lines
+}
+
+/// A muted placeholder line for a submodule (gitlink) change: its body is
+/// a commit OID, not text, so there is no diff to paint. Shows the short
+/// old/new commits, tolerating a missing side (a submodule add shows only
+/// the new commit, a delete only the old).
+fn submodule_placeholder(
+    old_commit: Option<&str>,
+    new_commit: Option<&str>,
+    theme: &Theme,
+) -> Line<'static> {
+    let short = |c: &str| c.chars().take(7).collect::<String>();
+    let text = match (old_commit, new_commit) {
+        (Some(o), Some(n)) => format!("Submodule {} \u{2192} {}", short(o), short(n)),
+        (None, Some(n)) => format!("Submodule {}", short(n)),
+        (Some(o), None) => format!("Submodule {}", short(o)),
+        (None, None) => "Submodule (no textual diff)".to_string(),
+    };
+    Line::from(Span::styled(
+        text,
+        Style::default().fg(rgb_to_color(theme.muted)),
+    ))
 }
 
 /// A breadcrumb-style box describing a type change (regular ↔ symlink ↔
@@ -694,6 +744,51 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.starts_with("@@")),
             "binary body must render no hunk lines, got: {texts:#?}"
+        );
+    }
+
+    #[test]
+    fn assemble_window_renders_submodule_placeholder() {
+        let resolved = vec![submodule_resolved("sub", "399c80dabc", "099e72cdef")];
+        let mut state = make_state(&resolved);
+        let window = state.visible_diff_window(DrawBudget::Full);
+        let texts: Vec<String> = window.iter().map(line_text).collect();
+        assert!(
+            texts.iter().any(|t| t == "sub"),
+            "expected the file header, got: {texts:#?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Submodule") && t.contains("399c80d") && t.contains("099e72c")),
+            "expected the submodule placeholder with short commits, got: {texts:#?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.starts_with("@@")),
+            "submodule body must render no hunk lines, got: {texts:#?}"
+        );
+    }
+
+    #[test]
+    fn assemble_window_renders_typechange_note_and_submodule_placeholder() {
+        let resolved = vec![submodule_typechange_resolved("sub", "099e72cdef")];
+        let mut state = make_state(&resolved);
+        let texts: Vec<String> = state
+            .visible_diff_window(DrawBudget::Full)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("type change: regular file \u{2192} submodule")),
+            "expected the type-change note, got: {texts:#?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Submodule") && t.contains("099e72c")),
+            "expected the submodule placeholder below the note, got: {texts:#?}"
         );
     }
 

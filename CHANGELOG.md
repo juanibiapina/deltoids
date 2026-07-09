@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: A failed Files build now shows the error in the diff pane instead of blanking to "No local changes.", so a real failure is no longer indistinguishable from a clean tree.
 - TUI: A binary file change no longer blanks the Files sidebar. Binary files are listed like any other change (with a `(binary)` badge and no line counts) and show a "binary file" placeholder in the diff pane.
+- TUI: A submodule change (commit bump, add, delete, or type change) no longer blanks the Files sidebar with a "missing index blob" error. Submodules are listed like any other change (with a `(submodule)` badge and no line counts) and show a `Submodule <old> → <new>` placeholder in the diff pane.
 - A repointed symlink no longer aborts the pager or TUI with a "missing index blob" error.
 - Files managed by a git content filter (such as git-crypt) now render like any other file, with full highlighting and breadcrumbs, instead of aborting the pager or TUI with a "missing index blob" error.
 - diff: Diffs now show the same added and removed lines as `git diff`; an edit plus new functions or tests beside it renders as one hunk that names their shared parent scope in the breadcrumb.

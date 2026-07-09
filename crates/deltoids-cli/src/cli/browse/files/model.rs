@@ -39,6 +39,14 @@ pub(super) enum FileBody {
     /// A binary change: no textual diff. Decided from the parsed diff, so
     /// content resolution never touches the ODB or the working tree.
     Binary,
+    /// A submodule (gitlink, git mode `160000`) change: its "content" is
+    /// a commit OID, not a blob, so content resolution would fail and
+    /// blank the panel. Decided from the parsed diff; the diff pane
+    /// renders a placeholder from the old/new commit hashes.
+    Submodule {
+        old_commit: Option<String>,
+        new_commit: Option<String>,
+    },
 }
 
 /// Parse `input`, resolve every file's before/after content against
@@ -136,6 +144,19 @@ pub(super) fn resolve(
             continue;
         }
 
+        // Submodule (gitlink) changes name a *commit* OID, not a blob, so
+        // content resolution would fail (not a blob, and the path is a
+        // directory in the working tree) and blank the whole panel. Decide
+        // straight from the parsed diff, exactly like symlinks/binaries.
+        if crate::sidebar::file_metadata(&file).is_submodule {
+            files.push(ResolvedFile {
+                file,
+                before: String::new(),
+                after: String::new(),
+            });
+            continue;
+        }
+
         let resolved = content::retrieve(&file, repo);
         let before = match resolved.before {
             SideContent::Resolved(s) => s,
@@ -176,8 +197,15 @@ pub(super) fn precompute_bodies(files: &[ResolvedFile]) -> Vec<FileBody> {
     files
         .iter()
         .map(|f| {
-            if crate::sidebar::file_metadata(&f.file).binary {
+            let meta = crate::sidebar::file_metadata(&f.file);
+            if meta.binary {
                 return FileBody::Binary;
+            }
+            if meta.is_submodule {
+                return FileBody::Submodule {
+                    old_commit: f.file.old_hash.clone(),
+                    new_commit: f.file.new_hash.clone(),
+                };
             }
             match SymlinkView::from_file_diff(&f.file) {
                 Some(view) => FileBody::Symlink(view),
@@ -200,6 +228,8 @@ pub(super) fn body_deltas(body: &FileBody) -> (usize, usize) {
         ),
         // Binary changes have no line counts (lazygit shows none either).
         FileBody::Binary => (0, 0),
+        // Submodule bumps have no textual line counts either.
+        FileBody::Submodule { .. } => (0, 0),
     }
 }
 
@@ -349,6 +379,38 @@ mod tests {
     }
 
     #[test]
+    fn build_model_keeps_submodule_bump_without_erroring() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_submodule_bump(dir.path());
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        // The core guarantee: a submodule commit bump must not error the
+        // whole panel (it did before the gitlink short-circuit).
+        let model = build_model(&input, Some(&wrapper)).expect("submodule bump must not error");
+
+        let sub_idx = model
+            .files
+            .iter()
+            .position(|f| display_path(&f.file) == "sub")
+            .expect("submodule file present in model");
+        assert!(
+            matches!(model.bodies[sub_idx], FileBody::Submodule { .. }),
+            "submodule should get a Submodule body, got {:?}",
+            std::mem::discriminant(&model.bodies[sub_idx])
+        );
+        assert_eq!(
+            body_deltas(&model.bodies[sub_idx]),
+            (0, 0),
+            "submodule bump shows no +/- counts"
+        );
+        assert!(
+            crate::sidebar::file_metadata(&model.files[sub_idx].file).is_submodule,
+            "the submodule row must carry the submodule marker for its badge"
+        );
+    }
+
+    #[test]
     fn build_model_from_working_tree() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
@@ -370,7 +432,9 @@ mod tests {
         assert_eq!(model.files[0].after, "world\n");
         match &model.bodies[0] {
             FileBody::Diff(diff) => assert!(!diff.hunks().is_empty()),
-            FileBody::Symlink(_) | FileBody::Binary => panic!("expected a text diff body"),
+            FileBody::Symlink(_) | FileBody::Binary | FileBody::Submodule { .. } => {
+                panic!("expected a text diff body")
+            }
         }
     }
 

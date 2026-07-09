@@ -604,6 +604,77 @@ mod tests {
         );
     }
 
+    /// Build an outer repo at `dir` with a submodule `sub` pinned at an
+    /// older commit, then bump the working-tree checkout to a newer commit
+    /// so the outer tree shows an unstaged submodule commit bump. Uses the
+    /// git CLI throughout (libgit2 cannot `submodule add`).
+    fn setup_submodule_bump(dir: &Path) {
+        let src = dir.parent().unwrap().join("sub_src");
+        fs::create_dir_all(&src).unwrap();
+        git_cli(&src, &["init", "-q"]);
+        fs::write(src.join("file.txt"), "v1\n").unwrap();
+        git_cli(&src, &["add", "-A"]);
+        git_cli(&src, &["commit", "-qm", "sub v1"]);
+        let v1 = String::from_utf8(git_cli(&src, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::write(src.join("file.txt"), "v2\n").unwrap();
+        git_cli(&src, &["add", "-A"]);
+        git_cli(&src, &["commit", "-qm", "sub v2"]);
+
+        git_cli(dir, &["init", "-q"]);
+        fs::write(dir.join("readme.txt"), "hello\n").unwrap();
+        git_cli(dir, &["add", "-A"]);
+        git_cli(dir, &["commit", "-qm", "init"]);
+        git_cli(
+            dir,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                src.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        git_cli(&dir.join("sub"), &["checkout", "-q", &v1]);
+        git_cli(dir, &["add", "sub"]);
+        git_cli(dir, &["commit", "-qm", "add submodule at v1"]);
+        git_cli(&dir.join("sub"), &["checkout", "-q", "-"]);
+    }
+
+    #[test]
+    fn working_tree_diff_submodule_bump_carries_gitlink_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_submodule_bump(dir.path());
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+
+        // The submodule delta carries the `160000` gitlink mode on the
+        // index line, and its "content" is a `Subproject commit` line, not
+        // a resolvable blob.
+        assert!(
+            patch.contains("diff --git a/sub b/sub"),
+            "missing submodule delta in: {patch}"
+        );
+        assert!(patch.contains("160000"), "missing gitlink mode in: {patch}");
+        assert!(
+            patch.contains("Subproject commit"),
+            "missing subproject marker in: {patch}"
+        );
+
+        // The status side reports the submodule path with an unstaged
+        // change (the working-tree checkout moved off the recorded commit).
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "sub").expect("sub in status");
+        assert!(
+            s.unstaged.is_some(),
+            "expected an unstaged change on the submodule, got {s:?}"
+        );
+    }
+
     #[test]
     fn working_tree_diff_symlink_to_file_is_single_delta() {
         let dir = tempfile::tempdir().unwrap();

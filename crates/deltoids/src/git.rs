@@ -427,6 +427,34 @@ mod tests {
     }
 
     #[test]
+    fn working_tree_diff_marks_binary_file_with_index_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        // Commit a binary blob (bytes with a NUL), then change it.
+        fs::write(dir.path().join("bin"), b"\x00\x01\x02").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        fs::write(dir.path().join("bin"), b"\x00\x03\x04").unwrap();
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(
+            patch.contains("Binary files ") && patch.contains(" differ"),
+            "expected a binary delta marker in: {patch}"
+        );
+        // The index line carries non-null blob hashes.
+        let index_line = patch
+            .lines()
+            .find(|l| l.trim_start().starts_with("index "))
+            .expect("index line present");
+        assert!(
+            !index_line.contains("0000000000000000000000000000000000000000"),
+            "expected non-null blob hashes in: {index_line}"
+        );
+    }
+
+    #[test]
     fn working_tree_diff_empty_when_clean() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());

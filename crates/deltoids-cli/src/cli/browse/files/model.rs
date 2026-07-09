@@ -36,6 +36,9 @@ pub(super) struct Model {
 pub(super) enum FileBody {
     Diff(Diff),
     Symlink(SymlinkView),
+    /// A binary change: no textual diff. Decided from the parsed diff, so
+    /// content resolution never touches the ODB or the working tree.
+    Binary,
 }
 
 /// Parse `input`, resolve every file's before/after content against
@@ -121,6 +124,18 @@ pub(super) fn resolve(
             continue;
         }
 
+        // Binary changes are decided straight from the parsed diff too:
+        // their blobs are not valid UTF-8, so resolving them would fail
+        // and blank the whole panel. Skip content resolution entirely.
+        if crate::sidebar::file_metadata(&file).binary {
+            files.push(ResolvedFile {
+                file,
+                before: String::new(),
+                after: String::new(),
+            });
+            continue;
+        }
+
         let resolved = content::retrieve(&file, repo);
         let before = match resolved.before {
             SideContent::Resolved(s) => s,
@@ -160,9 +175,14 @@ fn missing_blob_message(hash: &str, path: &str) -> String {
 pub(super) fn precompute_bodies(files: &[ResolvedFile]) -> Vec<FileBody> {
     files
         .iter()
-        .map(|f| match SymlinkView::from_file_diff(&f.file) {
-            Some(view) => FileBody::Symlink(view),
-            None => FileBody::Diff(Diff::compute(&f.before, &f.after, display_path(&f.file))),
+        .map(|f| {
+            if crate::sidebar::file_metadata(&f.file).binary {
+                return FileBody::Binary;
+            }
+            match SymlinkView::from_file_diff(&f.file) {
+                Some(view) => FileBody::Symlink(view),
+                None => FileBody::Diff(Diff::compute(&f.before, &f.after, display_path(&f.file))),
+            }
         })
         .collect()
 }
@@ -178,6 +198,8 @@ pub(super) fn body_deltas(body: &FileBody) -> (usize, usize) {
             view.new_target.is_some() as usize,
             view.old_target.is_some() as usize,
         ),
+        // Binary changes have no line counts (lazygit shows none either).
+        FileBody::Binary => (0, 0),
     }
 }
 
@@ -291,6 +313,42 @@ mod tests {
     }
 
     #[test]
+    fn build_model_keeps_binary_file_without_blanking() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        std::fs::write(dir.path().join("bin"), b"\x00\x01\x02").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // One text edit + one binary edit, both staged so the post-image
+        // blobs land in the ODB.
+        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+        std::fs::write(dir.path().join("bin"), b"\x00\x03\x04").unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).expect("binary edit must not error");
+
+        assert_eq!(model.files.len(), 2, "both files must survive");
+        let bin_idx = model
+            .files
+            .iter()
+            .position(|f| display_path(&f.file) == "bin")
+            .expect("binary file present in model");
+        assert!(
+            matches!(model.bodies[bin_idx], FileBody::Binary),
+            "binary file should get a Binary body"
+        );
+        assert_eq!(
+            body_deltas(&model.bodies[bin_idx]),
+            (0, 0),
+            "binary file shows no +/- counts"
+        );
+    }
+
+    #[test]
     fn build_model_from_working_tree() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
@@ -312,7 +370,7 @@ mod tests {
         assert_eq!(model.files[0].after, "world\n");
         match &model.bodies[0] {
             FileBody::Diff(diff) => assert!(!diff.hunks().is_empty()),
-            FileBody::Symlink(_) => panic!("expected a text diff body"),
+            FileBody::Symlink(_) | FileBody::Binary => panic!("expected a text diff body"),
         }
     }
 }

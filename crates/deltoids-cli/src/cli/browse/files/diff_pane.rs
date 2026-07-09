@@ -118,6 +118,13 @@ fn render_file_block(
                 theme,
             ));
         }
+        FileBody::Binary => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Binary file (no textual diff)".to_string(),
+                Style::default().fg(rgb_to_color(theme.muted)),
+            )));
+        }
     }
 
     lines
@@ -490,6 +497,26 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("\u{2192} a.txt")),
             "expected the symlink body, got: {texts:#?}"
+        );
+    }
+
+    #[test]
+    fn assemble_window_renders_binary_placeholder() {
+        let resolved = vec![binary_resolved("bin")];
+        let mut state = make_state(&resolved);
+        let window = state.visible_diff_window(DrawBudget::Full);
+        let texts: Vec<String> = window.iter().map(line_text).collect();
+        assert!(
+            texts.iter().any(|t| t == "bin"),
+            "expected the file header, got: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Binary file")),
+            "expected the binary placeholder, got: {texts:#?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.starts_with("@@")),
+            "binary body must render no hunk lines, got: {texts:#?}"
         );
     }
 

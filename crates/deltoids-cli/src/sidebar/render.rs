@@ -310,6 +310,10 @@ mod tests {
             combined.contains("(binary)"),
             "missing binary badge: {combined}"
         );
+        assert!(
+            !combined.contains('+') && !combined.contains('-'),
+            "binary row must not show +/- counts: {combined}"
+        );
     }
 
     #[test]

@@ -91,6 +91,19 @@ pub(super) fn make_state_with_rects(files: &[ResolvedFile]) -> FilesMode {
     state
 }
 
+/// A resolved binary file: its preamble carries the `Binary files ...
+/// differ` marker so `file_metadata` classifies it as binary, with empty
+/// before/after (content resolution is skipped for binaries).
+pub(super) fn binary_resolved(path: &str) -> ResolvedFile {
+    let mut file = file_diff(path);
+    file.preamble = vec![format!("Binary files a/{path} and b/{path} differ")];
+    ResolvedFile {
+        file,
+        before: String::new(),
+        after: String::new(),
+    }
+}
+
 /// A resolved file with distinct before/after so its diff is non-empty.
 pub(super) fn resolved(path: &str) -> ResolvedFile {
     ResolvedFile {

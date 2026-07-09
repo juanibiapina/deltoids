@@ -613,7 +613,7 @@ mod tests {
         let original = "alpha\nbeta\ngamma\n";
         let mut wrong = anchor_for(2, original);
         // Flip the hash so it definitely doesn't match.
-        wrong.hash = [b'z', b'z'];
+        wrong.hash = *b"zz";
         let edit = HashEdit::Replace {
             pos: wrong,
             end: None,
@@ -635,7 +635,7 @@ mod tests {
     fn stale_anchor_display_contains_fresh_anchors_and_star_markers() {
         let original = "one\ntwo\nthree\nfour\nfive\n";
         let mut wrong = anchor_for(3, original);
-        wrong.hash = [b'z', b'z'];
+        wrong.hash = *b"zz";
         let edit = HashEdit::Replace {
             pos: wrong,
             end: None,

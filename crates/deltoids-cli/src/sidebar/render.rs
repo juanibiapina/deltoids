@@ -137,8 +137,18 @@ fn file_row_spans(
         // Two-column stage field (lazygit parity): staged column then
         // worktree column, each in its own colour.
         Some(stage) => {
+            // Untracked renders porcelain `??`: the staging model keeps
+            // the staged column empty (an untracked file is not staged),
+            // but display convention shows `?` in both columns.
+            let is_untracked = stage.staged.is_none()
+                && stage.unstaged == Some(super::status::ChangeKind::Untracked);
+            let staged_col = if is_untracked {
+                Some(super::status::ChangeKind::Untracked)
+            } else {
+                stage.staged
+            };
             spans.push(stage_char_span(
-                stage.staged,
+                staged_col,
                 StageColumn::Staged,
                 base,
                 theme,
@@ -621,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_field_untracked_shows_question_red() {
+    fn stage_field_untracked_shows_double_question_red() {
         let f = fd("new.rs");
         let spans = stage_row(
             &f,
@@ -630,10 +640,14 @@ mod tests {
                 unstaged: Some(ChangeKind::Untracked),
             },
         );
-        let [(sc, _), (wc, wfg)] = stage_chars(&spans);
-        assert_eq!(sc, ' ');
-        assert_eq!(wc, '?');
+        // Untracked renders porcelain `??`: `?` in both columns, both red.
+        let [(sc, sfg), (wc, wfg)] = stage_chars(&spans);
+        assert_eq!((sc, wc), ('?', '?'));
+        assert_eq!(sfg, Some(rgb_to_color(theme().status_deleted)));
         assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
+        // The staging model stays porcelain (staged column empty), so the
+        // name is not tinted as staged.
+        assert_eq!(name_span(&spans, "new.rs").style.fg, None);
     }
 
     #[test]

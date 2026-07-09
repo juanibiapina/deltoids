@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: Reworked the Files sidebar styling.
 - TUI/pager: A rename now shows as a single `old → new` entry instead of a separate delete and add.
 - TUI: A file type change (regular ↔ symlink) now shows as a single row instead of a separate delete and add.
+- TUI: Untracked files now show `??` in the Files sidebar stage field, matching `git status`.
 
 ### Fixed
 

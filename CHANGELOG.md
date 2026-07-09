@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - TUI: Reworked the Files sidebar styling.
+- TUI/pager: A rename now shows as a single `old → new` entry instead of a separate delete and add.
 
 ### Fixed
 

@@ -373,4 +373,81 @@ mod tests {
             FileBody::Symlink(_) | FileBody::Binary => panic!("expected a text diff body"),
         }
     }
+
+    #[test]
+    fn build_model_pure_rename_is_single_row_with_zero_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(
+            dir.path().join("old.txt"),
+            "line one\nline two\nline three\nline four\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Pure rename: move and stage the delete + add.
+        std::fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).unwrap();
+
+        assert_eq!(model.files.len(), 1, "rename must be a single row");
+        assert_eq!(display_path(&model.files[0].file), "new.txt");
+        assert_eq!(
+            model.files[0].file.rename_from.as_deref(),
+            Some("old.txt"),
+            "rename origin must be recorded"
+        );
+        assert_eq!(
+            body_deltas(&model.bodies[0]),
+            (0, 0),
+            "a pure rename shows no +/- counts"
+        );
+
+        let stage = model.stages.get("new.txt").expect("new.txt staged entry");
+        assert_eq!(stage.staged, Some(ChangeKind::Renamed));
+    }
+
+    #[test]
+    fn build_model_content_changed_rename_is_single_row_with_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(
+            dir.path().join("old.txt"),
+            "line one\nline two\nline three\nline four\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Rename plus an edit: still one row, but with real +/- counts.
+        std::fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        std::fs::write(
+            dir.path().join("new.txt"),
+            "line one\nline two CHANGED\nline three\nline four\nline five\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).unwrap();
+
+        assert_eq!(model.files.len(), 1, "rename must be a single row");
+        assert_eq!(display_path(&model.files[0].file), "new.txt");
+        assert_eq!(
+            model.files[0].file.rename_from.as_deref(),
+            Some("old.txt"),
+            "rename origin must be recorded"
+        );
+        let (added, deleted) = body_deltas(&model.bodies[0]);
+        assert!(added > 0, "expected adds in content-changed rename");
+        assert!(deleted > 0, "expected dels in content-changed rename");
+
+        let stage = model.stages.get("new.txt").expect("new.txt staged entry");
+        assert_eq!(stage.staged, Some(ChangeKind::Renamed));
+    }
 }

@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use git2::{DiffFormat, DiffOptions, ObjectType, Oid, Repository, Status, StatusOptions};
+use git2::{
+    DiffFindOptions, DiffFormat, DiffOptions, ObjectType, Oid, Repository, Status, StatusOptions,
+};
 
 /// A discovered git repository, used to look up blobs by hash.
 pub struct Repo(Repository);
@@ -119,10 +121,20 @@ impl Repo {
             .recurse_untracked_dirs(true)
             .show_untracked_content(true);
 
-        let diff = self
+        let mut diff = self
             .0
             .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
             .map_err(|e| format!("failed to diff working tree: {e}"))?;
+
+        // Coalesce a delete + add of similar content into one rename
+        // delta so a rename shows as a single `old → new` entry, matching
+        // `working_tree_status` (which keys renames by the new path) and
+        // `git diff -M`. Explicit `renames(true)` keeps behavior
+        // independent of the user's `diff.renames` git config.
+        let mut find_opts = DiffFindOptions::new();
+        find_opts.renames(true);
+        diff.find_similar(Some(&mut find_opts))
+            .map_err(|e| format!("failed to detect renames: {e}"))?;
 
         let mut out = String::new();
         diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
@@ -207,14 +219,17 @@ fn entry_new_path(entry: &git2::StatusEntry<'_>) -> Option<String> {
 /// Map the `INDEX_*` (staged column) bits of a [`Status`] to a
 /// [`StageChange`], or `None` when nothing is staged.
 fn staged_change(flags: Status) -> Option<StageChange> {
+    // Check RENAMED before MODIFIED: a content-changed rename sets both
+    // INDEX_RENAMED and INDEX_MODIFIED, and git porcelain reports it as
+    // `R` (the rename wins).
     if flags.contains(Status::INDEX_NEW) {
         Some(StageChange::Added)
+    } else if flags.contains(Status::INDEX_RENAMED) {
+        Some(StageChange::Renamed)
     } else if flags.contains(Status::INDEX_MODIFIED) {
         Some(StageChange::Modified)
     } else if flags.contains(Status::INDEX_DELETED) {
         Some(StageChange::Deleted)
-    } else if flags.contains(Status::INDEX_RENAMED) {
-        Some(StageChange::Renamed)
     } else if flags.contains(Status::INDEX_TYPECHANGE) {
         Some(StageChange::TypeChanged)
     } else {
@@ -226,14 +241,16 @@ fn staged_change(flags: Status) -> Option<StageChange> {
 /// [`StageChange`], or `None` when the worktree matches the index.
 /// `WT_NEW` (an untracked file) maps to [`StageChange::Untracked`].
 fn unstaged_change(flags: Status) -> Option<StageChange> {
+    // Check RENAMED before MODIFIED for the same reason as the staged
+    // column: a content-changed rename sets both bits and reports as `R`.
     if flags.contains(Status::WT_NEW) {
         Some(StageChange::Untracked)
+    } else if flags.contains(Status::WT_RENAMED) {
+        Some(StageChange::Renamed)
     } else if flags.contains(Status::WT_MODIFIED) {
         Some(StageChange::Modified)
     } else if flags.contains(Status::WT_DELETED) {
         Some(StageChange::Deleted)
-    } else if flags.contains(Status::WT_RENAMED) {
-        Some(StageChange::Renamed)
     } else if flags.contains(Status::WT_TYPECHANGE) {
         Some(StageChange::TypeChanged)
     } else {
@@ -478,6 +495,73 @@ mod tests {
         assert!(patch.contains("+first"), "missing added line in: {patch}");
     }
 
+    #[test]
+    fn working_tree_diff_detects_staged_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(
+            dir.path().join("old.txt"),
+            "line one\nline two\nline three\nline four\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Pure rename: move the file and stage the delete + add.
+        fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(
+            patch.contains("rename from old.txt"),
+            "missing rename from in: {patch}"
+        );
+        assert!(
+            patch.contains("rename to new.txt"),
+            "missing rename to in: {patch}"
+        );
+    }
+
+    #[test]
+    fn working_tree_diff_detects_content_changed_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(
+            dir.path().join("old.txt"),
+            "line one\nline two\nline three\nline four\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Rename plus a small content edit: still one rename delta, but
+        // with an index line and hunks.
+        fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        fs::write(
+            dir.path().join("new.txt"),
+            "line one\nline two CHANGED\nline three\nline four\nline five\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+        assert!(
+            patch.contains("rename from old.txt"),
+            "missing rename from in: {patch}"
+        );
+        assert!(
+            patch.contains("rename to new.txt"),
+            "missing rename to in: {patch}"
+        );
+        assert!(patch.contains("index "), "missing index header in: {patch}");
+        assert!(
+            patch.contains("+line two CHANGED"),
+            "missing changed line in: {patch}"
+        );
+    }
+
     /// Look up one path's stage status from a `working_tree_status` result.
     fn status_of<'a>(statuses: &'a [FileStageStatus], path: &str) -> Option<&'a FileStageStatus> {
         statuses.iter().find(|s| s.path == path)
@@ -584,6 +668,34 @@ mod tests {
         // Rename by moving the file, then stage both the delete and add
         // so git detects the rename in the index.
         fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let statuses = wrapper.working_tree_status().unwrap();
+        let s = status_of(&statuses, "new.txt").expect("new.txt in status");
+        assert_eq!(s.staged, Some(StageChange::Renamed));
+    }
+
+    #[test]
+    fn working_tree_status_content_changed_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(
+            dir.path().join("old.txt"),
+            "line one\nline two\nline three\nline four\n",
+        )
+        .unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Rename plus an edit: git reports this as a rename (R), not a
+        // plain modify, even though the content also changed.
+        fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
+        fs::write(
+            dir.path().join("new.txt"),
+            "line one\nline two CHANGED\nline three\nline four\nline five\n",
+        )
+        .unwrap();
         stage_all(&repo);
 
         let wrapper = Repo(Repository::open(dir.path()).unwrap());

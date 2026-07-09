@@ -83,6 +83,18 @@ pub(super) fn file_icon(name: &str) -> IconSpec {
     DEFAULT_FILE
 }
 
+/// Icon for a directory row. Mirrors lazygit's directory branch of
+/// `IconForFile`: exact-name match in [`NAME_ICONS`] only (no extension
+/// map), else the generic [`ICON_DIR`] folder glyph.
+pub(super) fn dir_icon(name: &str) -> IconSpec {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    NAME_ICONS
+        .iter()
+        .find(|(k, _)| *k == base)
+        .map(|(_, v)| *v)
+        .unwrap_or(ICON_DIR)
+}
+
 /// The final extension of a basename, including the leading dot, matching
 /// Go's `filepath.Ext`. Empty string when there is no dot.
 fn file_ext(base: &str) -> &str {
@@ -878,5 +890,13 @@ mod tests {
     fn file_icon_unknown_extension_falls_back() {
         assert_eq!(file_icon("strange.xyz"), DEFAULT_FILE);
         assert_eq!(file_icon("noextension"), DEFAULT_FILE);
+    }
+
+    #[test]
+    fn dir_icon_name_lookup_and_fallback() {
+        assert_eq!(dir_icon("node_modules").glyph, "\u{e718}");
+        assert_eq!(dir_icon("unknown"), ICON_DIR);
+        // Deepest segment of a collapsed chain is the lookup key.
+        assert_eq!(dir_icon("a/b/bin").glyph, "\u{f12a7}");
     }
 }

@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::FileRowMeta;
-use super::icons::{ICON_DIR, IconMode, file_icon};
+use super::icons::{IconMode, dir_icon, file_icon};
 use super::status::{FileMode, FileStatus, ModeChange};
 use super::tree::Row;
 
@@ -101,9 +101,18 @@ fn dir_row_spans(
 ) {
     spans.push(Span::styled(indent(depth), base));
     if icons == IconMode::On {
+        // Look the icon up by the deepest segment of the label (strip the
+        // trailing `/`, take the last path component), since that segment
+        // is the directory the row's contents live in.
+        let key = label
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(label);
+        let icon = dir_icon(key);
         spans.push(Span::styled(
-            format!("{} ", ICON_DIR.glyph),
-            base.fg(rgb_to_color(ICON_DIR.color)),
+            format!("{} ", icon.glyph),
+            base.fg(rgb_to_color(icon.color)),
         ));
     }
     // With stage data, tint the label green/yellow/default by the
@@ -864,6 +873,74 @@ mod tests {
         let span = dir_label_span(&sidebar.rows()[0], "src/");
         assert_eq!(span.style.fg, Some(rgb_to_color(theme().muted)));
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn named_dir_uses_its_icon() {
+        // A file under bin/ → the bin/ dir row's icon span carries the
+        // `bin` glyph in lazygit's colour, not the generic folder glyph.
+        let f = fd("bin/tool.rs");
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+            stage: None,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::On);
+        let row = &sidebar.rows()[0];
+        let icon_span = row
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{f12a7}'))
+            .expect("bin icon span");
+        assert_eq!(icon_span.style.fg, Some(rgb_to_color((0x25, 0xa7, 0x9a))));
+    }
+
+    #[test]
+    fn unnamed_dir_keeps_folder_glyph() {
+        // A file under foo/ (no named match) → the foo/ dir row uses the
+        // generic folder glyph in the muted grey colour.
+        let f = fd("foo/x.rs");
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+            stage: None,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::On);
+        let row = &sidebar.rows()[0];
+        let icon_span = row
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{f07b}'))
+            .expect("folder glyph span");
+        assert_eq!(icon_span.style.fg, Some(rgb_to_color((0x87, 0x87, 0x87))));
+    }
+
+    #[test]
+    fn collapsed_chain_uses_deepest_segment_icon() {
+        // src/bin/x.rs collapses to `src/bin/`; the row is looked up by
+        // its deepest segment (`bin`, named), not the first (`src`,
+        // unnamed).
+        let f = fd("src/bin/x.rs");
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 0,
+            deleted: 0,
+            stage: None,
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::On);
+        let row = &sidebar.rows()[0];
+        assert!(
+            line_text(row).contains("src/bin/"),
+            "expected collapsed chain label"
+        );
+        let icon_span = row
+            .spans
+            .iter()
+            .find(|s| s.content.contains('\u{f12a7}'))
+            .expect("bin icon span");
+        assert_eq!(icon_span.style.fg, Some(rgb_to_color((0x25, 0xa7, 0x9a))));
     }
 
     #[test]

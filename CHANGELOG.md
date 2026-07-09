@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: Add support for custom commands.
 - TUI: The Files sidebar status colors (stage columns, file/directory name tint, and `+N`/`-N` counts) are now themeable via `[theme]` overrides in `config.toml`.
+- TUI: Files sidebar directory rows now show name-based icons (`bin`, `.github`, `node_modules`, …), matching lazygit; unnamed directories keep the folder glyph.
 - First-class support for symlinks.
 
 ### Changed

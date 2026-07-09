@@ -17,7 +17,7 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use deltoids::Theme;
 use deltoids::render_tui::{
@@ -155,6 +155,15 @@ fn placeholder_file_block(
     lines
 }
 
+/// What to show when the pane has no files. The clean/no-repo case is a
+/// single centered "No local changes." line; a build error is the error
+/// message, painted top-aligned and wrapped so multi-line text (a
+/// message plus a `hint:` line) is fully visible.
+enum EmptyPane {
+    NoChanges,
+    Error(String),
+}
+
 /// The diff pane's owned state. The retained per-file line cache plus the
 /// bookkeeping needed to scroll it and keep it aligned with the sidebar's
 /// selection.
@@ -171,6 +180,8 @@ pub(super) struct DiffPane {
     /// Row count of the last-assembled visible window; drives scroll
     /// clamping between draws (mirrors Traces reading rows from its cache).
     pub(super) window_rows: usize,
+    /// What the no-files render shows: the clean state or a build error.
+    empty_state: EmptyPane,
 }
 
 impl DiffPane {
@@ -181,7 +192,14 @@ impl DiffPane {
             cached_width: width,
             diff_scroll: 0,
             window_rows: 0,
+            empty_state: EmptyPane::NoChanges,
         }
+    }
+
+    /// Switch the no-files render to show a build-error message instead of
+    /// the clean "No local changes." state.
+    pub(super) fn set_empty_error(&mut self, msg: String) {
+        self.empty_state = EmptyPane::Error(msg);
     }
 
     /// Assemble the selected window's file blocks into one line vector and
@@ -312,23 +330,36 @@ impl DiffPane {
     ) {
         let color = pane_border_color(focused, theme);
 
-        // After a reload that reverted/committed every change there are no
-        // files: render a centered empty state rather than a blank pane.
+        // With no files, render an empty state rather than a blank pane:
+        // either the clean "No local changes." line (a reverted/committed
+        // tree or a non-repo) or a build-error message.
         if self.display_order.is_empty() {
             let block = pane_block_with_footer("─[2]─Diff─", color, None);
             let inner = block.inner(area);
             frame.render_widget(block, area);
-            let msg = Paragraph::new("No local changes.")
-                .style(Style::default().fg(rgb_to_color(theme.muted)))
-                .alignment(Alignment::Center);
-            let mid = inner.height / 2;
-            let line = Rect {
-                x: inner.x,
-                y: inner.y.saturating_add(mid),
-                width: inner.width,
-                height: 1.min(inner.height),
-            };
-            frame.render_widget(msg, line);
+            match &self.empty_state {
+                EmptyPane::NoChanges => {
+                    let msg = Paragraph::new("No local changes.")
+                        .style(Style::default().fg(rgb_to_color(theme.muted)))
+                        .alignment(Alignment::Center);
+                    let mid = inner.height / 2;
+                    let line = Rect {
+                        x: inner.x,
+                        y: inner.y.saturating_add(mid),
+                        width: inner.width,
+                        height: 1.min(inner.height),
+                    };
+                    frame.render_widget(msg, line);
+                }
+                // A build error can be multi-line (message + `hint:`), so
+                // paint it top-aligned and wrapped, not one centered line.
+                EmptyPane::Error(text) => {
+                    let msg = Paragraph::new(text.clone())
+                        .style(Style::default().fg(rgb_to_color(theme.muted)))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(msg, inner);
+                }
+            }
             return;
         }
 
@@ -381,6 +412,11 @@ mod tests {
     use crate::cli::browse::files::test_support::*;
     use crate::cli::browse::files::{Focus, handle_key};
 
+    /// Concatenate every cell symbol of a rendered `TestBackend` buffer.
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer.content().iter().map(|c| c.symbol()).collect()
+    }
+
     #[test]
     fn empty_model_state_has_empty_display_order() {
         // Guards the startup empty-state render path: a clean repo opens
@@ -390,6 +426,54 @@ mod tests {
         assert!(
             state.diff.display_order.is_empty(),
             "expected empty display order for a zero-file model"
+        );
+    }
+
+    #[test]
+    fn empty_error_state_renders_message_not_no_changes() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut pane = DiffPane::new(Vec::new(), 80);
+        pane.set_empty_error("missing index blob deadbeef\nhint: try again".to_string());
+
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            pane.render(f, area, false, &theme(), Vec::new());
+        })
+        .unwrap();
+        let text = buffer_text(term.backend().buffer());
+        assert!(
+            text.contains("missing index blob"),
+            "expected error message in: {text:?}"
+        );
+        assert!(
+            text.contains("hint: try again"),
+            "expected the hint line in: {text:?}"
+        );
+        assert!(
+            !text.contains("No local changes."),
+            "error state must not show the clean message: {text:?}"
+        );
+    }
+
+    #[test]
+    fn empty_default_state_renders_no_changes() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut pane = DiffPane::new(Vec::new(), 80);
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            pane.render(f, area, false, &theme(), Vec::new());
+        })
+        .unwrap();
+        let text = buffer_text(term.backend().buffer());
+        assert!(
+            text.contains("No local changes."),
+            "default empty state shows the clean message: {text:?}"
         );
     }
 

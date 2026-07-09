@@ -2,8 +2,12 @@
 //!
 //! Discovers the repository and shows its local working-tree changes
 //! against `HEAD`. The working tree is watched and re-diffed on
-//! change. Outside a repo the mode degrades to an empty
-//! "No local changes." state instead of erroring, so the TUI still opens.
+//! change. Not-a-repo and a clean tree both degrade to an empty
+//! "No local changes." state, so the TUI still opens; a genuine build
+//! error (a resolution/diff failure) instead shows a visible error
+//! message. The error state is static: a build error (e.g. a missing
+//! index blob) won't self-heal from working-tree edits, so it is not
+//! watched or reloaded.
 //!
 //! Layout: a file-tree sidebar (left column) and the deltoids diff
 //! renderer (right pane). Selecting a file scrolls the diff to it.
@@ -96,10 +100,23 @@ pub(super) struct FilesMode {
 }
 
 impl FilesMode {
-    /// Build the mode from the discovered repo's working tree, or an empty
-    /// state when not in a repo. `initial_diff_width` seeds the diff cache
-    /// for the first frame.
-    pub(super) fn build(theme: &Theme, initial_diff_width: usize) -> Result<Self, String> {
+    /// Build the mode from the discovered repo's working tree, always
+    /// yielding a renderable mode. Not-a-repo and a clean tree render the
+    /// empty "No local changes." state; a build error becomes a visible
+    /// error state. `initial_diff_width` seeds the diff cache for the first
+    /// frame.
+    pub(super) fn build(theme: &Theme, initial_diff_width: usize) -> Self {
+        match Self::try_build(theme, initial_diff_width) {
+            Ok(mode) => mode,
+            Err(msg) => Self::error(theme, initial_diff_width, msg),
+        }
+    }
+
+    /// Try to build the mode from the discovered repo's working tree, or an
+    /// empty state when not in a repo. Returns `Err` with a human-readable
+    /// message on a real resolution/diff failure; [`FilesMode::build`]
+    /// folds that into the error state.
+    fn try_build(theme: &Theme, initial_diff_width: usize) -> Result<Self, String> {
         let (input, repo, is_static) = match git::Repo::discover() {
             Some(repo) => {
                 let input = repo.working_tree_diff()?;
@@ -130,6 +147,21 @@ impl FilesMode {
             stages: Default::default(),
         };
         Self::new(model, String::new(), None, true, theme, width)
+    }
+
+    /// A Files mode that shows a build-error message instead of the empty
+    /// state. Like [`FilesMode::empty`] it holds no repo and is static: a
+    /// build error (e.g. a missing index blob) won't self-heal from
+    /// working-tree edits, so this mode is never watched or reloaded.
+    pub(super) fn error(theme: &Theme, width: usize, message: String) -> Self {
+        let model = Model {
+            files: Vec::new(),
+            bodies: Vec::new(),
+            stages: Default::default(),
+        };
+        let mut mode = Self::new(model, String::new(), None, true, theme, width);
+        mode.diff.set_empty_error(message);
+        mode
     }
 
     fn new(
@@ -452,6 +484,56 @@ mod tests {
     use super::*;
     use crate::cli::browse::files::test_support::*;
     use model::ResolvedFile;
+
+    #[test]
+    fn error_mode_draws_message_not_no_changes() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::{Constraint, Direction, Layout};
+
+        let theme = Theme::default();
+        let mut mode = FilesMode::error(
+            &theme,
+            80,
+            "missing index blob deadbeef\nhint: try again".to_string(),
+        );
+        let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(28), Constraint::Min(10)])
+                .split(area);
+            mode.draw(
+                f,
+                cols[0],
+                cols[1],
+                TabStrip { active: 0 },
+                &theme,
+                DrawBudget::Full,
+            );
+        })
+        .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("missing index blob"),
+            "error message missing: {text:?}"
+        );
+        assert!(
+            text.contains("hint: try again"),
+            "hint line missing: {text:?}"
+        );
+        assert!(
+            !text.contains("No local changes."),
+            "error state must not show the clean message: {text:?}"
+        );
+    }
 
     #[test]
     fn handle_key_tab_toggles_focus() {

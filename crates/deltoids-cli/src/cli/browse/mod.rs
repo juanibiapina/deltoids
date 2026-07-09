@@ -638,14 +638,12 @@ fn draw_loading(
     frame.render_widget(loading(pane_block("─Diff─", border)), right);
 }
 
-/// Build a mode for real on first activation. Degrades to an empty mode
-/// on failure (e.g. a git error) so a toggle never aborts the session.
+/// Build a mode for real on first activation. Each mode folds its own
+/// build failure into a renderable state (Files shows an error message;
+/// Traces degrades to empty) so a toggle never aborts the session.
 fn build_mode(index: usize, theme: &Theme, diff_width: usize) -> Box<dyn Mode> {
     match index {
-        FILES_MODE => Box::new(
-            FilesMode::build(theme, diff_width)
-                .unwrap_or_else(|_| FilesMode::empty(theme, diff_width)),
-        ),
+        FILES_MODE => Box::new(FilesMode::build(theme, diff_width)),
         _ => Box::new(TracesMode::build().unwrap_or_else(|_| TracesMode::empty())),
     }
 }

@@ -49,6 +49,18 @@ pub struct Theme {
     pub muted: (u8, u8, u8),
     /// Background color for selected items.
     pub selection_bg: (u8, u8, u8),
+    /// Foreground for added status (staged column, `+N` counts, added files).
+    pub status_added: (u8, u8, u8),
+    /// Foreground for deleted status (worktree column, `-N` counts, deletes).
+    pub status_deleted: (u8, u8, u8),
+    /// Foreground for modified status (piped-diff fallback letter).
+    pub status_modified: (u8, u8, u8),
+    /// Foreground for partial-stage tint (name/dir yellow) and renames.
+    pub status_partial: (u8, u8, u8),
+    /// Foreground for copied status (piped-diff fallback letter).
+    pub status_copied: (u8, u8, u8),
+    /// Foreground for type-change status (piped-diff fallback letter).
+    pub status_typechange: (u8, u8, u8),
 }
 
 impl Default for Theme {
@@ -65,6 +77,12 @@ impl Default for Theme {
             line_number: (122, 162, 247),        // #7aa2f7
             muted: (86, 95, 137),                // #565f89
             selection_bg: (45, 63, 118),         // #2d3f76
+            status_added: (158, 206, 106),       // #9ece6a
+            status_deleted: (247, 118, 142),     // #f7768e
+            status_modified: (247, 118, 142),    // #f7768e
+            status_partial: (224, 175, 104),     // #e0af68
+            status_copied: (125, 207, 255),      // #7dcfff
+            status_typechange: (187, 154, 247),  // #bb9af7
         }
     }
 }
@@ -90,6 +108,14 @@ impl Theme {
                 line_number: (122, 162, 247),
                 muted: (113, 121, 158),
                 selection_bg: (212, 222, 252),
+                // Status foregrounds match the dark palette; they read on
+                // cream as well as on the dark default.
+                status_added: (158, 206, 106),
+                status_deleted: (247, 118, 142),
+                status_modified: (247, 118, 142),
+                status_partial: (224, 175, 104),
+                status_copied: (125, 207, 255),
+                status_typechange: (187, 154, 247),
             },
         }
     }
@@ -255,6 +281,13 @@ fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
         line_number: parse_hex_color(&overlay.line_number).unwrap_or(base.line_number),
         muted: parse_hex_color(&overlay.muted).unwrap_or(base.muted),
         selection_bg: parse_hex_color(&overlay.selection_bg).unwrap_or(base.selection_bg),
+        status_added: parse_hex_color(&overlay.status_added).unwrap_or(base.status_added),
+        status_deleted: parse_hex_color(&overlay.status_deleted).unwrap_or(base.status_deleted),
+        status_modified: parse_hex_color(&overlay.status_modified).unwrap_or(base.status_modified),
+        status_partial: parse_hex_color(&overlay.status_partial).unwrap_or(base.status_partial),
+        status_copied: parse_hex_color(&overlay.status_copied).unwrap_or(base.status_copied),
+        status_typechange: parse_hex_color(&overlay.status_typechange)
+            .unwrap_or(base.status_typechange),
     }
 }
 
@@ -277,6 +310,12 @@ struct ThemeConfig {
     line_number: Option<String>,
     muted: Option<String>,
     selection_bg: Option<String>,
+    status_added: Option<String>,
+    status_deleted: Option<String>,
+    status_modified: Option<String>,
+    status_partial: Option<String>,
+    status_copied: Option<String>,
+    status_typechange: Option<String>,
 }
 
 /// Parse a deltoids `config.toml` body into `(explicit_mode, overlay)`.
@@ -398,15 +437,19 @@ mod tests {
     fn resolve_theme_applies_field_overrides_on_top_of_palette() {
         let overlay = ThemeConfig {
             diff_added_bg: Some("#112233".into()),
+            status_added: Some("#445566".into()),
             ..Default::default()
         };
         let theme = resolve_theme(ColorMode::Light, &overlay);
-        // Override wins for the specified field.
+        // Override wins for the specified fields.
         assert_eq!(theme.diff_added_bg, (0x11, 0x22, 0x33));
+        assert_eq!(theme.status_added, (0x44, 0x55, 0x66));
         // Other fields retain the light palette.
         let light = Theme::for_mode(ColorMode::Light);
         assert_eq!(theme.diff_deleted_bg, light.diff_deleted_bg);
         assert_eq!(theme.separator, light.separator);
+        assert_eq!(theme.status_deleted, light.status_deleted);
+        assert_eq!(theme.status_partial, light.status_partial);
     }
 
     #[test]
@@ -488,6 +531,11 @@ mod tests {
         assert_eq!(theme.diff_deleted_bg, (55, 34, 44));
         assert_eq!(theme.separator, (122, 162, 247));
         assert_eq!(theme.border, (122, 162, 247));
+        assert_eq!(theme.status_added, (158, 206, 106));
+        assert_eq!(theme.status_deleted, (247, 118, 142));
+        assert_eq!(theme.status_partial, (224, 175, 104));
+        assert_eq!(theme.status_copied, (125, 207, 255));
+        assert_eq!(theme.status_typechange, (187, 154, 247));
     }
 
     #[test]

@@ -110,7 +110,7 @@ fn dir_row_spans(
     // subtree's aggregate staging state (lazygit parity). Without it
     // (piped diff / no repo) keep the muted, bold directory styling.
     let label_style = match meta.dir_stage {
-        Some(agg) => match stage_tint(agg.has_staged, agg.has_unstaged) {
+        Some(agg) => match stage_tint(agg.has_staged, agg.has_unstaged, theme) {
             Some(color) => base.fg(color),
             None => base,
         },
@@ -137,8 +137,18 @@ fn file_row_spans(
         // Two-column stage field (lazygit parity): staged column then
         // worktree column, each in its own colour.
         Some(stage) => {
-            spans.push(stage_char_span(stage.staged, StageColumn::Staged, base));
-            spans.push(stage_char_span(stage.unstaged, StageColumn::Worktree, base));
+            spans.push(stage_char_span(
+                stage.staged,
+                StageColumn::Staged,
+                base,
+                theme,
+            ));
+            spans.push(stage_char_span(
+                stage.unstaged,
+                StageColumn::Worktree,
+                base,
+                theme,
+            ));
             spans.push(Span::styled(" ".to_string(), base));
         }
         // Fallback: single change-type letter from the combined diff
@@ -148,7 +158,8 @@ fn file_row_spans(
                 let badge = format!("{} ", status.badge());
                 spans.push(Span::styled(
                     badge,
-                    base.fg(status_color(status)).add_modifier(Modifier::BOLD),
+                    base.fg(status_color(status, theme))
+                        .add_modifier(Modifier::BOLD),
                 ));
             }
         }
@@ -172,11 +183,11 @@ fn file_row_spans(
     // greening a fully-added file, matching lazygit's staged-add
     // treatment.
     let name_style = match meta.stage {
-        Some(stage) => match stage_tint(stage.is_staged(), stage.is_unstaged()) {
+        Some(stage) => match stage_tint(stage.is_staged(), stage.is_unstaged(), theme) {
             Some(color) => base.fg(color),
             None => base,
         },
-        None if meta.status == Some(FileStatus::Added) => base.fg(Color::Green),
+        None if meta.status == Some(FileStatus::Added) => base.fg(rgb_to_color(theme.status_added)),
         None => base,
     };
     spans.push(Span::styled(display_name, name_style));
@@ -186,13 +197,19 @@ fn file_row_spans(
             spans.push(Span::styled(" ".to_string(), base));
         }
         if added > 0 {
-            spans.push(Span::styled(format!("+{added}"), base.fg(Color::Green)));
+            spans.push(Span::styled(
+                format!("+{added}"),
+                base.fg(rgb_to_color(theme.status_added)),
+            ));
         }
         if added > 0 && deleted > 0 {
             spans.push(Span::styled(" ".to_string(), base));
         }
         if deleted > 0 {
-            spans.push(Span::styled(format!("-{deleted}"), base.fg(Color::Red)));
+            spans.push(Span::styled(
+                format!("-{deleted}"),
+                base.fg(rgb_to_color(theme.status_deleted)),
+            ));
         }
     }
 
@@ -234,16 +251,17 @@ fn stage_char_span(
     change: Option<super::status::ChangeKind>,
     column: StageColumn,
     base: Style,
+    theme: &Theme,
 ) -> Span<'static> {
     match change {
         None => Span::styled(" ".to_string(), base),
         Some(kind) => {
             let color = if kind == super::status::ChangeKind::Untracked {
-                Color::Red
+                rgb_to_color(theme.status_deleted)
             } else {
                 match column {
-                    StageColumn::Staged => Color::Green,
-                    StageColumn::Worktree => Color::Red,
+                    StageColumn::Staged => rgb_to_color(theme.status_added),
+                    StageColumn::Worktree => rgb_to_color(theme.status_deleted),
                 }
             };
             Span::styled(
@@ -258,10 +276,10 @@ fn stage_char_span(
 /// Green when fully staged, yellow when partially staged, `None`
 /// (terminal default) otherwise. For a directory the inputs are the
 /// OR-fold over its subtree; for a file they're its own two columns.
-fn stage_tint(has_staged: bool, has_unstaged: bool) -> Option<Color> {
+fn stage_tint(has_staged: bool, has_unstaged: bool, theme: &Theme) -> Option<Color> {
     match (has_staged, has_unstaged) {
-        (true, false) => Some(Color::Green),
-        (true, true) => Some(Color::Yellow),
+        (true, false) => Some(rgb_to_color(theme.status_added)),
+        (true, true) => Some(rgb_to_color(theme.status_partial)),
         _ => None,
     }
 }
@@ -270,15 +288,16 @@ fn stage_tint(has_staged: bool, has_unstaged: bool) -> Option<Color> {
 // worktree column is red: a modified or deleted file shows a red letter, an
 // added file green. deltoids has no staged/unstaged axis, so it collapses
 // lazygit's two porcelain columns into this single change-type letter.
-fn status_color(status: FileStatus) -> Color {
-    match status {
-        FileStatus::Added => Color::Green,
-        FileStatus::Deleted => Color::Red,
-        FileStatus::Modified => Color::Red,
-        FileStatus::Renamed => Color::Yellow,
-        FileStatus::Copied => Color::Cyan,
-        FileStatus::TypeChanged => Color::Magenta,
-    }
+fn status_color(status: FileStatus, theme: &Theme) -> Color {
+    let rgb = match status {
+        FileStatus::Added => theme.status_added,
+        FileStatus::Deleted => theme.status_deleted,
+        FileStatus::Modified => theme.status_modified,
+        FileStatus::Renamed => theme.status_partial,
+        FileStatus::Copied => theme.status_copied,
+        FileStatus::TypeChanged => theme.status_typechange,
+    };
+    rgb_to_color(rgb)
 }
 
 #[cfg(test)]
@@ -525,10 +544,13 @@ mod tests {
         );
         let [(sc, sfg), (wc, _)] = stage_chars(&spans);
         assert_eq!(sc, 'A');
-        assert_eq!(sfg, Some(Color::Green));
+        assert_eq!(sfg, Some(rgb_to_color(theme().status_added)));
         assert_eq!(wc, ' ');
         // Fully staged: filename is green.
-        assert_eq!(name_span(&spans, "added.rs").style.fg, Some(Color::Green));
+        assert_eq!(
+            name_span(&spans, "added.rs").style.fg,
+            Some(rgb_to_color(theme().status_added))
+        );
     }
 
     #[test]
@@ -544,7 +566,7 @@ mod tests {
         let [(sc, _), (wc, wfg)] = stage_chars(&spans);
         assert_eq!(sc, ' ');
         assert_eq!(wc, 'M');
-        assert_eq!(wfg, Some(Color::Red));
+        assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
         // Not staged: default filename colour (no explicit fg).
         assert_eq!(name_span(&spans, "mod.rs").style.fg, None);
     }
@@ -561,10 +583,13 @@ mod tests {
         );
         let [(sc, sfg), (wc, wfg)] = stage_chars(&spans);
         assert_eq!((sc, wc), ('M', 'M'));
-        assert_eq!(sfg, Some(Color::Green));
-        assert_eq!(wfg, Some(Color::Red));
+        assert_eq!(sfg, Some(rgb_to_color(theme().status_added)));
+        assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
         // Partially staged: filename is yellow.
-        assert_eq!(name_span(&spans, "both.rs").style.fg, Some(Color::Yellow));
+        assert_eq!(
+            name_span(&spans, "both.rs").style.fg,
+            Some(rgb_to_color(theme().status_partial))
+        );
     }
 
     #[test]
@@ -580,7 +605,49 @@ mod tests {
         let [(sc, _), (wc, wfg)] = stage_chars(&spans);
         assert_eq!(sc, ' ');
         assert_eq!(wc, '?');
-        assert_eq!(wfg, Some(Color::Red));
+        assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
+    }
+
+    #[test]
+    fn custom_theme_status_colors_flow_into_spans() {
+        // A theme with distinctive status colours proves the row path reads
+        // theme fields rather than hardcoded ANSI: if colours were still
+        // hardcoded, these spans would carry the default RGBs instead.
+        let mut custom = theme();
+        custom.status_added = (1, 2, 3);
+        custom.status_deleted = (4, 5, 6);
+        custom.status_partial = (7, 8, 9);
+
+        // Fully staged add: stage char + name tint use status_added.
+        let f = fd("added.rs");
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 5,
+            deleted: 2,
+            stage: Some(StageStatus {
+                staged: Some(ChangeKind::Added),
+                unstaged: None,
+            }),
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &custom, IconMode::Off);
+        let spans = &sidebar.rows()[0].spans;
+        let [(_, sfg), _] = stage_chars(spans);
+        assert_eq!(sfg, Some(rgb_to_color(custom.status_added)));
+        assert_eq!(
+            name_span(spans, "added.rs").style.fg,
+            Some(rgb_to_color(custom.status_added))
+        );
+        // +N uses status_added, -N uses status_deleted.
+        let plus = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "+5")
+            .expect("+5 span");
+        let minus = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "-2")
+            .expect("-2 span");
+        assert_eq!(plus.style.fg, Some(rgb_to_color(custom.status_added)));
+        assert_eq!(minus.style.fg, Some(rgb_to_color(custom.status_deleted)));
     }
 
     #[test]
@@ -598,7 +665,7 @@ mod tests {
         let spans = &sidebar.rows()[0].spans;
         // Second span (after indent) is the "A " badge, not a 1-char col.
         assert_eq!(spans[1].content.as_ref(), "A ");
-        assert_eq!(spans[1].style.fg, Some(Color::Green));
+        assert_eq!(spans[1].style.fg, Some(rgb_to_color(theme().status_added)));
     }
 
     #[test]
@@ -644,10 +711,17 @@ mod tests {
 
     #[test]
     fn stage_tint_matches_lazygit_rule() {
-        assert_eq!(stage_tint(true, false), Some(Color::Green));
-        assert_eq!(stage_tint(true, true), Some(Color::Yellow));
-        assert_eq!(stage_tint(false, true), None);
-        assert_eq!(stage_tint(false, false), None);
+        let theme = theme();
+        assert_eq!(
+            stage_tint(true, false, &theme),
+            Some(rgb_to_color(theme.status_added))
+        );
+        assert_eq!(
+            stage_tint(true, true, &theme),
+            Some(rgb_to_color(theme.status_partial))
+        );
+        assert_eq!(stage_tint(false, true, &theme), None);
+        assert_eq!(stage_tint(false, false, &theme), None);
     }
 
     /// A `SidebarFile` at `path` with an explicit stage status.
@@ -690,7 +764,7 @@ mod tests {
         ];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let span = dir_label_span(&sidebar.rows()[0], "src/");
-        assert_eq!(span.style.fg, Some(Color::Green));
+        assert_eq!(span.style.fg, Some(rgb_to_color(theme().status_added)));
     }
 
     #[test]
@@ -715,7 +789,7 @@ mod tests {
         ];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let span = dir_label_span(&sidebar.rows()[0], "src/");
-        assert_eq!(span.style.fg, Some(Color::Yellow));
+        assert_eq!(span.style.fg, Some(rgb_to_color(theme().status_partial)));
     }
 
     #[test]
@@ -775,6 +849,6 @@ mod tests {
         ];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let span = dir_label_span(&sidebar.rows()[0], "crates/deltoids/src/");
-        assert_eq!(span.style.fg, Some(Color::Yellow));
+        assert_eq!(span.style.fg, Some(rgb_to_color(theme().status_partial)));
     }
 }

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - TUI: Add support for custom commands.
+- TUI: The Files sidebar status colors (stage columns, file/directory name tint, and `+N`/`-N` counts) are now themeable via `[theme]` overrides in `config.toml`.
 - First-class support for symlinks.
 
 ### Changed

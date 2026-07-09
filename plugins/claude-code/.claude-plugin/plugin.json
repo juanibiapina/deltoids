@@ -1,6 +1,6 @@
 {
   "name": "deltoids",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "Record Claude Code Write/Edit/MultiEdit calls into deltoids traces, grouped by Claude session.",
   "author": {
     "name": "Juan Ibiapina"

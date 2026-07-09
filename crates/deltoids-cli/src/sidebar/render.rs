@@ -429,6 +429,34 @@ mod tests {
     }
 
     #[test]
+    fn rendered_type_change_row_shows_t_badge_counts_and_mode_label() {
+        let f = fd_with_preamble("f.txt", &["old mode 100644", "new mode 120000"]);
+        let files = vec![SidebarFile {
+            file: &f,
+            added: 1,
+            deleted: 2,
+            stage: Some(StageStatus {
+                staged: Some(ChangeKind::TypeChanged),
+                unstaged: None,
+            }),
+        }];
+        let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let spans = &sidebar.rows()[0].spans;
+
+        // Staged column carries the single `T`.
+        let [(sc, _), (wc, _)] = stage_chars(spans);
+        assert_eq!((sc, wc), ('T', ' '));
+
+        let combined = spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        assert!(
+            combined.contains("(file\u{2192}symlink)"),
+            "missing type-change badge in: {combined}"
+        );
+        assert!(combined.contains("+1"), "missing +1 in: {combined}");
+        assert!(combined.contains("-2"), "missing -2 in: {combined}");
+    }
+
+    #[test]
     fn rendered_directory_row_contains_label() {
         let f = fd("src/a.rs");
         let files = vec![SidebarFile {

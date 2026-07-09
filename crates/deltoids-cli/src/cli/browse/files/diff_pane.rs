@@ -25,8 +25,10 @@ use deltoids::render_tui::{
     rgb_to_color,
 };
 
+use deltoids::parse::FileDiff;
+
 use crate::cli::browse::mode::{DrawBudget, should_build_body};
-use crate::sidebar::{IconMode, display_path, symlink_icon};
+use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
 use super::model::{FileBody, Model, ResolvedFile};
 
@@ -102,6 +104,25 @@ fn render_file_block(
             theme,
         ));
     }
+    // A type change renders as a content diff, but its note box stands in
+    // for the per-hunk line-number box: render the note box, then the hunk
+    // bodies without their own boxes (avoiding a second, redundant box).
+    if let Some(note) = typechange_note(&resolved.file, theme) {
+        lines.push(Line::from(""));
+        lines.extend(note);
+        if let FileBody::Diff(diff) = body {
+            for hunk in diff.hunks() {
+                lines.push(Line::from(""));
+                lines.extend(render_tui::render_hunk_body(
+                    hunk,
+                    diff.highlight(),
+                    width,
+                    theme,
+                ));
+            }
+        }
+        return lines;
+    }
 
     match body {
         FileBody::Diff(diff) => lines.extend(render_tui::render_hunk_list(
@@ -130,6 +151,40 @@ fn render_file_block(
     lines
 }
 
+/// A breadcrumb-style box describing a type change (regular ↔ symlink ↔
+/// submodule), shown above the diff body. A type change renders as an
+/// ordinary content diff (old bytes removed, new bytes added), which alone
+/// does not convey that the file *became* a symlink (or a regular file);
+/// this box spells that out, e.g. `type change: regular file → symlink`,
+/// matching the symlink view's breadcrumb box. `None` for every
+/// non-type-change file (a plain edit, an exec-bit flip, etc.).
+fn typechange_note(file: &FileDiff, theme: &Theme) -> Option<Vec<Line<'static>>> {
+    let ModeChange::TypeChange { old, new } = file_metadata(file).mode_change? else {
+        return None;
+    };
+    let description = format!(
+        "type change: {} \u{2192} {}",
+        typechange_label(old),
+        typechange_label(new)
+    );
+    Some(render_tui::render_note_box(
+        symlink_icon(IconMode::from_env()),
+        &description,
+        theme,
+    ))
+}
+
+/// Human-readable file-kind label for the type-change note.
+fn typechange_label(mode: FileMode) -> &'static str {
+    match mode {
+        FileMode::Regular => "regular file",
+        FileMode::Executable => "executable",
+        FileMode::Symlink => "symlink",
+        FileMode::Submodule => "submodule",
+        FileMode::Other => "unknown",
+    }
+}
+
 /// Cheap stand-in for a not-yet-highlighted file: the file header (and any
 /// rename header) plus a muted "Rendering…" line. No syntect, so holding
 /// `j` across many files never blocks. Its height is fixed and known, so
@@ -147,6 +202,10 @@ fn placeholder_file_block(
             &resolved.file.new_path,
             theme,
         ));
+    }
+    if let Some(note) = typechange_note(&resolved.file, theme) {
+        lines.push(Line::from(""));
+        lines.extend(note);
     }
     lines.push(Line::from(Span::styled(
         "Rendering…".to_string(),
@@ -582,6 +641,40 @@ mod tests {
             texts.iter().any(|t| t.contains("\u{2192} a.txt")),
             "expected the symlink body, got: {texts:#?}"
         );
+    }
+
+    #[test]
+    fn assemble_window_renders_typechange_note_for_type_change() {
+        // A regular file → symlink type change renders as a content diff
+        // plus a note clarifying the file became a symlink.
+        let mut file = file_diff("f.txt");
+        file.preamble = vec!["old mode 100644".to_string(), "new mode 120000".to_string()];
+        let resolved = vec![ResolvedFile {
+            file,
+            before: "hello\nworld\n".to_string(),
+            after: "target.txt\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        let texts: Vec<String> = state
+            .visible_diff_window(DrawBudget::Full)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("type change: regular file \u{2192} symlink")),
+            "expected the type-change note, got: {texts:#?}"
+        );
+        // The content diff still renders alongside the note.
+        assert!(
+            texts.iter().any(|t| t.contains("hello")),
+            "expected the removed content, got: {texts:#?}"
+        );
+        // Only the note box is drawn: no redundant per-hunk line-number
+        // box (which would add a second box-top line ending in `╮`).
+        let box_tops = texts.iter().filter(|t| t.ends_with('╮')).count();
+        assert_eq!(box_tops, 1, "expected exactly one box, got: {texts:#?}");
     }
 
     #[test]

@@ -85,6 +85,16 @@ pub fn render_rename_header(old_path: &str, new_path: &str, theme: &Theme) -> Li
 /// there, matching the hunk-box convention). `icon` is the glyph (or text
 /// fallback) the caller chose based on the icon toggle.
 pub fn render_symlink(view: &SymlinkView, icon: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = render_note_box(icon, &view.description, theme);
+    lines.push(symlink_body_line(view, theme));
+    lines
+}
+
+/// Render a breadcrumb-style labelled box: an `icon` cell then a muted
+/// `description`, using the same border style as the hunk header box.
+/// Shared by symlink changes and type changes so their description reads
+/// as a breadcrumb box rather than a plain subtitle line.
+pub fn render_note_box(icon: &str, description: &str, theme: &Theme) -> Vec<Line<'static>> {
     let border = Style::default().fg(rgb_to_color(theme.border));
     let muted = Style::default().fg(rgb_to_color(theme.muted));
     let inner = display_width(icon) + 1;
@@ -96,10 +106,9 @@ pub fn render_symlink(view: &SymlinkView, icon: &str, theme: &Theme) -> Vec<Line
         Line::from(vec![
             Span::styled(format!("{icon} │"), border),
             Span::raw(" "),
-            Span::styled(view.description.clone(), muted),
+            Span::styled(description.to_string(), muted),
         ]),
         Line::from(Span::styled(bot, border)),
-        symlink_body_line(view, theme),
     ]
 }
 
@@ -141,7 +150,21 @@ pub fn render_hunk(
             output.extend(render_breadcrumb_box(&b, highlight, theme));
         }
     }
+    output.extend(render_hunk_body(hunk, highlight, width, theme));
+    output
+}
 
+/// Render only a hunk's diff body (context lines + intraline-emphasised
+/// subhunks), without the leading breadcrumb / line-number box. Callers
+/// that supply their own header box (e.g. a type-change note box) use this
+/// to avoid a second, redundant box.
+pub fn render_hunk_body(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut output = Vec::new();
     let mut highlighter = HunkHighlighter::new(highlight);
 
     for run in hunk.runs() {

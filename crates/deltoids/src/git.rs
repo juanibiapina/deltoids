@@ -106,6 +106,12 @@ impl Repo {
     /// working tree matches `HEAD`. An unborn `HEAD` (a repo with no
     /// commits) is treated as an empty tree, so every file shows as an
     /// addition.
+    ///
+    /// A file whose type changed (regular ↔ symlink ↔ submodule) is
+    /// reported as a single `typechange` delta (via `include_typechange`)
+    /// rather than the delete + add pair libgit2 emits by default, so a
+    /// type change shows as one `old → new` row matching
+    /// `working_tree_status` (which reports `TypeChanged`).
     pub fn working_tree_diff(&self) -> Result<String, String> {
         let head_tree = match self.0.head() {
             Ok(head) => Some(
@@ -119,7 +125,8 @@ impl Repo {
         let mut opts = DiffOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
-            .show_untracked_content(true);
+            .show_untracked_content(true)
+            .include_typechange(true);
 
         let mut diff = self
             .0
@@ -559,6 +566,70 @@ mod tests {
         assert!(
             patch.contains("+line two CHANGED"),
             "missing changed line in: {patch}"
+        );
+    }
+
+    #[test]
+    fn working_tree_diff_type_change_is_single_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("f.txt"), "hello\nworld\n").unwrap();
+        fs::write(dir.path().join("target.txt"), "target content\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Replace the regular file with a symlink and stage it.
+        fs::remove_file(dir.path().join("f.txt")).unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.path().join("f.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+
+        // One diff block for f.txt (a single typechange delta), not the
+        // delete + add pair libgit2 emits by default.
+        let blocks = patch.matches("diff --git a/f.txt b/f.txt").count();
+        assert_eq!(blocks, 1, "expected one f.txt block in: {patch}");
+        assert!(
+            patch.contains("old mode 100644"),
+            "missing old mode in: {patch}"
+        );
+        assert!(
+            patch.contains("new mode 120000"),
+            "missing new mode in: {patch}"
+        );
+        assert!(
+            !patch.contains("deleted file mode") && !patch.contains("new file mode"),
+            "type change must not split into delete + add in: {patch}"
+        );
+    }
+
+    #[test]
+    fn working_tree_diff_symlink_to_file_is_single_delta() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("target.txt"), "target content\n").unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.path().join("f.txt")).unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Replace the symlink with a regular file and stage it.
+        fs::remove_file(dir.path().join("f.txt")).unwrap();
+        fs::write(dir.path().join("f.txt"), "now regular\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let patch = wrapper.working_tree_diff().unwrap();
+
+        let blocks = patch.matches("diff --git a/f.txt b/f.txt").count();
+        assert_eq!(blocks, 1, "expected one f.txt block in: {patch}");
+        assert!(
+            patch.contains("old mode 120000"),
+            "missing old mode in: {patch}"
+        );
+        assert!(
+            patch.contains("new mode 100644"),
+            "missing new mode in: {patch}"
         );
     }
 

@@ -412,6 +412,61 @@ mod tests {
     }
 
     #[test]
+    fn build_model_staged_type_change_is_single_row_with_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("f.txt"), "hello\nworld\n").unwrap();
+        std::fs::write(dir.path().join("target.txt"), "target content\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Regular file → symlink, staged.
+        std::fs::remove_file(dir.path().join("f.txt")).unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.path().join("f.txt")).unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).unwrap();
+
+        assert_eq!(model.files.len(), 1, "type change must be a single row");
+        assert_eq!(display_path(&model.files[0].file), "f.txt");
+        assert!(
+            matches!(model.bodies[0], FileBody::Diff(_)),
+            "type change renders as a content diff"
+        );
+        let (added, deleted) = body_deltas(&model.bodies[0]);
+        assert!(added > 0 && deleted > 0, "expected combined +/- counts");
+
+        let stage = model.stages.get("f.txt").expect("f.txt staged entry");
+        assert_eq!(stage.staged, Some(ChangeKind::TypeChanged));
+    }
+
+    #[test]
+    fn build_model_unstaged_type_change_is_single_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("f.txt"), "hello\nworld\n").unwrap();
+        std::fs::write(dir.path().join("target.txt"), "target content\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        // Regular file → symlink, left unstaged.
+        std::fs::remove_file(dir.path().join("f.txt")).unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.path().join("f.txt")).unwrap();
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let input = wrapper.working_tree_diff().unwrap();
+        let model = build_model(&input, Some(&wrapper)).unwrap();
+
+        assert_eq!(model.files.len(), 1, "type change must be a single row");
+        assert_eq!(display_path(&model.files[0].file), "f.txt");
+
+        let stage = model.stages.get("f.txt").expect("f.txt staged entry");
+        assert_eq!(stage.unstaged, Some(ChangeKind::TypeChanged));
+    }
+
+    #[test]
     fn build_model_content_changed_rename_is_single_row_with_counts() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());

@@ -262,13 +262,25 @@ fn hashedit_trace_is_visible_in_traces_subcommand() {
 }
 
 #[test]
-fn hashedit_rejects_a_per_op_reason() {
-    // Ops no longer carry a `reason`; a stray one is rejected by
-    // `deny_unknown_fields` before anything is applied.
+fn hashedit_ignores_an_unknown_per_op_field() {
+    // Ops no longer carry a `reason`; a stray field is ignored rather
+    // than failing the whole batch.
     let dir = tempdir().unwrap();
     let data_home = tempdir().unwrap();
     let path = dir.path().join("app.txt");
     fs::write(&path, "const x = 1;\n").unwrap();
+
+    let read_request = serde_json::json!({ "path": path });
+    let read_output = run_command_in_dir(
+        "hashread",
+        &[],
+        &[],
+        read_request.to_string().as_bytes(),
+        Some(dir.path()),
+    );
+    assert!(read_output.status.success());
+    let read_body = String::from_utf8(read_output.stdout).unwrap();
+    let anchor = anchor_from_hashread(&read_body, 1);
 
     let edit_request = serde_json::json!({
         "reason": "Bump x",
@@ -277,7 +289,7 @@ fn hashedit_rejects_a_per_op_reason() {
             {
                 "op": "replace",
                 "reason": "Bump x to 2",
-                "pos": "1zz",
+                "pos": anchor,
                 "lines": ["const x = 2;"]
             }
         ]
@@ -290,15 +302,12 @@ fn hashedit_rejects_a_per_op_reason() {
         Some(dir.path()),
     );
 
-    assert!(!edit_output.status.success());
-    let json: Value = serde_json::from_slice(&edit_output.stderr).unwrap();
-    assert_eq!(json["ok"], false);
     assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("Invalid request JSON"),
-        "{json}"
+        edit_output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&edit_output.stderr)
     );
-    assert_eq!(fs::read_to_string(&path).unwrap(), "const x = 1;\n");
+    let json: Value = serde_json::from_slice(&edit_output.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "const x = 2;\n");
 }

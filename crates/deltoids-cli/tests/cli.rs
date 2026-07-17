@@ -378,25 +378,25 @@ fn fails_when_target_path_is_a_directory() {
 }
 
 #[test]
-fn fails_when_request_has_unknown_field() {
+fn ignores_unknown_top_level_field() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("extra-field.txt");
+    fs::write(&file_path, "const x = 1;\n").unwrap();
+
     let request = serde_json::json!({
         "reason": "Unknown top-level field",
-        "path": "file.txt",
-        "oldText": "a",
-        "newText": "b",
+        "path": file_path,
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;",
         "extra": true
     });
 
     let output = run_edit(request.to_string().as_bytes());
 
-    assert!(!output.status.success());
-    let json: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("Invalid request JSON")
-    );
+    assert!(output.status.success());
+    assert_eq!(fs::read_to_string(&file_path).unwrap(), "const x = 2;\n");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["ok"], true);
 }
 
 #[test]

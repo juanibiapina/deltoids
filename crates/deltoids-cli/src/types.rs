@@ -5,7 +5,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct EditRequest {
     pub reason: String,
     pub path: String,
@@ -27,7 +26,6 @@ pub struct TextEdit {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WriteRequest {
     pub reason: String,
     pub path: String,
@@ -37,7 +35,7 @@ pub struct WriteRequest {
 /// A single hashline edit operation as it arrives over JSON. Intent is
 /// carried by the request's top-level `reason`; ops hold only mechanics.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum HashEditOp {
     /// Replace one anchored line, or the inclusive range `pos..=end` if
     /// `end` is provided, with `lines`.
@@ -62,7 +60,6 @@ pub enum HashEditOp {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HashEditRequest {
     pub reason: String,
     pub path: String,
@@ -70,7 +67,6 @@ pub struct HashEditRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HashReadRequest {
     pub path: String,
     #[serde(default)]

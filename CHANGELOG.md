@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- edit: extra fields in an edit request are now ignored instead of failing the edit, so a stray field the model adds no longer rejects the whole change.
+
 ## [0.12.0] - 2026-07-09
 
 ### Added

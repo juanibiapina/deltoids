@@ -128,6 +128,75 @@ impl TraceStore {
         }
 
         let mut traces = Vec::new();
+        for raw in self.load_all_raw()? {
+            let matching = raw
+                .entries
+                .iter()
+                .filter(|entry| entry.cwd == cwd)
+                .collect::<Vec<_>>();
+            if let Some(summary) = trace_summary_from(&raw.trace_id, &matching) {
+                traces.push(summary);
+            }
+        }
+
+        traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
+        Ok(traces)
+    }
+
+    /// Every trace under this store, regardless of directory, summarised
+    /// from its last entry and sorted newest-first. Used by the `serve`
+    /// subcommand, which browses traces across all projects.
+    pub fn list_all(&self) -> Result<Vec<TraceSummary>, String> {
+        let mut traces = Vec::new();
+        for raw in self.load_all_raw()? {
+            let refs = raw.entries.iter().collect::<Vec<_>>();
+            if let Some(summary) = trace_summary_from(&raw.trace_id, &refs) {
+                traces.push(summary);
+            }
+        }
+        traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
+        Ok(traces)
+    }
+
+    /// Distinct working directories seen across every trace, each with the
+    /// trace/entry counts and last-activity timestamp recorded there.
+    /// Sorted by most recent activity first.
+    pub fn projects(&self) -> Result<Vec<ProjectSummary>, String> {
+        use std::collections::HashMap;
+
+        let mut by_cwd: HashMap<String, ProjectSummary> = HashMap::new();
+        for raw in self.load_all_raw()? {
+            let mut cwds_in_trace = std::collections::HashSet::new();
+            for entry in &raw.entries {
+                let project = by_cwd
+                    .entry(entry.cwd.clone())
+                    .or_insert_with(|| ProjectSummary::empty(&entry.cwd));
+                project.entry_count += 1;
+                if entry.timestamp > project.last_timestamp {
+                    project.last_timestamp = entry.timestamp.clone();
+                }
+                cwds_in_trace.insert(entry.cwd.clone());
+            }
+            for cwd in cwds_in_trace {
+                if let Some(project) = by_cwd.get_mut(&cwd) {
+                    project.trace_count += 1;
+                }
+            }
+        }
+
+        let mut projects = by_cwd.into_values().collect::<Vec<_>>();
+        projects.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
+        Ok(projects)
+    }
+
+    /// Load every valid trace directory with all of its entries. Shared by
+    /// the directory-scanning list methods.
+    fn load_all_raw(&self) -> Result<Vec<RawTrace>, String> {
+        if !self.root.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut traces = Vec::new();
         let directories = fs::read_dir(&self.root)
             .map_err(|err| format!("Failed to read {}: {}", self.root.display(), err))?;
         for directory in directories {
@@ -149,25 +218,8 @@ impl TraceStore {
             }
 
             let entries = read_history_entries_from_path(&entries_path)?;
-            let matching_entries = entries
-                .iter()
-                .filter(|entry| entry.cwd == cwd)
-                .collect::<Vec<_>>();
-            let Some(last_entry) = matching_entries.last() else {
-                continue;
-            };
-
-            traces.push(TraceSummary {
-                trace_id,
-                entry_count: matching_entries.len(),
-                last_timestamp: last_entry.timestamp.clone(),
-                last_tool: last_entry.tool.clone(),
-                last_path: last_entry.path.clone(),
-                last_reason: last_entry.reason.clone(),
-            });
+            traces.push(RawTrace { trace_id, entries });
         }
-
-        traces.sort_by(|left, right| right.last_timestamp.cmp(&left.last_timestamp));
         Ok(traces)
     }
 
@@ -415,14 +467,78 @@ fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntr
 }
 
 /// Aggregate view of one trace, used by the TUI list pane.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TraceSummary {
     pub trace_id: String,
+    /// Working directory of the trace's last (matching) entry. Identifies
+    /// the project the trace belongs to for the `serve` subcommand.
+    pub cwd: String,
     pub entry_count: usize,
     pub last_timestamp: String,
     pub last_tool: String,
     pub last_path: String,
     pub last_reason: String,
+}
+
+/// A trace directory loaded whole: its id plus every entry, unfiltered.
+struct RawTrace {
+    trace_id: String,
+    entries: Vec<HistoryEntry>,
+}
+
+/// Build a [`TraceSummary`] from a trace id and the entries that belong to
+/// it (already filtered by the caller). `None` when there are no entries.
+fn trace_summary_from(trace_id: &str, entries: &[&HistoryEntry]) -> Option<TraceSummary> {
+    let last = entries.last()?;
+    Some(TraceSummary {
+        trace_id: trace_id.to_string(),
+        cwd: last.cwd.clone(),
+        entry_count: entries.len(),
+        last_timestamp: last.timestamp.clone(),
+        last_tool: last.tool.clone(),
+        last_path: last.path.clone(),
+        last_reason: last.reason.clone(),
+    })
+}
+
+/// Aggregate view of one project (a distinct working directory) across all
+/// of its traces. Used by the `serve` subcommand's project list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectSummary {
+    /// Opaque, stable, URL-safe id derived from `cwd`.
+    pub id: String,
+    pub cwd: String,
+    /// Last path component of `cwd`, for display.
+    pub name: String,
+    pub trace_count: usize,
+    pub entry_count: usize,
+    pub last_timestamp: String,
+}
+
+impl ProjectSummary {
+    fn empty(cwd: &str) -> Self {
+        Self {
+            id: project_id(cwd),
+            cwd: cwd.to_string(),
+            name: project_name(cwd),
+            trace_count: 0,
+            entry_count: 0,
+            last_timestamp: String::new(),
+        }
+    }
+}
+
+/// Stable URL-safe id for a project directory (xxh32 of the path, hex).
+pub fn project_id(cwd: &str) -> String {
+    format!("{:08x}", xxhash_rust::xxh32::xxh32(cwd.as_bytes(), 0))
+}
+
+fn project_name(cwd: &str) -> String {
+    Path::new(cwd)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| cwd.to_string())
 }
 
 #[cfg(test)]
@@ -506,5 +622,75 @@ mod tests {
 
         assert_eq!(resolved.trace_id, session_id);
         assert!(resolved.reused);
+    }
+
+    fn append_entry(store: &TraceStore, trace_id: &str, cwd: &str, timestamp: &str) {
+        store
+            .append(
+                trace_id,
+                &serde_json::json!({
+                    "v": 3,
+                    "tool": "edit",
+                    "traceId": trace_id,
+                    "timestamp": timestamp,
+                    "cwd": cwd,
+                    "path": format!("{cwd}/app.rs"),
+                    "reason": "change",
+                    "ok": true,
+                }),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn list_all_returns_traces_from_every_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        append_entry(&store, "01JAAAAAAAAAAAAAAAAAAAAAAA", "/a", "2026-01-01T00:00:00Z");
+        append_entry(&store, "01JBBBBBBBBBBBBBBBBBBBBBBB", "/b", "2026-01-02T00:00:00Z");
+
+        let all = store.list_all().unwrap();
+
+        assert_eq!(all.len(), 2);
+        // Sorted newest-first.
+        assert_eq!(all[0].trace_id, "01JBBBBBBBBBBBBBBBBBBBBBBB");
+        assert_eq!(all[0].cwd, "/b");
+        assert_eq!(all[1].cwd, "/a");
+    }
+
+    #[test]
+    fn projects_aggregate_traces_and_entries_by_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        // Two traces in /a (three entries total), one in /b.
+        append_entry(&store, "01JAAAAAAAAAAAAAAAAAAAAAAA", "/a", "2026-01-01T00:00:00Z");
+        append_entry(&store, "01JAAAAAAAAAAAAAAAAAAAAAAA", "/a", "2026-01-01T00:01:00Z");
+        append_entry(&store, "01JCCCCCCCCCCCCCCCCCCCCCCC", "/a", "2026-01-03T00:00:00Z");
+        append_entry(&store, "01JBBBBBBBBBBBBBBBBBBBBBBB", "/b", "2026-01-02T00:00:00Z");
+
+        let projects = store.projects().unwrap();
+
+        assert_eq!(projects.len(), 2);
+        // Sorted newest-first: /a's last activity is 2026-01-03.
+        let project_a = &projects[0];
+        assert_eq!(project_a.cwd, "/a");
+        assert_eq!(project_a.name, "a");
+        assert_eq!(project_a.trace_count, 2);
+        assert_eq!(project_a.entry_count, 3);
+        assert_eq!(project_a.last_timestamp, "2026-01-03T00:00:00Z");
+        assert_eq!(project_a.id, project_id("/a"));
+
+        let project_b = &projects[1];
+        assert_eq!(project_b.cwd, "/b");
+        assert_eq!(project_b.trace_count, 1);
+        assert_eq!(project_b.entry_count, 1);
+    }
+
+    #[test]
+    fn list_all_is_empty_when_root_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().join("missing"));
+        assert!(store.list_all().unwrap().is_empty());
+        assert!(store.projects().unwrap().is_empty());
     }
 }

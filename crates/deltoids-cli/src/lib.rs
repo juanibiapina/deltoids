@@ -27,7 +27,9 @@ use chrono::{SecondsFormat, Utc};
 pub use edit::{apply_edit, execute_request, execute_request_with_trace, render_diff};
 pub use hash_edit::{execute_hash_edit_request, execute_hash_edit_request_with_trace};
 pub use hash_read::execute_hash_read;
-pub use trace_store::{HistoryEntry, TraceSummary, trace_root_directory};
+pub use trace_store::{
+    HistoryEntry, ProjectSummary, TraceStore, TraceSummary, project_id, trace_root_directory,
+};
 pub use types::{
     EditRequest, ErrorResponse, HashEditOp, HashEditRequest, HashReadRequest, SuccessResponse,
     TextEdit, ToolError, WriteRequest,
@@ -36,7 +38,6 @@ pub use write::{
     execute_write_request, execute_write_request_with_trace, validate_write_target_path,
 };
 
-use trace_store::TraceStore;
 
 /// Build the success message shared by every tool: distinguishes a fresh
 /// trace from one that was reused so the agent knows to keep the id.

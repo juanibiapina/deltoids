@@ -68,6 +68,7 @@ pub(super) fn write_entry() -> HistoryEntry {
 pub(super) fn trace_summary(trace_id: &str, entry_count: usize, last_reason: &str) -> TraceSummary {
     TraceSummary {
         trace_id: trace_id.to_string(),
+        cwd: "/tmp/project".to_string(),
         entry_count,
         last_timestamp: "2026-04-16T12:00:00Z".to_string(),
         last_tool: "edit".to_string(),

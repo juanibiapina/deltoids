@@ -4,6 +4,7 @@
 //!
 //! - `pager`     ANSI diff filter for `less` / `core.pager`
 //! - `tui`       unified scrolling TUI (working-tree diff + trace browser)
+//! - `serve`     read-only HTTP server + web app for reviewing traces
 //! - `edit`      agent edit tool, appends to a trace
 //! - `write`     agent write tool, appends to a trace
 //! - `hashread`  agent read tool that emits hashline anchors
@@ -19,7 +20,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use deltoids_cli::cli::{edit, hash_edit, hash_read, hook, pager, tui, write};
+use deltoids_cli::cli::{edit, hash_edit, hash_read, hook, pager, serve, tui, write};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,6 +48,8 @@ enum Command {
     Pager(pager::Args),
     /// Unified scrolling TUI: working-tree diff and trace browser.
     Tui(tui::Args),
+    /// Serve traces over HTTP for the mobile web reviewer.
+    Serve(serve::Args),
     /// Agent edit tool — appends to a trace.
     Edit(edit::Args),
     /// Agent write tool — appends to a trace.
@@ -65,6 +68,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::Pager(args)) => pager::run(args),
         Some(Command::Tui(args)) => tui::run(args),
+        Some(Command::Serve(args)) => serve::run(args),
         Some(Command::Edit(args)) => edit::run(args),
         Some(Command::Write(args)) => write::run(args),
         Some(Command::Hashread(args)) => hash_read::run(args),

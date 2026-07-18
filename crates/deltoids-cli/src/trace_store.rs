@@ -166,22 +166,7 @@ impl TraceStore {
 
         let mut by_cwd: HashMap<String, ProjectSummary> = HashMap::new();
         for raw in self.load_all_raw()? {
-            let mut cwds_in_trace = std::collections::HashSet::new();
-            for entry in &raw.entries {
-                let project = by_cwd
-                    .entry(entry.cwd.clone())
-                    .or_insert_with(|| ProjectSummary::empty(&entry.cwd));
-                project.entry_count += 1;
-                if entry.timestamp > project.last_timestamp {
-                    project.last_timestamp = entry.timestamp.clone();
-                }
-                cwds_in_trace.insert(entry.cwd.clone());
-            }
-            for cwd in cwds_in_trace {
-                if let Some(project) = by_cwd.get_mut(&cwd) {
-                    project.trace_count += 1;
-                }
-            }
+            merge_trace_into_projects(&raw, &mut by_cwd);
         }
 
         let mut projects = by_cwd.into_values().collect::<Vec<_>>();
@@ -499,6 +484,31 @@ fn trace_summary_from(trace_id: &str, entries: &[&HistoryEntry]) -> Option<Trace
         last_path: last.path.clone(),
         last_reason: last.reason.clone(),
     })
+}
+
+/// Fold one trace's entries into the per-directory project aggregates:
+/// bump each project's entry count and last-activity timestamp, then count
+/// the trace once for every distinct directory it touched.
+fn merge_trace_into_projects(
+    raw: &RawTrace,
+    by_cwd: &mut std::collections::HashMap<String, ProjectSummary>,
+) {
+    let mut cwds_in_trace = std::collections::HashSet::new();
+    for entry in &raw.entries {
+        let project = by_cwd
+            .entry(entry.cwd.clone())
+            .or_insert_with(|| ProjectSummary::empty(&entry.cwd));
+        project.entry_count += 1;
+        if entry.timestamp > project.last_timestamp {
+            project.last_timestamp = entry.timestamp.clone();
+        }
+        cwds_in_trace.insert(entry.cwd.clone());
+    }
+    for cwd in cwds_in_trace {
+        if let Some(project) = by_cwd.get_mut(&cwd) {
+            project.trace_count += 1;
+        }
+    }
 }
 
 /// Aggregate view of one project (a distinct working directory) across all

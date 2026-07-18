@@ -10,6 +10,8 @@ mod intraline;
 mod language;
 pub mod parse;
 pub mod render;
+#[cfg(feature = "html")]
+pub mod render_html;
 #[cfg(feature = "ratatui")]
 pub mod render_tui;
 pub mod reverse;

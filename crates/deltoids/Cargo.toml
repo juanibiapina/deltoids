@@ -47,6 +47,8 @@ blob-resolve = ["dep:git2"]
 # Render `Hunk`s and headers as ratatui `Line<'static>` values for use in
 # scrolling TUIs (review, traces).
 ratatui = ["dep:ratatui"]
+# Render `Hunk`s as semantic HTML for the `deltoids serve` web app.
+html = []
 
 [lints]
 workspace = true

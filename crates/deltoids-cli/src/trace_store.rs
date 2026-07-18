@@ -646,8 +646,18 @@ mod tests {
     fn list_all_returns_traces_from_every_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let store = TraceStore::with_root(tmp.path().to_path_buf());
-        append_entry(&store, "01JAAAAAAAAAAAAAAAAAAAAAAA", "/a", "2026-01-01T00:00:00Z");
-        append_entry(&store, "01JBBBBBBBBBBBBBBBBBBBBBBB", "/b", "2026-01-02T00:00:00Z");
+        append_entry(
+            &store,
+            "01JAAAAAAAAAAAAAAAAAAAAAAA",
+            "/a",
+            "2026-01-01T00:00:00Z",
+        );
+        append_entry(
+            &store,
+            "01JBBBBBBBBBBBBBBBBBBBBBBB",
+            "/b",
+            "2026-01-02T00:00:00Z",
+        );
 
         let all = store.list_all().unwrap();
 
@@ -663,10 +673,30 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = TraceStore::with_root(tmp.path().to_path_buf());
         // Two traces in /a (three entries total), one in /b.
-        append_entry(&store, "01JAAAAAAAAAAAAAAAAAAAAAAA", "/a", "2026-01-01T00:00:00Z");
-        append_entry(&store, "01JAAAAAAAAAAAAAAAAAAAAAAA", "/a", "2026-01-01T00:01:00Z");
-        append_entry(&store, "01JCCCCCCCCCCCCCCCCCCCCCCC", "/a", "2026-01-03T00:00:00Z");
-        append_entry(&store, "01JBBBBBBBBBBBBBBBBBBBBBBB", "/b", "2026-01-02T00:00:00Z");
+        append_entry(
+            &store,
+            "01JAAAAAAAAAAAAAAAAAAAAAAA",
+            "/a",
+            "2026-01-01T00:00:00Z",
+        );
+        append_entry(
+            &store,
+            "01JAAAAAAAAAAAAAAAAAAAAAAA",
+            "/a",
+            "2026-01-01T00:01:00Z",
+        );
+        append_entry(
+            &store,
+            "01JCCCCCCCCCCCCCCCCCCCCCCC",
+            "/a",
+            "2026-01-03T00:00:00Z",
+        );
+        append_entry(
+            &store,
+            "01JBBBBBBBBBBBBBBBBBBBBBBB",
+            "/b",
+            "2026-01-02T00:00:00Z",
+        );
 
         let projects = store.projects().unwrap();
 

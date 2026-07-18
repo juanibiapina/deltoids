@@ -38,7 +38,6 @@ pub use write::{
     execute_write_request, execute_write_request_with_trace, validate_write_target_path,
 };
 
-
 /// Build the success message shared by every tool: distinguishes a fresh
 /// trace from one that was reused so the agent knows to keep the id.
 pub(crate) fn success_message(trace_id: &str, reused_trace: bool) -> String {

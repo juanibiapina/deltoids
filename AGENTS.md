@@ -8,7 +8,8 @@ This is a Rust workspace with CLI tools that trace file edits, plus a TUI to bro
 - `deltoids` — diff library with tree-sitter scope context. Optional features:
   - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by the `pager` and `tui` subcommands).
   - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by the `tui` subcommand).
-- `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (unified scrolling TUI: working-tree diff + trace browser), `edit`/`write` (agent edit tools). Also holds the trace-management library shared by `edit`/`write`. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
+  - `html` — adds `render_html` for rendering hunks as semantic HTML (used by the `serve` subcommand).
+- `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (unified scrolling TUI: working-tree diff + trace browser), `serve` (read-only HTTP server + mobile web trace reviewer), `edit`/`write` (agent edit tools). Also holds the trace-management library shared by `edit`/`write`. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
 - `tests` — cross-crate integration tests
 
 ## Build & Test
@@ -39,6 +40,7 @@ crates/
     src/hunk_header.rs        # Shared header layout
     src/render.rs             # Diff rendering as ANSI
     src/render_tui.rs         # Diff rendering for ratatui
+    src/render_html.rs        # Diff rendering as HTML (feature `html`)
     src/git.rs                # Git blob lookup
     src/content.rs            # Before/after content resolution
     src/intraline.rs          # Within-line diff algorithm
@@ -71,6 +73,11 @@ crates/
     src/scroll.rs            # Mouse-wheel scroll feel
     src/cli.rs               # Subcommand module declarations
     src/cli/pager.rs         # `deltoids pager` subcommand
+    src/cli/serve/           # `deltoids serve`: HTTP server + web trace reviewer
+      mod.rs                 #   Args + tiny_http accept loop (thin shell)
+      router.rs              #   pure method+URL -> response; the JSON/HTML API
+      assets.rs              #   embeds the web-app files
+      assets/                #   index.html / app.js / style.css (no build step)
     src/cli/browse/          # unified scrolling TUI (files / traces)
       mod.rs                 #   mode-agnostic shell: loop, routing, layout,
                              #     divider, resize, wheel, mode cycling, help,

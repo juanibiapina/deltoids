@@ -65,7 +65,7 @@ pub fn handle(store: &TraceStore, method: &str, target: &str) -> HttpResponse {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     match segments.as_slice() {
-        [] | ["index.html"] => HttpResponse::asset("text/html; charset=utf-8", assets::INDEX_HTML),
+        [] | ["index.html"] => index_html(),
         ["app.js"] => HttpResponse::asset("text/javascript; charset=utf-8", assets::APP_JS),
         ["style.css"] => HttpResponse::asset("text/css; charset=utf-8", assets::STYLE_CSS),
         ["api", "projects"] => projects(store),
@@ -75,6 +75,27 @@ pub fn handle(store: &TraceStore, method: &str, target: &str) -> HttpResponse {
         ["api", "feed"] => feed(store, query),
         _ => HttpResponse::not_found(),
     }
+}
+
+/// Serve `index.html` with `__ASSETS_VERSION__` replaced by a hash of the
+/// JS+CSS. The version becomes a `?v=` query on the asset URLs so a new
+/// build changes those URLs and no browser/edge cache can serve stale
+/// assets.
+fn index_html() -> HttpResponse {
+    let version = assets_version();
+    let body = assets::INDEX_HTML.replace("__ASSETS_VERSION__", &version);
+    HttpResponse {
+        status: 200,
+        content_type: "text/html; charset=utf-8",
+        body: body.into_bytes(),
+    }
+}
+
+fn assets_version() -> String {
+    let mut hash = xxhash_rust::xxh32::Xxh32::new(0);
+    hash.update(assets::APP_JS.as_bytes());
+    hash.update(assets::STYLE_CSS.as_bytes());
+    format!("{:08x}", hash.digest())
 }
 
 fn projects(store: &TraceStore) -> HttpResponse {

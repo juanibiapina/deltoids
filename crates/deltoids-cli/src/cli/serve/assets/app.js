@@ -174,7 +174,7 @@ async function renderEntry() {
       </div>
       ${errorBlock}
       <div class="diff">${detail.html || ""}</div>
-      <div class="navhint">swipe right → next · swipe left → back</div>
+      <div class="navhint">swipe left → next · swipe right → back</div>
     </div>`;
 
   centerFirstChange();
@@ -257,7 +257,7 @@ view.addEventListener(
     const dx = t.clientX - touchX;
     const dy = t.clientY - touchY;
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      go(dx > 0 ? 1 : -1); // swipe right → next, left → back
+      go(dx < 0 ? 1 : -1); // swipe left → next, right → back
     }
   },
   { passive: true },

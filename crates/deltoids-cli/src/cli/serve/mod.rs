@@ -72,8 +72,14 @@ fn respond(store: TraceStore, request: tiny_http::Request) {
 
     let content_type = tiny_http::Header::from_bytes(b"Content-Type", response.content_type)
         .expect("static content type is a valid header");
+    // Always revalidate: the embedded assets change with each release, and
+    // a phone caching a stale app.js would keep old behaviour (e.g. swipe
+    // direction) after a rebuild.
+    let no_store = tiny_http::Header::from_bytes(b"Cache-Control", b"no-store")
+        .expect("static cache-control is a valid header");
     let http = tiny_http::Response::from_data(response.body)
         .with_status_code(response.status)
-        .with_header(content_type);
+        .with_header(content_type)
+        .with_header(no_store);
     let _ = request.respond(http);
 }

@@ -87,6 +87,9 @@ body {
   height: calc(100% - 52px);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  /* Dedicate horizontal gestures to swipe navigation: the browser only
+     pans vertically, so nested code rows never steal a left/right swipe. */
+  touch-action: pan-y;
 }
 
 /* ---- lists (projects / traces) ---- */

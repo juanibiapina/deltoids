@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-21
+
 ### Added
 
 - serve: new `deltoids serve` command runs a small web app for reviewing your edits from a phone. It shows every edit across all your projects; open a session and swipe right/left to move between edits, each auto-centered on the change, and new edits pop up live.

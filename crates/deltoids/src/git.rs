@@ -4,6 +4,7 @@
 //! Available only when the `blob-resolve` cargo feature is enabled.
 
 use std::path::Path;
+use std::time::Duration;
 
 use git2::{
     DiffFindOptions, DiffFormat, DiffOptions, ObjectType, Oid, Repository, Status, StatusOptions,
@@ -112,12 +113,45 @@ impl Repo {
     /// rather than the delete + add pair libgit2 emits by default, so a
     /// type change shows as one `old → new` row matching
     /// `working_tree_status` (which reports `TypeChanged`).
+    ///
+    /// Retries the transient libgit2 Filesystem race: a working-tree file
+    /// can change size between the diff plan (which records each file's
+    /// size) and the lazy content load (which re-stats and refuses to emit
+    /// a mismatched file, raising a `Filesystem`-class error). A fresh diff
+    /// re-stats the tree, so a bounded retry lands in a quiet moment for
+    /// the common single-save-mid-diff case. A non-race error, or an
+    /// exhausted retry budget, maps to one boundary message.
     pub fn working_tree_diff(&self) -> Result<String, String> {
+        // A single save mid-diff is cleared by one fresh diff; a few
+        // attempts with single-digit-ms backoff cover it without adding
+        // noticeable latency to the common (no-race) path.
+        const MAX_ATTEMPTS: usize = 4;
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            let err = match self.diff_once() {
+                Ok(out) => return Ok(out),
+                Err(err) => err,
+            };
+            // Only the content-load step raises `Filesystem`; a fresh diff
+            // re-stats the tree and deterministically clears a one-save
+            // race. Anything else is a real failure — surface it now.
+            let racing = err.class() == git2::ErrorClass::Filesystem;
+            if racing && attempt < MAX_ATTEMPTS {
+                std::thread::sleep(Duration::from_millis(attempt as u64));
+                continue;
+            }
+            return Err(format!("failed to compute working-tree diff: {err}"));
+        }
+    }
+
+    /// One working-tree diff pass: peel `HEAD`, diff against the working
+    /// tree + index, coalesce renames, and print the patch. Returns the
+    /// raw [`git2::Error`] so [`Repo::working_tree_diff`] can inspect its
+    /// class and retry only the transient Filesystem race.
+    fn diff_once(&self) -> Result<String, git2::Error> {
         let head_tree = match self.0.head() {
-            Ok(head) => Some(
-                head.peel_to_tree()
-                    .map_err(|e| format!("failed to read HEAD tree: {e}"))?,
-            ),
+            Ok(head) => Some(head.peel_to_tree()?),
             // Unborn HEAD (no commits yet): diff against an empty tree.
             Err(_) => None,
         };
@@ -130,8 +164,7 @@ impl Repo {
 
         let mut diff = self
             .0
-            .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
-            .map_err(|e| format!("failed to diff working tree: {e}"))?;
+            .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
 
         // Coalesce a delete + add of similar content into one rename
         // delta so a rename shows as a single `old → new` entry, matching
@@ -140,8 +173,7 @@ impl Repo {
         // independent of the user's `diff.renames` git config.
         let mut find_opts = DiffFindOptions::new();
         find_opts.renames(true);
-        diff.find_similar(Some(&mut find_opts))
-            .map_err(|e| format!("failed to detect renames: {e}"))?;
+        diff.find_similar(Some(&mut find_opts))?;
 
         let mut out = String::new();
         diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
@@ -155,8 +187,7 @@ impl Repo {
                 out.push_str(text);
             }
             true
-        })
-        .map_err(|e| format!("failed to format diff: {e}"))?;
+        })?;
 
         Ok(out)
     }
@@ -402,6 +433,53 @@ mod tests {
         assert!(patch.contains("index "), "missing index header in: {patch}");
         assert!(patch.contains("-hello"), "missing old line in: {patch}");
         assert!(patch.contains("+world"), "missing new line in: {patch}");
+    }
+
+    #[test]
+    fn working_tree_diff_retries_size_check_race() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // A writer thread rewrites one file with a varying length while the
+        // main thread repeatedly diffs. The writer is paced slower than the
+        // retry backoff window (1+2+3 ms), so a diff that races a write
+        // deterministically retries into a quiet gap. The guarantee under
+        // test is that the bounded retry hides the transient Filesystem
+        // race; the hard "TUI stays alive" guarantee lives in the reload
+        // tests, not here.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let path = dir.path().join("a.txt");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_writer = stop.clone();
+        let writer = std::thread::spawn(move || {
+            let mut n = 0usize;
+            while !stop_writer.load(Ordering::Relaxed) {
+                // Vary the byte length so the recorded size and the
+                // reload-time size can disagree (the race condition).
+                let body = "x".repeat(n % 64);
+                let _ = fs::write(&path, format!("{body}\n"));
+                n += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        for _ in 0..30 {
+            let result = wrapper.working_tree_diff();
+            assert!(
+                result.is_ok(),
+                "paced writer must not surface the Filesystem race: {:?}",
+                result.err()
+            );
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
     }
 
     #[test]

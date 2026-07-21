@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - edit: extra fields in an edit request are now ignored instead of failing the edit, so a stray field the model adds no longer rejects the whole change.
+- TUI: the Files view no longer crashes with "file changed before we could read it" when files change while it re-diffs; it keeps the current view and refreshes on the next stable moment. On startup it shows a brief "Loading…" and settles into the live diff.
 
 ## [0.12.0] - 2026-07-09
 

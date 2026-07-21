@@ -265,11 +265,14 @@ fn placeholder_file_block(
 }
 
 /// What to show when the pane has no files. The clean/no-repo case is a
-/// single centered "No local changes." line; a build error is the error
-/// message, painted top-aligned and wrapped so multi-line text (a
-/// message plus a `hint:` line) is fully visible.
+/// single centered "No local changes." line; `Loading` is the same
+/// centered treatment for a startup that is still resolving its first
+/// diff (a repo was found but the initial build lost a race); a build
+/// error is the error message, painted top-aligned and wrapped so
+/// multi-line text (a message plus a `hint:` line) is fully visible.
 enum EmptyPane {
     NoChanges,
+    Loading,
     Error(String),
 }
 
@@ -309,6 +312,18 @@ impl DiffPane {
     /// the clean "No local changes." state.
     pub(super) fn set_empty_error(&mut self, msg: String) {
         self.empty_state = EmptyPane::Error(msg);
+    }
+
+    /// Switch the no-files render to a neutral "Loading…" line, used while
+    /// a repo-backed startup resolves its first diff.
+    pub(super) fn set_empty_loading(&mut self) {
+        self.empty_state = EmptyPane::Loading;
+    }
+
+    /// Reset the no-files render to the clean "No local changes." state
+    /// (used once a startup that was Loading resolves to a stable tree).
+    pub(super) fn clear_empty_state(&mut self) {
+        self.empty_state = EmptyPane::NoChanges;
     }
 
     /// Assemble the selected window's file blocks into one line vector and
@@ -447,8 +462,12 @@ impl DiffPane {
             let inner = block.inner(area);
             frame.render_widget(block, area);
             match &self.empty_state {
-                EmptyPane::NoChanges => {
-                    let msg = Paragraph::new("No local changes.")
+                EmptyPane::NoChanges | EmptyPane::Loading => {
+                    let text = match self.empty_state {
+                        EmptyPane::Loading => "Loading\u{2026}",
+                        _ => "No local changes.",
+                    };
+                    let msg = Paragraph::new(text)
                         .style(Style::default().fg(rgb_to_color(theme.muted)))
                         .alignment(Alignment::Center);
                     let mid = inner.height / 2;
@@ -564,6 +583,31 @@ mod tests {
         assert!(
             !text.contains("No local changes."),
             "error state must not show the clean message: {text:?}"
+        );
+    }
+
+    #[test]
+    fn empty_loading_state_renders_loading_not_no_changes() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut pane = DiffPane::new(Vec::new(), 80);
+        pane.set_empty_loading();
+
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            pane.render(f, area, false, &theme(), Vec::new());
+        })
+        .unwrap();
+        let text = buffer_text(term.backend().buffer());
+        assert!(
+            text.contains("Loading"),
+            "loading state shows the loading line: {text:?}"
+        );
+        assert!(
+            !text.contains("No local changes."),
+            "loading state must not show the clean message: {text:?}"
         );
     }
 

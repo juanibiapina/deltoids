@@ -55,16 +55,41 @@ fn reload_needed(new_input: &str, last_input: &str) -> bool {
     new_input != last_input
 }
 
+/// The result of one working-tree reload tick. A working-tree diff is a
+/// snapshot of a moving target, so a failed tick is transient and
+/// self-correcting: the poll and watcher schedule another attempt soon.
+/// This enum keeps that distinction visible to the caller (the mode) so a
+/// failure never kills the loop and a still-loading startup can decide
+/// when a run of failures is genuinely stuck.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReloadOutcome {
+    /// The diff changed and the view was rebuilt in place.
+    Rebuilt,
+    /// The tree was stable (diff unchanged); nothing rebuilt.
+    Unchanged,
+    /// The tick failed (a transient diff/content race); the current view
+    /// is kept untouched and the next scheduled tick will retry. Carries
+    /// the error message so a still-loading startup can surface it if the
+    /// failure persists past its window.
+    Failed(String),
+}
+
 /// Re-diff the working tree and rebuild the view in place, preserving the
-/// selected file by path. Captures the current selection's path from the
-/// old `model`, builds a fresh model from `repo.working_tree_diff()`,
-/// applies it via [`reload_view`], then swaps `model` to the new value.
+/// selected file by path. Computes a fresh model from
+/// `repo.working_tree_diff()` via [`compute_reload`], then applies it via
+/// [`apply_reload`].
 ///
 /// Deduplicates on the diff text: `last_input` holds what the current
 /// model was built from, so an unchanged tree (a poll tick or a
 /// filesystem event that doesn't alter the diff) costs one
-/// `working_tree_diff` and skips the model/view rebuild. Returns `true`
-/// only when it rebuilt.
+/// `working_tree_diff` and skips the model/view rebuild.
+///
+/// A working-tree diff races on-disk churn: a file can change size mid-diff
+/// (the libgit2 Filesystem error) or between the diff and content
+/// resolution (a hash mismatch → missing blob). Both are transient and
+/// self-correct, so this returns [`ReloadOutcome::Failed`] rather than an
+/// error, leaving `model`/`last_input` untouched for the next tick to
+/// retry.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reload_working_tree(
     diff: &mut DiffPane,
@@ -75,16 +100,63 @@ pub(super) fn reload_working_tree(
     theme: &Theme,
     width: usize,
     diff_viewport: usize,
-) -> Result<bool, String> {
+) -> ReloadOutcome {
+    let computed = compute_reload(repo, last_input);
+    apply_reload(
+        diff,
+        sidebar,
+        model,
+        last_input,
+        computed,
+        theme,
+        width,
+        diff_viewport,
+    )
+}
+
+/// The fallible half of a reload: re-diff the working tree and, when the
+/// diff changed, rebuild the model. Returns `Ok(None)` for a stable tree
+/// (diff unchanged from `last_input`), `Ok(Some(..))` for a fresh model,
+/// or `Err` when either the diff read or the model build lost a race with
+/// on-disk churn. Reads nothing the caller mutates, so a failure here is
+/// safe to discard.
+fn compute_reload(repo: &git::Repo, last_input: &str) -> Result<Option<(String, Model)>, String> {
     let input = repo.working_tree_diff()?;
     if !reload_needed(&input, last_input) {
-        return Ok(false);
+        return Ok(None);
     }
+    let model = build_model(&input, Some(repo))?;
+    Ok(Some((input, model)))
+}
+
+/// The infallible half of a reload: apply a `computed` result to the view.
+/// A fresh model swaps `model`/`last_input` and rebuilds the view
+/// (`Rebuilt`); a stable tree is a no-op (`Unchanged`); a failed compute
+/// keeps the current view untouched (`Failed`). Isolating this from the
+/// fallible half lets tests drive every outcome deterministically without
+/// racing a real working tree.
+#[allow(clippy::too_many_arguments)]
+fn apply_reload(
+    diff: &mut DiffPane,
+    sidebar: &mut Sidebar,
+    model: &mut Model,
+    last_input: &mut String,
+    computed: Result<Option<(String, Model)>, String>,
+    theme: &Theme,
+    width: usize,
+    diff_viewport: usize,
+) -> ReloadOutcome {
+    let (input, new_model) = match computed {
+        Ok(Some(pair)) => pair,
+        Ok(None) => return ReloadOutcome::Unchanged,
+        // Transient race: keep the current view (do not touch
+        // model/last_input) and let the next tick retry.
+        Err(msg) => return ReloadOutcome::Failed(msg),
+    };
     let prev_path = sidebar
         .nearest_file_index()
         .and_then(|idx| model.files.get(idx))
         .map(|f| display_path(&f.file).to_string());
-    let new_model = build_model(&input, Some(repo))?;
     reload_view(
         diff,
         sidebar,
@@ -96,7 +168,7 @@ pub(super) fn reload_working_tree(
     );
     *model = new_model;
     *last_input = input;
-    Ok(true)
+    ReloadOutcome::Rebuilt
 }
 
 /// Rebuild the sidebar and diff view from `model`, preserving the user's
@@ -246,6 +318,85 @@ mod tests {
             matches!(path.as_deref(), Some("a.txt") | Some("c.txt")),
             "selection should clamp to a surviving file, got {path:?}"
         );
+    }
+
+    /// A model with the given file paths, for feeding `apply_reload`.
+    fn apply_reload_computed(paths: &[&str]) -> Result<Option<(String, Model)>, String> {
+        Ok(Some((format!("diff for {paths:?}"), model_of(paths))))
+    }
+
+    #[test]
+    fn apply_reload_failed_keeps_model_and_last_input() {
+        // A failed compute (either the diff read or the model build lost a
+        // race) must keep the current view: no model swap, no last_input
+        // change, and a Failed outcome so the caller can retry.
+        let m1 = model_of(&["a.txt", "b.txt"]);
+        let mut state = make_state(&m1.files);
+        let mut model = model_of(&["a.txt", "b.txt"]);
+        let mut last_input = "original diff".to_string();
+
+        let outcome = apply_reload(
+            &mut state.diff,
+            &mut state.sidebar,
+            &mut model,
+            &mut last_input,
+            Err("file changed before we could read it".to_string()),
+            &theme(),
+            80,
+            4,
+        );
+
+        assert!(matches!(outcome, ReloadOutcome::Failed(_)));
+        assert_eq!(last_input, "original diff", "last_input must be untouched");
+        assert_eq!(model.files.len(), 2, "model must be untouched");
+    }
+
+    #[test]
+    fn apply_reload_unchanged_keeps_model_and_last_input() {
+        // A stable tree (diff unchanged) is a no-op that keeps the view.
+        let m1 = model_of(&["a.txt"]);
+        let mut state = make_state(&m1.files);
+        let mut model = model_of(&["a.txt"]);
+        let mut last_input = "original diff".to_string();
+
+        let outcome = apply_reload(
+            &mut state.diff,
+            &mut state.sidebar,
+            &mut model,
+            &mut last_input,
+            Ok(None),
+            &theme(),
+            80,
+            4,
+        );
+
+        assert_eq!(outcome, ReloadOutcome::Unchanged);
+        assert_eq!(last_input, "original diff");
+        assert_eq!(model.files.len(), 1);
+    }
+
+    #[test]
+    fn apply_reload_rebuilt_swaps_model_and_last_input() {
+        // A fresh model swaps in and updates last_input.
+        let m1 = model_of(&["a.txt"]);
+        let mut state = make_state(&m1.files);
+        let mut model = model_of(&["a.txt"]);
+        let mut last_input = "original diff".to_string();
+
+        let outcome = apply_reload(
+            &mut state.diff,
+            &mut state.sidebar,
+            &mut model,
+            &mut last_input,
+            apply_reload_computed(&["a.txt", "b.txt"]),
+            &theme(),
+            80,
+            4,
+        );
+
+        assert_eq!(outcome, ReloadOutcome::Rebuilt);
+        assert_ne!(last_input, "original diff", "last_input must advance");
+        assert_eq!(model.files.len(), 2, "model must swap to the new one");
     }
 
     #[test]

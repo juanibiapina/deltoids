@@ -3,11 +3,20 @@
 //! Discovers the repository and shows its local working-tree changes
 //! against `HEAD`. The working tree is watched and re-diffed on
 //! change. Not-a-repo and a clean tree both degrade to an empty
-//! "No local changes." state, so the TUI still opens; a genuine build
-//! error (a resolution/diff failure) instead shows a visible error
-//! message. The error state is static: a build error (e.g. a missing
-//! index blob) won't self-heal from working-tree edits, so it is not
-//! watched or reloaded.
+//! "No local changes." state, so the TUI still opens.
+//!
+//! A working-tree diff is a snapshot of a moving target, so both the
+//! startup build and every reload can lose a race with on-disk churn.
+//! Neither is fatal:
+//!
+//! - **Reload** keeps the current view on a failed tick (see
+//!   [`reload::ReloadOutcome`]); the poll and watcher retry, so it
+//!   self-heals.
+//! - **Startup** inside a repo shows a neutral "Loading…" state and
+//!   builds a normal, reloadable mode: the first successful tick promotes
+//!   it to a live diff. Only a failure that persists past a short window
+//!   degrades to the static error state, so a real error never hides
+//!   behind an endless spinner.
 //!
 //! Layout: a file-tree sidebar (left column) and the deltoids diff
 //! renderer (right pane). Selecting a file scrolls the diff to it.
@@ -26,6 +35,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -46,7 +56,7 @@ mod test_support;
 
 use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 use model::{DiffSource, Model, build_model};
-use reload::{reload_working_tree, should_reload, spawn_watcher};
+use reload::{ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
 use sidebar_pane::build_sidebar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +64,13 @@ pub(super) enum Focus {
     Sidebar,
     Diff,
 }
+
+/// How long a repo-backed startup may stay in the "Loading…" state before
+/// a still-failing build degrades to the static error screen. Under normal
+/// churn a stable moment (and a successful diff) arrives well within this
+/// window; only a genuinely persistent error keeps failing past it. Kept
+/// generous so a burst of transient races never trips it.
+const STARTUP_LOADING_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Whether the discovered repo has any local working-tree changes
 /// against `HEAD`. False outside a repo or on any git error. Cheap: it
@@ -91,6 +108,17 @@ pub(super) struct FilesMode {
     repo: Option<git::Repo>,
     /// True for a piped/empty source that never refreshes.
     is_static: bool,
+    /// True while a repo-backed startup is still resolving its first diff
+    /// (the initial build lost a race): the pane shows "Loading…" and the
+    /// first successful reload promotes it to a live view. `loading_since`
+    /// bounds how long this may persist before degrading to a static
+    /// error.
+    startup_pending: bool,
+    /// When the startup "Loading…" state began, used to bound it: a
+    /// failure past [`STARTUP_LOADING_TIMEOUT`] degrades to a static error
+    /// rather than spinning forever. `None` once resolved or never
+    /// pending.
+    loading_since: Option<Instant>,
     /// The diff text the current model was built from; the poll compares
     /// fresh `working_tree_diff` output against this to skip rebuilds.
     last_input: String,
@@ -102,44 +130,39 @@ pub(super) struct FilesMode {
 impl FilesMode {
     /// Build the mode from the discovered repo's working tree, always
     /// yielding a renderable mode. Not-a-repo and a clean tree render the
-    /// empty "No local changes." state; a build error becomes a visible
-    /// error state. `initial_diff_width` seeds the diff cache for the first
-    /// frame.
+    /// empty "No local changes." state; a repo-backed build that loses a
+    /// race renders a neutral, reloadable "Loading…" state that self-heals
+    /// on the first successful tick. `initial_diff_width` seeds the diff
+    /// cache for the first frame.
     pub(super) fn build(theme: &Theme, initial_diff_width: usize) -> Self {
-        match Self::try_build(theme, initial_diff_width) {
-            Ok(mode) => mode,
-            Err(msg) => Self::error(theme, initial_diff_width, msg),
+        // Not a repo: degrade to the static empty state so the TUI still
+        // opens.
+        let Some(repo) = git::Repo::discover() else {
+            return Self::empty(theme, initial_diff_width);
+        };
+        match Self::try_model(&repo) {
+            Ok((input, model)) => {
+                Self::new(model, input, Some(repo), false, theme, initial_diff_width)
+            }
+            // A repo-backed build lost a race (a size-check or content
+            // race). Rather than a static error screen, open a reloadable
+            // "Loading…" mode; the watcher/poll retries and the first
+            // stable tick promotes it to a live diff.
+            Err(_) => Self::loading(repo, theme, initial_diff_width),
         }
     }
 
-    /// Try to build the mode from the discovered repo's working tree, or an
-    /// empty state when not in a repo. Returns `Err` with a human-readable
-    /// message on a real resolution/diff failure; [`FilesMode::build`]
-    /// folds that into the error state.
-    fn try_build(theme: &Theme, initial_diff_width: usize) -> Result<Self, String> {
-        let (input, repo, is_static) = match git::Repo::discover() {
-            Some(repo) => {
-                let input = repo.working_tree_diff()?;
-                (input, Some(repo), false)
-            }
-            // Not a repo: degrade to the empty state instead of erroring,
-            // so the TUI still opens.
-            None => (String::new(), None, true),
-        };
-        let model = build_model(&input, repo.as_ref())?;
-        Ok(Self::new(
-            model,
-            input,
-            repo,
-            is_static,
-            theme,
-            initial_diff_width,
-        ))
+    /// Compute the working-tree diff and its model, or an error when the
+    /// diff read or model build loses a race with on-disk churn.
+    fn try_model(repo: &git::Repo) -> Result<(String, Model), String> {
+        let input = repo.working_tree_diff()?;
+        let model = build_model(&input, Some(repo))?;
+        Ok((input, model))
     }
 
     /// A cheap empty Files mode: no repo, no diff, static. Used as the
-    /// startup placeholder for the inactive mode and as a degraded
-    /// fallback when a real build fails.
+    /// startup placeholder for the inactive mode and as the not-a-repo
+    /// fallback.
     pub(super) fn empty(theme: &Theme, width: usize) -> Self {
         let model = Model {
             files: Vec::new(),
@@ -149,10 +172,31 @@ impl FilesMode {
         Self::new(model, String::new(), None, true, theme, width)
     }
 
+    /// A reloadable Files mode that shows a neutral "Loading…" state while
+    /// a repo-backed startup resolves its first diff. It holds the repo
+    /// and an empty model with a sentinel `last_input`, so the ordinary
+    /// reload path rebuilds it into a live view on the first stable tick;
+    /// [`FilesMode::reload`] promotes it out of Loading, or degrades it to
+    /// the static error state once failures persist past
+    /// [`STARTUP_LOADING_TIMEOUT`].
+    fn loading(repo: git::Repo, theme: &Theme, width: usize) -> Self {
+        let model = Model {
+            files: Vec::new(),
+            bodies: Vec::new(),
+            stages: Default::default(),
+        };
+        let mut mode = Self::new(model, String::new(), Some(repo), false, theme, width);
+        mode.startup_pending = true;
+        mode.loading_since = Some(Instant::now());
+        mode.diff.set_empty_loading();
+        mode
+    }
+
     /// A Files mode that shows a build-error message instead of the empty
-    /// state. Like [`FilesMode::empty`] it holds no repo and is static: a
-    /// build error (e.g. a missing index blob) won't self-heal from
-    /// working-tree edits, so this mode is never watched or reloaded.
+    /// state. Holds no repo and is static: reserved for a genuinely
+    /// non-recoverable failure (and the startup Loading guard, which
+    /// degrades to it once a build error persists past the loading
+    /// window), so this mode is never watched or reloaded.
     pub(super) fn error(theme: &Theme, width: usize, message: String) -> Self {
         let model = Model {
             files: Vec::new(),
@@ -185,6 +229,8 @@ impl FilesMode {
             model,
             repo,
             is_static,
+            startup_pending: false,
+            loading_since: None,
             last_input: input,
             _watcher: None,
         }
@@ -222,6 +268,60 @@ impl FilesMode {
     /// window (a sidebar move re-derives the window).
     fn snap_diff_to_selected_file(&mut self) {
         self.diff.snap_to_top();
+    }
+
+    /// Fold a [`ReloadOutcome`] into the startup Loading state machine and
+    /// report whether the visible content changed (the redraw signal).
+    ///
+    /// A successful tick (rebuilt or a confirmed-stable tree) promotes a
+    /// still-loading startup to its live view. A failed tick keeps the
+    /// current view; while loading, it counts against the loading window
+    /// and, once the window elapses, degrades to the static error screen so
+    /// a persistent error never hides behind an endless "Loading…".
+    fn resolve_reload(&mut self, outcome: ReloadOutcome, theme: &Theme, width: usize) -> bool {
+        match outcome {
+            ReloadOutcome::Rebuilt => {
+                self.promote_from_loading();
+                true
+            }
+            ReloadOutcome::Unchanged => {
+                // A successful diff that matched `last_input`. At startup
+                // (`last_input == ""`) this confirms a clean tree, so leave
+                // Loading for the "No local changes." state.
+                self.promote_from_loading();
+                false
+            }
+            ReloadOutcome::Failed(msg) => {
+                // A build error that persists past the loading window is
+                // treated as genuine: degrade to the static error screen
+                // (repo dropped, no reload). A fresh failure keeps Loading.
+                if self.startup_pending && self.loading_window_elapsed() {
+                    *self = Self::error(theme, width, msg);
+                }
+                false
+            }
+        }
+    }
+
+    /// Whether the startup "Loading…" window has elapsed. A `None`
+    /// `loading_since` (not loading) reports elapsed, but the caller only
+    /// consults this while `startup_pending`.
+    fn loading_window_elapsed(&self) -> bool {
+        self.loading_since
+            .map(|since| since.elapsed() >= STARTUP_LOADING_TIMEOUT)
+            .unwrap_or(true)
+    }
+
+    /// Leave the startup "Loading…" state once a tick resolves it. Clears
+    /// the pending flag and the loading window and resets the empty-pane
+    /// render to the neutral "No local changes." state (irrelevant once
+    /// files are present). A no-op when not loading.
+    fn promote_from_loading(&mut self) {
+        if self.startup_pending {
+            self.startup_pending = false;
+            self.loading_since = None;
+            self.diff.clear_empty_state();
+        }
     }
 }
 
@@ -455,7 +555,7 @@ impl Mode for FilesMode {
             self.diff.cached_width
         };
         // `repo` borrows `self.repo`; the rest are disjoint fields.
-        reload_working_tree(
+        let outcome = reload_working_tree(
             &mut self.diff,
             &mut self.sidebar,
             &mut self.model,
@@ -464,7 +564,11 @@ impl Mode for FilesMode {
             theme,
             width,
             viewport.right_viewport,
-        )
+        );
+        // The reload tick is non-fatal: never return `Err`. Fold the
+        // outcome into the startup Loading state machine and report only
+        // whether the visible content changed.
+        Ok(self.resolve_reload(outcome, theme, width))
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
@@ -640,5 +744,120 @@ mod tests {
 
         std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
         assert!(repo_has_changes(&wrapper), "edited tree has changes");
+    }
+
+    /// The reload viewport used by the startup self-heal tests.
+    fn reload_vp() -> ReloadViewport {
+        ReloadViewport {
+            left_viewport: 20,
+            right_viewport: 20,
+            right_width: 80,
+        }
+    }
+
+    #[test]
+    fn loading_mode_is_reloadable_and_self_heals_to_live_diff() {
+        // A repo-backed startup that opened in Loading is non-static and
+        // reloadable; the first successful reload promotes it to a live
+        // diff and clears the loading banner. This is the deterministic
+        // proof of the startup self-heal.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
+        stage_all(&repo);
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let theme = Theme::default();
+        let mut mode = FilesMode::loading(wrapper, &theme, 80);
+
+        assert!(!mode.is_static, "loading mode must be reloadable");
+        assert!(mode.startup_pending, "loading mode is pending");
+        assert!(mode.model.files.is_empty(), "loading mode has no files yet");
+
+        let changed = mode.reload(reload_vp(), &theme).unwrap();
+        assert!(changed, "first successful reload must rebuild");
+        assert!(
+            !mode.startup_pending,
+            "a live diff clears the loading state"
+        );
+        assert_eq!(mode.model.files.len(), 1, "the diff is now live");
+        assert_eq!(
+            crate::sidebar::display_path(&mode.model.files[0].file),
+            "a.txt"
+        );
+    }
+
+    #[test]
+    fn loading_mode_resolves_clean_tree_to_no_changes() {
+        // A startup that opened Loading but whose tree is actually clean
+        // resolves out of Loading on the first tick (an Unchanged outcome
+        // at the empty sentinel confirms a clean tree).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let theme = Theme::default();
+        let mut mode = FilesMode::loading(wrapper, &theme, 80);
+
+        let changed = mode.reload(reload_vp(), &theme).unwrap();
+        assert!(!changed, "a clean tree has nothing to rebuild");
+        assert!(
+            !mode.startup_pending,
+            "a confirmed clean tree leaves Loading"
+        );
+        assert!(!mode.is_static, "a clean tree is still watchable");
+    }
+
+    #[test]
+    fn loading_mode_keeps_loading_on_failure_within_window() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let theme = Theme::default();
+        let mut mode = FilesMode::loading(wrapper, &theme, 80);
+
+        // A fresh failure (loading_since is now) must not degrade.
+        let changed = mode.resolve_reload(
+            ReloadOutcome::Failed("transient race".to_string()),
+            &theme,
+            80,
+        );
+        assert!(!changed);
+        assert!(mode.startup_pending, "a fresh failure keeps Loading");
+        assert!(!mode.is_static, "a fresh failure stays reloadable");
+    }
+
+    #[test]
+    fn loading_mode_degrades_to_error_after_window() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let theme = Theme::default();
+        let mut mode = FilesMode::loading(wrapper, &theme, 80);
+
+        // Pretend the loading window has already elapsed (the machine has
+        // been up far longer than the timeout, so this never underflows).
+        mode.loading_since = Some(Instant::now() - STARTUP_LOADING_TIMEOUT * 2);
+
+        let changed = mode.resolve_reload(
+            ReloadOutcome::Failed("missing index blob deadbeef".to_string()),
+            &theme,
+            80,
+        );
+        assert!(!changed);
+        assert!(
+            mode.is_static,
+            "a failure that persists past the window degrades to a static error"
+        );
+        assert!(
+            !mode.startup_pending,
+            "the degraded state is no longer loading"
+        );
     }
 }

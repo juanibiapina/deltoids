@@ -79,6 +79,8 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         model,
         repo: None,
         is_static: true,
+        startup_pending: false,
+        loading_since: None,
         last_input: String::new(),
         _watcher: None,
     }

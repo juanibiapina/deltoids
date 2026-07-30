@@ -1,0 +1,48 @@
+---
+layout: "../../../../layouts/DocsLayout.astro"
+title: "Claude Code"
+description: "Install the deltoids plugin for Claude Code and record every edit as a trace."
+---
+
+import { SITE } from "../../../../data/site";
+import Note from "../../../../components/docs/Note.astro";
+
+# Claude Code
+
+<Note label="Before you start">
+  Requires the `deltoids` binary on `PATH`. See [Install](/docs/).
+</Note>
+
+## Install
+
+```bash
+claude plugin marketplace add juanibiapina/deltoids
+claude plugin install deltoids@deltoids
+```
+
+From inside an interactive session, run
+`/plugin marketplace add juanibiapina/deltoids` then
+`/plugin install deltoids@deltoids`.
+
+The plugin records every `Write` and `Edit` call as a trace, grouped by
+Claude session.
+
+## Watch the traces
+
+```bash
+deltoids tui
+```
+
+The Claude `session_id` is the deltoids trace id, so resuming a session
+with `claude --continue` keeps appending to the same trace.
+
+<Note>
+  Unlike the pi integration, edits are recorded without per-edit
+  summaries. Claude's `PostToolUse` hook does not expose one.
+</Note>
+
+## If hooks do not fire
+
+Claude Code has a known <a href="https://github.com/anthropics/claude-code/issues/34573">plugin hook delivery bug</a>.
+The <a href={`${SITE.repo.url}/blob/main/plugins/claude-code/README.md`}>plugin README</a>
+carries a `~/.claude/settings.json` snippet that works around it.

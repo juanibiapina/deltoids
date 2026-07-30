@@ -1,0 +1,44 @@
+---
+layout: "../../../../layouts/DocsLayout.astro"
+title: "pi"
+description: "Install the deltoids edit and write tools in pi, and watch the traces they record."
+---
+
+import Note from "../../../../components/docs/Note.astro";
+
+# pi
+
+<Note label="Before you start">
+  Requires the `deltoids` binary on `PATH`. See [Install](/docs/).
+</Note>
+
+## Install
+
+```bash
+pi install https://github.com/juanibiapina/deltoids
+```
+
+This overrides pi's built-in `edit` and `write` tools with the traced
+versions. Each edit is recorded with the summary the agent wrote for it.
+
+## Watch the traces
+
+Run the TUI in the same directory as pi:
+
+```bash
+deltoids tui
+```
+
+Traces mode lists every edit as it lands, with its diff and summary.
+
+## Edit modes
+
+Set `DELTOIDS_EDIT_MODE=hash` before launching pi to swap `edit` to a
+line-anchored backend (`deltoids hashedit`) and add a `hashread` tool for
+text-file reads. The default (`text` mode) keeps the classic
+`oldText`/`newText` `edit` schema.
+
+<Note>
+  The mode is fixed for the lifetime of the pi session. Changing it
+  requires restarting pi.
+</Note>

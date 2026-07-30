@@ -1,0 +1,46 @@
+---
+layout: "../../../../layouts/DocsLayout.astro"
+title: "Git"
+description: "Use deltoids as the pager for git diff, git show, and git log."
+---
+
+import Note from "../../../../components/docs/Note.astro";
+
+# Git
+
+<Note label="Before you start">
+  Requires the `deltoids` binary on `PATH`. See [Install](/docs/).
+</Note>
+
+## One-off
+
+Pipe any unified diff through `deltoids`:
+
+```bash
+git diff | deltoids | less -R
+git show HEAD~1 | deltoids | less -R
+git log -p | deltoids | less -R
+```
+
+## Default pager
+
+```bash
+git config --global core.pager 'deltoids | less -R'
+```
+
+This routes every paged Git command through `deltoids`, including
+commands whose output is not a diff. `deltoids` passes those through
+unchanged.
+
+## Per command
+
+To keep the default pager and use `deltoids` only where it helps:
+
+```bash
+git config --global pager.diff 'deltoids | less -R'
+git config --global pager.show 'deltoids | less -R'
+git config --global pager.log 'deltoids | less -R'
+```
+
+`less -R` is what renders the ANSI colors. Without it, the escape codes
+show up as text.

@@ -1,0 +1,28 @@
+---
+layout: "../../../../layouts/DocsLayout.astro"
+title: "GitHub CLI"
+description: "Use deltoids as the pager for gh pr diff and other gh commands."
+---
+
+import Note from "../../../../components/docs/Note.astro";
+
+# GitHub CLI
+
+<Note label="Before you start">
+  Requires the `deltoids` binary on `PATH`. See [Install](/docs/).
+</Note>
+
+## One-off
+
+```bash
+gh pr diff <number> | deltoids | less -R
+```
+
+## Default pager
+
+```bash
+gh config set pager 'deltoids | less -R'
+```
+
+`gh` uses this pager for every command that pages, so reviewing a pull
+request diff picks up scope expansion without any per-command flag.

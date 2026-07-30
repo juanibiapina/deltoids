@@ -1,0 +1,40 @@
+---
+layout: "../../../../layouts/DocsLayout.astro"
+title: "Lazygit"
+description: "Set deltoids as the diff pager inside lazygit."
+---
+
+import { Image } from "astro:assets";
+import Note from "../../../../components/docs/Note.astro";
+import lazygitShot from "../../../../assets/screenshots/lazygit.png";
+
+# Lazygit
+
+<Note label="Before you start">
+  Requires the `deltoids` binary on `PATH`. See [Install](/docs/).
+</Note>
+
+## Configuration
+
+Lazygit reads `~/.config/lazygit/config.yml` on macOS and Linux. Add the
+`git.paging.pager` key:
+
+```yaml
+# ~/.config/lazygit/config.yml
+git:
+  paging:
+    pager: deltoids
+```
+
+No `less -R` here: lazygit renders the output in its own panel.
+
+Restart lazygit after saving. The config is read at startup.
+
+<Image
+  src={lazygitShot}
+  alt="lazygit with deltoids as the pager: a hunk expanded to its enclosing function"
+  widths={[720, 1080, 1440]}
+  sizes="(min-width: 900px) 720px, 100vw"
+  format="webp"
+  loading="lazy"
+/>

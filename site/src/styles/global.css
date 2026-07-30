@@ -710,6 +710,7 @@ pre code {
   margin-top: 24px;
 }
 
+
 .docs-sidebar h4 {
   font-size: 0.6875rem;
   text-transform: uppercase;
@@ -754,6 +755,36 @@ pre code {
   border-left-color: var(--accent);
   background: color-mix(in oklab, var(--accent) 8%, transparent);
   font-weight: 500;
+}
+
+/* Below the two-column breakpoint the sidebar sits above the article, so
+   a stacked list would push the page title off screen. Wrap the links
+   into rows of pills instead. */
+@media (max-width: 899px) {
+  .docs-sidebar-group + .docs-sidebar-group {
+    margin-top: 16px;
+  }
+
+  .docs-sidebar h4 {
+    padding: 0;
+    margin-bottom: 8px;
+  }
+
+  .docs-sidebar ul {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .docs-sidebar-link {
+    padding: 5px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+  }
+
+  .docs-sidebar-link.is-active {
+    border-color: var(--accent);
+  }
 }
 
 .docs-content {
@@ -820,6 +851,16 @@ pre code {
 
 .docs-content pre {
   margin: 0 0 20px;
+}
+
+.docs-content img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 0 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-code);
 }
 
 .docs-content blockquote {

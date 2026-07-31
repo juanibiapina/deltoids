@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-07-31
+
 ### Fixed
 
 - diff: changes inside `export const f = () => {}` and `export function f()` now show the comments written above the function, like every other function shape. Editing only those comments keeps the function as the hunk's context too.

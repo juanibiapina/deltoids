@@ -1,0 +1,10 @@
+@@ -3,8 +3,8 @@ [variable_declarator resolveContext]
+ // Build a TopicContext from a Telegram message.
+ // Everything else is dropped.
+ export const resolveContext = (chatType: string) => {
+-  if (chatType === "private") {
++  if (chatType === "private" || chatType === "group") {
+     return 0;
+   }
+   return null;
+ };

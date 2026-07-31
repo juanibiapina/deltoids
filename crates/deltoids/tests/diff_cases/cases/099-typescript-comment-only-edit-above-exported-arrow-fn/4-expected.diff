@@ -1,0 +1,6 @@
+@@ -3,4 +3,4 @@ [variable_declarator compute]
+-// Old docs
++// New docs
+ export const compute = (a: number) => {
+   return a;
+ };

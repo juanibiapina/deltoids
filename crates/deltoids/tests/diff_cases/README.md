@@ -171,6 +171,9 @@ Current cases:
 | `063-rust-block-comment-only-edit-above-fn`         | Rust `/* … */` block-comment-only edit above a fn anchors on the fn |
 | `081-typescript-jsdoc-only-edit-above-method`       | TS `/** */` JSDoc-only edit above a class method anchors on the method |
 | `091-javascript-comment-only-edit-above-fn`         | JS `//` line-comment-only edit above a top-level fn anchors on the fn |
+| `093-typescript-exported-arrow-body-edit-includes-leading-comment` | Body edit in `export const f = () => {}` starts the hunk at the leading comments |
+| `094-typescript-exported-function-body-edit-includes-leading-comment` | Body edit in `export function f()` starts the hunk at the leading comments |
+| `099-typescript-comment-only-edit-above-exported-arrow-fn` | Comment-only edit above `export const f = () => {}` anchors on the function |
 | `102-python-comment-only-edit-above-method`         | Python `#` comment-only edit above a class method anchors on the method |
 | `112-go-doc-comment-only-edit-above-fn`             | Go `//` doc-comment-only edit above a fn anchors on the fn |
 | `122-ruby-comment-only-edit-above-method`           | Ruby `#` comment-only edit above a class method anchors on the method |

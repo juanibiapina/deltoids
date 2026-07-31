@@ -262,8 +262,44 @@ impl ParsedFile {
             .tree
             .root_node()
             .descendant_for_point_range(point, point)?;
-        let node = skip_leading_comments(node, self.leading_comment_kinds);
-        Some(skip_decorators(node))
+        let skipped = skip_leading_comments(node, self.leading_comment_kinds);
+        // Landing on a wrapper (`export const f = () => {}`) hides the
+        // scope: it is a *descendant* of the wrapper, and the caller only
+        // walks upward from here. Descend back into it.
+        let skipped = if skipped.id() == node.id() {
+            skipped
+        } else {
+            self.wrapped_scope(skipped)
+        };
+        Some(skip_decorators(skipped))
+    }
+
+    /// Innermost scope nested inside `node` that starts on the same source
+    /// row, or `node` when there is none.
+    ///
+    /// Inverse of [`same_row_wrapper`]: `export const f = () => {}` parses
+    /// as `export_statement` > `lexical_declaration` >
+    /// `variable_declarator`, all starting on the same row, and only the
+    /// declarator is the function scope. Only structures and promoted
+    /// kinds with a function value qualify, so a plain `const a = 1`
+    /// wrapper is left alone.
+    fn wrapped_scope<'a>(&self, node: Node<'a>) -> Node<'a> {
+        let row = node.start_position().row;
+        let mut best = node;
+        let mut current = node;
+        while let Some(child) = current
+            .named_child(0)
+            .filter(|c| c.start_position().row == row)
+        {
+            let kind_is_promoted = self.promoted_kinds.contains(&child.kind());
+            if self.structure_kinds.contains(&child.kind())
+                || (kind_is_promoted && self.has_function_value(&child))
+            {
+                best = child;
+            }
+            current = child;
+        }
+        best
     }
 
     /// Pick an expansion anchor for a *contained* change when no enclosing
@@ -612,9 +648,16 @@ fn is_string_literal_kind(kind: &str) -> bool {
 /// leading-comment kinds (doc comments, attributes) and return the earliest
 /// start row. Extends the scope's start line so hunks for changes inside
 /// the function body include the full leading context.
+///
+/// The walk starts from the outermost ancestor that begins on the same
+/// row as `node` (see [`same_row_wrapper`]), not from `node` itself:
+/// `export const f = () => {}` picks the promoted `variable_declarator`
+/// as its scope, but the doc comment above it is a sibling of the
+/// enclosing `export_statement`, two levels up.
 fn leading_adjusted_start(node: Node<'_>, leading_comment_kinds: &[&str]) -> usize {
+    let anchor = same_row_wrapper(node);
     let mut start = node.start_position().row;
-    let mut prev = node.prev_named_sibling();
+    let mut prev = anchor.prev_named_sibling();
     while let Some(p) = prev {
         if p.kind() == "decorator" || leading_comment_kinds.contains(&p.kind()) {
             start = p.start_position().row;
@@ -624,6 +667,29 @@ fn leading_adjusted_start(node: Node<'_>, leading_comment_kinds: &[&str]) -> usi
         }
     }
     start
+}
+
+/// Climb to the outermost ancestor that starts on the same source row as
+/// `node`, stopping below the file root.
+///
+/// Such an ancestor is a wrapper sharing the scope's first line — the
+/// `lexical_declaration` and `export_statement` around
+/// `export const f = () => {}`, or the `export_statement` around
+/// `export function f() {}`. Anything written above that wrapper belongs
+/// to the scope, so leading-comment lookups anchor here. Wrappers on
+/// their own rows (Python `decorated_definition`, Rust attributes) start
+/// on a different row and are left to the sibling walk.
+fn same_row_wrapper(node: Node<'_>) -> Node<'_> {
+    let row = node.start_position().row;
+    let mut anchor = node;
+    while let Some(parent) = anchor.parent() {
+        // The root spans the whole file; it is never a wrapper.
+        if parent.parent().is_none() || parent.start_position().row != row {
+            break;
+        }
+        anchor = parent;
+    }
+    anchor
 }
 
 /// If `node` (or any of its ancestors) is one of `kinds`, walk forward
@@ -917,6 +983,81 @@ impl Foo {
         let names: Vec<&str> = scopes.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(kinds, vec!["impl_item", "function_item"]);
         assert_eq!(names, vec!["Foo", "compute"]);
+    }
+
+    #[test]
+    fn enclosing_scopes_start_at_leading_comment_of_exported_arrow_fn() {
+        let source = "\
+const prefix = 1;
+
+// Doc one.
+// Doc two.
+export const compute = (a: number) => {
+  return a;
+};
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // line 5 (0-indexed) is `  return a;` inside the arrow body.
+        let scope = parsed
+            .enclosing_scopes(5)
+            .into_iter()
+            .find(|s| s.name == "compute")
+            .expect("declarator scope");
+        // 1-indexed line 3 is `// Doc one.`, the first leading comment.
+        assert_eq!(scope.start_line, 3);
+    }
+
+    #[test]
+    fn named_scope_at_comment_above_exported_arrow_fn_is_the_function() {
+        let source = "\
+const prefix = 1;
+
+// Doc one.
+export const compute = (a: number) => {
+  return a;
+};
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // line 2 (0-indexed) is the comment; it documents `compute`.
+        let scope = parsed.named_scope_at(2).expect("scope at comment line");
+        assert_eq!(scope.kind, "variable_declarator");
+        assert_eq!(scope.name, "compute");
+    }
+
+    #[test]
+    fn named_scope_at_comment_above_exported_function_is_the_function() {
+        let source = "\
+const prefix = 1;
+
+// Doc one.
+export function compute(a: number) {
+  return a;
+}
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        let scope = parsed.named_scope_at(2).expect("scope at comment line");
+        assert_eq!(scope.kind, "function_declaration");
+        assert_eq!(scope.name, "compute");
+    }
+
+    #[test]
+    fn enclosing_scopes_start_at_leading_comment_of_local_arrow_fn() {
+        let source = "\
+const prefix = 1;
+
+// Doc one.
+const compute = (a: number) => {
+  return a;
+};
+";
+        let parsed = ParsedFile::parse("app.ts", source).expect("parse");
+        // line 4 (0-indexed) is `  return a;` inside the arrow body.
+        let scope = parsed
+            .enclosing_scopes(4)
+            .into_iter()
+            .find(|s| s.name == "compute")
+            .expect("declarator scope");
+        assert_eq!(scope.start_line, 3);
     }
 
     #[test]

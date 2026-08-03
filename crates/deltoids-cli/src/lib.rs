@@ -1,12 +1,11 @@
-//! Crate root for `deltoids-cli`. The edit/write/hashedit/hashread tool
-//! execution lives in concern-specific sibling modules; this root keeps
+//! Crate root for `deltoids-cli`. The edit/write tool execution lives in
+//! concern-specific sibling modules; this root keeps
 //! the public surface (re-exports), the wire types, and the small shared
 //! helpers those modules lean on (timestamps, the working directory,
 //! trace success/error shaping, and path validation).
 
 pub mod cli;
 pub mod events;
-pub mod hashline;
 pub mod scroll;
 pub mod sidebar;
 pub mod sidebar_width;
@@ -14,8 +13,6 @@ pub mod terminal;
 pub mod trace_store;
 
 mod edit;
-mod hash_edit;
-mod hash_read;
 mod types;
 mod write;
 
@@ -25,15 +22,10 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 
 pub use edit::{apply_edit, execute_request, execute_request_with_trace, render_diff};
-pub use hash_edit::{execute_hash_edit_request, execute_hash_edit_request_with_trace};
-pub use hash_read::execute_hash_read;
 pub use trace_store::{
     HistoryEntry, ProjectSummary, TraceStore, TraceSummary, project_id, trace_root_directory,
 };
-pub use types::{
-    EditRequest, ErrorResponse, HashEditOp, HashEditRequest, HashReadRequest, SuccessResponse,
-    TextEdit, ToolError, WriteRequest,
-};
+pub use types::{EditRequest, ErrorResponse, SuccessResponse, TextEdit, ToolError, WriteRequest};
 pub use write::{
     execute_write_request, execute_write_request_with_trace, validate_write_target_path,
 };

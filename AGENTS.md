@@ -56,13 +56,7 @@ crates/
     src/types.rs             # Wire request/response/error types
     src/edit.rs              # `edit` tool execution + apply_edits
     src/write.rs             # `write` tool execution
-    src/hash_edit.rs         # `hashedit` execution + op translation
-    src/hash_read.rs         # `hashread` rendering
     src/trace_store.rs       # Trace storage
-    src/hashline/            # Hashline engine
-      mod.rs                 #   docs + re-exports
-      anchor.rs             #   hash alphabet, formatters, anchor parsing
-      apply.rs              #   edit ops + splice engine
     src/sidebar/             # File tree sidebar for Files mode
       mod.rs                 #   Sidebar state + navigation
       status.rs            #   file classification
@@ -105,14 +99,12 @@ crates/
     src/cli/tui.rs           # `deltoids tui` entry (interactive / headless scripted)
     src/cli/edit.rs          # `deltoids edit` subcommand
     src/cli/write.rs         # `deltoids write` subcommand
-    src/cli/hash_read.rs     # `deltoids hashread` subcommand
-    src/cli/hash_edit.rs     # `deltoids hashedit` subcommand
     src/cli/hook.rs          # `deltoids hook` subcommand
     src/bin/deltoids.rs      # Single binary dispatcher
 
   tests/
     tests/tui_cli.rs          # Integration tests for edit/write/traces
-    tests/hash_cli.rs         # Integration tests for hashread/hashedit
+    tests/cli_surface.rs      # Integration tests for the public CLI surface
     tests/claude_code_hook.rs # Integration tests for the hook
     fixtures/claude-code/     # Hook test fixtures
 

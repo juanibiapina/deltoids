@@ -152,7 +152,7 @@ export const INSTALL_CARDS: InstallCard[] = [
 export const FAQ: { q: string; a: string }[] = [
   {
     q: "Is `deltoids` just a pager?",
-    a: "No. Piped a diff, it's a pager. Run in a terminal, `deltoids` opens a TUI that browses your working tree and your coding agent's edits. It also ships `edit`, `write`, `hashread`, and `hashedit` tools for agents.",
+    a: "No. Piped a diff, it's a pager. Run in a terminal, `deltoids` opens a TUI that browses your working tree and your coding agent's edits. It also ships `edit` and `write` tools for agents.",
   },
   {
     q: "How is this different from `git diff -W`?",

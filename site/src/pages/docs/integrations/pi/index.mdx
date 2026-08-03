@@ -30,15 +30,3 @@ deltoids tui
 ```
 
 Traces mode lists every edit as it lands, with its diff and summary.
-
-## Edit modes
-
-Set `DELTOIDS_EDIT_MODE=hash` before launching pi to swap `edit` to a
-line-anchored backend (`deltoids hashedit`) and add a `hashread` tool for
-text-file reads. The default (`text` mode) keeps the classic
-`oldText`/`newText` `edit` schema.
-
-<Note>
-  The mode is fixed for the lifetime of the pi session. Changing it
-  requires restarting pi.
-</Note>

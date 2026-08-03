@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- agent tools: Remove the line-anchored read and edit commands and the corresponding pi edit mode.
+
 ## [0.12.2] - 2026-07-31
 
 ### Fixed

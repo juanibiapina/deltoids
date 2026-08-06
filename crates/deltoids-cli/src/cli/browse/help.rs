@@ -29,19 +29,14 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),
     ("< / >", "narrow / widen sidebar (shared by modes)"),
-    ("q / Esc", "quit (or close this popup)"),
+    ("q", "quit"),
 ];
 
-/// Key dispatch while the help popup is shown. `?`, `Esc`, and `q`
-/// all close the popup; everything else is swallowed. `q`/`Esc` do
-/// **not** quit the app while the popup is open; closing the modal
-/// first matches lazygit/k9s/vim convention.
+/// Key dispatch while the help popup is shown. `?` and `Esc` close the
+/// popup; everything else is swallowed.
 pub(super) fn handle_key_help(help_visible: &mut bool, key: KeyCode) -> AppCommand {
-    match key {
-        KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
-            *help_visible = false;
-        }
-        _ => {}
+    if matches!(key, KeyCode::Char('?') | KeyCode::Esc) {
+        *help_visible = false;
     }
     AppCommand::Continue
 }
@@ -161,13 +156,26 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_help_closes_on_q_and_esc_without_quitting() {
-        for key in [KeyCode::Char('q'), KeyCode::Esc] {
-            let mut visible = true;
-            let cmd = handle_key_help(&mut visible, key);
-            assert_eq!(cmd, AppCommand::Continue);
-            assert!(!visible);
-        }
+    fn handle_key_help_closes_on_esc() {
+        let mut visible = true;
+        let cmd = handle_key_help(&mut visible, KeyCode::Esc);
+        assert_eq!(cmd, AppCommand::Continue);
+        assert!(!visible);
+    }
+
+    #[test]
+    fn help_keys_document_q_as_the_only_quit_key() {
+        let quit = HELP_KEYS
+            .iter()
+            .find(|(_, d)| d.contains("quit"))
+            .expect("help popup must document the quit binding");
+        assert_eq!(quit.0, "q");
+        assert!(
+            !HELP_KEYS
+                .iter()
+                .any(|(k, d)| k.contains("Esc") && d.contains("quit")),
+            "Esc must not be documented as a quit key"
+        );
     }
 
     #[test]

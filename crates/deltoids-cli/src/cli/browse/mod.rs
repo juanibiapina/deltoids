@@ -471,6 +471,10 @@ impl Shell {
         left_viewport: usize,
         right_viewport: usize,
     ) -> AppCommand {
+        // `q` quits from anywhere, popup or not.
+        if key == KeyCode::Char('q') {
+            return AppCommand::Quit;
+        }
         if self.help_visible {
             return help::handle_key_help(&mut self.help_visible, key);
         }
@@ -479,7 +483,6 @@ impl Shell {
                 self.help_visible = true;
                 AppCommand::Continue
             }
-            KeyCode::Char('q') | KeyCode::Esc => AppCommand::Quit,
             // `]` cycles to the next mode, `[` to the previous.
             KeyCode::Char(']') => {
                 self.cycle(true);

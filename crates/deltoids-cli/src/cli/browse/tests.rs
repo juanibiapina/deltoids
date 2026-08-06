@@ -115,17 +115,19 @@ fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
 }
 
 #[test]
-fn q_and_esc_quit() {
-    let (mut modes, _, _) = two_modes();
+fn q_quits_and_esc_routes_to_the_active_mode() {
+    let (mut modes, files_rec, _) = two_modes();
     let mut s = shell();
     assert_eq!(
         s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
         AppCommand::Quit
     );
+    // Esc is not a quit key outside the help popup: it reaches the mode.
     assert_eq!(
         s.handle_key(&mut modes, KeyCode::Esc, 4, 4),
-        AppCommand::Quit
+        AppCommand::Continue
     );
+    assert_eq!(files_rec.borrow().keys, vec![KeyCode::Esc]);
 }
 
 #[test]
@@ -153,12 +155,24 @@ fn question_mark_toggles_help_and_help_swallows_keys() {
     s.handle_key(&mut modes, KeyCode::Char('?'), 4, 4);
     assert!(s.help_visible);
 
-    // While help is up, a quit key only closes the popup and does not
-    // reach the active mode.
-    let cmd = s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4);
+    // While help is up, Esc closes the popup and does not reach the
+    // active mode.
+    let cmd = s.handle_key(&mut modes, KeyCode::Esc, 4, 4);
     assert_eq!(cmd, AppCommand::Continue);
     assert!(!s.help_visible);
     assert!(files_rec.borrow().keys.is_empty());
+}
+
+#[test]
+fn q_quits_even_with_the_help_popup_open() {
+    let (mut modes, _, _) = two_modes();
+    let mut s = shell();
+    s.handle_key(&mut modes, KeyCode::Char('?'), 4, 4);
+    assert!(s.help_visible);
+    assert_eq!(
+        s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
+        AppCommand::Quit
+    );
 }
 
 #[test]

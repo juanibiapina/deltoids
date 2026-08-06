@@ -26,7 +26,7 @@ Keys:
 - PgUp / PgDn:     scroll the diff pane
 - < / >:           narrow / widen the sidebar (or drag the divider)
 - ?:               toggle the help popup
-- q / Esc:         quit
+- q:               quit
 
 Set RV_NO_ICONS=1 to disable nerd-font glyphs in the sidebar.
 "#;

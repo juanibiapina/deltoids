@@ -132,6 +132,53 @@ fn symlink_body_line(view: &SymlinkView, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
+/// One rendered terminal row of a hunk, plus where it came from.
+///
+/// A long diff line wraps onto several rows, so rendered rows and logical
+/// hunk lines are not one-to-one. Callers that need to map a row back to
+/// the line it came from (to place a cursor, attach a review comment, or
+/// insert a row after a line) render through [`render_hunk_rows`] and read
+/// [`HunkRow::source_line`] instead of reconstructing the mapping from row
+/// counts.
+#[derive(Debug, Clone)]
+pub struct HunkRow {
+    /// The row as drawn.
+    pub line: Line<'static>,
+    /// Index into [`Hunk::lines`] this row renders, or `None` for the
+    /// breadcrumb / line-number header box.
+    pub source_line: Option<usize>,
+    /// Whether this is the first rendered row of `source_line`.
+    pub first_row: bool,
+    /// Whether this is the last rendered row of `source_line`.
+    pub last_row: bool,
+}
+
+impl HunkRow {
+    /// A header (or otherwise line-less) row.
+    fn header(line: Line<'static>) -> Self {
+        Self {
+            line,
+            source_line: None,
+            first_row: false,
+            last_row: false,
+        }
+    }
+}
+
+/// Push every rendered row of one logical hunk line, tagging the first and
+/// last so callers can anchor a cursor and place trailing rows.
+fn push_source_rows(output: &mut Vec<HunkRow>, lines: Vec<Line<'static>>, source_line: usize) {
+    let last_index = lines.len().saturating_sub(1);
+    for (index, line) in lines.into_iter().enumerate() {
+        output.push(HunkRow {
+            line,
+            source_line: Some(source_line),
+            first_row: index == 0,
+            last_row: index == last_index,
+        });
+    }
+}
+
 /// Render a full hunk: breadcrumb / line-number box followed by the diff
 /// body (context lines + intraline-emphasised subhunks). Highlighting uses
 /// `highlight`, which callers should obtain from `Diff::highlight()`.
@@ -142,16 +189,39 @@ pub fn render_hunk(
     layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    render_hunk_rows(hunk, highlight, width, layout, theme)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+/// Render a full hunk as structured rows: the same output as
+/// [`render_hunk`], with each row tagged by the hunk line it came from.
+pub fn render_hunk_rows(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+) -> Vec<HunkRow> {
     let mut output = Vec::new();
     match HunkHeader::plan(hunk, width) {
         HunkHeader::LineNumber { line_num } => {
-            output.extend(render_line_number_box(line_num, theme));
+            output.extend(
+                render_line_number_box(line_num, theme)
+                    .into_iter()
+                    .map(HunkRow::header),
+            );
         }
         HunkHeader::Breadcrumb(b) => {
-            output.extend(render_breadcrumb_box(&b, highlight, theme));
+            output.extend(
+                render_breadcrumb_box(&b, highlight, theme)
+                    .into_iter()
+                    .map(HunkRow::header),
+            );
         }
     }
-    output.extend(render_hunk_body(hunk, highlight, width, layout, theme));
+    output.extend(render_hunk_body_rows(hunk, highlight, width, layout, theme));
     output
 }
 
@@ -166,23 +236,46 @@ pub fn render_hunk_body(
     layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    render_hunk_body_rows(hunk, highlight, width, layout, theme)
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
+}
+
+/// Render a hunk's diff body as structured rows: the same output as
+/// [`render_hunk_body`], with each row tagged by the hunk line it came
+/// from. Used by callers that supply their own header box and still need
+/// row-to-line identity.
+pub fn render_hunk_body_rows(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+) -> Vec<HunkRow> {
     let mut output = Vec::new();
     let mut highlighter = HunkHighlighter::new(highlight);
+    let mut source_line = 0usize;
 
     for run in hunk.runs() {
         match run {
             HunkRun::Context(line) => {
                 let ranges = highlighter.context(&line.content);
-                output.extend(syntax_diff_line(
-                    &line.content,
-                    Color::Reset,
-                    &ranges,
-                    width,
-                    theme,
-                ));
+                let rendered = syntax_diff_line(&line.content, Color::Reset, &ranges, width, theme);
+                push_source_rows(&mut output, rendered, source_line);
+                source_line += 1;
             }
             HunkRun::Change(slice) => {
-                render_subhunk(slice, &mut highlighter, width, layout, theme, &mut output);
+                render_subhunk(
+                    slice,
+                    source_line,
+                    &mut highlighter,
+                    width,
+                    layout,
+                    theme,
+                    &mut output,
+                );
+                source_line += slice.len();
             }
         }
     }
@@ -299,11 +392,12 @@ fn render_breadcrumb_box(
 /// lines; pairing the two pools drives intraline emphasis.
 fn render_subhunk(
     lines: &[crate::DiffLine],
+    first_source_line: usize,
     highlighter: &mut HunkHighlighter,
     width: usize,
     layout: ChangeLayout,
     theme: &Theme,
-    rendered: &mut Vec<Line<'static>>,
+    rendered: &mut Vec<HunkRow>,
 ) {
     let minus_contents: Vec<&str> = lines
         .iter()
@@ -323,52 +417,64 @@ fn render_subhunk(
     // its line no matter how the layout interleaves the two kinds.
     // `Hunk::runs::Change` only emits Added/Removed; Context lines arrive
     // separately as `HunkRun::Context`.
+    // Bind emphasis and the source-line index to each line in stored order,
+    // then reorder for the chosen layout. Carrying the source-line index
+    // through the reorder keeps each row tagged with its original hunk line
+    // no matter how the layout interleaves the two kinds.
     let plain = LineEmphasis::Plain;
     let mut mi = 0usize;
     let mut pi = 0usize;
-    let annotated: Vec<(&crate::DiffLine, &LineEmphasis)> = lines
+    let annotated: Vec<(&crate::DiffLine, &LineEmphasis, usize)> = lines
         .iter()
-        .map(|line| match line.kind {
-            LineKind::Removed => {
-                let emphasis = &minus_emphasis[mi];
-                mi += 1;
-                (line, emphasis)
+        .enumerate()
+        .map(|(offset, line)| {
+            let source_line = first_source_line + offset;
+            match line.kind {
+                LineKind::Removed => {
+                    let emphasis = &minus_emphasis[mi];
+                    mi += 1;
+                    (line, emphasis, source_line)
+                }
+                LineKind::Added => {
+                    let emphasis = &plus_emphasis[pi];
+                    pi += 1;
+                    (line, emphasis, source_line)
+                }
+                LineKind::Context => (line, &plain, source_line),
             }
-            LineKind::Added => {
-                let emphasis = &plus_emphasis[pi];
-                pi += 1;
-                (line, emphasis)
-            }
-            LineKind::Context => (line, &plain),
         })
         .collect();
 
     // Interleaving preserves each kind's relative order, so the two-sided
     // highlighter still receives removed lines (minus state) and added lines
     // (plus state) in order; only their alternation changes.
-    for (line, emphasis) in arrange_change(&annotated, |(l, _)| l.kind.clone(), layout) {
+    for &(line, emphasis, source_line) in
+        arrange_change(&annotated, |(l, _, _)| l.kind.clone(), layout)
+    {
         match line.kind {
             LineKind::Removed => {
                 let ranges = highlighter.removed(&line.content);
-                rendered.extend(render_emphasized_line(
+                let emitted = render_emphasized_line(
                     &line.content,
                     emphasis,
                     LineKind::Removed,
                     &ranges,
                     width,
                     theme,
-                ));
+                );
+                push_source_rows(rendered, emitted, source_line);
             }
             LineKind::Added => {
                 let ranges = highlighter.added(&line.content);
-                rendered.extend(render_emphasized_line(
+                let emitted = render_emphasized_line(
                     &line.content,
                     emphasis,
                     LineKind::Added,
                     &ranges,
                     width,
                     theme,
-                ));
+                );
+                push_source_rows(rendered, emitted, source_line);
             }
             LineKind::Context => {}
         }
@@ -1026,6 +1132,89 @@ mod tests {
             kind: LineKind::Context,
             content: content.to_string(),
         }
+    }
+
+    #[test]
+    fn hunk_rows_project_to_the_same_lines_as_render_hunk() {
+        let theme = Theme::default();
+        let hunk = rust_function_hunk();
+        let rows = render_hunk_rows(&hunk, None, 80, ChangeLayout::default(), &theme);
+        let lines = render_hunk(&hunk, None, 80, ChangeLayout::default(), &theme);
+        assert_eq!(rows.len(), lines.len());
+        for (row, line) in rows.iter().zip(lines.iter()) {
+            assert_eq!(line_text(&row.line), line_text(line));
+        }
+    }
+
+    #[test]
+    fn hunk_rows_mark_header_rows_as_line_less() {
+        let theme = Theme::default();
+        let rows = render_hunk_rows(&rust_function_hunk(), None, 80, ChangeLayout::default(), &theme);
+        // The breadcrumb box comes first; its rows belong to no hunk line.
+        assert!(rows[0].source_line.is_none());
+        assert!(rows.iter().take(3).all(|row| row.source_line.is_none()));
+    }
+
+    #[test]
+    fn hunk_rows_map_body_rows_to_their_hunk_lines() {
+        let theme = Theme::default();
+        let rows = render_hunk_rows(&rust_function_hunk(), None, 80, ChangeLayout::default(), &theme);
+        let body: Vec<&HunkRow> = rows.iter().filter(|r| r.source_line.is_some()).collect();
+        // One row per line, in order, each both first and last of its line.
+        assert_eq!(body.len(), 2);
+        assert_eq!(body[0].source_line, Some(0));
+        assert_eq!(body[1].source_line, Some(1));
+        assert!(body.iter().all(|row| row.first_row && row.last_row));
+        assert!(line_text(&body[0].line).contains("fn main()"));
+        assert!(line_text(&body[1].line).contains("println!"));
+    }
+
+    #[test]
+    fn hunk_rows_keep_wrapped_rows_on_one_source_line() {
+        let theme = Theme::default();
+        // A context line far wider than the pane wraps onto several rows;
+        // every row must still point at hunk line 0.
+        let hunk = context_hunk(&"x".repeat(50));
+        let rows = render_hunk_rows(&hunk, None, 10, ChangeLayout::default(), &theme);
+        let body: Vec<&HunkRow> = rows.iter().filter(|r| r.source_line.is_some()).collect();
+        assert!(body.len() > 1, "line should wrap onto several rows");
+        assert!(body.iter().all(|row| row.source_line == Some(0)));
+        assert!(body[0].first_row && !body[0].last_row);
+        assert!(body[body.len() - 1].last_row);
+        assert_eq!(
+            body.iter().filter(|row| row.first_row).count(),
+            1,
+            "exactly one row is the line's first"
+        );
+    }
+
+    #[test]
+    fn hunk_rows_track_identities_across_an_intraline_pair() {
+        let theme = Theme::default();
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                ctx_line("keep"),
+                DiffLine {
+                    kind: LineKind::Removed,
+                    content: "let x = 1;".to_string(),
+                },
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "let x = 2;".to_string(),
+                },
+                ctx_line("tail"),
+            ],
+            ancestors: Vec::new(),
+        };
+        let rows = render_hunk_rows(&hunk, None, 80, ChangeLayout::default(), &theme);
+        let sources: Vec<Option<usize>> = rows
+            .iter()
+            .filter(|row| row.source_line.is_some())
+            .map(|row| row.source_line)
+            .collect();
+        assert_eq!(sources, vec![Some(0), Some(1), Some(2), Some(3)]);
     }
 
     #[test]

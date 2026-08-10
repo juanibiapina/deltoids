@@ -12,7 +12,8 @@ use ratatui::{
 };
 
 use deltoids::render_tui::{
-    self, pane_block_with_footer, pane_border_color, render_pane_scrollbar, rgb_to_color,
+    pane_block_with_footer, pane_border_color, render_hunk_rows, render_pane_scrollbar,
+    rgb_to_color,
 };
 use deltoids::{ChangeLayout, Theme};
 
@@ -20,23 +21,28 @@ use crate::HistoryEntry;
 use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 use crate::cli::browse::text::wrap_text;
 
+use crate::cli::browse::comment_view::{highlight_row, with_comments};
+use crate::cli::browse::comments::{CommentAnchor, CommentScope, hunk_lines};
+use crate::cli::browse::diff_cursor::{DiffRow, LinePlace, restore_cursor};
+
 use super::model::LoadedTrace;
 use super::{AppState, Focus};
 
 /// Retained store of rendered entry diffs, keyed by
-/// `(trace_index, entry_index)`. Every retained entry shares one `width`;
-/// a width change clears the store (mirroring Files mode's `cached_width`
-/// rebuild). Retaining rendered entries makes revisiting an entry instant
-/// instead of re-highlighting it on every selection change.
+/// `(trace_index, entry_index)`. Every retained entry shares one `epoch`
+/// (render width plus change layout); a change to either clears the store
+/// (mirroring Files mode's `cached_width` rebuild). Retaining rendered
+/// entries makes revisiting an entry instant instead of re-highlighting it
+/// on every selection change.
 #[derive(Debug, Default, Clone)]
 pub(super) struct DiffCache {
     epoch: CacheEpoch,
-    lines: HashMap<(usize, usize), Vec<Line<'static>>>,
+    rows: HashMap<(usize, usize), Vec<DiffRow>>,
 }
 
 /// The identity every retained entry shares: its render `width` and the
 /// active change `layout`. A change to either invalidates the whole store,
-/// since both alter every entry's rendered lines.
+/// since both alter every entry's rendered rows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CacheEpoch {
     pub(super) width: usize,
@@ -44,51 +50,39 @@ pub(super) struct CacheEpoch {
 }
 
 impl DiffCache {
-    /// Rendered lines for `(trace, entry)` at `epoch`, or `None` on an
+    /// Rendered rows for `(trace, entry)` at `epoch`, or `None` on an
     /// epoch mismatch or a miss.
-    fn get(&self, epoch: CacheEpoch, key: (usize, usize)) -> Option<&Vec<Line<'static>>> {
+    pub(super) fn get(&self, epoch: CacheEpoch, key: (usize, usize)) -> Option<&Vec<DiffRow>> {
         if self.epoch != epoch {
             return None;
         }
-        self.lines.get(&key)
+        self.rows.get(&key)
     }
 
     /// Whether `(trace, entry)` is already rendered at `epoch`.
-    fn contains(&self, epoch: CacheEpoch, key: (usize, usize)) -> bool {
-        self.epoch == epoch && self.lines.contains_key(&key)
+    pub(super) fn contains(&self, epoch: CacheEpoch, key: (usize, usize)) -> bool {
+        self.epoch == epoch && self.rows.contains_key(&key)
     }
 
-    /// Store rendered `lines` for `(trace, entry)`. A width or layout
-    /// change clears the store first so every retained entry shares one
-    /// epoch.
-    pub(super) fn insert(
-        &mut self,
-        epoch: CacheEpoch,
-        key: (usize, usize),
-        lines: Vec<Line<'static>>,
-    ) {
+    /// Store rendered `rows` for `(trace, entry)`. A width or layout change
+    /// clears the store first so every retained entry shares one epoch.
+    pub(super) fn insert(&mut self, epoch: CacheEpoch, key: (usize, usize), rows: Vec<DiffRow>) {
         if self.epoch != epoch {
-            self.lines.clear();
+            self.rows.clear();
             self.epoch = epoch;
         }
-        self.lines.insert(key, lines);
+        self.rows.insert(key, rows);
     }
 
     /// Drop all retained entries (used on reload, when disk data changed).
     pub(super) fn clear(&mut self) {
-        self.lines.clear();
+        self.rows.clear();
     }
 
     /// Whether the store holds no retained entries.
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
-    /// Row count for `(trace, entry)` at the store's current width (0 on a
-    /// miss). Used for scroll math between draws.
-    pub(super) fn rows_for(&self, key: (usize, usize)) -> usize {
-        self.lines.get(&key).map(|lines| lines.len()).unwrap_or(0)
+        self.rows.is_empty()
     }
 }
 
@@ -96,18 +90,35 @@ pub(super) fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -
     detail_row_count.saturating_sub(detail_height.max(1))
 }
 
-fn ensure_diff_cache(
+/// Make sure `(trace, entry)` is rendered at `epoch`, splice this entry's
+/// comments over it, and put the cursor back on its diff line. Rebuilding
+/// the retained render happens only on a miss (a new entry, width, or
+/// layout) — never for a comment, which is drawn as an overlay.
+pub(super) fn ensure_diff_cache(
     active_trace: &LoadedTrace,
     state: &mut AppState,
     epoch: CacheEpoch,
     key: (usize, usize),
     theme: &Theme,
 ) {
-    if state.diff_cache.contains(epoch, key) {
-        return;
+    if !state.diff_cache.contains(epoch, key) {
+        let rows = build_diff_rows(active_trace, key.1, epoch.width, epoch.layout, theme);
+        state.diff_cache.insert(epoch, key, rows);
     }
-    let lines = render_detail_for(active_trace, key.1, epoch.width, epoch.layout, theme);
-    state.diff_cache.insert(epoch, key, lines);
+    let AppState {
+        diff_cache,
+        comments,
+        window,
+        cursor,
+        ..
+    } = state;
+    let Some(rows) = diff_cache.get(epoch, key) else {
+        return;
+    };
+    // A recorded entry cannot change under the reviewer, so its comments
+    // are never outdated.
+    *window = with_comments(rows, comments, epoch.width, theme, |_, _| false);
+    restore_cursor(window, cursor);
 }
 
 pub(super) fn render_diff_pane(
@@ -131,26 +142,44 @@ pub(super) fn render_diff_pane(
     }
 
     let diff_viewport = area.height.saturating_sub(2) as usize;
+    // Transient status (e.g. copy feedback) takes over the footer; the
+    // default footer shows the change layout and the help hint.
+    let footer = match state.status.clone() {
+        Some(status) => format!(" {status} "),
+        None => format!(" {}  \u{00b7}  ? help ", layout_label(layout)),
+    };
     let block = pane_block_with_footer(
         "─[3]─Diff─",
         pane_border_color(state.focus == Focus::Diff, theme),
-        Some(format!(" {}  \u{00b7}  ? help ", layout_label(layout))),
+        Some(footer),
     );
 
-    match state.diff_cache.get(epoch, key) {
-        Some(lines) => {
-            let detail_row_count = lines.len();
-            let start = state.diff_scroll.min(detail_row_count);
+    match (!state.window.is_empty()).then_some(&state.window) {
+        Some(rows) => {
+            let detail_row_count = rows.len();
+            let start = state.cursor.scroll.min(detail_row_count);
             let end = start
                 .saturating_add(diff_viewport.max(1))
                 .min(detail_row_count);
-            let visible_lines: Vec<Line<'static>> = lines[start..end].to_vec();
+            let cursor_bg = rgb_to_color(theme.selection_bg);
+            let show_cursor = state.focus == Focus::Diff;
+            let visible_lines: Vec<Line<'static>> = rows[start..end]
+                .iter()
+                .enumerate()
+                .map(|(offset, row)| {
+                    if show_cursor && start + offset == state.cursor.row && row.is_selectable() {
+                        highlight_row(row.line.clone(), detail_width, cursor_bg)
+                    } else {
+                        row.line.clone()
+                    }
+                })
+                .collect();
             frame.render_widget(Paragraph::new(visible_lines).block(block), area);
             render_pane_scrollbar(
                 frame,
                 area,
                 detail_row_count,
-                state.diff_scroll,
+                state.cursor.scroll,
                 diff_viewport,
                 state.focus == Focus::Diff,
                 theme,
@@ -195,7 +224,7 @@ fn render_detail_placeholder(
 /// TUI is running; stripping it yields the path the user typed. Falls
 /// back to collapsing `$HOME` to `~` when the path is not under `cwd`
 /// (e.g. an absolute path outside the tree).
-fn display_path(path: &str, cwd: &str) -> String {
+pub(super) fn display_path(path: &str, cwd: &str) -> String {
     // Only treat as relative on a real path boundary, so a sibling that
     // merely shares the prefix (`/a/project-2` vs `/a/project`) is not
     // mistaken for a child.
@@ -228,41 +257,101 @@ fn collapse_home(path: &str) -> String {
     path.to_string()
 }
 
-pub(super) fn render_detail_for(
+/// Build the diff pane's rows for one entry: the detail header, then each
+/// hunk, with every logical diff line anchored to a [`CommentAnchor`] and
+/// any saved comment drawn under the line's last wrapped row.
+pub(super) fn build_diff_rows(
     trace: &LoadedTrace,
     entry_index: usize,
     width: usize,
     layout: ChangeLayout,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> Vec<DiffRow> {
     let Some(entry) = trace.entries.get(entry_index) else {
         return Vec::new();
     };
 
-    let mut rendered = render_detail_header(entry, width, theme);
+    let mut rendered: Vec<DiffRow> = render_detail_header(entry, width, theme)
+        .into_iter()
+        .map(DiffRow::plain)
+        .collect();
 
     if !entry.ok {
         if let Some(err) = entry.error.as_deref() {
-            rendered.push(Line::from(""));
-            rendered.push(labeled_line("error", err, Color::Red));
+            rendered.push(DiffRow::plain(Line::from("")));
+            rendered.push(DiffRow::plain(labeled_line("error", err, Color::Red)));
         }
     } else if entry.hunks.is_empty() {
         // v1 entries have no hunks; show deprecation notice.
-        rendered.push(Line::from(""));
-        rendered.push(Line::from("(old format, cannot display)"));
+        rendered.push(DiffRow::plain(Line::from("")));
+        rendered.push(DiffRow::plain(Line::from("(old format, cannot display)")));
     } else {
-        // The hunk body carries its own leading blank separator, so the
-        // header/body gap comes from render_hunk_list.
-        rendered.extend(render_tui::render_hunk_list(
-            &entry.hunks,
-            entry.highlight.as_deref(),
-            width,
-            layout,
-            theme,
-        ));
+        for (hunk_index, hunk) in entry.hunks.iter().enumerate() {
+            // Blank separator before each hunk, matching render_hunk_list.
+            rendered.push(DiffRow::plain(Line::from("")));
+            push_hunk_rows(
+                &mut rendered,
+                hunk,
+                entry,
+                hunk_index,
+                &scope(trace, entry_index),
+                width,
+                layout,
+                theme,
+            );
+        }
     }
 
     rendered
+}
+
+/// The comment scope for one entry of `trace`.
+pub(super) fn scope(trace: &LoadedTrace, entry_index: usize) -> CommentScope {
+    CommentScope::TraceEntry {
+        trace_id: trace.trace.trace_id.clone(),
+        entry_index,
+    }
+}
+
+/// Render one hunk into `rows`, tagging each row with the diff line it
+/// renders. The entry path, hunk position, and line index give every diff
+/// line a stable identity for the cursor.
+#[allow(clippy::too_many_arguments)]
+fn push_hunk_rows(
+    rows: &mut Vec<DiffRow>,
+    hunk: &deltoids::Hunk,
+    entry: &HistoryEntry,
+    hunk_index: usize,
+    scope: &CommentScope,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+) {
+    let anchors: Vec<CommentAnchor> = hunk_lines(hunk)
+        .map(|line| CommentAnchor {
+            scope: scope.clone(),
+            path: entry.path.clone(),
+            side: line.side,
+            line: line.number,
+        })
+        .collect();
+
+    for row in render_hunk_rows(hunk, entry.highlight.as_deref(), width, layout, theme) {
+        let Some(index) = row.source_line else {
+            rows.push(DiffRow::plain(row.line));
+            continue;
+        };
+        rows.push(DiffRow::line_row(
+            row.line,
+            anchors[index].clone(),
+            row.first_row.then(|| LinePlace {
+                file: entry.path.clone(),
+                hunk: hunk_index,
+                index,
+            }),
+            row.last_row,
+        ));
+    }
 }
 
 fn render_detail_header(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -342,27 +431,41 @@ mod tests {
     fn diff_cache_retains_entries_across_selection_changes() {
         let mut cache = DiffCache::default();
         let e = grouped_epoch(80);
-        cache.insert(e, (0, 0), vec![Line::from("a")]);
-        cache.insert(e, (0, 1), vec![Line::from("b"), Line::from("b2")]);
+        cache.insert(e, (0, 0), vec![DiffRow::plain(Line::from("a"))]);
+        cache.insert(
+            e,
+            (0, 1),
+            vec![
+                DiffRow::plain(Line::from("b")),
+                DiffRow::plain(Line::from("b2")),
+            ],
+        );
 
         // Both entries stay retained: revisiting the first is a cache hit.
         assert!(cache.contains(e, (0, 0)));
         assert!(cache.contains(e, (0, 1)));
-        assert_eq!(cache.rows_for((0, 0)), 1);
-        assert_eq!(cache.rows_for((0, 1)), 2);
-        assert_eq!(cache.get(e, (0, 0)).map(|l| l.len()), Some(1));
+        assert_eq!(cache.get(e, (0, 0)).map(|rows| rows.len()), Some(1));
+        assert_eq!(cache.get(e, (0, 1)).map(|rows| rows.len()), Some(2));
     }
 
     #[test]
     fn diff_cache_width_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(grouped_epoch(80), (0, 0), vec![Line::from("a")]);
+        cache.insert(
+            grouped_epoch(80),
+            (0, 0),
+            vec![DiffRow::plain(Line::from("a"))],
+        );
         assert!(cache.contains(grouped_epoch(80), (0, 0)));
 
         // A different width drops the stale entry and rebuilds at the new width.
         assert!(!cache.contains(grouped_epoch(79), (0, 0)));
         assert!(cache.get(grouped_epoch(79), (0, 0)).is_none());
-        cache.insert(grouped_epoch(79), (0, 1), vec![Line::from("b")]);
+        cache.insert(
+            grouped_epoch(79),
+            (0, 1),
+            vec![DiffRow::plain(Line::from("b"))],
+        );
         assert!(!cache.contains(grouped_epoch(79), (0, 0)));
         assert!(cache.contains(grouped_epoch(79), (0, 1)));
     }
@@ -370,7 +473,11 @@ mod tests {
     #[test]
     fn diff_cache_layout_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(grouped_epoch(80), (0, 0), vec![Line::from("a")]);
+        cache.insert(
+            grouped_epoch(80),
+            (0, 0),
+            vec![DiffRow::plain(Line::from("a"))],
+        );
         assert!(cache.contains(grouped_epoch(80), (0, 0)));
 
         // Same width, different layout: the stale entry is dropped.
@@ -381,7 +488,7 @@ mod tests {
             },
         };
         assert!(!cache.contains(interleaved, (0, 0)));
-        cache.insert(interleaved, (0, 1), vec![Line::from("b")]);
+        cache.insert(interleaved, (0, 1), vec![DiffRow::plain(Line::from("b"))]);
         assert!(!cache.contains(interleaved, (0, 0)));
         assert!(cache.contains(interleaved, (0, 1)));
     }
@@ -415,7 +522,10 @@ mod tests {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
             entries: vec![entry.clone()],
         };
-        render_detail_for(&trace, 0, width, ChangeLayout::Grouped, theme)
+        build_diff_rows(&trace, 0, width, ChangeLayout::Grouped, theme)
+            .into_iter()
+            .map(|row| row.line)
+            .collect()
     }
 
     #[test]
@@ -456,8 +566,13 @@ mod tests {
 
         let lines = render_entry(&entry, 80, &theme);
         let header = render_detail_header(&entry, 80, &theme);
-        let body =
-            render_tui::render_hunk_list(&entry.hunks, None, 80, ChangeLayout::Grouped, &theme);
+        let body = deltoids::render_tui::render_hunk_list(
+            &entry.hunks,
+            None,
+            80,
+            ChangeLayout::Grouped,
+            &theme,
+        );
 
         // Header first, then exactly the shared hunk body (no edit box in
         // between).

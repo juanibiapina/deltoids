@@ -194,6 +194,64 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
 }
 
 #[test]
+fn comments_on_diff_lines_copy_out_as_a_review_prompt() {
+    let dir = tempdir().unwrap();
+    let data_home = tempdir().unwrap();
+    // Canonicalize so the recorded path and the process cwd agree (macOS
+    // temp dirs live behind a /var -> /private/var symlink), which is what
+    // lets the prompt show a working-directory-relative path.
+    let work_dir = fs::canonicalize(dir.path()).unwrap();
+    let file_path = work_dir.join("app.txt");
+    fs::write(&file_path, "line one\nline two\nconst x = 1;\nline four\n").unwrap();
+
+    let edit_request = serde_json::json!({
+        "reason": "Update x constant",
+        "path": file_path,
+        "oldText": "const x = 1;",
+        "newText": "const x = 2;"
+    });
+    let edit_output = run_command_in_dir(
+        "edit",
+        &[],
+        &[("XDG_DATA_HOME", data_home.path())],
+        edit_request.to_string().as_bytes(),
+        Some(&work_dir),
+    );
+    assert!(edit_output.status.success());
+
+    // Focus the diff pane (`3`), step down to the removed line (`jj`),
+    // comment on it, step to the added line, comment on it, then copy
+    // (`y`). Without a terminal the prompt is printed instead of copied.
+    let tui_output = run_command_in_dir(
+        "tui",
+        &[],
+        &[("XDG_DATA_HOME", data_home.path())],
+        b"3jjcwhy removed\njckeep this\ny",
+        Some(&work_dir),
+    );
+
+    assert!(tui_output.status.success());
+    let stdout = String::from_utf8(tui_output.stdout).unwrap();
+    assert!(stdout.contains("Address the following code review comments"));
+    assert!(stdout.contains(
+        "A line marked outdated is quoted as it read when the note was written; it has changed since, so locate the reviewer's intent rather than trusting the number."
+    ));
+    // Removed line: old-file numbering and a `-` marker.
+    assert!(
+        stdout.contains("app.txt:3\n- const x = 1;\nnote: why removed"),
+        "prompt was:\n{stdout}"
+    );
+    // Added line: new-file numbering and a `+` marker.
+    assert!(
+        stdout.contains("app.txt:3\n+ const x = 2;\nnote: keep this"),
+        "prompt was:\n{stdout}"
+    );
+    // The comments also render inline under their diff lines.
+    assert!(stdout.contains("why removed"));
+    assert!(stdout.contains("keep this"));
+}
+
+#[test]
 fn shows_only_traces_for_the_current_directory() {
     let first_dir = tempdir().unwrap();
     let second_dir = tempdir().unwrap();

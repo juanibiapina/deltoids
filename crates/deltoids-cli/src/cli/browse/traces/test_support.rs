@@ -65,6 +65,39 @@ pub(super) fn write_entry() -> HistoryEntry {
     }
 }
 
+/// An edit entry carrying a real hunk, so the diff pane renders
+/// selectable diff rows (the plain `edit_entry` is a v1 entry with no
+/// hunks and renders only the "old format" notice).
+pub(super) fn hunk_entry() -> HistoryEntry {
+    let mut entry = edit_entry();
+    entry.hunks = vec![deltoids::Hunk {
+        old_start: 10,
+        new_start: 10,
+        lines: vec![
+            diff_line(deltoids::LineKind::Context, "fn main() {"),
+            diff_line(deltoids::LineKind::Removed, "let x = 1;"),
+            diff_line(deltoids::LineKind::Added, "let x = 2;"),
+        ],
+        ancestors: Vec::new(),
+    }];
+    entry
+}
+
+fn diff_line(kind: deltoids::LineKind, content: &str) -> deltoids::DiffLine {
+    deltoids::DiffLine {
+        kind,
+        content: content.to_string(),
+    }
+}
+
+/// A single trace holding one [`hunk_entry`].
+pub(super) fn trace_with_hunks() -> LoadedTrace {
+    LoadedTrace {
+        trace: trace_summary("01JTESTTRACE00000000000000", 1, "Update x"),
+        entries: vec![hunk_entry()],
+    }
+}
+
 pub(super) fn trace_summary(trace_id: &str, entry_count: usize, last_reason: &str) -> TraceSummary {
     TraceSummary {
         trace_id: trace_id.to_string(),

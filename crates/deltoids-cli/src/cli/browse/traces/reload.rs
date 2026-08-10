@@ -42,7 +42,7 @@ pub(super) fn reload_traces(
         state.trace_index = 0;
         state.traces_list_state.select(Some(0));
         state.set_entry_index(0);
-        state.diff_scroll = 0;
+        state.reset_diff_view();
         state.diff_cache.clear();
         return Ok(());
     }
@@ -78,7 +78,7 @@ pub(super) fn reload_traces(
             .map(|t| t.trace.trace_id.as_str())
         || clamped != prev_entry_index;
     if selection_changed {
-        state.diff_scroll = 0;
+        state.reset_diff_view();
     }
 
     Ok(())
@@ -222,7 +222,7 @@ mod tests {
             // New trace arrived: switch to it.
             state.trace_index = 0;
             state.set_entry_index(0);
-            state.diff_scroll = 0;
+            state.cursor.scroll = 0;
             state.diff_cache.clear();
             return;
         }
@@ -250,7 +250,7 @@ mod tests {
                 .map(|t| t.trace.trace_id.as_str())
             || clamped != prev_entry_index;
         if selection_changed {
-            state.diff_scroll = 0;
+            state.cursor.scroll = 0;
         }
     }
 
@@ -262,7 +262,7 @@ mod tests {
         };
         let mut traces = vec![trace.clone()];
         let mut state = AppState::new(traces.len());
-        state.diff_scroll = 42;
+        state.cursor.scroll = 42;
 
         // Reload with same trace, same entries.
         let updated = LoadedTrace {
@@ -271,7 +271,7 @@ mod tests {
         };
         simulate_reload(&mut traces, &mut state, vec![updated]);
 
-        assert_eq!(state.diff_scroll, 42, "scroll should be preserved");
+        assert_eq!(state.cursor.scroll, 42, "scroll should be preserved");
     }
 
     #[test]
@@ -288,13 +288,16 @@ mod tests {
         let mut state = AppState::new(traces.len());
         state.trace_index = 1;
         state.set_entry_index(0);
-        state.diff_scroll = 15;
+        state.cursor.scroll = 15;
 
         // trace_b disappears.
         simulate_reload(&mut traces, &mut state, vec![trace_a]);
 
         assert_eq!(state.trace_index, 0);
-        assert_eq!(state.diff_scroll, 0, "scroll should reset when trace gone");
+        assert_eq!(
+            state.cursor.scroll, 0,
+            "scroll should reset when trace gone"
+        );
     }
 
     #[test]
@@ -307,7 +310,7 @@ mod tests {
         let mut state = AppState::new(traces.len());
         state.trace_index = 0;
         state.set_entry_index(0);
-        state.diff_scroll = 10;
+        state.cursor.scroll = 10;
 
         // New trace appears at head (newest).
         let trace_b = LoadedTrace {
@@ -323,7 +326,7 @@ mod tests {
             "01JTESTTRACE00000000000001"
         );
         assert_eq!(state.entry_index(), 0);
-        assert_eq!(state.diff_scroll, 0, "scroll should reset for new trace");
+        assert_eq!(state.cursor.scroll, 0, "scroll should reset for new trace");
     }
 
     #[test]
@@ -340,7 +343,7 @@ mod tests {
         let mut state = AppState::new(traces.len());
         state.trace_index = 1; // select trace_b
         state.set_entry_index(0);
-        state.diff_scroll = 15;
+        state.cursor.scroll = 15;
 
         // trace_b gains an entry but no new trace appears.
         let trace_b_updated = LoadedTrace {
@@ -355,7 +358,7 @@ mod tests {
             traces[state.trace_index].trace.trace_id,
             "01JTESTTRACE00000000000001"
         );
-        assert_eq!(state.diff_scroll, 15, "scroll should be preserved");
+        assert_eq!(state.cursor.scroll, 15, "scroll should be preserved");
     }
 
     #[test]
@@ -367,7 +370,7 @@ mod tests {
         let mut traces = vec![trace];
         let mut state = AppState::new(traces.len());
         state.set_entry_index(2);
-        state.diff_scroll = 20;
+        state.cursor.scroll = 20;
 
         // Entries shrink to 1, so entry_index 2 gets clamped to 0.
         let shrunk = LoadedTrace {
@@ -378,7 +381,7 @@ mod tests {
 
         assert_eq!(state.entry_index(), 0);
         assert_eq!(
-            state.diff_scroll, 0,
+            state.cursor.scroll, 0,
             "scroll should reset when entry clamped"
         );
     }

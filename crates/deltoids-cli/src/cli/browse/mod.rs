@@ -60,7 +60,11 @@ use crate::events::read_event_burst;
 use crate::sidebar_width::{self, Preference};
 use crate::terminal::TerminalSession;
 
+mod clipboard;
 mod command;
+mod comment_view;
+mod comments;
+mod diff_cursor;
 pub mod files;
 mod help;
 pub mod mode;
@@ -221,6 +225,13 @@ pub fn run(active_mode: usize) -> Result<(), String> {
                 } else {
                     let _ = suspend::run_background(&run.command);
                 }
+            }
+            // Clipboard writes also happen here: the OSC 52 fallback goes
+            // to the same stdout the terminal owns. The outcome goes back
+            // to the mode so a failed copy is reported honestly.
+            AppCommand::CopyToClipboard(text) => {
+                let result = clipboard::copy(&text);
+                modes[shell.active].report_copy(result);
             }
             AppCommand::Continue => {}
         }
@@ -490,6 +501,13 @@ impl Shell {
         left_viewport: usize,
         right_viewport: usize,
     ) -> AppCommand {
+        // A mode with an open text editor owns every key, so global
+        // bindings and custom-command keys are typed as literal text —
+        // `q` included — and `Esc` closes the editor. Checked first, since
+        // there is no way to type a `q` otherwise.
+        if modes[self.active].captures_text_input() {
+            return modes[self.active].handle_key(key, left_viewport, right_viewport);
+        }
         // `q` quits from anywhere, popup or not.
         if key == KeyCode::Char('q') {
             return AppCommand::Quit;

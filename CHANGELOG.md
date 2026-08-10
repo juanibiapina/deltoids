@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - diff: add support for SQL
 - TUI: press `\` to toggle how changed lines are laid out, between grouped (all removed, then all added) and interleaved (each removed line next to its replacement). The Diff pane footer shows the current mode.
+- traces TUI: Leave review comments on diff lines (`c` to write, `d` to delete), and copy them all with `y` as one prompt for a coding agent. Comments live in the running session only.
 
 ### Changed
 
 - serve: long lines now wrap on screen, so reviewing a diff on a phone needs no horizontal scrolling. Two buttons in the reviewer let you switch back to unwrapped lines and pick one of three font sizes; both choices are remembered.
+- traces TUI: `j` / `k` now step between diff lines in the diff pane; `Shift+J` / `Shift+K` and PgUp / PgDn still scroll.
 - agent tools: Remove the line-anchored read and edit commands and the corresponding pi edit mode.
 - TUI: Esc no longer quits; press q to quit from anywhere.
 

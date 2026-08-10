@@ -43,6 +43,10 @@ pub(crate) enum AppCommand {
     /// Run a custom command; handled by the `run()` loop since it may need
     /// the `Terminal`.
     Run(CustomRun),
+    /// Put this text on the system clipboard; handled by the `run()` loop
+    /// since it owns terminal output (the OSC 52 fallback writes there).
+    /// The outcome comes back through [`Mode::report_copy`].
+    CopyToClipboard(String),
 }
 
 /// How much work a mode may spend on this frame.
@@ -308,6 +312,20 @@ pub(crate) trait Mode {
         left_viewport: usize,
         right_viewport: usize,
     ) -> AppCommand;
+
+    /// Whether the mode currently owns raw text input (a modal editor is
+    /// open). While this is `true` the shell routes every key straight to
+    /// the mode, so global bindings (`q`, `?`, `[`, `]`, `<`, `>`, `Esc`)
+    /// and custom-command keys can be typed as text. Modes without a text
+    /// editor keep the default.
+    fn captures_text_input(&self) -> bool {
+        false
+    }
+
+    /// Report the outcome of an [`AppCommand::CopyToClipboard`] the shell
+    /// performed, so the mode can correct its status message when the copy
+    /// failed. Ignored by modes that never request a copy.
+    fn report_copy(&mut self, _result: Result<(), String>) {}
 
     /// Handle a mouse event already filtered of divider-drag handling.
     /// The mode hit-tests within the left column / right pane using the

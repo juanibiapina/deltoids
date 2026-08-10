@@ -1149,7 +1149,13 @@ mod tests {
     #[test]
     fn hunk_rows_mark_header_rows_as_line_less() {
         let theme = Theme::default();
-        let rows = render_hunk_rows(&rust_function_hunk(), None, 80, ChangeLayout::default(), &theme);
+        let rows = render_hunk_rows(
+            &rust_function_hunk(),
+            None,
+            80,
+            ChangeLayout::default(),
+            &theme,
+        );
         // The breadcrumb box comes first; its rows belong to no hunk line.
         assert!(rows[0].source_line.is_none());
         assert!(rows.iter().take(3).all(|row| row.source_line.is_none()));
@@ -1158,7 +1164,13 @@ mod tests {
     #[test]
     fn hunk_rows_map_body_rows_to_their_hunk_lines() {
         let theme = Theme::default();
-        let rows = render_hunk_rows(&rust_function_hunk(), None, 80, ChangeLayout::default(), &theme);
+        let rows = render_hunk_rows(
+            &rust_function_hunk(),
+            None,
+            80,
+            ChangeLayout::default(),
+            &theme,
+        );
         let body: Vec<&HunkRow> = rows.iter().filter(|r| r.source_line.is_some()).collect();
         // One row per line, in order, each both first and last of its line.
         assert_eq!(body.len(), 2);

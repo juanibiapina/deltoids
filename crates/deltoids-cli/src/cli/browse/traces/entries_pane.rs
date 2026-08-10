@@ -25,7 +25,7 @@ pub(super) fn move_entry_down(state: &mut AppState, traces: &[LoadedTrace]) {
     let current = state.entry_index();
     if current + 1 < entry_count {
         state.set_entry_index(current + 1);
-        state.diff_scroll = 0;
+        state.reset_diff_view();
     }
 }
 
@@ -33,7 +33,7 @@ pub(super) fn move_entry_up(state: &mut AppState) {
     let current = state.entry_index();
     if current > 0 {
         state.set_entry_index(current - 1);
-        state.diff_scroll = 0;
+        state.reset_diff_view();
     }
 }
 

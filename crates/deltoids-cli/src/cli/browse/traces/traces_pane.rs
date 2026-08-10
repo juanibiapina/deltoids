@@ -21,7 +21,7 @@ pub(super) fn move_trace_down(state: &mut AppState, traces: &[LoadedTrace]) {
     if state.trace_index + 1 < traces.len() {
         state.trace_index += 1;
         state.traces_list_state.select(Some(state.trace_index));
-        state.diff_scroll = 0;
+        state.reset_diff_view();
     }
 }
 
@@ -29,7 +29,7 @@ pub(super) fn move_trace_up(state: &mut AppState) {
     if state.trace_index > 0 {
         state.trace_index -= 1;
         state.traces_list_state.select(Some(state.trace_index));
-        state.diff_scroll = 0;
+        state.reset_diff_view();
     }
 }
 

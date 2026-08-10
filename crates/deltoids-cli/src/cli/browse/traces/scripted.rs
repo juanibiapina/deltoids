@@ -4,16 +4,36 @@
 
 use std::io::{self, Read};
 
+use crossterm::event::KeyCode;
+
 use deltoids::Theme;
 use deltoids::render_tui::position_footer;
 
+use crate::cli::browse::mode::AppCommand;
+
 use crate::sidebar_width;
 
-use super::detail::{fit_line, render_detail_for};
+use super::detail::{CacheEpoch, build_diff_rows, ensure_diff_cache, fit_line};
 use super::entries_pane::entry_label_plain;
 use super::model::LoadedTrace;
 use super::traces_pane::trace_label;
-use super::{AppState, DIFF_SCROLL_STEP, Focus, move_down, move_up};
+use crate::cli::browse::comment_view::with_comments;
+use crate::cli::browse::diff_cursor::Step;
+
+use super::{
+    AppState, DIFF_SCROLL_STEP, Focus, InputState, copy_comments, delete_comment,
+    handle_comment_key, move_diff_cursor, move_down, move_up, open_comment,
+};
+
+const SCRIPTED_WIDTH: usize = 120;
+const SCRIPTED_HEIGHT: usize = 30;
+
+/// Diff-pane width the scripted renderer uses, matching the geometry in
+/// [`render_scripted`] so cursor targets line up with what is printed.
+fn scripted_right_width() -> usize {
+    let left_width = sidebar_width::default_width(SCRIPTED_WIDTH as u16) as usize;
+    SCRIPTED_WIDTH.saturating_sub(left_width + 3)
+}
 
 pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), String> {
     let mut state = AppState::new(traces.len());
@@ -22,20 +42,64 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
         .read_to_string(&mut input)
         .map_err(|err| format!("Failed to read stdin: {err}"))?;
 
+    let right_width = scripted_right_width();
+    // Keys that act on diff rows need the rows to exist first; the
+    // interactive path gets that from the previous draw.
+    let ensure_rows = |state: &mut AppState| {
+        if let Some(active) = traces.get(state.trace_index) {
+            let key = state.diff_key();
+            let epoch = CacheEpoch {
+                width: right_width,
+                layout: deltoids::ChangeLayout::Grouped,
+            };
+            ensure_diff_cache(active, state, epoch, key, theme);
+        }
+    };
+
+    // Text typed into the comment editor is echoed nowhere; the printed
+    // snapshot and any copied prompt are the observable result.
+    let mut copied: Option<String> = None;
+
     for ch in input.chars() {
+        if matches!(state.input, InputState::Commenting { .. }) {
+            let key = match ch {
+                '\n' | '\r' => KeyCode::Enter,
+                '\u{1b}' => KeyCode::Esc,
+                '\u{8}' | '\u{7f}' => KeyCode::Backspace,
+                other => KeyCode::Char(other),
+            };
+            handle_comment_key(&mut state, key);
+            continue;
+        }
+
         match ch {
             'j' => {
                 if state.focus == Focus::Diff {
-                    state.diff_scroll += DIFF_SCROLL_STEP;
+                    ensure_rows(&mut state);
+                    move_diff_cursor(&mut state, Step::Down, SCRIPTED_HEIGHT);
                 } else {
                     move_down(&mut state, traces);
                 }
             }
             'k' => {
                 if state.focus == Focus::Diff {
-                    state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP);
+                    ensure_rows(&mut state);
+                    move_diff_cursor(&mut state, Step::Up, SCRIPTED_HEIGHT);
                 } else {
                     move_up(&mut state, traces);
+                }
+            }
+            'c' => {
+                ensure_rows(&mut state);
+                open_comment(&mut state, traces);
+            }
+            'd' => {
+                ensure_rows(&mut state);
+                delete_comment(&mut state);
+            }
+            'y' => {
+                if let AppCommand::CopyToClipboard(prompt) = copy_comments(&mut state, traces) {
+                    copied = Some(prompt);
                 }
             }
             '\t' => {
@@ -45,8 +109,8 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
                     Focus::Diff => Focus::Entries,
                 };
             }
-            'J' => state.diff_scroll += DIFF_SCROLL_STEP,
-            'K' => state.diff_scroll = state.diff_scroll.saturating_sub(DIFF_SCROLL_STEP),
+            'J' => state.cursor.scroll += DIFF_SCROLL_STEP,
+            'K' => state.cursor.scroll = state.cursor.scroll.saturating_sub(DIFF_SCROLL_STEP),
             '1' => state.focus = Focus::Entries,
             '2' => state.focus = Focus::Traces,
             '3' => state.focus = Focus::Diff,
@@ -55,7 +119,15 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
         }
     }
 
-    print!("{}", render_scripted(traces, &state, 120, 30, theme));
+    // Without a terminal there is no clipboard to write to, so the prompt
+    // goes to stdout: the scripted path's observable copy result.
+    if let Some(prompt) = copied {
+        print!("{prompt}");
+    }
+    print!(
+        "{}",
+        render_scripted(traces, &state, SCRIPTED_WIDTH, SCRIPTED_HEIGHT, theme)
+    );
     Ok(())
 }
 
@@ -134,19 +206,20 @@ fn render_scripted(
     let sidebar_rows = [entries_rows, traces_rows].concat();
 
     // Right: diff for selected entry, spans full body height
-    let detail = render_detail_for(
+    let rows = build_diff_rows(
         active_trace,
         state.entry_index(),
         right_width,
         deltoids::ChangeLayout::Grouped,
         theme,
-    )
-    .into_iter()
-    .map(|line| line.to_string())
-    .collect::<Vec<_>>();
+    );
+    let detail = with_comments(&rows, &state.comments, right_width, theme, |_, _| false)
+        .into_iter()
+        .map(|row| row.line.to_string())
+        .collect::<Vec<_>>();
     let diff_rows = detail
         .iter()
-        .skip(state.diff_scroll)
+        .skip(state.cursor.scroll)
         .take(body_height)
         .map(|line| fit_line(line, right_width))
         .collect::<Vec<_>>();

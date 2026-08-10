@@ -25,6 +25,8 @@ struct Recorder {
 struct RecordingMode {
     rec: Rc<RefCell<Recorder>>,
     selected: Option<PathBuf>,
+    /// Stands in for a mode with an open text editor.
+    capturing: bool,
 }
 
 impl RecordingMode {
@@ -34,6 +36,7 @@ impl RecordingMode {
             Self {
                 rec: rec.clone(),
                 selected: None,
+                capturing: false,
             },
             rec,
         )
@@ -56,6 +59,10 @@ impl Mode for RecordingMode {
     fn handle_key(&mut self, key: KeyCode, _lv: usize, _rv: usize) -> AppCommand {
         self.rec.borrow_mut().keys.push(key);
         AppCommand::Continue
+    }
+
+    fn captures_text_input(&self) -> bool {
+        self.capturing
     }
 
     fn handle_mouse(&mut self, _mouse: MouseEvent, _lv: usize, _rv: usize) -> AppCommand {
@@ -482,6 +489,7 @@ fn custom_key_with_selected_path_returns_run() {
     modes[FILES_MODE] = Box::new(RecordingMode {
         rec: files_rec.clone(),
         selected: Some(PathBuf::from("/tmp/a.txt")),
+        capturing: false,
     });
     let _ = files;
     let mut s = shell();
@@ -506,6 +514,7 @@ fn custom_key_preserves_subprocess_flag() {
     modes[FILES_MODE] = Box::new(RecordingMode {
         rec: files_rec,
         selected: Some(PathBuf::from("/tmp/a.txt")),
+        capturing: false,
     });
     let mut s = shell();
     s.commands = vec![custom_command('E', "nvim {{filename}}", true)];
@@ -549,6 +558,7 @@ fn global_builtins_beat_colliding_custom_binding() {
     modes[FILES_MODE] = Box::new(RecordingMode {
         rec: files_rec,
         selected: Some(PathBuf::from("/tmp/a.txt")),
+        capturing: false,
     });
     let mut s = shell();
     // Bind the same keys as the `q` quit and `[` cycle globals.
@@ -585,4 +595,38 @@ fn apply_events_quit_short_circuits() {
     );
     // Only the first j reached the mode.
     assert_eq!(files_rec.borrow().keys, vec![KeyCode::Char('j')]);
+}
+
+#[test]
+fn capturing_mode_receives_every_key_including_globals() {
+    let (mut modes, files_rec, _) = two_modes();
+    modes[FILES_MODE] = Box::new(RecordingMode {
+        rec: files_rec.clone(),
+        selected: Some(PathBuf::from("/tmp/a.txt")),
+        capturing: true,
+    });
+    let mut s = shell();
+    // A custom binding that would otherwise shadow the mode's own keys.
+    s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
+
+    for code in [
+        KeyCode::Char('q'),
+        KeyCode::Char('?'),
+        KeyCode::Char('['),
+        KeyCode::Char(']'),
+        KeyCode::Char('<'),
+        KeyCode::Char('>'),
+        KeyCode::Char('e'),
+        KeyCode::Esc,
+    ] {
+        assert_eq!(
+            s.handle_key(&mut modes, code, 4, 4),
+            AppCommand::Continue,
+            "{code:?} must not act as a global while a mode captures input"
+        );
+    }
+
+    assert_eq!(files_rec.borrow().keys.len(), 8);
+    assert_eq!(s.active, FILES_MODE, "mode cycling stayed put");
+    assert!(!s.help_visible, "the help popup never opened");
 }

@@ -65,6 +65,7 @@ pub mod files;
 mod help;
 pub mod mode;
 mod suspend;
+mod text;
 pub mod traces;
 mod watch;
 

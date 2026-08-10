@@ -32,6 +32,13 @@
 //! - [`diff_pane`]: the diff pane's state, scroll math, keys, render.
 //! - [`sidebar_pane`]: the sidebar's build, keys, render, footer.
 //! - [`reload`]: the working-tree watcher and in-place rebuild.
+//!
+//! Review comments live in the shell-level [`super::comments`] (the pure
+//! store/prompt core), [`super::comment_view`] (how they look), and
+//! [`super::diff_cursor`] (rows and cursor), all shared with Traces mode.
+//! With the diff pane focused, `j`/`k` move a cursor between diff lines,
+//! `c` comments on the selected line, `d` deletes that comment, and `y`
+//! copies every working-tree comment as one agent-ready prompt.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -40,11 +47,15 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use deltoids::{ChangeLayout, Theme, git};
+use deltoids::{ChangeLayout, LineKind, Theme, git};
 
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
-use crate::sidebar::Sidebar;
+use crate::sidebar::{Sidebar, display_path};
 
+use super::comment_view::render_comment_editor;
+use super::comments::{
+    CommentAnchor, CommentScope, CommentStore, PromptSection, build_prompt, hunk_lines, reanchor,
+};
 use super::mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TabStrip};
 
 mod diff_pane;
@@ -55,7 +66,7 @@ mod sidebar_pane;
 mod test_support;
 
 use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
-use model::{DiffSource, Model, build_model};
+use model::{DiffSource, FileBody, Model, build_model};
 use reload::{ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
 use sidebar_pane::build_sidebar;
 
@@ -63,6 +74,21 @@ use sidebar_pane::build_sidebar;
 pub(super) enum Focus {
     Sidebar,
     Diff,
+}
+
+/// Whether the diff pane is being browsed or a comment is being typed.
+#[derive(Debug, Clone)]
+enum InputState {
+    Normal,
+    /// The comment editor is open on `anchor`, holding the text so far
+    /// plus the line it annotates. The snapshot is taken when the editor
+    /// opens, so saving still works when the working tree changes
+    /// underneath while the reviewer types.
+    Commenting {
+        anchor: CommentAnchor,
+        line: (String, LineKind),
+        buffer: String,
+    },
 }
 
 /// How long a repo-backed startup may stay in the "Loading…" state before
@@ -102,6 +128,12 @@ pub(super) struct FilesMode {
     diff_rect: Rect,
     /// Translates fanned-out mouse-wheel events into proportional motion.
     wheel: WheelScroll<Focus>,
+    /// Session-only review comments on the working-tree diff. Survives
+    /// reloads: anchors are line-based, not index-based.
+    comments: CommentStore,
+    input: InputState,
+    /// Transient diff-pane footer message (copy feedback).
+    status: Option<String>,
     /// The owned data: resolved files plus their diffs.
     model: Model,
     /// The repo (for blob resolution and working-tree reload), if any.
@@ -226,6 +258,9 @@ impl FilesMode {
             sidebar_rect: Rect::default(),
             diff_rect: Rect::default(),
             wheel: WheelScroll::new(),
+            comments: CommentStore::default(),
+            input: InputState::Normal,
+            status: None,
             model,
             repo,
             is_static,
@@ -267,7 +302,13 @@ impl FilesMode {
             ChangeLayout::Grouped,
             &Theme::default(),
             budget,
-        )
+            &self.comments,
+        );
+        self.diff
+            .rows()
+            .iter()
+            .map(|row| row.line.clone())
+            .collect()
     }
 
     /// Sync the diff pane's scroll to the top of the selected file's
@@ -302,7 +343,10 @@ impl FilesMode {
                 // treated as genuine: degrade to the static error screen
                 // (repo dropped, no reload). A fresh failure keeps Loading.
                 if self.startup_pending && self.loading_window_elapsed() {
+                    // The user's notes outlive the view they were made on.
+                    let comments = std::mem::take(&mut self.comments);
                     *self = Self::error(theme, width, msg);
+                    self.comments = comments;
                 }
                 false
             }
@@ -338,7 +382,23 @@ fn handle_key(
     diff_viewport: usize,
     sidebar_viewport: usize,
 ) -> AppCommand {
+    if matches!(state.input, InputState::Commenting { .. }) {
+        return handle_comment_key(state, key);
+    }
+
+    // Any other key clears the transient copy status.
+    state.status = None;
+
     match key {
+        KeyCode::Char('c') => {
+            open_comment(state);
+            AppCommand::Continue
+        }
+        KeyCode::Char('d') => {
+            delete_comment(state);
+            AppCommand::Continue
+        }
+        KeyCode::Char('y') => copy_comments(state),
         KeyCode::Tab | KeyCode::BackTab => {
             state.focus = match state.focus {
                 Focus::Sidebar => Focus::Diff,
@@ -385,6 +445,146 @@ fn handle_key(
     }
 }
 
+/// Handle a key while the comment editor is open. The shell routes every
+/// key here (see [`Mode::captures_text_input`]), so characters that are
+/// normally global bindings are typed as text.
+fn handle_comment_key(state: &mut FilesMode, key: KeyCode) -> AppCommand {
+    match key {
+        KeyCode::Esc => {
+            state.input = InputState::Normal;
+        }
+        KeyCode::Enter => {
+            if let InputState::Commenting {
+                anchor,
+                line: (code, kind),
+                buffer,
+            } = std::mem::replace(&mut state.input, InputState::Normal)
+            {
+                state.comments.set(anchor, buffer, code, kind);
+            }
+        }
+        KeyCode::Backspace => {
+            if let InputState::Commenting { buffer, .. } = &mut state.input {
+                buffer.pop();
+            }
+        }
+        KeyCode::Char(ch) => {
+            if let InputState::Commenting { buffer, .. } = &mut state.input {
+                buffer.push(ch);
+            }
+        }
+        _ => {}
+    }
+    AppCommand::Continue
+}
+
+/// Open the comment editor for the diff line under the cursor, seeded
+/// with any note already saved there. A no-op unless the diff pane is
+/// focused with the cursor on a diff line.
+fn open_comment(state: &mut FilesMode) {
+    if state.focus != Focus::Diff {
+        return;
+    }
+    let Some(anchor) = state.diff.cursor_anchor().cloned() else {
+        return;
+    };
+    let Some(line) = anchored_line(&state.model, &anchor) else {
+        return;
+    };
+    let buffer = state.comments.note(&anchor).unwrap_or_default().to_string();
+    state.input = InputState::Commenting {
+        anchor,
+        line,
+        buffer,
+    };
+}
+
+/// Delete the comment on the diff line under the cursor, if any.
+fn delete_comment(state: &mut FilesMode) {
+    if state.focus != Focus::Diff {
+        return;
+    }
+    let Some(anchor) = state.diff.cursor_anchor().cloned() else {
+        return;
+    };
+    state.comments.remove(&anchor);
+}
+
+/// Store `note` against `anchor`, snapshotting the line it annotates.
+/// An empty note deletes the comment. A no-op when the line is no longer
+/// in the diff.
+#[cfg(test)]
+fn save_comment(state: &mut FilesMode, anchor: CommentAnchor, note: String) {
+    let Some((code, kind)) = anchored_line(&state.model, &anchor) else {
+        return;
+    };
+    state.comments.set(anchor, note, code, kind);
+}
+
+/// The index of `path` in the model's files.
+fn file_index(model: &Model, path: &str) -> Option<usize> {
+    model
+        .files
+        .iter()
+        .position(|resolved| display_path(&resolved.file) == path)
+}
+
+/// The text and kind of the diff line `anchor` points at, or `None` when
+/// the file or the line is no longer in the diff.
+fn anchored_line(model: &Model, anchor: &CommentAnchor) -> Option<(String, LineKind)> {
+    let index = file_index(model, &anchor.path)?;
+    let FileBody::Diff(diff) = model.bodies.get(index)? else {
+        return None;
+    };
+    diff.hunks().iter().find_map(|hunk| {
+        hunk_lines(hunk)
+            .find(|line| line.side == anchor.side && line.number == anchor.line)
+            .map(|line| (line.content.to_string(), line.kind.clone()))
+    })
+}
+
+/// Build the review prompt for every working-tree comment and ask the
+/// shell to copy it, recording what happened in the diff pane footer.
+fn copy_comments(state: &mut FilesMode) -> AppCommand {
+    match working_tree_prompt(state) {
+        Some((prompt, count)) => {
+            let noun = if count == 1 { "comment" } else { "comments" };
+            state.status = Some(format!("Copied {count} {noun}"));
+            AppCommand::CopyToClipboard(prompt)
+        }
+        None => {
+            state.status = Some("No comments to copy".to_string());
+            AppCommand::Continue
+        }
+    }
+}
+
+/// Every comment on the working tree, as one prompt ordered by the
+/// sidebar's file order and then by position in each file's diff.
+fn working_tree_prompt(state: &FilesMode) -> Option<(String, usize)> {
+    let sections = prompt_sections(&state.model, &state.diff.display_order);
+    build_prompt("", &state.comments, &sections)
+}
+
+/// The working tree's text diffs in sidebar order: what the comment core
+/// needs to order, re-anchor, and copy notes.
+fn prompt_sections<'a>(model: &'a Model, display_order: &[usize]) -> Vec<PromptSection<'a>> {
+    display_order
+        .iter()
+        .filter_map(|&index| {
+            let resolved = model.files.get(index)?;
+            let FileBody::Diff(diff) = model.bodies.get(index)? else {
+                return None;
+            };
+            Some(PromptSection {
+                scope: CommentScope::WorkingTree,
+                path: display_path(&resolved.file).to_string(),
+                hunks: diff.hunks(),
+            })
+        })
+        .collect()
+}
+
 fn pane_at(state: &FilesMode, col: u16, row: u16) -> Option<Focus> {
     let pos = Position::new(col, row);
     if state.sidebar_rect.contains(pos) {
@@ -402,6 +602,10 @@ fn handle_mouse(
     diff_viewport: usize,
     sidebar_viewport: usize,
 ) -> AppCommand {
+    // The comment editor owns input while it is open.
+    if matches!(state.input, InputState::Commenting { .. }) {
+        return AppCommand::Continue;
+    }
     // Ctrl + wheel redirects the scroll to the sidebar list regardless
     // of hover position, so the diff can be scrolled by hovering it while
     // Ctrl steps through files. (Shift+wheel is swallowed by common
@@ -463,13 +667,25 @@ fn handle_mouse(
         },
         MouseEventKind::Down(MouseButton::Left) => {
             state.focus = target;
-            if target == Focus::Sidebar {
-                let rect = state.sidebar_rect;
-                let content_y = mouse.row.saturating_sub(rect.y).saturating_sub(1) as usize;
-                let clicked = state.sidebar.scroll() + content_y;
-                if clicked < state.sidebar.row_count() {
-                    state.sidebar.set_selected(clicked, sidebar_viewport);
-                    state.snap_diff_to_selected_file();
+            match target {
+                Focus::Sidebar => {
+                    let rect = state.sidebar_rect;
+                    let content_y = mouse.row.saturating_sub(rect.y).saturating_sub(1) as usize;
+                    let clicked = state.sidebar.scroll() + content_y;
+                    if clicked < state.sidebar.row_count() {
+                        state.sidebar.set_selected(clicked, sidebar_viewport);
+                        state.snap_diff_to_selected_file();
+                    }
+                }
+                // Clicking a diff line moves the cursor there; clicks on
+                // headers, spacers, wrapped continuations, and comment
+                // rows only focus the pane.
+                Focus::Diff => {
+                    let content_y = mouse
+                        .row
+                        .saturating_sub(state.diff_rect.y)
+                        .saturating_sub(1) as usize;
+                    state.diff.select_row(state.diff.cursor.scroll + content_y);
                 }
             }
             AppCommand::Continue
@@ -507,11 +723,27 @@ impl Mode for FilesMode {
             tabs.title_line(border, theme),
             theme,
         );
-        let window = self
-            .diff
-            .assemble_window(dr, &self.model, diff_width, layout, theme, budget);
-        self.diff
-            .render(frame, right, self.focus == Focus::Diff, theme, window);
+        self.diff.assemble_window(
+            dr,
+            &self.model,
+            diff_width,
+            layout,
+            theme,
+            budget,
+            &self.comments,
+        );
+        self.diff.render(
+            frame,
+            right,
+            self.focus == Focus::Diff,
+            theme,
+            self.status.as_deref(),
+        );
+
+        if let InputState::Commenting { anchor, buffer, .. } = &self.input {
+            let label = format!("{}:{}", anchor.path, anchor.line);
+            render_comment_editor(frame, right, &label, buffer, theme);
+        }
     }
 
     fn handle_key(
@@ -521,6 +753,16 @@ impl Mode for FilesMode {
         right_viewport: usize,
     ) -> AppCommand {
         handle_key(self, key, right_viewport, left_viewport)
+    }
+
+    fn captures_text_input(&self) -> bool {
+        matches!(self.input, InputState::Commenting { .. })
+    }
+
+    fn report_copy(&mut self, result: Result<(), String>) {
+        if let Err(err) = result {
+            self.status = Some(format!("Copy failed: {err}"));
+        }
     }
 
     fn handle_mouse(
@@ -572,6 +814,12 @@ impl Mode for FilesMode {
             width,
             viewport.right_viewport,
         );
+        // A rebuilt diff may have shifted the lines comments point at:
+        // follow them onto their new numbers before anything renders.
+        if outcome == ReloadOutcome::Rebuilt {
+            let sections = prompt_sections(&self.model, &self.diff.display_order);
+            reanchor(&mut self.comments, &sections);
+        }
         // The reload tick is non-fatal: never return `Err`. Fold the
         // outcome into the startup Loading state machine and report only
         // whether the visible content changed.
@@ -593,8 +841,522 @@ impl Mode for FilesMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::browse::comments::LineSide;
+    use crate::cli::browse::files::diff_pane::CacheEpoch;
     use crate::cli::browse::files::test_support::*;
     use model::ResolvedFile;
+
+    fn grouped_epoch(width: usize) -> CacheEpoch {
+        CacheEpoch {
+            width,
+            layout: ChangeLayout::Grouped,
+        }
+    }
+
+    /// A file whose diff has context, a removed line, and an added line at
+    /// known numbers: `line one`, `line two`, `const x = 1;` → `2;`.
+    fn edited(path: &str) -> ResolvedFile {
+        ResolvedFile {
+            file: file_diff(path),
+            before: "line one\nline two\nconst x = 1;\nline four\n".to_string(),
+            after: "line one\nline two\nconst x = 2;\nline four\n".to_string(),
+        }
+    }
+
+    /// A Files mode focused on the diff pane with its window assembled,
+    /// as the first draw would leave it.
+    fn diff_state(files: &[ResolvedFile]) -> FilesMode {
+        let mut state = make_state_with_rects(files);
+        state.focus = Focus::Diff;
+        rebuild_window(&mut state);
+        state
+    }
+
+    /// Re-assemble the diff window, as a draw does.
+    fn rebuild_window(state: &mut FilesMode) {
+        let range = state.sidebar.selection_display_range();
+        let width = state.diff.cached_width;
+        state.diff.assemble_window(
+            range,
+            &state.model,
+            width,
+            ChangeLayout::Grouped,
+            &Theme::default(),
+            DrawBudget::Full,
+            &state.comments,
+        );
+    }
+
+    /// Save `text` at `anchor` through the same path the editor uses,
+    /// then re-assemble as the following draw would.
+    fn note(state: &mut FilesMode, anchor: &CommentAnchor, text: &str) {
+        save_comment(state, anchor.clone(), text.to_string());
+        rebuild_window(state);
+    }
+
+    fn cursor_line(state: &FilesMode) -> Option<(String, LineSide, usize)> {
+        state
+            .diff
+            .cursor_anchor()
+            .map(|anchor| (anchor.path.clone(), anchor.side, anchor.line))
+    }
+
+    fn window_text(state: &FilesMode) -> Vec<String> {
+        state
+            .diff
+            .rows()
+            .iter()
+            .map(|row| line_text(&row.line))
+            .collect()
+    }
+
+    /// Type `text` into an open comment editor.
+    fn type_text(state: &mut FilesMode, text: &str) {
+        for ch in text.chars() {
+            handle_key(state, KeyCode::Char(ch), 18, 18);
+        }
+    }
+
+    #[test]
+    fn diff_rows_anchor_each_line_to_its_file_and_number() {
+        let state = diff_state(&[edited("src/app.rs")]);
+        let anchors: Vec<(String, LineSide, usize)> = state
+            .diff
+            .rows()
+            .iter()
+            .filter_map(|row| row.anchor.as_ref())
+            .map(|a| (a.path.clone(), a.side, a.line))
+            .collect();
+
+        // Context lines 1-2 (new-file numbering), the removed line at old
+        // line 3, and the added line that replaces it at new line 3.
+        assert_eq!(
+            anchors,
+            vec![
+                ("src/app.rs".to_string(), LineSide::New, 1),
+                ("src/app.rs".to_string(), LineSide::New, 2),
+                ("src/app.rs".to_string(), LineSide::Old, 3),
+                ("src/app.rs".to_string(), LineSide::New, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_cursor_walks_diff_lines_across_the_files_in_the_window() {
+        // Selecting the `src/` directory row puts both files in one window.
+        let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
+        state.sidebar.set_selected(0, 18);
+        rebuild_window(&mut state);
+
+        let mut visited = Vec::new();
+        for _ in 0..12 {
+            if let Some(line) = cursor_line(&state) {
+                visited.push(line);
+            }
+            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        }
+
+        assert!(
+            visited.iter().any(|(path, _, _)| path == "src/a.txt"),
+            "the cursor starts in the first file: {visited:?}"
+        );
+        assert!(
+            visited.iter().any(|(path, _, _)| path == "src/b.txt"),
+            "and walks on into the second: {visited:?}"
+        );
+    }
+
+    #[test]
+    fn c_opens_the_editor_and_enter_saves_the_comment() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+
+        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        assert!(matches!(state.input, InputState::Commenting { .. }));
+        type_text(&mut state, "needs review");
+        handle_key(&mut state, KeyCode::Enter, 18, 18);
+
+        assert!(matches!(state.input, InputState::Normal));
+        assert_eq!(state.comments.note(&anchor), Some("needs review"));
+        // The line it annotates is snapshotted with it.
+        assert_eq!(
+            state.comments.get(&anchor).map(|c| c.code.as_str()),
+            Some("line one")
+        );
+    }
+
+    #[test]
+    fn c_does_nothing_off_a_diff_line() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        state.focus = Focus::Sidebar;
+        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        assert!(matches!(state.input, InputState::Normal));
+
+        // Focused on the diff but parked on the file header.
+        state.focus = Focus::Diff;
+        state.diff.cursor.row = 0;
+        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        assert!(matches!(state.input, InputState::Normal));
+    }
+
+    #[test]
+    fn esc_cancels_without_changing_the_saved_comment() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        note(&mut state, &anchor, "keep me");
+
+        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        type_text(&mut state, "x");
+        handle_key(&mut state, KeyCode::Esc, 18, 18);
+
+        assert!(matches!(state.input, InputState::Normal));
+        assert_eq!(state.comments.note(&anchor), Some("keep me"));
+    }
+
+    #[test]
+    fn saving_empty_text_and_d_both_delete_the_comment() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+
+        note(&mut state, &anchor, "first pass");
+        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        for _ in 0.."first pass".len() {
+            handle_key(&mut state, KeyCode::Backspace, 18, 18);
+        }
+        handle_key(&mut state, KeyCode::Enter, 18, 18);
+        assert_eq!(state.comments.note(&anchor), None);
+
+        note(&mut state, &anchor, "second pass");
+        handle_key(&mut state, KeyCode::Char('d'), 18, 18);
+        assert_eq!(state.comments.note(&anchor), None);
+    }
+
+    #[test]
+    fn saved_comments_render_under_their_diff_line() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        // Comment on the added line (new line 3).
+        for _ in 0..3 {
+            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        }
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        assert_eq!((anchor.side, anchor.line), (LineSide::New, 3));
+        note(&mut state, &anchor, "explain this");
+
+        let rows = state.diff.rows();
+        let line_row = rows
+            .iter()
+            .position(|row| row.anchor.as_ref() == Some(&anchor))
+            .expect("the commented line is still rendered");
+        assert!(
+            line_text(&rows[line_row + 1].line).contains("explain this"),
+            "the comment renders directly under its line: {:#?}",
+            window_text(&state)
+        );
+        assert!(
+            !rows[line_row + 1].is_selectable(),
+            "comment rows are not cursor stops"
+        );
+    }
+
+    #[test]
+    fn a_comment_never_drops_the_retained_render() {
+        // A comment is drawn over the retained render, not into it.
+        // Rebuilding for a comment would re-run syntax highlighting and
+        // flash the "Rendering…" placeholder on the next frame.
+        let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
+        // Selecting `src/` warms both files' blocks.
+        state.sidebar.set_selected(0, 18);
+        rebuild_window(&mut state);
+        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
+        assert!(state.diff.cache.contains(grouped_epoch(80), 1));
+
+        let anchor = CommentAnchor {
+            scope: CommentScope::WorkingTree,
+            path: "src/b.txt".to_string(),
+            side: LineSide::New,
+            line: 1,
+        };
+        note(&mut state, &anchor, "look here");
+
+        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
+        assert!(
+            state.diff.cache.contains(grouped_epoch(80), 1),
+            "the commented file's render survives"
+        );
+        assert!(
+            window_text(&state)
+                .iter()
+                .any(|row| row.contains("look here")),
+            "and the comment is on screen"
+        );
+    }
+
+    #[test]
+    fn y_copies_every_comment_in_sidebar_order() {
+        let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
+        state.sidebar.set_selected(0, 18);
+        rebuild_window(&mut state);
+
+        // Nothing to copy yet.
+        let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("No comments to copy"));
+
+        let in_b = CommentAnchor {
+            scope: CommentScope::WorkingTree,
+            path: "src/b.txt".to_string(),
+            side: LineSide::New,
+            line: 3,
+        };
+        let in_a = CommentAnchor {
+            scope: CommentScope::WorkingTree,
+            path: "src/a.txt".to_string(),
+            side: LineSide::Old,
+            line: 3,
+        };
+        note(&mut state, &in_b, "second");
+        note(&mut state, &in_a, "first");
+
+        let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        let prompt = match command {
+            AppCommand::CopyToClipboard(prompt) => prompt,
+            other => panic!("expected a clipboard copy, got {other:?}"),
+        };
+        assert_eq!(state.status.as_deref(), Some("Copied 2 comments"));
+        // Repo-relative paths, correct sides, sidebar order.
+        assert!(
+            prompt.contains("src/a.txt:3\n- const x = 1;\nnote: first"),
+            "prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("src/b.txt:3\n+ const x = 2;\nnote: second"),
+            "prompt was:\n{prompt}"
+        );
+        assert!(prompt.find("note: first").unwrap() < prompt.find("note: second").unwrap());
+    }
+
+    #[test]
+    fn a_failed_copy_is_reported_instead_of_success() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        state.status = Some("Copied 1 comment".to_string());
+
+        Mode::report_copy(&mut state, Err("no clipboard".to_string()));
+        assert_eq!(state.status.as_deref(), Some("Copy failed: no clipboard"));
+
+        Mode::report_copy(&mut state, Ok(()));
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Copy failed: no clipboard"),
+            "a successful copy leaves the mode's own message in place"
+        );
+    }
+
+    #[test]
+    fn the_open_editor_captures_keys_that_are_normally_bindings() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+
+        assert!(!Mode::captures_text_input(&state));
+        Mode::handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        assert!(
+            Mode::captures_text_input(&state),
+            "the shell must hand every key to the open editor"
+        );
+
+        for ch in "q?[]<>d".chars() {
+            Mode::handle_key(&mut state, KeyCode::Char(ch), 18, 18);
+        }
+        Mode::handle_key(&mut state, KeyCode::Enter, 18, 18);
+
+        assert!(!Mode::captures_text_input(&state));
+        assert_eq!(state.comments.note(&anchor), Some("q?[]<>d"));
+    }
+
+    #[test]
+    fn clicking_a_diff_line_moves_the_cursor_there() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        let last_line_row = state
+            .diff
+            .rows()
+            .iter()
+            .rposition(|row| row.is_selectable())
+            .unwrap();
+
+        // Row 0 of the pane body is one below the pane's top border.
+        let mouse = make_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            50,
+            (last_line_row + 1) as u16,
+        );
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(state.diff.cursor.row, last_line_row);
+
+        // A click on the file header only focuses the pane.
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 1);
+        handle_mouse(&mut state, mouse, 18, 18);
+        assert_eq!(state.diff.cursor.row, last_line_row);
+    }
+
+    #[test]
+    fn a_wrapped_diff_line_still_takes_one_cursor_stop() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        // A pane far narrower than the content wraps every diff line.
+        state.diff.cached_width = 8;
+        state.diff.cache.clear();
+        rebuild_window(&mut state);
+
+        let rows = state.diff.rows();
+        let selectable = rows.iter().filter(|row| row.is_selectable()).count();
+        assert_eq!(selectable, 4, "one stop per diff line, not per row");
+        assert!(
+            rows.len() > selectable + 3,
+            "the narrow pane should have produced wrapped rows"
+        );
+    }
+
+    #[test]
+    fn comments_follow_their_line_when_the_working_tree_shifts() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        // Comment on the added line, `const x = 2;` at new line 3.
+        for _ in 0..3 {
+            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        }
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        note(&mut state, &anchor, "look here");
+
+        // Two lines are inserted above it, so the same text is now line 5.
+        let shifted = ResolvedFile {
+            file: file_diff("app.rs"),
+            before: "line one\nline two\nconst x = 1;\nline four\n".to_string(),
+            after: "line zero\nline half\nline one\nline two\nconst x = 2;\nline four\n"
+                .to_string(),
+        };
+        let model = model_from(&[shifted]);
+        let sections = prompt_sections(&model, &state.diff.display_order);
+        reanchor(&mut state.comments, &sections);
+        state.model = model;
+        state.diff.cache.clear();
+        rebuild_window(&mut state);
+
+        let moved = CommentAnchor {
+            line: 5,
+            ..anchor.clone()
+        };
+        assert_eq!(state.comments.note(&anchor), None);
+        assert_eq!(state.comments.note(&moved), Some("look here"));
+        // It still renders under its line, and is not outdated.
+        let text = window_text(&state).join("\n");
+        assert!(text.contains("look here"), "rendered as:\n{text}");
+        assert!(!text.contains("outdated"), "rendered as:\n{text}");
+    }
+
+    #[test]
+    fn a_comment_whose_line_changed_under_it_renders_outdated() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        for _ in 0..3 {
+            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        }
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        note(&mut state, &anchor, "look here");
+
+        // The commented line is rewritten in place: same number, new text,
+        // and nothing else matches the snapshot, so it cannot be followed.
+        state.model = model_from(&[ResolvedFile {
+            file: file_diff("app.rs"),
+            before: "line one\nline two\nconst x = 1;\nline four\n".to_string(),
+            after: "line one\nline two\nconst x = 99;\nline four\n".to_string(),
+        }]);
+        let sections = prompt_sections(&state.model, &state.diff.display_order);
+        reanchor(&mut state.comments, &sections);
+        state.diff.cache.clear();
+        rebuild_window(&mut state);
+
+        let text = window_text(&state).join("\n");
+        assert!(text.contains("look here"), "the note is kept:\n{text}");
+        assert!(text.contains("outdated"), "and marked outdated:\n{text}");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_cursor_on_its_diff_line() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        for _ in 0..2 {
+            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        }
+        let before = state.diff.cursor_anchor().cloned().unwrap();
+
+        // A reload rebuilds every row from scratch.
+        state.diff.cache.clear();
+        state.diff.after_reload();
+        rebuild_window(&mut state);
+
+        assert_eq!(state.diff.cursor_anchor(), Some(&before));
+    }
+
+    #[test]
+    fn the_open_editor_shows_the_target_line_and_typed_text() {
+        let mut state = diff_state(&[edited("src/app.rs")]);
+        for _ in 0..2 {
+            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        }
+        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        type_text(&mut state, "look here");
+
+        let screen = drawn_screen(&mut state);
+        assert!(screen.contains("src/app.rs:3"), "screen was:\n{screen}");
+        assert!(screen.contains("look here"));
+        assert!(screen.contains("Enter save"));
+    }
+
+    #[test]
+    fn the_diff_pane_footer_shows_the_copy_status() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        assert!(drawn_screen(&mut state).contains("No comments to copy"));
+    }
+
+    /// Build a model from resolved files, as `make_state` does.
+    fn model_from(files: &[ResolvedFile]) -> Model {
+        let owned: Vec<ResolvedFile> = files.to_vec();
+        let bodies = model::precompute_bodies(&owned);
+        Model {
+            files: owned,
+            bodies,
+            stages: Default::default(),
+        }
+    }
+
+    /// Draw one frame of Files mode and return the flattened screen text.
+    fn drawn_screen(mode: &mut FilesMode) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::{Constraint, Direction, Layout};
+
+        let theme = Theme::default();
+        let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        term.draw(|frame| {
+            let area = frame.area();
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(30), Constraint::Min(10)])
+                .split(area);
+            mode.draw(
+                frame,
+                cols[0],
+                cols[1],
+                TabStrip { active: 0 },
+                ChangeLayout::Grouped,
+                &theme,
+                DrawBudget::Full,
+            );
+        })
+        .unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
 
     #[test]
     fn error_mode_draws_message_not_no_changes() {

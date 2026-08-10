@@ -21,10 +21,13 @@ use std::collections::HashMap;
 
 use deltoids::{Hunk, LineKind};
 
-/// Which trace entry a comment belongs to, so notes on the same path in
-/// different recorded edits coexist.
+/// Which diff a comment belongs to.
+///
+/// Files mode has exactly one (the working tree); Traces mode has one per
+/// trace entry, so notes on the same path in different edits coexist.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum CommentScope {
+    WorkingTree,
     TraceEntry {
         trace_id: String,
         entry_index: usize,
@@ -196,6 +199,62 @@ fn comment_is_current(
     })
 }
 
+/// Follow comments onto the lines they were written against after the
+/// underlying diff changed.
+///
+/// A working tree moves under the reviewer: editing anything above a
+/// commented line shifts its number, which would otherwise leave the note
+/// pointing at whatever now occupies that number. For every comment whose
+/// anchored line no longer carries the text it was written against, this
+/// looks for exactly one line on the same side of the same file with that
+/// text and moves the anchor there. Ambiguous or vanished lines are left
+/// alone; the diff pane marks them outdated.
+pub(super) fn reanchor(store: &mut CommentStore, sections: &[PromptSection<'_>]) {
+    let mut moves: Vec<(CommentAnchor, CommentAnchor)> = Vec::new();
+
+    for section in sections {
+        let lines: Vec<HunkLine<'_>> = section.hunks.iter().flat_map(hunk_lines).collect();
+
+        let mine = store
+            .comments
+            .iter()
+            .filter(|(anchor, _)| anchor.scope == section.scope && anchor.path == section.path);
+        for (anchor, comment) in mine {
+            let anchored = lines
+                .iter()
+                .find(|line| line.side == anchor.side && line.number == anchor.line);
+            if anchored.is_some_and(|line| line.content == comment.code) {
+                continue;
+            }
+            // Overlapping hunks can render one line twice, so count
+            // distinct line numbers rather than occurrences.
+            let mut candidates: Vec<usize> = lines
+                .iter()
+                .filter(|line| line.side == anchor.side && line.content == comment.code)
+                .map(|line| line.number)
+                .collect();
+            candidates.sort_unstable();
+            candidates.dedup();
+            let [found] = candidates[..] else {
+                continue;
+            };
+            moves.push((
+                anchor.clone(),
+                CommentAnchor {
+                    line: found,
+                    ..anchor.clone()
+                },
+            ));
+        }
+    }
+
+    for (from, to) in moves {
+        if let Some(comment) = store.comments.remove(&from) {
+            store.comments.insert(to, comment);
+        }
+    }
+}
+
 /// Diff-side marker shown before the code line in the prompt.
 fn line_marker(kind: &LineKind) -> char {
     match kind {
@@ -291,10 +350,7 @@ mod tests {
 
     fn anchor(path: &str, side: LineSide, line: usize) -> CommentAnchor {
         CommentAnchor {
-            scope: CommentScope::TraceEntry {
-                trace_id: "T1".to_string(),
-                entry_index: 0,
-            },
+            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             side,
             line,
@@ -307,10 +363,7 @@ mod tests {
 
     fn section<'a>(path: &str, hunks: &'a [Hunk]) -> PromptSection<'a> {
         PromptSection {
-            scope: CommentScope::TraceEntry {
-                trace_id: "T1".to_string(),
-                entry_index: 0,
-            },
+            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             hunks,
         }
@@ -346,17 +399,17 @@ mod tests {
     #[test]
     fn the_same_line_in_different_scopes_holds_different_comments() {
         let mut store = CommentStore::default();
-        let first = anchor("a.rs", LineSide::New, 10);
-        let mut second = first.clone();
-        second.scope = CommentScope::TraceEntry {
+        let working = anchor("a.rs", LineSide::New, 10);
+        let mut traced = working.clone();
+        traced.scope = CommentScope::TraceEntry {
             trace_id: "T1".to_string(),
-            entry_index: 1,
+            entry_index: 0,
         };
-        note_at(&mut store, first.clone(), "in the first edit", "code");
-        note_at(&mut store, second.clone(), "in the second edit", "code");
+        note_at(&mut store, working.clone(), "in the tree", "code");
+        note_at(&mut store, traced.clone(), "in the trace", "code");
 
-        assert_eq!(store.note(&first), Some("in the first edit"));
-        assert_eq!(store.note(&second), Some("in the second edit"));
+        assert_eq!(store.note(&working), Some("in the tree"));
+        assert_eq!(store.note(&traced), Some("in the trace"));
     }
 
     #[test]
@@ -514,6 +567,129 @@ mod tests {
         assert_eq!(count, 2);
         assert!(prompt.find("note: anchored").unwrap() < prompt.find("note: orphan").unwrap());
         assert!(prompt.contains("z.rs:99 (outdated)"));
+    }
+
+    #[test]
+    fn reanchor_follows_a_line_that_moved() {
+        // The reviewer commented on new line 11; an edit above pushed the
+        // same text down to line 21.
+        let mut store = CommentStore::default();
+        store.set(
+            anchor("a.rs", LineSide::New, 11),
+            "note".to_string(),
+            "let x = 2;".to_string(),
+            LineKind::Added,
+        );
+
+        let moved = Hunk {
+            old_start: 20,
+            new_start: 20,
+            lines: vec![
+                diff_line(LineKind::Context, "fn main() {"),
+                diff_line(LineKind::Added, "let x = 2;"),
+            ],
+            ancestors: Vec::new(),
+        };
+        reanchor(&mut store, &[section("a.rs", &[moved])]);
+
+        assert_eq!(store.note(&anchor("a.rs", LineSide::New, 11)), None);
+        assert_eq!(
+            store.note(&anchor("a.rs", LineSide::New, 21)),
+            Some("note"),
+            "the comment follows its line"
+        );
+    }
+
+    #[test]
+    fn reanchor_leaves_a_line_that_did_not_move() {
+        let hunk = sample_hunk();
+        let mut store = CommentStore::default();
+        store.set(
+            anchor("a.rs", LineSide::New, 11),
+            "note".to_string(),
+            "let x = 2;".to_string(),
+            LineKind::Added,
+        );
+        reanchor(&mut store, &[section("a.rs", &[hunk])]);
+        assert_eq!(store.note(&anchor("a.rs", LineSide::New, 11)), Some("note"));
+    }
+
+    #[test]
+    fn reanchor_leaves_ambiguous_and_vanished_lines_alone() {
+        // Two lines now carry the commented text: moving the note would be
+        // a guess, so it stays put (and renders outdated).
+        let ambiguous = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                diff_line(LineKind::Added, "let x = 2;"),
+                diff_line(LineKind::Added, "let x = 2;"),
+            ],
+            ancestors: Vec::new(),
+        };
+        let mut store = CommentStore::default();
+        store.set(
+            anchor("a.rs", LineSide::New, 11),
+            "note".to_string(),
+            "let x = 2;".to_string(),
+            LineKind::Added,
+        );
+        reanchor(&mut store, &[section("a.rs", &[ambiguous])]);
+        assert_eq!(store.note(&anchor("a.rs", LineSide::New, 11)), Some("note"));
+
+        // The text is gone entirely: the note is kept where it was.
+        let gone = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![diff_line(LineKind::Added, "something else")],
+            ancestors: Vec::new(),
+        };
+        reanchor(&mut store, &[section("a.rs", &[gone])]);
+        assert_eq!(store.note(&anchor("a.rs", LineSide::New, 11)), Some("note"));
+    }
+
+    #[test]
+    fn reanchor_follows_a_moved_line_that_overlapping_hunks_render_twice() {
+        let mut store = CommentStore::default();
+        store.set(
+            anchor("a.rs", LineSide::New, 11),
+            "note".to_string(),
+            "let x = 2;".to_string(),
+            LineKind::Added,
+        );
+        let moved = Hunk {
+            old_start: 20,
+            new_start: 20,
+            lines: vec![
+                diff_line(LineKind::Context, "fn main() {"),
+                diff_line(LineKind::Added, "let x = 2;"),
+            ],
+            ancestors: Vec::new(),
+        };
+        // The same hunk twice: one line, rendered in two overlapping
+        // windows. That is not an ambiguous match.
+        reanchor(&mut store, &[section("a.rs", &[moved.clone(), moved])]);
+        assert_eq!(store.note(&anchor("a.rs", LineSide::New, 21)), Some("note"));
+    }
+
+    #[test]
+    fn reanchor_only_touches_the_file_and_side_it_was_written_on() {
+        let mut store = CommentStore::default();
+        // A note on b.rs must not be moved by a.rs's diff.
+        store.set(
+            anchor("b.rs", LineSide::New, 11),
+            "note".to_string(),
+            "let x = 2;".to_string(),
+            LineKind::Added,
+        );
+        let moved = Hunk {
+            old_start: 20,
+            new_start: 20,
+            lines: vec![diff_line(LineKind::Added, "let x = 2;")],
+            ancestors: Vec::new(),
+        };
+        reanchor(&mut store, &[section("a.rs", &[moved])]);
+        assert_eq!(store.note(&anchor("b.rs", LineSide::New, 11)), Some("note"));
     }
 
     #[test]

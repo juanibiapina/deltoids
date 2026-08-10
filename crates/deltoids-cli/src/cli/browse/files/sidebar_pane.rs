@@ -183,13 +183,13 @@ mod tests {
         assert_eq!(state.focus, Focus::Sidebar);
         // Initial selection is file 0, diff_scroll 0.
         assert_eq!(state.sidebar.selected_file_index(), Some(0));
-        state.diff.diff_scroll = 5; // scrolled somewhere inside file 0
+        state.diff.cursor.scroll = 5; // scrolled somewhere inside file 0
 
         handle_key(&mut state, KeyCode::Char('j'), 2, 4);
         // Sidebar should now be on file 1.
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
         // The diff snapped to the top of the newly selected file's window.
-        assert_eq!(state.diff.diff_scroll, 0);
+        assert_eq!(state.diff.cursor.scroll, 0);
     }
 
     #[test]

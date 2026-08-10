@@ -79,6 +79,11 @@ crates/
                              #     reload orchestration (active eager / lazy)
       mode.rs               #   Mode trait + TabStrip + AppCommand
       help.rs               #   shared help popup
+      comments.rs           #   review comments
+      comment_view.rs       #   comment rows
+      diff_cursor.rs        #   the cursor that walks lines
+      clipboard.rs          #   clipboard write (native helper + OSC 52)
+      text.rs               #   display width + word wrapping
       watch.rs              #   shared workdir watcher + reload filter
       tests.rs              #   shell tests (mock Mode)
       files/                 #   FilesMode (working-tree / piped diff)

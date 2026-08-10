@@ -195,7 +195,7 @@ fn reload_view(
     diff.cache.clear();
     diff.display_order = display_order;
     diff.cached_width = width;
-    diff.window_rows = 0;
+    diff.reset_window();
     *sidebar = new_sidebar;
 
     if let Some(path) = prev_path
@@ -207,13 +207,15 @@ fn reload_view(
         sidebar.select_file_index(idx, diff_viewport);
     }
 
-    // Snap to the top of the restored selection's window.
-    diff.snap_to_top();
+    // Start from the top of the restored selection's window, keeping the
+    // reviewer's cursor on the diff line it was on.
+    diff.after_reload();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::browse::comments::CommentStore;
     use crate::cli::browse::files::sidebar_pane::sidebar_footer;
     use crate::cli::browse::files::test_support::*;
     use crate::cli::browse::mode::DrawBudget;
@@ -255,16 +257,17 @@ mod tests {
         assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
         // The diff pane is filtered to the restored file and snapped to its top.
         let dr = state.sidebar.selection_display_range();
-        let window = state.diff.assemble_window(
+        state.diff.assemble_window(
             dr,
             &m2,
             80,
             deltoids::ChangeLayout::Grouped,
             &theme(),
             DrawBudget::Full,
+            &CommentStore::default(),
         );
-        assert_eq!(line_text(&window[0]), "b.txt");
-        assert_eq!(state.diff.diff_scroll, 0);
+        assert_eq!(line_text(&state.diff.rows()[0].line), "b.txt");
+        assert_eq!(state.diff.cursor.scroll, 0);
     }
 
     #[test]
@@ -288,16 +291,17 @@ mod tests {
 
         assert!(state.diff.display_order.is_empty());
         let dr = state.sidebar.selection_display_range();
-        let window = state.diff.assemble_window(
+        state.diff.assemble_window(
             dr,
             &empty,
             80,
             deltoids::ChangeLayout::Grouped,
             &theme(),
             DrawBudget::Full,
+            &CommentStore::default(),
         );
-        assert!(window.is_empty());
-        assert_eq!(state.diff.window_rows, 0);
+        assert!(state.diff.rows().is_empty());
+        assert_eq!(state.diff.window_rows(), 0);
         assert_eq!(
             sidebar_footer(&state.sidebar, &state.diff.display_order),
             None

@@ -15,8 +15,10 @@ use crate::scroll::WheelScroll;
 use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
 
 use super::diff_pane::DiffPane;
+use crate::cli::browse::comments::CommentStore;
+
 use super::model::{Model, ResolvedFile, body_deltas, precompute_bodies};
-use super::{FilesMode, Focus};
+use super::{FilesMode, Focus, InputState};
 
 pub(super) fn theme() -> Theme {
     Theme::default()
@@ -76,6 +78,9 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         sidebar_rect: Rect::default(),
         diff_rect: Rect::default(),
         wheel: WheelScroll::new(),
+        comments: CommentStore::default(),
+        input: InputState::Normal,
+        status: None,
         model,
         repo: None,
         is_static: true,

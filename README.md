@@ -90,6 +90,35 @@ git:
     pager: deltoids
 ```
 
+### Review comments
+
+Works the same on both diffs: the working tree in Files mode and a trace
+entry in Traces mode. Focus the diff pane (`2` in Files, `3` in Traces)
+and move the cursor between diff lines with `j` / `k`:
+
+- `c` opens a one-line comment editor for the selected line (existing
+  text is loaded for editing; `Enter` saves, `Esc` cancels, saving empty
+  text deletes the comment)
+- `d` deletes the selected line's comment
+- `y` copies every comment in the current view to the clipboard as one
+  prompt
+
+Comments live in the running session only; nothing is written to disk. In
+Files mode they follow their line as the working tree changes, and are
+marked stale when the line moves on in a way that cannot be followed.
+
+The copied prompt lists each comment in file order, ready to paste into a
+coding agent:
+
+```text
+Address the following code review comments. For each, the file and line
+are given, with the relevant line and the reviewer's note.
+
+src/app.rs:42
++ let value = parse(input);
+note: handle the parse error
+```
+
 ## Configuration
 
 Deltoids reads `$XDG_CONFIG_HOME/deltoids/config.toml` (falling back to

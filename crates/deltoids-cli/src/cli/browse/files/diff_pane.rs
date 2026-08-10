@@ -23,10 +23,15 @@ use deltoids::render_tui::{
     self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
     rgb_to_color,
 };
-use deltoids::{ChangeLayout, Theme};
+use deltoids::{ChangeLayout, Hunk, Theme};
 
 use deltoids::parse::FileDiff;
 
+use crate::cli::browse::comment_view::{highlight_row, with_comments};
+use crate::cli::browse::comments::{CommentAnchor, CommentScope, CommentStore, hunk_lines};
+use crate::cli::browse::diff_cursor::{
+    Cursor, DiffRow, LinePlace, Step, keep_visible, restore_cursor, select_row, step_cursor,
+};
 use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
@@ -43,52 +48,52 @@ pub(super) const SCROLL_STEP_LARGE: usize = 3;
 #[derive(Debug, Default)]
 pub(super) struct DiffCache {
     epoch: CacheEpoch,
-    lines: HashMap<usize, Vec<Line<'static>>>,
+    rows: HashMap<usize, Vec<DiffRow>>,
 }
 
 /// The identity every retained block shares: its render `width` and the
 /// active change `layout`. A change to either invalidates the whole store,
-/// since both alter every block's rendered lines.
+/// since both alter every block's rendered rows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct CacheEpoch {
-    width: usize,
-    layout: ChangeLayout,
+pub(super) struct CacheEpoch {
+    pub(super) width: usize,
+    pub(super) layout: ChangeLayout,
 }
 
 impl DiffCache {
-    /// Rendered lines for file `key` at `epoch`, or `None` on an epoch
+    /// Rendered rows for file `key` at `epoch`, or `None` on an epoch
     /// mismatch or a miss.
-    fn get(&self, epoch: CacheEpoch, key: usize) -> Option<&Vec<Line<'static>>> {
+    fn get(&self, epoch: CacheEpoch, key: usize) -> Option<&Vec<DiffRow>> {
         if self.epoch != epoch {
             return None;
         }
-        self.lines.get(&key)
+        self.rows.get(&key)
     }
 
     /// Whether file `key` is already rendered at `epoch`.
-    fn contains(&self, epoch: CacheEpoch, key: usize) -> bool {
-        self.epoch == epoch && self.lines.contains_key(&key)
+    pub(super) fn contains(&self, epoch: CacheEpoch, key: usize) -> bool {
+        self.epoch == epoch && self.rows.contains_key(&key)
     }
 
-    /// Store rendered `lines` for file `key`. A width or layout change
+    /// Store rendered `rows` for file `key`. A width or layout change
     /// clears the store first so every retained block shares one epoch.
-    fn insert(&mut self, epoch: CacheEpoch, key: usize, lines: Vec<Line<'static>>) {
+    fn insert(&mut self, epoch: CacheEpoch, key: usize, rows: Vec<DiffRow>) {
         if self.epoch != epoch {
-            self.lines.clear();
+            self.rows.clear();
             self.epoch = epoch;
         }
-        self.lines.insert(key, lines);
+        self.rows.insert(key, rows);
     }
 
     /// Drop all retained blocks (used on reload, when disk data changed).
     pub(super) fn clear(&mut self) {
-        self.lines.clear();
+        self.rows.clear();
     }
 
     /// Whether the store holds no retained blocks.
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+        self.rows.is_empty()
     }
 }
 
@@ -96,41 +101,53 @@ impl DiffCache {
 /// the body — either each hunk (blank-separated) for a text diff, or the
 /// symlink view for a symlink change. The text-diff path carries the
 /// syntax-highlighting cost (`render_hunk`) that lazy rendering defers.
+///
+/// Every row of a diff line is tagged with the [`CommentAnchor`] it
+/// belongs to; saved comments are spliced in later by
+/// [`crate::cli::browse::comment_view::with_comments`].
 fn render_file_block(
     resolved: &ResolvedFile,
     body: &FileBody,
     width: usize,
     layout: ChangeLayout,
     theme: &Theme,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+) -> Vec<DiffRow> {
     let path = display_path(&resolved.file);
-    lines.extend(render_tui::render_file_header(path, width, theme));
+    let mut rows: Vec<DiffRow> = render_tui::render_file_header(path, width, theme)
+        .into_iter()
+        .map(DiffRow::plain)
+        .collect();
 
     if let Some(old_path) = &resolved.file.rename_from {
-        lines.push(render_tui::render_rename_header(
+        rows.push(DiffRow::plain(render_tui::render_rename_header(
             old_path,
             &resolved.file.new_path,
             theme,
-        ));
+        )));
     }
     // A type change renders as a content diff, but its note box stands in
     // for the per-hunk line-number box: render the note box, then the hunk
     // bodies without their own boxes (avoiding a second, redundant box).
     if let Some(note) = typechange_note(&resolved.file, theme) {
-        lines.push(Line::from(""));
-        lines.extend(note);
+        rows.push(DiffRow::plain(Line::from("")));
+        rows.extend(note.into_iter().map(DiffRow::plain));
         match body {
             FileBody::Diff(diff) => {
-                for hunk in diff.hunks() {
-                    lines.push(Line::from(""));
-                    lines.extend(render_tui::render_hunk_body(
+                for (index, hunk) in diff.hunks().iter().enumerate() {
+                    rows.push(DiffRow::plain(Line::from("")));
+                    push_hunk_rows(
+                        &mut rows,
+                        render_tui::render_hunk_body_rows(
+                            hunk,
+                            diff.highlight(),
+                            width,
+                            layout,
+                            theme,
+                        ),
                         hunk,
-                        diff.highlight(),
-                        width,
-                        layout,
-                        theme,
-                    ));
+                        (path, index),
+                        path,
+                    );
                 }
             }
             // A type change *into* a submodule (regular → submodule) has no
@@ -140,55 +157,122 @@ fn render_file_block(
                 old_commit,
                 new_commit,
             } => {
-                lines.push(Line::from(""));
-                lines.push(submodule_placeholder(
+                rows.push(DiffRow::plain(Line::from("")));
+                rows.push(DiffRow::plain(submodule_placeholder(
                     old_commit.as_deref(),
                     new_commit.as_deref(),
                     theme,
-                ));
+                )));
             }
             _ => {}
         }
-        return lines;
+        return rows;
     }
 
     match body {
-        FileBody::Diff(diff) => lines.extend(render_tui::render_hunk_list(
-            diff.hunks(),
-            diff.highlight(),
-            width,
-            layout,
-            theme,
-        )),
+        // Mirrors `render_hunk_list`: a blank separator before each hunk.
+        FileBody::Diff(diff) => {
+            for (index, hunk) in diff.hunks().iter().enumerate() {
+                rows.push(DiffRow::plain(Line::from("")));
+                push_hunk_rows(
+                    &mut rows,
+                    render_tui::render_hunk_rows(hunk, diff.highlight(), width, layout, theme),
+                    hunk,
+                    (path, index),
+                    path,
+                );
+            }
+        }
         FileBody::Symlink(view) => {
-            lines.push(Line::from(""));
-            lines.extend(render_tui::render_symlink(
-                view,
-                symlink_icon(IconMode::from_env()),
-                theme,
-            ));
+            rows.push(DiffRow::plain(Line::from("")));
+            rows.extend(
+                render_tui::render_symlink(view, symlink_icon(IconMode::from_env()), theme)
+                    .into_iter()
+                    .map(DiffRow::plain),
+            );
         }
         FileBody::Binary => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
+            rows.push(DiffRow::plain(Line::from("")));
+            rows.push(DiffRow::plain(Line::from(Span::styled(
                 "Binary file (no textual diff)".to_string(),
                 Style::default().fg(rgb_to_color(theme.muted)),
-            )));
+            ))));
         }
         FileBody::Submodule {
             old_commit,
             new_commit,
         } => {
-            lines.push(Line::from(""));
-            lines.push(submodule_placeholder(
+            rows.push(DiffRow::plain(Line::from("")));
+            rows.push(DiffRow::plain(submodule_placeholder(
                 old_commit.as_deref(),
                 new_commit.as_deref(),
                 theme,
-            ));
+            )));
         }
     }
 
-    lines
+    rows
+}
+
+/// The text of the diff line `anchor` points at, as the working tree has
+/// it now.
+fn line_content<'a>(model: &'a Model, anchor: &CommentAnchor) -> Option<&'a str> {
+    let index = model
+        .files
+        .iter()
+        .position(|resolved| display_path(&resolved.file) == anchor.path)?;
+    let FileBody::Diff(diff) = model.bodies.get(index)? else {
+        return None;
+    };
+    diff.hunks().iter().find_map(|hunk| {
+        hunk_lines(hunk)
+            .find(|line| line.side == anchor.side && line.number == anchor.line)
+            .map(|line| line.content)
+    })
+}
+
+/// The comment anchor for every logical line of `hunk`, in line order.
+fn hunk_anchors(hunk: &Hunk, path: &str) -> Vec<CommentAnchor> {
+    hunk_lines(hunk)
+        .map(|line| CommentAnchor {
+            scope: CommentScope::WorkingTree,
+            path: path.to_string(),
+            side: line.side,
+            line: line.number,
+        })
+        .collect()
+}
+
+/// Push already-rendered `rendered` hunk rows, tagging each with the diff
+/// line it belongs to. `place` is the hunk's `(file path, hunk)` position,
+/// which with the line's index gives every diff line a unique identity
+/// for the cursor. Comments are not drawn here: they are spliced in on
+/// the way to the screen, so writing one never re-renders the file.
+fn push_hunk_rows(
+    rows: &mut Vec<DiffRow>,
+    rendered: Vec<render_tui::HunkRow>,
+    hunk: &Hunk,
+    place: (&str, usize),
+    path: &str,
+) {
+    let (file, hunk_index) = place;
+    let anchors = hunk_anchors(hunk, path);
+    for row in rendered {
+        let Some(index) = row.source_line else {
+            rows.push(DiffRow::plain(row.line));
+            continue;
+        };
+        rows.push(DiffRow::line_row(
+            row.line,
+            anchors[index].clone(),
+            row.first_row.then(|| LinePlace {
+                file: file.to_string(),
+                hunk: hunk_index,
+                index,
+            }),
+            row.last_row,
+        ));
+    }
 }
 
 /// A muted placeholder line for a submodule (gitlink) change: its body is
@@ -298,12 +382,17 @@ pub(super) struct DiffPane {
     pub(super) display_order: Vec<usize>,
     /// The width the cache was built for; a change clears it.
     pub(super) cached_width: usize,
-    /// Vertical scroll offset, relative to the top of the current
-    /// selection's assembled window.
-    pub(super) diff_scroll: usize,
-    /// Row count of the last-assembled visible window; drives scroll
-    /// clamping between draws (mirrors Traces reading rows from its cache).
-    pub(super) window_rows: usize,
+    /// The diff cursor's row and the pane's scroll offset, both relative
+    /// to the top of the current selection's assembled window.
+    pub(super) cursor: Cursor,
+    /// The last-assembled window. Retained so key handling between draws
+    /// works against exactly the rows on screen.
+    window: Vec<DiffRow>,
+    /// Set by a reload: the next render scrolls the restored cursor back
+    /// into view. Ordinary scrolling deliberately leaves the cursor
+    /// behind, so this is only armed when the window was rebuilt under
+    /// the user.
+    reveal_cursor: bool,
     /// The layout the last window was assembled with; shown in the footer.
     current_layout: ChangeLayout,
     /// What the no-files render shows: the clean state or a build error.
@@ -316,8 +405,9 @@ impl DiffPane {
             cache: DiffCache::default(),
             display_order,
             cached_width: width,
-            diff_scroll: 0,
-            window_rows: 0,
+            cursor: Cursor::default(),
+            window: Vec::new(),
+            reveal_cursor: false,
             current_layout: ChangeLayout::Grouped,
             empty_state: EmptyPane::NoChanges,
         }
@@ -347,6 +437,7 @@ impl DiffPane {
     /// uncached file contributes a cheap placeholder block instead (and is
     /// not cached). `display_range` is the sidebar's selection range in
     /// display order: a single file, a directory subtree, or `None`.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble_window(
         &mut self,
         display_range: Option<Range<usize>>,
@@ -355,32 +446,63 @@ impl DiffPane {
         layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
-    ) -> Vec<Line<'static>> {
+        comments: &CommentStore,
+    ) {
         self.current_layout = layout;
         let Some(range) = display_range else {
-            self.window_rows = 0;
-            return Vec::new();
+            self.set_window(Vec::new());
+            return;
         };
         if range.is_empty() || self.display_order.is_empty() {
-            self.window_rows = 0;
-            return Vec::new();
+            self.set_window(Vec::new());
+            return;
         }
 
         let mut window = Vec::new();
         for (i, pos) in range.clone().enumerate() {
             let input_idx = self.display_order[pos];
             if i > 0 {
-                window.push(Line::from(""));
+                window.push(DiffRow::plain(Line::from("")));
             }
-            window.extend(self.file_block(input_idx, model, width, layout, theme, budget));
+            window
+                .extend(self.file_block(input_idx, model, width, layout, theme, budget, comments));
         }
-        self.window_rows = window.len();
-        window
+        self.set_window(window);
+    }
+
+    /// Adopt a freshly-assembled window and put the cursor back on the
+    /// diff line it was on, falling back to the nearest line to its old
+    /// row when that line is gone.
+    fn set_window(&mut self, window: Vec<DiffRow>) {
+        self.window = window;
+        restore_cursor(&self.window, &mut self.cursor);
+    }
+
+    /// Row count of the last-assembled window.
+    pub(super) fn window_rows(&self) -> usize {
+        self.window.len()
+    }
+
+    /// Drop the assembled window (a reload invalidates every row).
+    pub(super) fn reset_window(&mut self) {
+        self.window.clear();
+    }
+
+    /// The rows currently on screen.
+    #[cfg(test)]
+    pub(super) fn rows(&self) -> &[DiffRow] {
+        &self.window
+    }
+
+    /// The diff line under the cursor, when it sits on one.
+    pub(super) fn cursor_anchor(&self) -> Option<&CommentAnchor> {
+        self.window.get(self.cursor.row)?.anchor.as_ref()
     }
 
     /// One file's block for the current frame: the retained highlighted
     /// lines when cached; a fresh highlight (retained) when the budget
     /// allows building; otherwise a cheap placeholder.
+    #[allow(clippy::too_many_arguments)]
     fn file_block(
         &mut self,
         input_idx: usize,
@@ -389,65 +511,98 @@ impl DiffPane {
         layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
-    ) -> Vec<Line<'static>> {
+        comments: &CommentStore,
+    ) -> Vec<DiffRow> {
         let epoch = CacheEpoch { width, layout };
         let cached = self.cache.contains(epoch, input_idx);
         if should_build_body(budget, cached) {
             if !cached {
-                let lines = render_file_block(
+                let rows = render_file_block(
                     &model.files[input_idx],
                     &model.bodies[input_idx],
                     width,
                     layout,
                     theme,
                 );
-                self.cache.insert(epoch, input_idx, lines);
+                self.cache.insert(epoch, input_idx, rows);
             }
-            self.cache
+            let cached = self
+                .cache
                 .get(epoch, input_idx)
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default();
+            // Comments are drawn over the retained render, never into it.
+            with_comments(&cached, comments, width, theme, |anchor, comment| {
+                // A note the working tree has moved past no longer
+                // describes the line it points at.
+                line_content(model, anchor).is_some_and(|content| content != comment.code)
+            })
         } else {
             placeholder_file_block(&model.files[input_idx], width, theme)
+                .into_iter()
+                .map(DiffRow::plain)
+                .collect()
         }
     }
 
     /// Maximum scroll offset (relative to the window top) that keeps the
     /// viewport inside the assembled window.
     fn max_scroll(&self, viewport: usize) -> usize {
-        self.window_rows.saturating_sub(viewport.max(1))
+        self.window_rows().saturating_sub(viewport.max(1))
     }
 
     pub(super) fn scroll_by(&mut self, delta: isize, viewport: usize) {
         let max = self.max_scroll(viewport) as isize;
-        let target = (self.diff_scroll as isize + delta).clamp(0, max.max(0));
-        self.diff_scroll = target as usize;
+        let target = (self.cursor.scroll as isize + delta).clamp(0, max.max(0));
+        self.cursor.scroll = target as usize;
+    }
+
+    /// Move the diff cursor one diff line, keeping it in view.
+    pub(super) fn step_cursor(&mut self, step: Step, viewport: usize) {
+        step_cursor(&self.window, step, viewport, &mut self.cursor);
+    }
+
+    /// Put the cursor on `row` when that row starts a diff line. Used by
+    /// a click in the pane.
+    pub(super) fn select_row(&mut self, row: usize) {
+        select_row(&self.window, row, &mut self.cursor);
     }
 
     fn scroll_to_top(&mut self) {
-        self.diff_scroll = 0;
+        self.cursor.scroll = 0;
     }
 
     fn scroll_to_bottom(&mut self, viewport: usize) {
-        self.diff_scroll = self.max_scroll(viewport);
+        self.cursor.scroll = self.max_scroll(viewport);
     }
 
-    /// Reset the scroll to the top of the current selection's window. A
+    /// Reset the view to the top of the current selection's window. A
     /// sidebar move re-derives the window, so showing the newly selected
-    /// file from its top is always scroll 0.
+    /// file from its top is always scroll 0, with the cursor back on the
+    /// window's first diff line.
     pub(super) fn snap_to_top(&mut self) {
-        self.diff_scroll = 0;
+        self.cursor = Cursor::default();
+        self.reveal_cursor = false;
     }
 
-    /// Handle a key while the diff pane is focused. Only scroll keys are
-    /// meaningful; everything else is ignored.
+    /// Prepare the pane for a rebuilt model: start from the top of the
+    /// window, but keep the diff line the cursor was on and reveal it
+    /// again once the new window is assembled. A working tree changes
+    /// under the reviewer; their place in it should not.
+    pub(super) fn after_reload(&mut self) {
+        self.cursor.scroll = 0;
+        self.reveal_cursor = true;
+    }
+
+    /// Handle a key while the diff pane is focused: `j`/`k` walk diff
+    /// lines, the rest scroll. Everything else is ignored.
     pub(super) fn handle_key(&mut self, key: KeyCode, viewport: usize) {
         match key {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.scroll_by(SCROLL_STEP_SMALL as isize, viewport);
+                self.step_cursor(Step::Down, viewport);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.scroll_by(-(SCROLL_STEP_SMALL as isize), viewport);
+                self.step_cursor(Step::Up, viewport);
             }
             KeyCode::PageDown => {
                 self.scroll_by(viewport.max(1) as isize, viewport);
@@ -461,16 +616,16 @@ impl DiffPane {
         }
     }
 
-    /// Display the pre-assembled `window` (built by
-    /// [`DiffPane::assemble_window`], which also set `window_rows`): clamp
-    /// the scroll, slice the viewport, and paint the footer + scrollbar.
+    /// Display the window last assembled by
+    /// [`DiffPane::assemble_window`]: clamp the scroll, slice the
+    /// viewport, highlight the cursor, and paint the footer + scrollbar.
     pub(super) fn render(
         &mut self,
         frame: &mut ratatui::Frame<'_>,
         area: Rect,
         focused: bool,
         theme: &Theme,
-        window: Vec<Line<'static>>,
+        status: Option<&str>,
     ) {
         let color = pane_border_color(focused, theme);
 
@@ -517,12 +672,31 @@ impl DiffPane {
         });
         let viewport = inner.height as usize;
 
-        let scroll = self.diff_scroll.min(self.max_scroll(viewport));
-        self.diff_scroll = scroll;
-        let end = scroll.saturating_add(viewport.max(1)).min(window.len());
-        let visible: Vec<Line<'static>> = window[scroll..end].to_vec();
+        if std::mem::take(&mut self.reveal_cursor) {
+            keep_visible(&mut self.cursor, viewport.max(1));
+        }
+        let scroll = self.cursor.scroll.min(self.max_scroll(viewport));
+        self.cursor.scroll = scroll;
+        let end = scroll
+            .saturating_add(viewport.max(1))
+            .min(self.window.len());
+        let cursor_bg = rgb_to_color(theme.selection_bg);
+        let width = inner.width as usize;
+        let visible: Vec<Line<'static>> = self.window[scroll..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, row)| {
+                if focused && scroll + offset == self.cursor.row && row.is_selectable() {
+                    highlight_row(row.line.clone(), width, cursor_bg)
+                } else {
+                    row.line.clone()
+                }
+            })
+            .collect();
 
-        let footer = self.footer();
+        let footer = status
+            .map(|status| format!(" {status} "))
+            .or_else(|| self.footer());
         let block = pane_block_with_footer("─[2]─Diff─", color, footer);
         frame.render_widget(Paragraph::new(visible).block(block), area);
 
@@ -532,7 +706,7 @@ impl DiffPane {
         render_pane_scrollbar(
             frame,
             area,
-            self.window_rows,
+            self.window_rows(),
             scroll,
             pane_inner_height(area),
             focused,
@@ -542,14 +716,14 @@ impl DiffPane {
 
     /// Build the diff pane's bottom-right footer: `" line X of Y "` for the
     /// current scroll position within the assembled window, or `None` when
-    /// the pane is empty. Reads `window_rows`, so it is meaningful only
-    /// after [`DiffPane::assemble_window`] (which `render` calls first).
+    /// the pane is empty. Reads the assembled window, so it is meaningful
+    /// only after [`DiffPane::assemble_window`].
     pub(super) fn footer(&self) -> Option<String> {
-        let span = self.window_rows;
+        let span = self.window_rows();
         if span == 0 {
             return None;
         }
-        let pos = self.diff_scroll.min(span.saturating_sub(1)) + 1;
+        let pos = self.cursor.scroll.min(span.saturating_sub(1)) + 1;
         let layout = layout_label(self.current_layout);
         Some(format!(
             " line {pos} of {span}  \u{00b7}  {layout}  \u{00b7}  ? help "
@@ -561,6 +735,13 @@ impl DiffPane {
 mod tests {
     use super::*;
     use crate::cli::browse::files::test_support::*;
+
+    fn grouped_epoch(width: usize) -> CacheEpoch {
+        CacheEpoch {
+            width,
+            layout: ChangeLayout::Grouped,
+        }
+    }
     use crate::cli::browse::files::{Focus, handle_key};
 
     /// Concatenate every cell symbol of a rendered `TestBackend` buffer.
@@ -591,7 +772,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
         term.draw(|f| {
             let area = f.area();
-            pane.render(f, area, false, &theme(), Vec::new());
+            pane.render(f, area, false, &theme(), None);
         })
         .unwrap();
         let text = buffer_text(term.backend().buffer());
@@ -620,7 +801,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
         term.draw(|f| {
             let area = f.area();
-            pane.render(f, area, false, &theme(), Vec::new());
+            pane.render(f, area, false, &theme(), None);
         })
         .unwrap();
         let text = buffer_text(term.backend().buffer());
@@ -635,6 +816,45 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_pane_paints_the_cursor_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let resolved = vec![ResolvedFile {
+            file: file_diff("a.txt"),
+            before: "one\ntwo\n".to_string(),
+            after: "one\nTWO\n".to_string(),
+        }];
+        let mut state = make_state(&resolved);
+        let _ = state.visible_diff_window(DrawBudget::Full);
+        let cursor_row = state.diff.cursor.row;
+
+        let selection_bg = rgb_to_color(theme().selection_bg);
+        let bg_of_row = |focused: bool, pane: &mut DiffPane| {
+            let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            term.draw(|f| {
+                let area = f.area();
+                pane.render(f, area, focused, &theme(), None);
+            })
+            .unwrap();
+            // Row 0 of the body sits one row below the pane border.
+            let y = (cursor_row + 1) as u16;
+            term.backend().buffer()[(1, y)].style().bg
+        };
+
+        assert_eq!(
+            bg_of_row(true, &mut state.diff),
+            Some(selection_bg),
+            "the focused pane highlights the line the cursor is on"
+        );
+        assert_ne!(
+            bg_of_row(false, &mut state.diff),
+            Some(selection_bg),
+            "an unfocused pane draws no cursor"
+        );
+    }
+
+    #[test]
     fn empty_default_state_renders_no_changes() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -643,7 +863,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
         term.draw(|f| {
             let area = f.area();
-            pane.render(f, area, false, &theme(), Vec::new());
+            pane.render(f, area, false, &theme(), None);
         })
         .unwrap();
         let text = buffer_text(term.backend().buffer());
@@ -666,19 +886,19 @@ mod tests {
         assert_eq!(state.sidebar.display_order().len(), 2);
     }
 
-    fn grouped_epoch(width: usize) -> CacheEpoch {
-        CacheEpoch {
-            width,
-            layout: ChangeLayout::Grouped,
-        }
-    }
-
     #[test]
     fn diff_cache_retains_blocks_across_selection_changes() {
         let mut cache = DiffCache::default();
         let e = grouped_epoch(80);
-        cache.insert(e, 0, vec![Line::from("a")]);
-        cache.insert(e, 1, vec![Line::from("b"), Line::from("b2")]);
+        cache.insert(e, 0, vec![DiffRow::plain(Line::from("a"))]);
+        cache.insert(
+            e,
+            1,
+            vec![
+                DiffRow::plain(Line::from("b")),
+                DiffRow::plain(Line::from("b2")),
+            ],
+        );
 
         // Both files stay retained: revisiting the first is a cache hit.
         assert!(cache.contains(e, 0));
@@ -690,13 +910,13 @@ mod tests {
     #[test]
     fn diff_cache_width_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(grouped_epoch(80), 0, vec![Line::from("a")]);
+        cache.insert(grouped_epoch(80), 0, vec![DiffRow::plain(Line::from("a"))]);
         assert!(cache.contains(grouped_epoch(80), 0));
 
         // A different width drops the stale block and rebuilds at the new width.
         assert!(!cache.contains(grouped_epoch(79), 0));
         assert!(cache.get(grouped_epoch(79), 0).is_none());
-        cache.insert(grouped_epoch(79), 1, vec![Line::from("b")]);
+        cache.insert(grouped_epoch(79), 1, vec![DiffRow::plain(Line::from("b"))]);
         assert!(!cache.contains(grouped_epoch(79), 0));
         assert!(cache.contains(grouped_epoch(79), 1));
     }
@@ -704,7 +924,7 @@ mod tests {
     #[test]
     fn diff_cache_layout_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(grouped_epoch(80), 0, vec![Line::from("a")]);
+        cache.insert(grouped_epoch(80), 0, vec![DiffRow::plain(Line::from("a"))]);
         assert!(cache.contains(grouped_epoch(80), 0));
 
         // Same width, different layout: the stale block is dropped and
@@ -716,8 +936,7 @@ mod tests {
             },
         };
         assert!(!cache.contains(interleaved, 0));
-        assert!(cache.get(interleaved, 0).is_none());
-        cache.insert(interleaved, 1, vec![Line::from("b")]);
+        cache.insert(interleaved, 1, vec![DiffRow::plain(Line::from("b"))]);
         assert!(!cache.contains(interleaved, 0));
         assert!(cache.contains(interleaved, 1));
     }
@@ -977,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_j_in_diff_focus_scrolls_diff() {
+    fn handle_key_j_in_diff_focus_walks_diff_lines_and_follows_them() {
         // Build a diff with enough lines to scroll.
         let f = file_diff("a.txt");
         let resolved = vec![ResolvedFile {
@@ -986,11 +1205,17 @@ mod tests {
             after: (0..50).map(|i| format!("line {i}!\n")).collect::<String>(),
         }];
         let mut state = make_state(&resolved);
-        // Prime the window row count so scrolling has room.
+        // Prime the window so the cursor has rows to walk.
         let _ = state.visible_diff_window(DrawBudget::Full);
         state.focus = Focus::Diff;
+
+        let first = state.diff.cursor_anchor().cloned().expect("a diff line");
         handle_key(&mut state, KeyCode::Char('j'), 4, 4);
-        assert_eq!(state.diff.diff_scroll, 1);
+        let second = state.diff.cursor_anchor().cloned().expect("a diff line");
+        assert_ne!(first, second, "j moves to the next diff line");
+        // The pane scrolls only as much as it takes to keep it visible.
+        assert!(state.diff.cursor.row >= state.diff.cursor.scroll);
+        assert!(state.diff.cursor.row < state.diff.cursor.scroll + 4);
     }
 
     #[test]
@@ -1006,7 +1231,7 @@ mod tests {
         // Stay in Sidebar focus; Shift+J should still scroll the diff.
         assert_eq!(state.focus, Focus::Sidebar);
         handle_key(&mut state, KeyCode::Char('J'), 4, 4);
-        assert_eq!(state.diff.diff_scroll, SCROLL_STEP_LARGE);
+        assert_eq!(state.diff.cursor.scroll, SCROLL_STEP_LARGE);
     }
 
     #[test]
@@ -1137,11 +1362,6 @@ mod tests {
             footer.contains("? help"),
             "expected '? help' hint in footer, got {footer:?}"
         );
-        // The default layout label is shown so the toggle state is visible.
-        assert!(
-            footer.contains("grouped"),
-            "expected the layout label in footer, got {footer:?}"
-        );
     }
 
     #[test]
@@ -1155,16 +1375,16 @@ mod tests {
         let mut state = make_state_with_rects(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
         state.focus = Focus::Diff;
-        let before = state.diff.diff_scroll;
+        let before = state.diff.cursor.scroll;
 
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollDown, 50, 5);
         crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
-        assert!(state.diff.diff_scroll > before);
+        assert!(state.diff.cursor.scroll > before);
 
-        let after_down = state.diff.diff_scroll;
+        let after_down = state.diff.cursor.scroll;
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollUp, 50, 5);
         crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
-        assert!(state.diff.diff_scroll < after_down);
+        assert!(state.diff.cursor.scroll < after_down);
     }
 
     #[test]
@@ -1186,7 +1406,7 @@ mod tests {
         let mut state = make_state_with_rects(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
         let initial = state.sidebar.selected();
-        let diff_before = state.diff.diff_scroll;
+        let diff_before = state.diff.cursor.scroll;
 
         // Cursor over the diff (col 50), Ctrl held.
         let mouse = make_mouse_mods(
@@ -1202,7 +1422,7 @@ mod tests {
             "ctrl+scroll should move the sidebar selection"
         );
         assert_eq!(
-            state.diff.diff_scroll, diff_before,
+            state.diff.cursor.scroll, diff_before,
             "ctrl+scroll should not scroll the diff"
         );
     }

@@ -23,21 +23,22 @@ Keys:
 - [ / ]:           cycle Files / Traces mode
 - Tab / 1 / 2:     focus panes in the current mode
 - j / k / arrows:  move within the focused pane (between diff lines in
-                   the Traces diff pane)
+                   the diff pane)
 - Shift+J / K:     scroll the diff pane
 - PgUp / PgDn:     page the focused pane
 - < / >:           narrow / widen the sidebar (or drag the divider)
 - ?:               toggle the help popup
 - q:               quit
 
-Review comments, with the Traces diff pane focused (3):
+Review comments, with the diff pane focused (2 in Files, 3 in Traces):
 - c:               comment on the diff line under the cursor
 - d:               delete that line's comment
-- y:               copy every comment on the trace as one prompt
+- y:               copy every comment in the view as one prompt
 
 Comments live in the running session only; they are never written to disk.
 Copying builds a prompt listing each file, line, diff line, and note, ready
-to paste into a coding agent.
+to paste into a coding agent. In Files mode comments follow their line as
+the working tree changes, and are marked stale when the line moves on.
 
 Set RV_NO_ICONS=1 to disable nerd-font glyphs in the sidebar.
 "#;

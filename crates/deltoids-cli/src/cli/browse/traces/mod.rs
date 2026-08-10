@@ -368,7 +368,10 @@ fn anchored_line(traces: &[LoadedTrace], anchor: &CommentAnchor) -> Option<(Stri
     let CommentScope::TraceEntry {
         trace_id,
         entry_index,
-    } = &anchor.scope;
+    } = &anchor.scope
+    else {
+        return None;
+    };
     let trace = traces.iter().find(|t| &t.trace.trace_id == trace_id)?;
     let entry = trace.entries.get(*entry_index)?;
     entry.hunks.iter().find_map(|hunk| {

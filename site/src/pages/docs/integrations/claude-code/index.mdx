@@ -36,6 +36,17 @@ deltoids tui
 The Claude `session_id` is the deltoids trace id, so resuming a session
 with `claude --continue` keeps appending to the same trace.
 
+## Review an edit
+
+Focus the diff pane with `3`, move between diff lines with `j` / `k`,
+and press `c` to leave a comment on the line under the cursor (`d`
+deletes it). Press `y` to copy every comment on the trace as one prompt,
+ready to paste back into Claude Code. Comments live in the running TUI
+session only; nothing is written to the trace.
+
+The same keys work in Files mode on your working-tree diff, where the
+diff pane is `2`.
+
 <Note>
   Unlike the pi integration, edits are recorded without per-edit
   summaries. Claude's `PostToolUse` hook does not expose one.

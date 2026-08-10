@@ -228,10 +228,7 @@ mod tests {
 
     fn anchor_in(path: &str, line: usize) -> CommentAnchor {
         CommentAnchor {
-            scope: CommentScope::TraceEntry {
-                trace_id: "T1".to_string(),
-                entry_index: 0,
-            },
+            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             side: LineSide::New,
             line,

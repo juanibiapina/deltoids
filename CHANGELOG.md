@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - agent tools: Remove the line-anchored read and edit commands and the corresponding pi edit mode.
 - TUI: Esc no longer quits; press q to quit from anywhere.
 
+### Fixed
+
+- diff: When a new section or function is inserted above another change, the hunks no longer overlap. The surrounding region now appears once, in order, with correct line numbers below the insertion.
+
 ## [0.12.2] - 2026-07-31
 
 ### Fixed

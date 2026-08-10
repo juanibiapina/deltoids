@@ -32,7 +32,7 @@ pub(super) fn plan(
     total_new: usize,
 ) -> Vec<ContextRange> {
     let ranges = compute_context_ranges(ops, old_parsed, new_parsed, total_old, total_new);
-    merge_ranges(ranges)
+    split_at_unmergeable_inserts(merge_ranges(ranges))
 }
 
 /// Compute default 3-line context range for a change.
@@ -543,6 +543,43 @@ fn merge_ranges(mut ranges: Vec<ContextRange>) -> Vec<ContextRange> {
     }
 
     merged
+}
+
+fn split_at_unmergeable_inserts(ranges: Vec<ContextRange>) -> Vec<ContextRange> {
+    let mut cuts: Vec<usize> = ranges
+        .iter()
+        .filter(|range| range.prevent_merge)
+        .map(|range| range.start)
+        .collect();
+    if cuts.is_empty() {
+        return ranges;
+    }
+    cuts.sort_unstable();
+
+    let mut split = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.prevent_merge {
+            split.push(range);
+            continue;
+        }
+        let mut tail = range;
+        for &cut in &cuts {
+            // `cut` is the old line the inserted block goes in front of, so
+            // it only splits a range with lines on both sides of it.
+            if tail.start < cut && cut <= tail.end {
+                let mut head = tail;
+                head.end = cut - 1;
+                split.push(head);
+                tail.start = cut;
+            }
+        }
+        split.push(tail);
+    }
+
+    // A zero-width insert range sorts ahead of a range starting on the
+    // same line: its lines come first in the updated file.
+    split.sort_by_key(|range| (range.start, range.end));
+    split
 }
 
 #[cfg(test)]

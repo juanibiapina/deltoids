@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- serve: long lines now wrap on screen, so reviewing a diff on a phone needs no horizontal scrolling. Two buttons in the reviewer let you switch back to unwrapped lines and pick one of three font sizes; both choices are remembered.
 - agent tools: Remove the line-anchored read and edit commands and the corresponding pi edit mode.
 - TUI: Esc no longer quits; press q to quit from anywhere.
 

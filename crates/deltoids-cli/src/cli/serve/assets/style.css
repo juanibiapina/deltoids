@@ -36,7 +36,7 @@ body {
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: max(env(safe-area-inset-top), 8px) 12px 8px;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
@@ -74,6 +74,28 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Compact reviewer controls (wrap toggle, font-size cycle). Sized to fit
+   next to the back button and counter at 360px without wrapping the bar. */
+.ctl {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+  font-family: var(--mono);
+  line-height: 1;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+}
+
+.ctl:active,
+.ctl[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .counter {
@@ -178,10 +200,25 @@ body {
   white-space: pre-wrap;
 }
 
+/* Code lines soft-wrap by default so a phone never needs horizontal
+   scrolling; `.diff.nowrap` restores per-row horizontal scrolling for
+   content that reads better aligned (tables, long data rows). Font size
+   is a three-step user preference applied via `data-size`. */
 .diff {
   font-family: var(--mono);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: var(--diff-font, 12.5px);
+  line-height: 1.45;
+  tab-size: 4;
+}
+
+.diff[data-size="s"] {
+  --diff-font: 11px;
+}
+.diff[data-size="m"] {
+  --diff-font: 12.5px;
+}
+.diff[data-size="l"] {
+  --diff-font: 14.5px;
 }
 
 .hunk {
@@ -194,9 +231,16 @@ body {
   padding: 4px 14px;
   color: var(--muted);
   background: var(--bg-row);
-  font-size: 11.5px;
+  font-size: 0.92em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.diff.nowrap .breadcrumb,
+.diff.nowrap .lineno {
   white-space: nowrap;
   overflow-x: auto;
+  touch-action: pan-x pan-y;
 }
 
 .crumb-sep {
@@ -205,14 +249,22 @@ body {
 
 .row {
   display: flex;
+  white-space: pre-wrap;
+}
+
+.diff.nowrap .row {
   white-space: pre;
   overflow-x: auto;
+  /* The view dedicates horizontal gestures to swipe navigation; in the
+     opt-in nowrap mode a row must be pannable or its overflow is
+     unreachable on touch. */
+  touch-action: pan-x pan-y;
 }
 
 .row .ln {
   flex: none;
-  width: 44px;
-  padding-right: 10px;
+  width: 4ch;
+  padding-right: 8px;
   text-align: right;
   color: var(--muted);
   user-select: none;
@@ -223,6 +275,19 @@ body {
 
 .row .code {
   flex: 1 1 auto;
+  /* `min-width: 0` lets the cell shrink below its content width so long
+     lines wrap; the hanging indent marks continuation rows. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-right: 8px;
+  padding-left: 2ch;
+  text-indent: -2ch;
+}
+
+.diff.nowrap .row .code {
+  overflow-wrap: normal;
+  padding-left: 0;
+  text-indent: 0;
 }
 
 .row.context {

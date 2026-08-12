@@ -8,6 +8,8 @@ const titleEl = document.getElementById("title");
 const subtitleEl = document.getElementById("subtitle");
 const counterEl = document.getElementById("counter");
 const backEl = document.getElementById("back");
+const wrapEl = document.getElementById("wrap");
+const sizeEl = document.getElementById("size");
 const toastEl = document.getElementById("toast");
 
 const state = {
@@ -19,6 +21,65 @@ const state = {
   cursor: "", // feed cursor (newest seen timestamp)
   seen: new Set(), // "trace_id:index" keys already surfaced
 };
+
+// ---- reading preferences ---------------------------------------------
+
+// Wrapping and font size are per-device reading preferences, kept in
+// localStorage so they survive reloads. Narrow screens default to the
+// smallest step; once the user picks a size, that choice wins everywhere.
+const SIZES = ["s", "m", "l"];
+
+function storedPref(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function storePref(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    /* private mode / quota: preference just does not persist */
+  }
+}
+
+const prefs = {
+  wrap: storedPref("deltoids.wrap") !== "0",
+  size: SIZES.includes(storedPref("deltoids.size"))
+    ? storedPref("deltoids.size")
+    : window.innerWidth <= 420
+      ? "s"
+      : "m",
+};
+
+// Apply the current preferences to whatever diff is on screen and keep the
+// control buttons showing their state.
+function applyPrefs() {
+  const diff = view.querySelector(".diff");
+  if (diff) {
+    diff.classList.toggle("nowrap", !prefs.wrap);
+    diff.dataset.size = prefs.size;
+  }
+  wrapEl.setAttribute("aria-pressed", prefs.wrap ? "true" : "false");
+  wrapEl.textContent = prefs.wrap ? "⇌" : "→";
+  sizeEl.textContent = prefs.size.toUpperCase();
+}
+
+wrapEl.addEventListener("click", () => {
+  prefs.wrap = !prefs.wrap;
+  storePref("deltoids.wrap", prefs.wrap ? "1" : "0");
+  applyPrefs();
+  centerFirstChange();
+});
+
+sizeEl.addEventListener("click", () => {
+  prefs.size = SIZES[(SIZES.indexOf(prefs.size) + 1) % SIZES.length];
+  storePref("deltoids.size", prefs.size);
+  applyPrefs();
+  centerFirstChange();
+});
 
 async function api(path) {
   const res = await fetch(path);
@@ -55,6 +116,7 @@ async function showProjects() {
   state.trace = null;
   setHeader("deltoids", "traces across your projects", "");
   backEl.hidden = true;
+  showControls(false);
   view.scrollTop = 0;
 
   let projects = [];
@@ -96,6 +158,7 @@ async function showTraces(project) {
   state.project = project;
   setHeader(project.name, project.cwd, "");
   backEl.hidden = false;
+  showControls(false);
   view.scrollTop = 0;
 
   let traces = [];
@@ -143,6 +206,7 @@ async function openTrace(traceId, cwd, index) {
   state.index = index === "last" ? data.entries.length - 1 : index;
   if (state.index < 0) state.index = 0;
   backEl.hidden = false;
+  showControls(true);
   await renderEntry();
 }
 
@@ -177,6 +241,7 @@ async function renderEntry() {
       <div class="navhint">swipe left → next · swipe right → back</div>
     </div>`;
 
+  applyPrefs();
   centerFirstChange();
   prefetch(state.index + 1);
   prefetch(state.index - 1);
@@ -211,6 +276,12 @@ function go(delta) {
 }
 
 // ---- header + navigation ---------------------------------------------
+
+function showControls(visible) {
+  wrapEl.hidden = !visible;
+  sizeEl.hidden = !visible;
+  if (visible) applyPrefs();
+}
 
 function setHeader(title, subtitle, counter) {
   titleEl.textContent = title;

@@ -14,7 +14,9 @@
 //! - `.lineno`          the line-number-only header when a hunk has no scope
 //! - `.row`             a body line; carries `.context` / `.added` / `.removed`
 //! - `.ln`              the gutter line number inside a row
-//! - `.code`            the code cell inside a row
+//! - `.code`            the code cell inside a row; the stylesheet owns
+//!   wrapping (soft wrap with a hanging indent by default), so rows must
+//!   stay a single `.ln` + `.code` pair with no pre-wrapped line breaks
 //! - `.emph`            an intraline-emphasised span inside `.code`
 //! - `[data-first-change]` marks the first changed row of the entry so the
 //!   web app can scroll it to the vertical centre.

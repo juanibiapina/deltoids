@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use deltoids::{Theme, git};
+use deltoids::{ChangeLayout, Theme, git};
 
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::Sidebar;
@@ -260,8 +260,14 @@ impl FilesMode {
     fn visible_diff_window(&mut self, budget: DrawBudget) -> Vec<ratatui::text::Line<'static>> {
         let dr = self.sidebar.selection_display_range();
         let width = self.diff.cached_width;
-        self.diff
-            .assemble_window(dr, &self.model, width, &Theme::default(), budget)
+        self.diff.assemble_window(
+            dr,
+            &self.model,
+            width,
+            ChangeLayout::Grouped,
+            &Theme::default(),
+            budget,
+        )
     }
 
     /// Sync the diff pane's scroll to the top of the selected file's
@@ -479,6 +485,7 @@ impl Mode for FilesMode {
         left: Rect,
         right: Rect,
         tabs: TabStrip,
+        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
@@ -502,7 +509,7 @@ impl Mode for FilesMode {
         );
         let window = self
             .diff
-            .assemble_window(dr, &self.model, diff_width, theme, budget);
+            .assemble_window(dr, &self.model, diff_width, layout, theme, budget);
         self.diff
             .render(frame, right, self.focus == Focus::Diff, theme, window);
     }
@@ -613,6 +620,7 @@ mod tests {
                 cols[0],
                 cols[1],
                 TabStrip { active: 0 },
+                ChangeLayout::Grouped,
                 &theme,
                 DrawBudget::Full,
             );

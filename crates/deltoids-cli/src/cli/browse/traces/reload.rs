@@ -105,7 +105,14 @@ mod tests {
         let mut state = AppState::new(traces.len());
         state.trace_index = 1;
         state.set_entry_index(0);
-        state.diff_cache.insert(80, (1, 0), vec![]);
+        state.diff_cache.insert(
+            crate::cli::browse::traces::detail::CacheEpoch {
+                width: 80,
+                layout: deltoids::ChangeLayout::Grouped,
+            },
+            (1, 0),
+            vec![],
+        );
 
         // Simulate a reload where trace_b gains an entry.
         let trace_b_updated = LoadedTrace {
@@ -157,7 +164,14 @@ mod tests {
         let mut traces = vec![trace_a.clone(), trace_b.clone()];
         let mut state = AppState::new(traces.len());
         state.trace_index = 1; // select trace_b
-        state.diff_cache.insert(80, (1, 0), vec![]);
+        state.diff_cache.insert(
+            crate::cli::browse::traces::detail::CacheEpoch {
+                width: 80,
+                layout: deltoids::ChangeLayout::Grouped,
+            },
+            (1, 0),
+            vec![],
+        );
 
         // Simulate trace_b disappearing.
         let prev_trace_id = traces

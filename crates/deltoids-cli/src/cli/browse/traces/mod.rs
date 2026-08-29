@@ -32,10 +32,10 @@ use ratatui::{
 };
 
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
-use deltoids::Theme;
 use deltoids::render_tui::{
     pane_block, pane_block_with_footer, pane_border_color, position_footer, rgb_to_color,
 };
+use deltoids::{ChangeLayout, Theme};
 
 use super::mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TabStrip};
 
@@ -421,6 +421,7 @@ impl Mode for TracesMode {
         left: Rect,
         right: Rect,
         tabs: TabStrip,
+        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
@@ -451,7 +452,15 @@ impl Mode for TracesMode {
             theme,
         );
         render_traces_pane(frame, sidebar[1], &self.traces, &mut self.state, theme);
-        render_diff_pane(frame, right, active_trace, &mut self.state, theme, budget);
+        render_diff_pane(
+            frame,
+            right,
+            active_trace,
+            &mut self.state,
+            layout,
+            theme,
+            budget,
+        );
     }
 
     fn handle_key(

@@ -19,15 +19,15 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use deltoids::Theme;
 use deltoids::render_tui::{
     self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
     rgb_to_color,
 };
+use deltoids::{ChangeLayout, Theme};
 
 use deltoids::parse::FileDiff;
 
-use crate::cli::browse::mode::{DrawBudget, should_build_body};
+use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
 use super::model::{FileBody, Model, ResolvedFile};
@@ -42,31 +42,40 @@ pub(super) const SCROLL_STEP_LARGE: usize = 3;
 /// every selection change.
 #[derive(Debug, Default)]
 pub(super) struct DiffCache {
-    width: usize,
+    epoch: CacheEpoch,
     lines: HashMap<usize, Vec<Line<'static>>>,
 }
 
+/// The identity every retained block shares: its render `width` and the
+/// active change `layout`. A change to either invalidates the whole store,
+/// since both alter every block's rendered lines.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CacheEpoch {
+    width: usize,
+    layout: ChangeLayout,
+}
+
 impl DiffCache {
-    /// Rendered lines for file `key` at `width`, or `None` on a width
+    /// Rendered lines for file `key` at `epoch`, or `None` on an epoch
     /// mismatch or a miss.
-    fn get(&self, width: usize, key: usize) -> Option<&Vec<Line<'static>>> {
-        if self.width != width {
+    fn get(&self, epoch: CacheEpoch, key: usize) -> Option<&Vec<Line<'static>>> {
+        if self.epoch != epoch {
             return None;
         }
         self.lines.get(&key)
     }
 
-    /// Whether file `key` is already rendered at `width`.
-    fn contains(&self, width: usize, key: usize) -> bool {
-        self.width == width && self.lines.contains_key(&key)
+    /// Whether file `key` is already rendered at `epoch`.
+    fn contains(&self, epoch: CacheEpoch, key: usize) -> bool {
+        self.epoch == epoch && self.lines.contains_key(&key)
     }
 
-    /// Store rendered `lines` for file `key`. A width change clears the
-    /// store first so every retained block shares one width.
-    fn insert(&mut self, width: usize, key: usize, lines: Vec<Line<'static>>) {
-        if self.width != width {
+    /// Store rendered `lines` for file `key`. A width or layout change
+    /// clears the store first so every retained block shares one epoch.
+    fn insert(&mut self, epoch: CacheEpoch, key: usize, lines: Vec<Line<'static>>) {
+        if self.epoch != epoch {
             self.lines.clear();
-            self.width = width;
+            self.epoch = epoch;
         }
         self.lines.insert(key, lines);
     }
@@ -91,6 +100,7 @@ fn render_file_block(
     resolved: &ResolvedFile,
     body: &FileBody,
     width: usize,
+    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -118,6 +128,7 @@ fn render_file_block(
                         hunk,
                         diff.highlight(),
                         width,
+                        layout,
                         theme,
                     ));
                 }
@@ -146,6 +157,7 @@ fn render_file_block(
             diff.hunks(),
             diff.highlight(),
             width,
+            layout,
             theme,
         )),
         FileBody::Symlink(view) => {
@@ -292,6 +304,8 @@ pub(super) struct DiffPane {
     /// Row count of the last-assembled visible window; drives scroll
     /// clamping between draws (mirrors Traces reading rows from its cache).
     pub(super) window_rows: usize,
+    /// The layout the last window was assembled with; shown in the footer.
+    current_layout: ChangeLayout,
     /// What the no-files render shows: the clean state or a build error.
     empty_state: EmptyPane,
 }
@@ -304,6 +318,7 @@ impl DiffPane {
             cached_width: width,
             diff_scroll: 0,
             window_rows: 0,
+            current_layout: ChangeLayout::Grouped,
             empty_state: EmptyPane::NoChanges,
         }
     }
@@ -337,9 +352,11 @@ impl DiffPane {
         display_range: Option<Range<usize>>,
         model: &Model,
         width: usize,
+        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) -> Vec<Line<'static>> {
+        self.current_layout = layout;
         let Some(range) = display_range else {
             self.window_rows = 0;
             return Vec::new();
@@ -355,7 +372,7 @@ impl DiffPane {
             if i > 0 {
                 window.push(Line::from(""));
             }
-            window.extend(self.file_block(input_idx, model, width, theme, budget));
+            window.extend(self.file_block(input_idx, model, width, layout, theme, budget));
         }
         self.window_rows = window.len();
         window
@@ -369,22 +386,25 @@ impl DiffPane {
         input_idx: usize,
         model: &Model,
         width: usize,
+        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) -> Vec<Line<'static>> {
-        let cached = self.cache.contains(width, input_idx);
+        let epoch = CacheEpoch { width, layout };
+        let cached = self.cache.contains(epoch, input_idx);
         if should_build_body(budget, cached) {
             if !cached {
                 let lines = render_file_block(
                     &model.files[input_idx],
                     &model.bodies[input_idx],
                     width,
+                    layout,
                     theme,
                 );
-                self.cache.insert(width, input_idx, lines);
+                self.cache.insert(epoch, input_idx, lines);
             }
             self.cache
-                .get(width, input_idx)
+                .get(epoch, input_idx)
                 .cloned()
                 .unwrap_or_default()
         } else {
@@ -530,7 +550,10 @@ impl DiffPane {
             return None;
         }
         let pos = self.diff_scroll.min(span.saturating_sub(1)) + 1;
-        Some(format!(" line {pos} of {span}  \u{00b7}  ? help "))
+        let layout = layout_label(self.current_layout);
+        Some(format!(
+            " line {pos} of {span}  \u{00b7}  {layout}  \u{00b7}  ? help "
+        ))
     }
 }
 
@@ -643,31 +666,60 @@ mod tests {
         assert_eq!(state.sidebar.display_order().len(), 2);
     }
 
+    fn grouped_epoch(width: usize) -> CacheEpoch {
+        CacheEpoch {
+            width,
+            layout: ChangeLayout::Grouped,
+        }
+    }
+
     #[test]
     fn diff_cache_retains_blocks_across_selection_changes() {
         let mut cache = DiffCache::default();
-        cache.insert(80, 0, vec![Line::from("a")]);
-        cache.insert(80, 1, vec![Line::from("b"), Line::from("b2")]);
+        let e = grouped_epoch(80);
+        cache.insert(e, 0, vec![Line::from("a")]);
+        cache.insert(e, 1, vec![Line::from("b"), Line::from("b2")]);
 
         // Both files stay retained: revisiting the first is a cache hit.
-        assert!(cache.contains(80, 0));
-        assert!(cache.contains(80, 1));
-        assert_eq!(cache.get(80, 0).map(|l| l.len()), Some(1));
-        assert_eq!(cache.get(80, 1).map(|l| l.len()), Some(2));
+        assert!(cache.contains(e, 0));
+        assert!(cache.contains(e, 1));
+        assert_eq!(cache.get(e, 0).map(|l| l.len()), Some(1));
+        assert_eq!(cache.get(e, 1).map(|l| l.len()), Some(2));
     }
 
     #[test]
     fn diff_cache_width_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(80, 0, vec![Line::from("a")]);
-        assert!(cache.contains(80, 0));
+        cache.insert(grouped_epoch(80), 0, vec![Line::from("a")]);
+        assert!(cache.contains(grouped_epoch(80), 0));
 
         // A different width drops the stale block and rebuilds at the new width.
-        assert!(!cache.contains(79, 0));
-        assert!(cache.get(79, 0).is_none());
-        cache.insert(79, 1, vec![Line::from("b")]);
-        assert!(!cache.contains(79, 0));
-        assert!(cache.contains(79, 1));
+        assert!(!cache.contains(grouped_epoch(79), 0));
+        assert!(cache.get(grouped_epoch(79), 0).is_none());
+        cache.insert(grouped_epoch(79), 1, vec![Line::from("b")]);
+        assert!(!cache.contains(grouped_epoch(79), 0));
+        assert!(cache.contains(grouped_epoch(79), 1));
+    }
+
+    #[test]
+    fn diff_cache_layout_change_clears_store() {
+        let mut cache = DiffCache::default();
+        cache.insert(grouped_epoch(80), 0, vec![Line::from("a")]);
+        assert!(cache.contains(grouped_epoch(80), 0));
+
+        // Same width, different layout: the stale block is dropped and
+        // rebuilt under the new layout epoch.
+        let interleaved = CacheEpoch {
+            width: 80,
+            layout: ChangeLayout::Interleaved {
+                group: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+        };
+        assert!(!cache.contains(interleaved, 0));
+        assert!(cache.get(interleaved, 0).is_none());
+        cache.insert(interleaved, 1, vec![Line::from("b")]);
+        assert!(!cache.contains(interleaved, 0));
+        assert!(cache.contains(interleaved, 1));
     }
 
     #[test]
@@ -844,7 +896,7 @@ mod tests {
 
         // A Full frame highlights the selected file and retains it.
         let _ = state.visible_diff_window(DrawBudget::Full);
-        assert!(state.diff.cache.contains(80, 0));
+        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
     }
 
     #[test]
@@ -880,7 +932,7 @@ mod tests {
 
         // The settling Full frame renders and retains it.
         let _ = state.visible_diff_window(DrawBudget::Full);
-        assert!(state.diff.cache.contains(80, 0));
+        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
     }
 
     #[test]
@@ -1084,6 +1136,11 @@ mod tests {
         assert!(
             footer.contains("? help"),
             "expected '? help' hint in footer, got {footer:?}"
+        );
+        // The default layout label is shown so the toggle state is visible.
+        assert!(
+            footer.contains("grouped"),
+            "expected the layout label in footer, got {footer:?}"
         );
     }
 

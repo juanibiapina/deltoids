@@ -21,8 +21,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use deltoids::Theme;
 use deltoids::render_tui::rgb_to_color;
+use deltoids::{ChangeLayout, Theme};
 
 /// A request to run a custom command, bubbled up to the `run()` loop
 /// (which owns the `Terminal`). Carries the fully-expanded shell line and
@@ -66,6 +66,19 @@ pub(crate) enum DrawBudget {
 /// file index, Traces by `(trace, entry)`).
 pub(crate) fn should_build_body(budget: DrawBudget, already_cached: bool) -> bool {
     budget == DrawBudget::Full || already_cached
+}
+
+/// Short human label for the current diff change-layout, shown in the Diff
+/// pane footer so the toggle's state (and when it wraps back to `grouped`)
+/// is visible.
+pub(crate) fn layout_label(layout: ChangeLayout) -> String {
+    match layout {
+        ChangeLayout::Grouped => "grouped".to_string(),
+        ChangeLayout::Interleaved { group } => match group.get() {
+            1 => "interleaved".to_string(),
+            n => format!("blocks of {n}"),
+        },
+    }
 }
 
 /// Labels for the modes, in `active`-index order.
@@ -275,12 +288,14 @@ pub(crate) trait Mode {
     /// draws the tab strip in its top-left panel title. `budget` tells
     /// the mode whether it may defer expensive rendering this frame
     /// (`Fast` while input streams, `Full` once it settles).
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
         frame: &mut Frame<'_>,
         left: Rect,
         right: Rect,
         tabs: TabStrip,
+        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     );

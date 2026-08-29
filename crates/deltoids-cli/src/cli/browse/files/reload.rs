@@ -255,9 +255,14 @@ mod tests {
         assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
         // The diff pane is filtered to the restored file and snapped to its top.
         let dr = state.sidebar.selection_display_range();
-        let window = state
-            .diff
-            .assemble_window(dr, &m2, 80, &theme(), DrawBudget::Full);
+        let window = state.diff.assemble_window(
+            dr,
+            &m2,
+            80,
+            deltoids::ChangeLayout::Grouped,
+            &theme(),
+            DrawBudget::Full,
+        );
         assert_eq!(line_text(&window[0]), "b.txt");
         assert_eq!(state.diff.diff_scroll, 0);
     }
@@ -283,9 +288,14 @@ mod tests {
 
         assert!(state.diff.display_order.is_empty());
         let dr = state.sidebar.selection_display_range();
-        let window = state
-            .diff
-            .assemble_window(dr, &empty, 80, &theme(), DrawBudget::Full);
+        let window = state.diff.assemble_window(
+            dr,
+            &empty,
+            80,
+            deltoids::ChangeLayout::Grouped,
+            &theme(),
+            DrawBudget::Full,
+        );
         assert!(window.is_empty());
         assert_eq!(state.diff.window_rows, 0);
         assert_eq!(

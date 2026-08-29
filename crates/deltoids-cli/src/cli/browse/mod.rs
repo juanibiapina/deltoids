@@ -53,8 +53,8 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
-use deltoids::Theme;
 use deltoids::render_tui::{pane_block, pane_block_with_tabs, rgb_to_color};
+use deltoids::{ChangeLayout, Theme};
 
 use crate::events::read_event_burst;
 use crate::sidebar_width::{self, Preference};
@@ -141,12 +141,14 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         let active = shell.active;
         let help_visible = shell.help_visible;
         let pref = shell.sidebar_pref;
-        let commands = &shell.commands;
+        let layout = shell.change_layout;
         // When the active mode hasn't been built yet (just toggled to), draw
         // a loading frame instead. The tab strip already shows the switch,
         // so the UI feels responsive while the (possibly slow) build runs.
         let building = !shell.built[active];
-        let budget = shell.draw_budget();
+        // Take the budget (a `&mut` op) before borrowing `commands`.
+        let budget = shell.take_draw_budget();
+        let commands = &shell.commands;
         let area = terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -163,6 +165,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
                         cols[0],
                         cols[1],
                         TabStrip { active },
+                        layout,
                         &theme,
                         budget,
                     );
@@ -250,6 +253,11 @@ struct Shell {
     dragging_divider: bool,
     /// Whether the help popup is shown.
     help_visible: bool,
+    /// Current diff change-layout, shared by both modes. Cycled with `\`.
+    change_layout: ChangeLayout,
+    /// One-shot: force the next frame to draw `Full` (set by a layout
+    /// toggle so the diff rebuilds without a scroll-resetting placeholder).
+    force_full: bool,
     /// Last-drawn left-column rect, for divider hit-testing.
     left_rect: Rect,
     /// Per-mode change receivers, armed lazily on first activation.
@@ -285,6 +293,8 @@ impl Shell {
             sidebar_pref,
             dragging_divider: false,
             help_visible: false,
+            change_layout: ChangeLayout::Grouped,
+            force_full: false,
             left_rect: Rect::default(),
             receivers: [None, None],
             armed: [false, false],
@@ -348,7 +358,15 @@ impl Shell {
     /// The draw budget for the current frame: `Full` when input has
     /// settled, `Fast` while a navigation key is streaming so modes can
     /// defer expensive rendering.
-    fn draw_budget(&self) -> DrawBudget {
+    ///
+    /// A one-shot `force_full` overrides the streaming heuristic for the
+    /// next frame and is consumed here. A layout toggle sets it so the diff
+    /// rebuilds fully at once instead of flashing `Fast` placeholders (whose
+    /// short window would clamp the saved scroll to the top).
+    fn take_draw_budget(&mut self) -> DrawBudget {
+        if std::mem::take(&mut self.force_full) {
+            return DrawBudget::Full;
+        }
         if self.input_idle {
             DrawBudget::Full
         } else {
@@ -500,6 +518,15 @@ impl Shell {
                 self.sidebar_pref.narrow();
                 AppCommand::Continue
             }
+            // `\` cycles the diff change-layout for both modes. The cache
+            // keys on layout, so the next draw rebuilds.
+            KeyCode::Char('\\') => {
+                self.change_layout = next_layout(self.change_layout);
+                // Rebuild fully next frame so the diff keeps its scroll
+                // position instead of snapping to the top.
+                self.force_full = true;
+                AppCommand::Continue
+            }
             // Custom commands take priority over a mode's own keys (but not
             // over the shell globals above). A bound key with a selectable
             // file expands and bubbles up a Run request; with nothing
@@ -648,6 +675,18 @@ fn build_mode(index: usize, theme: &Theme, diff_width: usize) -> Box<dyn Mode> {
     match index {
         FILES_MODE => Box::new(FilesMode::build(theme, diff_width)),
         _ => Box::new(TracesMode::build().unwrap_or_else(|_| TracesMode::empty())),
+    }
+}
+
+/// Toggle the diff change-layout: `Grouped ⇆ interleaved`. Interleaved uses
+/// a group size of 1 (each removed line next to its replacement).
+fn next_layout(layout: ChangeLayout) -> ChangeLayout {
+    use std::num::NonZeroUsize;
+    match layout {
+        ChangeLayout::Grouped => ChangeLayout::Interleaved {
+            group: NonZeroUsize::new(1).expect("1 is non-zero"),
+        },
+        ChangeLayout::Interleaved { .. } => ChangeLayout::Grouped,
     }
 }
 

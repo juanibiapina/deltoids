@@ -12,13 +12,13 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use deltoids::Theme;
 use deltoids::render_tui::{
-    self, pane_block, pane_border_color, render_pane_scrollbar, rgb_to_color,
+    self, pane_block_with_footer, pane_border_color, render_pane_scrollbar, rgb_to_color,
 };
+use deltoids::{ChangeLayout, Theme};
 
 use crate::HistoryEntry;
-use crate::cli::browse::mode::{DrawBudget, should_build_body};
+use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 
 use super::model::LoadedTrace;
 use super::{AppState, Focus};
@@ -30,31 +30,46 @@ use super::{AppState, Focus};
 /// instead of re-highlighting it on every selection change.
 #[derive(Debug, Default, Clone)]
 pub(super) struct DiffCache {
-    width: usize,
+    epoch: CacheEpoch,
     lines: HashMap<(usize, usize), Vec<Line<'static>>>,
 }
 
+/// The identity every retained entry shares: its render `width` and the
+/// active change `layout`. A change to either invalidates the whole store,
+/// since both alter every entry's rendered lines.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CacheEpoch {
+    pub(super) width: usize,
+    pub(super) layout: ChangeLayout,
+}
+
 impl DiffCache {
-    /// Rendered lines for `(trace, entry)` at `width`, or `None` on a
-    /// width mismatch or a miss.
-    fn get(&self, width: usize, key: (usize, usize)) -> Option<&Vec<Line<'static>>> {
-        if self.width != width {
+    /// Rendered lines for `(trace, entry)` at `epoch`, or `None` on an
+    /// epoch mismatch or a miss.
+    fn get(&self, epoch: CacheEpoch, key: (usize, usize)) -> Option<&Vec<Line<'static>>> {
+        if self.epoch != epoch {
             return None;
         }
         self.lines.get(&key)
     }
 
-    /// Whether `(trace, entry)` is already rendered at `width`.
-    fn contains(&self, width: usize, key: (usize, usize)) -> bool {
-        self.width == width && self.lines.contains_key(&key)
+    /// Whether `(trace, entry)` is already rendered at `epoch`.
+    fn contains(&self, epoch: CacheEpoch, key: (usize, usize)) -> bool {
+        self.epoch == epoch && self.lines.contains_key(&key)
     }
 
-    /// Store rendered `lines` for `(trace, entry)`. A width change clears
-    /// the store first so every retained entry shares one width.
-    pub(super) fn insert(&mut self, width: usize, key: (usize, usize), lines: Vec<Line<'static>>) {
-        if self.width != width {
+    /// Store rendered `lines` for `(trace, entry)`. A width or layout
+    /// change clears the store first so every retained entry shares one
+    /// epoch.
+    pub(super) fn insert(
+        &mut self,
+        epoch: CacheEpoch,
+        key: (usize, usize),
+        lines: Vec<Line<'static>>,
+    ) {
+        if self.epoch != epoch {
             self.lines.clear();
-            self.width = width;
+            self.epoch = epoch;
         }
         self.lines.insert(key, lines);
     }
@@ -84,15 +99,15 @@ pub(super) fn max_detail_scroll(detail_row_count: usize, detail_height: usize) -
 fn ensure_diff_cache(
     active_trace: &LoadedTrace,
     state: &mut AppState,
-    detail_width: usize,
+    epoch: CacheEpoch,
     key: (usize, usize),
     theme: &Theme,
 ) {
-    if state.diff_cache.contains(detail_width, key) {
+    if state.diff_cache.contains(epoch, key) {
         return;
     }
-    let lines = render_detail_for(active_trace, key.1, detail_width, theme);
-    state.diff_cache.insert(detail_width, key, lines);
+    let lines = render_detail_for(active_trace, key.1, epoch.width, epoch.layout, theme);
+    state.diff_cache.insert(epoch, key, lines);
 }
 
 pub(super) fn render_diff_pane(
@@ -100,23 +115,29 @@ pub(super) fn render_diff_pane(
     area: ratatui::layout::Rect,
     active_trace: &LoadedTrace,
     state: &mut AppState,
+    layout: ChangeLayout,
     theme: &Theme,
     budget: DrawBudget,
 ) {
     let detail_width = area.width.saturating_sub(2) as usize;
+    let epoch = CacheEpoch {
+        width: detail_width,
+        layout,
+    };
     let key = (state.trace_index, state.entry_index());
 
-    if should_build_body(budget, state.diff_cache.contains(detail_width, key)) {
-        ensure_diff_cache(active_trace, state, detail_width, key, theme);
+    if should_build_body(budget, state.diff_cache.contains(epoch, key)) {
+        ensure_diff_cache(active_trace, state, epoch, key, theme);
     }
 
     let diff_viewport = area.height.saturating_sub(2) as usize;
-    let block = pane_block(
+    let block = pane_block_with_footer(
         "─[3]─Diff─",
         pane_border_color(state.focus == Focus::Diff, theme),
+        Some(format!(" {}  \u{00b7}  ? help ", layout_label(layout))),
     );
 
-    match state.diff_cache.get(detail_width, key) {
+    match state.diff_cache.get(epoch, key) {
         Some(lines) => {
             let detail_row_count = lines.len();
             let start = state.diff_scroll.min(detail_row_count);
@@ -211,6 +232,7 @@ pub(super) fn render_detail_for(
     trace: &LoadedTrace,
     entry_index: usize,
     width: usize,
+    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let Some(entry) = trace.entries.get(entry_index) else {
@@ -235,6 +257,7 @@ pub(super) fn render_detail_for(
             &entry.hunks,
             entry.highlight.as_deref(),
             width,
+            layout,
             theme,
         ));
     }
@@ -400,32 +423,59 @@ mod tests {
     use super::*;
     use crate::cli::browse::traces::test_support::*;
 
+    fn grouped_epoch(width: usize) -> CacheEpoch {
+        CacheEpoch {
+            width,
+            layout: ChangeLayout::Grouped,
+        }
+    }
+
     #[test]
     fn diff_cache_retains_entries_across_selection_changes() {
         let mut cache = DiffCache::default();
-        cache.insert(80, (0, 0), vec![Line::from("a")]);
-        cache.insert(80, (0, 1), vec![Line::from("b"), Line::from("b2")]);
+        let e = grouped_epoch(80);
+        cache.insert(e, (0, 0), vec![Line::from("a")]);
+        cache.insert(e, (0, 1), vec![Line::from("b"), Line::from("b2")]);
 
         // Both entries stay retained: revisiting the first is a cache hit.
-        assert!(cache.contains(80, (0, 0)));
-        assert!(cache.contains(80, (0, 1)));
+        assert!(cache.contains(e, (0, 0)));
+        assert!(cache.contains(e, (0, 1)));
         assert_eq!(cache.rows_for((0, 0)), 1);
         assert_eq!(cache.rows_for((0, 1)), 2);
-        assert_eq!(cache.get(80, (0, 0)).map(|l| l.len()), Some(1));
+        assert_eq!(cache.get(e, (0, 0)).map(|l| l.len()), Some(1));
     }
 
     #[test]
     fn diff_cache_width_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(80, (0, 0), vec![Line::from("a")]);
-        assert!(cache.contains(80, (0, 0)));
+        cache.insert(grouped_epoch(80), (0, 0), vec![Line::from("a")]);
+        assert!(cache.contains(grouped_epoch(80), (0, 0)));
 
         // A different width drops the stale entry and rebuilds at the new width.
-        assert!(!cache.contains(79, (0, 0)));
-        assert!(cache.get(79, (0, 0)).is_none());
-        cache.insert(79, (0, 1), vec![Line::from("b")]);
-        assert!(!cache.contains(79, (0, 0)));
-        assert!(cache.contains(79, (0, 1)));
+        assert!(!cache.contains(grouped_epoch(79), (0, 0)));
+        assert!(cache.get(grouped_epoch(79), (0, 0)).is_none());
+        cache.insert(grouped_epoch(79), (0, 1), vec![Line::from("b")]);
+        assert!(!cache.contains(grouped_epoch(79), (0, 0)));
+        assert!(cache.contains(grouped_epoch(79), (0, 1)));
+    }
+
+    #[test]
+    fn diff_cache_layout_change_clears_store() {
+        let mut cache = DiffCache::default();
+        cache.insert(grouped_epoch(80), (0, 0), vec![Line::from("a")]);
+        assert!(cache.contains(grouped_epoch(80), (0, 0)));
+
+        // Same width, different layout: the stale entry is dropped.
+        let interleaved = CacheEpoch {
+            width: 80,
+            layout: ChangeLayout::Interleaved {
+                group: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+        };
+        assert!(!cache.contains(interleaved, (0, 0)));
+        cache.insert(interleaved, (0, 1), vec![Line::from("b")]);
+        assert!(!cache.contains(interleaved, (0, 0)));
+        assert!(cache.contains(interleaved, (0, 1)));
     }
 
     #[test]
@@ -437,13 +487,14 @@ mod tests {
         };
         let theme = test_theme();
         let mut state = AppState::new(1);
+        let e = grouped_epoch(80);
 
-        assert!(!state.diff_cache.contains(80, (0, 0)));
-        ensure_diff_cache(&trace, &mut state, 80, (0, 0), &theme);
-        assert!(state.diff_cache.contains(80, (0, 0)));
+        assert!(!state.diff_cache.contains(e, (0, 0)));
+        ensure_diff_cache(&trace, &mut state, e, (0, 0), &theme);
+        assert!(state.diff_cache.contains(e, (0, 0)));
         // Second call is a no-op hit; the store still holds the one entry.
-        ensure_diff_cache(&trace, &mut state, 80, (0, 0), &theme);
-        assert!(state.diff_cache.contains(80, (0, 0)));
+        ensure_diff_cache(&trace, &mut state, e, (0, 0), &theme);
+        assert!(state.diff_cache.contains(e, (0, 0)));
     }
 
     /// Concatenate the visible text of a `Line<'static>` (ignoring styles).
@@ -456,7 +507,7 @@ mod tests {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
             entries: vec![entry.clone()],
         };
-        render_detail_for(&trace, 0, width, theme)
+        render_detail_for(&trace, 0, width, ChangeLayout::Grouped, theme)
     }
 
     #[test]
@@ -497,7 +548,8 @@ mod tests {
 
         let lines = render_entry(&entry, 80, &theme);
         let header = render_detail_header(&entry, 80, &theme);
-        let body = render_tui::render_hunk_list(&entry.hunks, None, 80, &theme);
+        let body =
+            render_tui::render_hunk_list(&entry.hunks, None, 80, ChangeLayout::Grouped, &theme);
 
         // Header first, then exactly the shared hunk body (no edit box in
         // between).

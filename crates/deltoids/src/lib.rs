@@ -1,3 +1,4 @@
+mod change_layout;
 pub mod config;
 #[cfg(feature = "blob-resolve")]
 pub mod content;
@@ -19,6 +20,7 @@ mod scope;
 pub mod symlink;
 pub mod syntax;
 
+pub use change_layout::{ChangeLayout, arrange_change};
 pub use config::{ColorMode, SyntaxAssets, Theme};
 pub use engine::{DiffOp, Snapshot};
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TUI: press `\` to toggle how changed lines are laid out, between grouped (all removed, then all added) and interleaved (each removed line next to its replacement). The Diff pane footer shows the current mode.
+
 ### Changed
 
 - serve: long lines now wrap on screen, so reviewing a diff on a phone needs no horizontal scrolling. Two buttons in the reviewer let you switch back to unwrapped lines and pick one of three font sizes; both choices are remembered.

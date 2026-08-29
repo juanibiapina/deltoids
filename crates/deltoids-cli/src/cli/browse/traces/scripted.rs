@@ -134,10 +134,16 @@ fn render_scripted(
     let sidebar_rows = [entries_rows, traces_rows].concat();
 
     // Right: diff for selected entry, spans full body height
-    let detail = render_detail_for(active_trace, state.entry_index(), right_width, theme)
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>();
+    let detail = render_detail_for(
+        active_trace,
+        state.entry_index(),
+        right_width,
+        deltoids::ChangeLayout::Grouped,
+        theme,
+    )
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>();
     let diff_rows = detail
         .iter()
         .skip(state.diff_scroll)

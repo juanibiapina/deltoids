@@ -45,7 +45,7 @@ use crate::highlight::HunkHighlighter;
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 use crate::symlink::SymlinkView;
-use crate::{Hunk, HunkRun, LineKind};
+use crate::{ChangeLayout, Hunk, HunkRun, LineKind, arrange_change};
 
 const TAB_WIDTH: usize = 4;
 
@@ -139,6 +139,7 @@ pub fn render_hunk(
     hunk: &Hunk,
     highlight: Option<&str>,
     width: usize,
+    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut output = Vec::new();
@@ -150,7 +151,7 @@ pub fn render_hunk(
             output.extend(render_breadcrumb_box(&b, highlight, theme));
         }
     }
-    output.extend(render_hunk_body(hunk, highlight, width, theme));
+    output.extend(render_hunk_body(hunk, highlight, width, layout, theme));
     output
 }
 
@@ -162,6 +163,7 @@ pub fn render_hunk_body(
     hunk: &Hunk,
     highlight: Option<&str>,
     width: usize,
+    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut output = Vec::new();
@@ -180,7 +182,7 @@ pub fn render_hunk_body(
                 ));
             }
             HunkRun::Change(slice) => {
-                render_subhunk(slice, &mut highlighter, width, theme, &mut output);
+                render_subhunk(slice, &mut highlighter, width, layout, theme, &mut output);
             }
         }
     }
@@ -200,12 +202,13 @@ pub fn render_hunk_list(
     hunks: &[Hunk],
     highlight: Option<&str>,
     width: usize,
+    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut output = Vec::new();
     for hunk in hunks {
         output.push(Line::from(""));
-        output.extend(render_hunk(hunk, highlight, width, theme));
+        output.extend(render_hunk(hunk, highlight, width, layout, theme));
     }
     output
 }
@@ -298,6 +301,7 @@ fn render_subhunk(
     lines: &[crate::DiffLine],
     highlighter: &mut HunkHighlighter,
     width: usize,
+    layout: ChangeLayout,
     theme: &Theme,
     rendered: &mut Vec<Line<'static>>,
 ) {
@@ -314,37 +318,58 @@ fn render_subhunk(
 
     let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_contents, &plus_contents);
 
+    // Bind each line to its emphasis in stored order, then reorder for the
+    // chosen layout. Binding before the reorder keeps emphasis aligned with
+    // its line no matter how the layout interleaves the two kinds.
+    // `Hunk::runs::Change` only emits Added/Removed; Context lines arrive
+    // separately as `HunkRun::Context`.
+    let plain = LineEmphasis::Plain;
     let mut mi = 0usize;
     let mut pi = 0usize;
+    let annotated: Vec<(&crate::DiffLine, &LineEmphasis)> = lines
+        .iter()
+        .map(|line| match line.kind {
+            LineKind::Removed => {
+                let emphasis = &minus_emphasis[mi];
+                mi += 1;
+                (line, emphasis)
+            }
+            LineKind::Added => {
+                let emphasis = &plus_emphasis[pi];
+                pi += 1;
+                (line, emphasis)
+            }
+            LineKind::Context => (line, &plain),
+        })
+        .collect();
 
-    for line in lines {
+    // Interleaving preserves each kind's relative order, so the two-sided
+    // highlighter still receives removed lines (minus state) and added lines
+    // (plus state) in order; only their alternation changes.
+    for (line, emphasis) in arrange_change(&annotated, |(l, _)| l.kind.clone(), layout) {
         match line.kind {
             LineKind::Removed => {
                 let ranges = highlighter.removed(&line.content);
                 rendered.extend(render_emphasized_line(
                     &line.content,
-                    &minus_emphasis[mi],
+                    emphasis,
                     LineKind::Removed,
                     &ranges,
                     width,
                     theme,
                 ));
-                mi += 1;
             }
             LineKind::Added => {
                 let ranges = highlighter.added(&line.content);
                 rendered.extend(render_emphasized_line(
                     &line.content,
-                    &plus_emphasis[pi],
+                    emphasis,
                     LineKind::Added,
                     &ranges,
                     width,
                     theme,
                 ));
-                pi += 1;
             }
-            // `Hunk::runs::Change` only emits Added/Removed; Context
-            // lines arrive separately as `HunkRun::Context`.
             LineKind::Context => {}
         }
     }
@@ -1020,7 +1045,13 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some("TypeScriptReact"), 80, &theme);
+        let lines = render_hunk(
+            &hunk,
+            Some("TypeScriptReact"),
+            80,
+            ChangeLayout::Grouped,
+            &theme,
+        );
         let body = body_rows(&lines);
         let first = fg_colors(&body[0]); // "/**"
         let second = fg_colors(&body[1]); // interior comment line
@@ -1040,6 +1071,7 @@ mod tests {
             &context_hunk(" * VAPID event fetch return 404 const class"),
             Some("TypeScriptReact"),
             80,
+            ChangeLayout::Grouped,
             &theme,
         );
         let standalone_set = fg_colors(&body_rows(&standalone)[0]);
@@ -1073,7 +1105,13 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some("TypeScriptReact"), 80, &theme);
+        let lines = render_hunk(
+            &hunk,
+            Some("TypeScriptReact"),
+            80,
+            ChangeLayout::Grouped,
+            &theme,
+        );
         let body = body_rows(&lines);
         let comment = fg_colors(&body[1]); // intro context line
         assert_eq!(comment.len(), 1, "context comment line is uniform");
@@ -1089,7 +1127,7 @@ mod tests {
         let content = "abcdefghij klmnopqrst uvwxyz0123 456789"; // 39 cols
         let width = 10;
         let hunk = context_hunk(content);
-        let lines = render_hunk(&hunk, None, width, &theme);
+        let lines = render_hunk(&hunk, None, width, ChangeLayout::Grouped, &theme);
         let body = body_rows(&lines);
         assert!(body.len() > 1, "expected multiple wrapped rows");
         for row in &body {
@@ -1118,7 +1156,7 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, None, width, &theme);
+        let lines = render_hunk(&hunk, None, width, ChangeLayout::Grouped, &theme);
         let body = body_rows(&lines);
         assert!(body.len() > 1, "expected wrap");
         for row in &body {
@@ -1135,7 +1173,7 @@ mod tests {
         let theme = Theme::default();
         let width = 10;
         let hunk = context_hunk("0123456789"); // exactly 10 cols
-        let lines = render_hunk(&hunk, None, width, &theme);
+        let lines = render_hunk(&hunk, None, width, ChangeLayout::Grouped, &theme);
         let body = body_rows(&lines);
         assert_eq!(
             body.len(),
@@ -1152,7 +1190,7 @@ mod tests {
         // Three columns of ASCII then a width-2 char: it cannot fit at col 3,
         // so it moves whole to the next row.
         let hunk = context_hunk("abc世");
-        let lines = render_hunk(&hunk, None, width, &theme);
+        let lines = render_hunk(&hunk, None, width, ChangeLayout::Grouped, &theme);
         let body = body_rows(&lines);
         assert_eq!(body.len(), 2);
         assert_eq!(line_text(&body[0]).trim_end(), "abc");
@@ -1185,7 +1223,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, None, width, &theme);
+        let lines = render_hunk(&hunk, None, width, ChangeLayout::Grouped, &theme);
         // Added rows: every row padded to width, and both bg colors appear
         // across the wrapped rows.
         let added_rows: Vec<&Line<'static>> = lines
@@ -1228,7 +1266,7 @@ mod tests {
                 text: long.to_string(),
             }],
         };
-        let lines = render_hunk(&hunk, Some("Rust"), width, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), width, ChangeLayout::Grouped, &theme);
         // Exactly one scope row inside the box references the ancestor, and it
         // fits within the box width (truncated, not wrapped).
         let scope_rows: Vec<&Line<'static>> = lines
@@ -1297,7 +1335,7 @@ mod tests {
     #[test]
     fn render_hunk_list_empty_input_yields_empty_vec() {
         let theme = Theme::default();
-        let lines = render_hunk_list(&[], None, 80, &theme);
+        let lines = render_hunk_list(&[], None, 80, ChangeLayout::Grouped, &theme);
         assert!(lines.is_empty());
     }
 
@@ -1305,10 +1343,10 @@ mod tests {
     fn render_hunk_list_prefixes_each_hunk_with_a_blank() {
         let theme = Theme::default();
         let hunks = vec![context_hunk("first"), context_hunk("second")];
-        let single_0 = render_hunk(&hunks[0], None, 80, &theme);
-        let single_1 = render_hunk(&hunks[1], None, 80, &theme);
+        let single_0 = render_hunk(&hunks[0], None, 80, ChangeLayout::Grouped, &theme);
+        let single_1 = render_hunk(&hunks[1], None, 80, ChangeLayout::Grouped, &theme);
 
-        let lines = render_hunk_list(&hunks, None, 80, &theme);
+        let lines = render_hunk_list(&hunks, None, 80, ChangeLayout::Grouped, &theme);
 
         // First emitted line is blank (separates the body from any header).
         assert_eq!(line_text(&lines[0]), "");
@@ -1345,7 +1383,7 @@ mod tests {
     fn render_hunk_emits_breadcrumb_when_ancestors_present() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
         // First line is the breadcrumb top border.
         assert!(line_text(&lines[0]).contains("╮"));
         // Some line in the box references the ancestor.
@@ -1364,7 +1402,7 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
         // Expect a 3-line box containing the line number.
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(text.iter().any(|t| t.contains("42")));
@@ -1375,7 +1413,7 @@ mod tests {
     fn render_hunk_added_line_carries_added_bg() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
         let added_bg = rgb_to_color(theme.diff_added_bg);
         assert!(
             lines
@@ -1403,7 +1441,98 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
+        let added_emph = rgb_to_color(theme.diff_added_emph_bg);
+        let removed_emph = rgb_to_color(theme.diff_deleted_emph_bg);
+        let bgs: Vec<Color> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().filter_map(|s| s.style.bg))
+            .collect();
+        assert!(bgs.contains(&added_emph), "missing added emph bg");
+        assert!(bgs.contains(&removed_emph), "missing removed emph bg");
+    }
+
+    /// A three-line replace: the diff-body row kinds (by background) tell
+    /// grouped from interleaved. Removed rows carry a deleted background,
+    /// added rows an added background; we read the sequence of the two.
+    fn body_kind_sequence(lines: &[Line<'static>], theme: &Theme) -> Vec<char> {
+        let del = rgb_to_color(theme.diff_deleted_bg);
+        let del_emph = rgb_to_color(theme.diff_deleted_emph_bg);
+        let add = rgb_to_color(theme.diff_added_bg);
+        let add_emph = rgb_to_color(theme.diff_added_emph_bg);
+        lines
+            .iter()
+            .filter_map(|l| {
+                let bgs: Vec<Color> = l.spans.iter().filter_map(|s| s.style.bg).collect();
+                if bgs.iter().any(|b| *b == del || *b == del_emph) {
+                    Some('-')
+                } else if bgs.iter().any(|b| *b == add || *b == add_emph) {
+                    Some('+')
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn three_line_replace_hunk() -> Hunk {
+        let removed = |c: &str| DiffLine {
+            kind: LineKind::Removed,
+            content: c.to_string(),
+        };
+        let added = |c: &str| DiffLine {
+            kind: LineKind::Added,
+            content: c.to_string(),
+        };
+        Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                removed("let a = 1;"),
+                removed("let b = 2;"),
+                removed("let c = 3;"),
+                added("let a = 10;"),
+                added("let b = 20;"),
+                added("let c = 30;"),
+            ],
+            ancestors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn grouped_layout_keeps_removed_before_added() {
+        let theme = Theme::default();
+        let lines = render_hunk(
+            &three_line_replace_hunk(),
+            Some("Rust"),
+            80,
+            ChangeLayout::Grouped,
+            &theme,
+        );
+        assert_eq!(
+            body_kind_sequence(&lines, &theme),
+            vec!['-', '-', '-', '+', '+', '+']
+        );
+    }
+
+    #[test]
+    fn interleaved_layout_alternates_and_keeps_emphasis() {
+        let theme = Theme::default();
+        let group = std::num::NonZeroUsize::new(1).unwrap();
+        let lines = render_hunk(
+            &three_line_replace_hunk(),
+            Some("Rust"),
+            80,
+            ChangeLayout::Interleaved { group },
+            &theme,
+        );
+        assert_eq!(
+            body_kind_sequence(&lines, &theme),
+            vec!['-', '+', '-', '+', '-', '+']
+        );
+        // Intraline emphasis still resolves: the paired rows carry the
+        // stronger emph backgrounds, proving emphasis stayed bound to its
+        // line through the reordering.
         let added_emph = rgb_to_color(theme.diff_added_emph_bg);
         let removed_emph = rgb_to_color(theme.diff_deleted_emph_bg);
         let bgs: Vec<Color> = lines
@@ -1431,7 +1560,7 @@ mod tests {
         let render = |diff: &Diff| -> Vec<Line<'static>> {
             diff.hunks()
                 .iter()
-                .flat_map(|h| render_hunk(h, diff.highlight(), 120, &theme))
+                .flat_map(|h| render_hunk(h, diff.highlight(), 120, ChangeLayout::Grouped, &theme))
                 .collect()
         };
 
@@ -1461,7 +1590,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
         let added_emph = rgb_to_color(theme.diff_added_emph_bg);
         let removed_emph = rgb_to_color(theme.diff_deleted_emph_bg);
         let bgs: Vec<Color> = lines
@@ -1507,7 +1636,7 @@ mod tests {
                 },
             ],
         };
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert!(
             texts.iter().any(|t| t.contains("...")),
@@ -1545,7 +1674,7 @@ mod tests {
                 },
             ],
         };
-        let lines = render_hunk(&hunk, Some("Rust"), 80, &theme);
+        let lines = render_hunk(&hunk, Some("Rust"), 80, ChangeLayout::Grouped, &theme);
         for line in &lines {
             assert!(
                 !line_text(line).contains("..."),

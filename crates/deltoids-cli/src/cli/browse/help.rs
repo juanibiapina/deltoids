@@ -29,6 +29,7 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),
     ("< / >", "narrow / widen sidebar (shared by modes)"),
+    ("\\", "cycle diff layout (grouped \u{2194} interleaved)"),
     ("q", "quit"),
 ];
 

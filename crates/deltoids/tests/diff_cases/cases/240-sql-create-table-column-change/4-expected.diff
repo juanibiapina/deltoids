@@ -1,0 +1,7 @@
+@@ -1,5 +1,5 @@ [create_table users]
+ CREATE TABLE users (
+   id INT PRIMARY KEY,
+-  name TEXT,
++  name VARCHAR(255),
+   email TEXT
+ );

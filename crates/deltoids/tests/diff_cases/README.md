@@ -127,6 +127,7 @@ Cases are organised loosely by theme via their numeric prefix:
 * `190-199` — CSS scope behaviour
 * `200-209` — Markdown scope behaviour
 * `220-229` — TOML scope behaviour
+* `240-249` — SQL scope behaviour
 
 Current cases:
 
@@ -191,3 +192,6 @@ Current cases:
 | `096-typescript-large-fn-nearby-changes-merge`     | Three replaces in adjacent objects in 200+ line fn → one merged hunk      |
 | `097-typescript-method-rename-split`             | Method rename + body change + new wrapper render faithfully in one hunk, `+/-` counts match git |
 | `237-rust-replace-adds-multiple-new-functions`      | A Replace that edits one fn and appends new fns renders every line by op kind, `+/-` counts match git |
+| `240-sql-create-table-column-change`                | SQL `CREATE TABLE` column edit → `[create_table users]` breadcrumb (name from `object_reference`) |
+| `241-sql-create-function-body-change`               | SQL `CREATE FUNCTION` body edit → `[create_function add]` breadcrumb |
+| `242-sql-select-statement-no-breadcrumb`            | Bare SQL `SELECT` change → no breadcrumb |

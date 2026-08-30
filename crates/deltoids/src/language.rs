@@ -29,6 +29,7 @@ pub enum Language {
     Python,
     Ruby,
     Rust,
+    Sql,
     Toml,
     Tsx,
     TypeScript,
@@ -67,6 +68,13 @@ pub(crate) struct TreeSitterConfig {
     /// `identifier (string_lit | identifier)* { body }` with no fields,
     /// so the breadcrumb reads e.g. `resource "aws_s3_bucket" "logs"`.
     pub(crate) positional_name_kinds: &'static [&'static str],
+    /// Node kinds whose breadcrumb name is the text of their descendant
+    /// `object_reference` child rather than a `name` field. Use for SQL
+    /// DDL statements (`create_table`, `create_function`, `alter_table`,
+    /// …), where the object name lives on a nested `object_reference`
+    /// (`users`, `public.users`, `add`) and the statement node itself
+    /// exposes no `name` field.
+    pub(crate) object_reference_name_kinds: &'static [&'static str],
     /// Node kinds that, when they appear as siblings above a structure,
     /// attach to that structure for scope queries. Typically `comment`
     /// plus the language's attribute kinds (Rust `attribute_item`).
@@ -102,6 +110,7 @@ impl Language {
             Language::Python => "python",
             Language::Ruby => "ruby",
             Language::Rust => "rust",
+            Language::Sql => "sql",
             Language::Toml => "toml",
             Language::Tsx => "tsx",
             Language::TypeScript => "typescript",
@@ -126,6 +135,7 @@ impl Language {
             "python" => Some(Language::Python),
             "ruby" => Some(Language::Ruby),
             "rust" => Some(Language::Rust),
+            "sql" => Some(Language::Sql),
             "toml" => Some(Language::Toml),
             "tsx" => Some(Language::Tsx),
             "typescript" => Some(Language::TypeScript),
@@ -173,6 +183,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["line_comment", "block_comment", "attribute_item"],
                 transparent_expansion: true,
             },
@@ -184,6 +195,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -226,6 +238,7 @@ impl Language {
                 // string-literal arg).
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -258,6 +271,7 @@ impl Language {
                 ],
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -288,6 +302,7 @@ impl Language {
                 ],
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -311,6 +326,7 @@ impl Language {
                 anchor_only_kinds: &["func_literal"],
                 call_promoted_kinds: &["call_expression"],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -326,6 +342,7 @@ impl Language {
                 anchor_only_kinds: &["block", "do_block", "lambda"],
                 call_promoted_kinds: &["call"],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -346,6 +363,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
             },
@@ -357,6 +375,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -372,6 +391,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -383,6 +403,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -399,6 +420,7 @@ impl Language {
                 anchor_only_kinds: &["function_definition"],
                 call_promoted_kinds: &["function_call"],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -410,6 +432,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -426,6 +449,7 @@ impl Language {
                 // `variable "region"`, `module "vpc"`). Build the
                 // breadcrumb name from those positional children.
                 positional_name_kinds: &["block"],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -437,6 +461,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &[],
                 // Prose: body changes have no structure ancestor, and the
                 // outermost transparent ancestor is a whole heading-
@@ -446,6 +471,47 @@ impl Language {
                 // section model is future work.
                 transparent_expansion: false,
             },
+            Language::Sql => TreeSitterConfig {
+                language: tree_sitter_sequel::LANGUAGE,
+                // DDL statements are the named units of a schema. Each
+                // parses as `statement > create_*/alter_*`; the wrapper
+                // `statement` stays transparent so the breadcrumb reads
+                // e.g. `[create_table users]`.
+                structure_kinds: &[
+                    "create_table",
+                    "create_view",
+                    "create_materialized_view",
+                    "create_function",
+                    "create_index",
+                    "create_trigger",
+                    "create_type",
+                    "create_schema",
+                    "create_sequence",
+                    "alter_table",
+                ],
+                promoted_kinds: &[],
+                function_body_kinds: &[],
+                anchor_only_kinds: &[],
+                call_promoted_kinds: &[],
+                positional_name_kinds: &[],
+                // Every DDL structure carries its object name on a nested
+                // `object_reference` (`users`, `public.users`, `add`),
+                // not a `name` field.
+                object_reference_name_kinds: &[
+                    "create_table",
+                    "create_view",
+                    "create_materialized_view",
+                    "create_function",
+                    "create_index",
+                    "create_trigger",
+                    "create_type",
+                    "create_schema",
+                    "create_sequence",
+                    "alter_table",
+                ],
+                leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
+            },
             Language::Toml => TreeSitterConfig {
                 language: tree_sitter_toml_ng::LANGUAGE,
                 structure_kinds: &["table", "table_array_element"],
@@ -454,6 +520,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -465,6 +532,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
             },
@@ -476,6 +544,7 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
             },
@@ -504,6 +573,7 @@ impl Language {
             "Python" => Some(Language::Python),
             "Ruby" => Some(Language::Ruby),
             "Rust" => Some(Language::Rust),
+            "SQL" => Some(Language::Sql),
             "TOML" => Some(Language::Toml),
             "TypeScript" => Some(Language::TypeScript),
             "TypeScriptReact" => Some(Language::Tsx),
@@ -590,6 +660,7 @@ mod tests {
             Language::Python,
             Language::Ruby,
             Language::Rust,
+            Language::Sql,
             Language::Toml,
             Language::Tsx,
             Language::TypeScript,

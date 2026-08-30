@@ -42,6 +42,10 @@ pub struct ParsedFile {
     /// positional `identifier` / `string_lit` children rather than a
     /// `name` field. See [`crate::language::TreeSitterConfig`].
     positional_name_kinds: &'static [&'static str],
+    /// Node kinds whose breadcrumb name is the text of their descendant
+    /// `object_reference` child (SQL DDL). See
+    /// [`crate::language::TreeSitterConfig`].
+    object_reference_name_kinds: &'static [&'static str],
     /// Node kinds that, when they appear as siblings above a structure,
     /// attach to that structure for scope queries. See
     /// [`crate::language::TreeSitterConfig`].
@@ -75,6 +79,7 @@ impl ParsedFile {
             anchor_only_kinds: entry.anchor_only_kinds,
             call_promoted_kinds: entry.call_promoted_kinds,
             positional_name_kinds: entry.positional_name_kinds,
+            object_reference_name_kinds: entry.object_reference_name_kinds,
             leading_comment_kinds: entry.leading_comment_kinds,
             transparent_expansion: entry.transparent_expansion,
         })
@@ -174,7 +179,13 @@ impl ParsedFile {
         let end_line = node_end_line(n);
         let kind_is_call_promoted = self.call_promoted_kinds.contains(&n.kind());
         let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
-        let name = self.scope_name(n, kind_is_call_promoted, kind_is_positional);
+        let kind_is_object_reference = self.object_reference_name_kinds.contains(&n.kind());
+        let name = self.scope_name(
+            n,
+            kind_is_call_promoted,
+            kind_is_positional,
+            kind_is_object_reference,
+        );
         let text = self
             .source_line_raw(n.start_position().row)
             .unwrap_or_default();
@@ -405,14 +416,24 @@ impl ParsedFile {
     /// (e.g. `call_expression` in JS/TS) build their name from the callee
     /// plus the first string-literal argument. Positional-name nodes
     /// (HCL `block`) build their name from concatenated `identifier` /
-    /// `string_lit` children. Everything else looks up the conventional
-    /// `name` / `property` / `type` / `key` field.
-    fn scope_name(&self, node: Node, is_call_promoted: bool, is_positional: bool) -> String {
+    /// `string_lit` children. Object-reference nodes (SQL DDL) build their
+    /// name from a nested `object_reference` child. Everything else looks
+    /// up the conventional `name` / `property` / `type` / `key` field.
+    fn scope_name(
+        &self,
+        node: Node,
+        is_call_promoted: bool,
+        is_positional: bool,
+        is_object_reference: bool,
+    ) -> String {
         if is_call_promoted {
             return self.call_expression_name(node);
         }
         if is_positional {
             return self.positional_name(node);
+        }
+        if is_object_reference {
+            return self.object_reference_name(node);
         }
         // `property` covers JS `field_definition`'s name field.
         node.child_by_field_name("name")
@@ -443,6 +464,21 @@ impl ParsedFile {
             }
         }
         parts.join(" ")
+    }
+
+    /// Breadcrumb name for a SQL DDL node: the text of its first
+    /// descendant `object_reference` child. `create_table users` yields
+    /// `users`, `create_table public.users` yields `public.users`. The
+    /// statement node itself carries no `name` field, so the name is read
+    /// from the nested reference. Returns an empty string when no
+    /// `object_reference` is present.
+    fn object_reference_name(&self, node: Node) -> String {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find(|c| c.kind() == "object_reference")
+            .and_then(|reference| reference.utf8_text(&self.source).ok())
+            .unwrap_or("")
+            .to_string()
     }
 
     /// True when the call node has a function-body kind in its arguments
@@ -1156,9 +1192,68 @@ Intro paragraph.
     }
 
     #[test]
+    fn enclosing_scopes_names_sql_create_table_from_object_reference() {
+        let source = "\
+CREATE TABLE public.users (
+  id INT PRIMARY KEY,
+  name TEXT
+);
+";
+        let parsed = ParsedFile::parse("schema.sql", source).expect("parse");
+        // line 2 (0-indexed) is the `name TEXT` column inside the table.
+        let scope = parsed
+            .enclosing_scopes(2)
+            .into_iter()
+            .find(|s| s.kind == "create_table")
+            .expect("create_table scope");
+        // The name comes from the nested `object_reference`, schema-qualified.
+        assert_eq!(scope.name, "public.users");
+    }
+
+    #[test]
+    fn enclosing_scopes_names_sql_create_function_body_edit() {
+        let source = "\
+CREATE FUNCTION add(a INT, b INT) RETURNS INT AS $$
+BEGIN
+  RETURN a + b;
+END;
+$$ LANGUAGE plpgsql;
+";
+        let parsed = ParsedFile::parse("fn.sql", source).expect("parse");
+        // line 2 (0-indexed) is `RETURN a + b;` inside the function body.
+        let scope = parsed
+            .enclosing_scopes(2)
+            .into_iter()
+            .find(|s| s.kind == "create_function")
+            .expect("create_function scope");
+        assert_eq!(scope.name, "add");
+    }
+
+    #[test]
+    fn enclosing_scopes_sql_comment_above_create_extends_start() {
+        let source = "\
+-- users table
+CREATE TABLE users (
+  id INT
+);
+";
+        let parsed = ParsedFile::parse("schema.sql", source).expect("parse");
+        // line 2 (0-indexed) is the `id INT` column.
+        let scope = parsed
+            .enclosing_scopes(2)
+            .into_iter()
+            .find(|s| s.kind == "create_table")
+            .expect("create_table scope");
+        // 1-indexed line 1 is the leading `-- users table` comment.
+        assert_eq!(scope.start_line, 1);
+        assert_eq!(scope.name, "users");
+    }
+
+    #[test]
     fn detects_all_supported_languages() {
         let cases = vec![
             ("test.rs", "fn main() {}"),
+            ("test.sql", "SELECT 1;"),
             ("test.py", "def f(): pass"),
             ("test.js", "function f() {}"),
             ("test.ts", "function f() {}"),

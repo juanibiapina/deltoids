@@ -201,11 +201,97 @@ const statusEl = document.getElementById("status");
 const appEl = document.getElementById("app");
 const formEl = document.getElementById("pr-form");
 const inputEl = document.getElementById("pr-url");
+const topbarEl = document.querySelector(".topbar");
+const toolbarEl = document.getElementById("toolbar");
+const scrimEl = document.getElementById("scrim");
+const filesBtn = document.getElementById("files-btn");
+const wrapBtn = document.getElementById("wrap-btn");
+const sizeDownBtn = document.getElementById("size-down");
+const sizeUpBtn = document.getElementById("size-up");
+const tokenBtn = document.getElementById("token-btn");
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
 }
+
+// ---------------------------------------------------------------------------
+// Reading preferences (wrap + text size), persisted per browser.
+// ---------------------------------------------------------------------------
+
+const WRAP_KEY = "deltoids.review.nowrap";
+const SIZE_KEY = "deltoids.review.size";
+const SIZES = ["s", "m", "l"];
+
+function applyWrap(nowrap) {
+  appEl.classList.toggle("nowrap", nowrap);
+  // The button reflects wrap being ON (pressed = wrapping).
+  wrapBtn.setAttribute("aria-pressed", String(!nowrap));
+}
+
+function applySize(size) {
+  appEl.dataset.size = SIZES.includes(size) ? size : "m";
+}
+
+let nowrap = localStorage.getItem(WRAP_KEY) === "1";
+let sizeIndex = Math.max(0, SIZES.indexOf(localStorage.getItem(SIZE_KEY) || "m"));
+applyWrap(nowrap);
+applySize(SIZES[sizeIndex]);
+
+wrapBtn.addEventListener("click", () => {
+  nowrap = !nowrap;
+  localStorage.setItem(WRAP_KEY, nowrap ? "1" : "0");
+  applyWrap(nowrap);
+});
+
+function stepSize(delta) {
+  sizeIndex = Math.min(SIZES.length - 1, Math.max(0, sizeIndex + delta));
+  const size = SIZES[sizeIndex];
+  localStorage.setItem(SIZE_KEY, size);
+  applySize(size);
+  sizeDownBtn.disabled = sizeIndex === 0;
+  sizeUpBtn.disabled = sizeIndex === SIZES.length - 1;
+}
+sizeDownBtn.addEventListener("click", () => stepSize(-1));
+sizeUpBtn.addEventListener("click", () => stepSize(1));
+stepSize(0);
+
+// ---------------------------------------------------------------------------
+// Mobile file drawer (sidebar becomes an off-canvas overlay below 1024px).
+// ---------------------------------------------------------------------------
+
+function openDrawer() {
+  scrimEl.hidden = false;
+  document.body.classList.add("drawer-open");
+  filesBtn.setAttribute("aria-expanded", "true");
+}
+
+function closeDrawer() {
+  document.body.classList.remove("drawer-open");
+  filesBtn.setAttribute("aria-expanded", "false");
+}
+
+filesBtn.addEventListener("click", () => {
+  if (document.body.classList.contains("drawer-open")) closeDrawer();
+  else openDrawer();
+});
+scrimEl.addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeDrawer();
+});
+
+// ---------------------------------------------------------------------------
+// Sticky offset: keep --topbar-h in sync with the real topbar, which grows
+// when its form wraps onto its own row on narrow screens.
+// ---------------------------------------------------------------------------
+
+function syncTopbarHeight() {
+  const h = Math.round(topbarEl.getBoundingClientRect().height);
+  document.documentElement.style.setProperty("--topbar-h", `${h}px`);
+}
+new ResizeObserver(syncTopbarHeight).observe(topbarEl);
+window.addEventListener("resize", syncTopbarHeight);
+syncTopbarHeight();
 
 async function review(input) {
   const ref = parsePrUrl(input);
@@ -215,6 +301,8 @@ async function review(input) {
   }
 
   appEl.innerHTML = "";
+  toolbarEl.hidden = false;
+  closeDrawer();
   setStatus("Loading engine and PR…");
 
   try {
@@ -294,6 +382,7 @@ async function review(input) {
       link.className = `side-item ${badgeClass(file.status)}`;
       link.textContent = file.filename;
       link.title = file.filename;
+      link.addEventListener("click", closeDrawer);
       sidebar.appendChild(link);
     });
 
@@ -318,7 +407,10 @@ function renderFileShell(file) {
   head.querySelector(".path").textContent = label;
   const body = document.createElement("div");
   body.className = "diff";
-  body.innerHTML = `<div class="notice">Loading…</div>`;
+  body.innerHTML =
+    `<div class="skeleton" aria-hidden="true">` +
+    `<div class="bar"></div><div class="bar"></div>` +
+    `<div class="bar"></div><div class="bar"></div></div>`;
   el.appendChild(head);
   el.appendChild(body);
   return { el, body };
@@ -335,7 +427,12 @@ function escapeHtml(s) {
 }
 
 // Token prompt.
-document.getElementById("token-btn").addEventListener("click", () => {
+function syncTokenState() {
+  tokenBtn.classList.toggle("has-token", Boolean(token()));
+}
+syncTokenState();
+
+tokenBtn.addEventListener("click", () => {
   const current = token();
   const next = prompt(
     "GitHub personal access token (read-only, stored in this browser). Leave blank to clear.",
@@ -344,6 +441,7 @@ document.getElementById("token-btn").addEventListener("click", () => {
   if (next === null) return;
   if (next.trim()) localStorage.setItem(TOKEN_KEY, next.trim());
   else localStorage.removeItem(TOKEN_KEY);
+  syncTokenState();
   setStatus(next.trim() ? "Token saved." : "Token cleared.");
 });
 
@@ -356,11 +454,44 @@ formEl.addEventListener("submit", (e) => {
   review(value);
 });
 
+// First-run empty state: explain the tool, offer example PRs, hint at tokens.
+const EXAMPLES = [
+  { label: "octocat/Spoon-Knife #41130", pr: "octocat/Spoon-Knife/41130" },
+  { label: "earendil-works/pi #542", pr: "earendil-works/pi/542" },
+];
+
+function renderIntro() {
+  toolbarEl.hidden = true;
+  const intro = document.createElement("div");
+  intro.className = "intro";
+  intro.innerHTML =
+    `<h1>Review a GitHub pull request as a clean, scoped diff.</h1>` +
+    `<p>Paste a public PR URL above. deltoids renders each changed file ` +
+    `with tree-sitter scope context — right here in your browser, no server.</p>` +
+    `<div class="examples"></div>` +
+    `<p class="hint">Hitting GitHub's rate limit? Add a read-only token with ` +
+    `the 🔑 button (kept only in this browser). Deep-link any PR with ` +
+    `<code>?pr=…</code>.</p>`;
+  const examples = intro.querySelector(".examples");
+  for (const { label, pr } of EXAMPLES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "example";
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      inputEl.value = pr;
+      formEl.requestSubmit();
+    });
+    examples.appendChild(btn);
+  }
+  appEl.appendChild(intro);
+}
+
 // Deep link: ?pr=<url or owner/repo/number>
 const initial = new URLSearchParams(location.search).get("pr");
 if (initial) {
   inputEl.value = initial;
   review(initial);
 } else {
-  setStatus("Paste a GitHub PR URL and press Review.");
+  renderIntro();
 }

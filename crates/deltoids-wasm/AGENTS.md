@@ -64,6 +64,17 @@ tested by `site/test/review-lib.test.mjs`). It:
 - renders each changed file through the wasm engine, reusing deltoids' HTML
   class contract and the `serve` diff CSS.
 
+The layout is responsive over a media-query ladder (640 / 1024 / 1440px) driven
+by CSS variables. The file sidebar is a persistent grid column at ≥1024px and an
+off-canvas drawer below (the "Files" button toggles `body.drawer-open`; the DOM
+and IntersectionObserver stay put). `.file-head` is sticky, offset by a live
+`--topbar-h` that `app.js` recomputes from the real topbar with a
+`ResizeObserver` so the offset tracks the form wrapping on phones. A toolbar
+carries a wrap toggle (`main.nowrap` gives container-level horizontal scroll with
+a sticky-left gutter) and a text-size cycle (`main[data-size]`); both persist in
+`localStorage`. The PR input is ≥16px to stop iOS focus-zoom, touch targets are
+≥44px, and safe-area insets are honored.
+
 ## Known follow-up
 
 The wasm is ~15 MB (~3 MB gzipped) because two-face embeds ~200 languages.

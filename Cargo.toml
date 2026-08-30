@@ -24,3 +24,13 @@ excessive_nesting = "deny"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Size-optimized profile for the browser wasm engine (deltoids-wasm). Keeps the
+# native release/dist profiles untouched.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

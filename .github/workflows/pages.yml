@@ -5,11 +5,15 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'crates/deltoids/**'
+      - 'crates/deltoids-wasm/**'
       - '.github/workflows/pages.yml'
   pull_request:
     branches: [main]
     paths:
       - 'site/**'
+      - 'crates/deltoids/**'
+      - 'crates/deltoids-wasm/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -34,6 +38,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # --- Build the browser PR reviewer wasm engine (crates/deltoids-wasm) ---
+      # The tree-sitter C grammars need a wasi-libc sysroot to compile for wasm,
+      # supplied by wasi-sdk. The result is copied into site/public/review/ and
+      # then picked up by the Astro build below.
+      - name: Install Rust (wasm32-wasip1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install binaryen (wasm-opt)
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
+      - name: Download wasi-sdk
+        working-directory: ${{ github.workspace }}
+        run: |
+          ver=34
+          curl -sL -o wasi-sdk.tar.gz \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${ver}/wasi-sdk-${ver}.0-x86_64-linux.tar.gz"
+          tar xzf wasi-sdk.tar.gz
+          echo "WASI_SDK=${{ github.workspace }}/wasi-sdk-${ver}.0-x86_64-linux" >> "$GITHUB_ENV"
+
+      - name: Build wasm engine
+        working-directory: ${{ github.workspace }}
+        run: bash crates/deltoids-wasm/build-wasm.sh
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -43,6 +75,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test reviewer helpers
+        run: npm test
 
       - name: Type-check
         run: npx astro check

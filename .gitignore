@@ -1,1 +1,4 @@
 /target
+
+# Built wasm engine for the browser PR reviewer (produced by crates/deltoids-wasm/build-wasm.sh)
+/site/public/review/deltoids_wasm.wasm

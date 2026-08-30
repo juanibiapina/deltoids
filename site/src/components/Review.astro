@@ -14,6 +14,11 @@ import tracesShot from "../assets/screenshots/traces.png";
         diffs. Install the agent edit tools and the same TUI follows your
         coding agent, each change tagged with its reason.
       </p>
+      <p class="review-web">
+        No install needed to review a GitHub PR: the same
+        scope-expanded, syntax-highlighted diffs run entirely in your
+        browser. <a class="btn btn-primary" href="/review/">Try it live →</a>
+      </p>
     </div>
 
     <div class="agents-block">
@@ -50,6 +55,17 @@ import tracesShot from "../assets/screenshots/traces.png";
 </section>
 
 <style>
+  .review-web {
+    max-width: 640px;
+    margin: 20px auto 0;
+    text-align: center;
+    color: var(--text-muted);
+  }
+
+  .review-web .btn {
+    margin-top: 14px;
+  }
+
   .agents-block {
     max-width: 720px;
     margin: 0 auto;

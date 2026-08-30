@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>deltoids · review a GitHub PR</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">deltoids<span class="brand-dim"> review</span></div>
+      <form id="pr-form" class="pr-form">
+        <input
+          id="pr-url"
+          class="pr-input"
+          type="text"
+          placeholder="https://github.com/owner/repo/pull/123"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="go" type="submit">Review</button>
+        <button id="token-btn" type="button" title="GitHub token">🔑</button>
+      </form>
+    </header>
+
+    <div id="status" class="status"></div>
+    <main id="app"></main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

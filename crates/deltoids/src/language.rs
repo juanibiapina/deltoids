@@ -7,7 +7,6 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use bat::assets::HighlightingAssets;
 use serde::{Deserialize, Serialize};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use tree_sitter_language::LanguageFn;
@@ -586,12 +585,7 @@ impl Language {
 static DETECTION_SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 
 fn detection_syntax_set() -> &'static SyntaxSet {
-    DETECTION_SYNTAX_SET.get_or_init(|| {
-        HighlightingAssets::from_binary()
-            .get_syntax_set()
-            .expect("bundled syntax assets should load")
-            .clone()
-    })
+    DETECTION_SYNTAX_SET.get_or_init(crate::config::bundled_syntax_set)
 }
 
 fn detect_syntax_by_path<'a>(syntax_set: &'a SyntaxSet, path: &str) -> Option<&'a SyntaxReference> {

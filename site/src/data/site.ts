@@ -28,6 +28,7 @@ export const SITE = {
 export const NAV_LINKS = [
   { href: "/#pager", label: "Pager" },
   { href: "/#review", label: "Review" },
+  { href: "/review/", label: "Try it live" },
   { href: "/#install", label: "Install" },
   { href: "/#faq", label: "FAQ" },
   { href: "/docs/", label: "Docs" },

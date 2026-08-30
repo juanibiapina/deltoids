@@ -571,6 +571,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+ "two-face",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -597,6 +598,13 @@ dependencies = [
  "ulid",
  "unicode-width",
  "xxhash-rust",
+]
+
+[[package]]
+name = "deltoids-wasm"
+version = "0.12.2"
+dependencies = [
+ "deltoids",
 ]
 
 [[package]]
@@ -2657,6 +2665,17 @@ checksum = "53c223db85f05e34794f065454843b0668ebc15d240ada63e2b5939f43ce7c97"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "two-face"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39e51b6e60e545cfdae5a4639ff423818f52372211a8d9a3e892b4b0761f76b2"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "syntect",
 ]
 
 [[package]]

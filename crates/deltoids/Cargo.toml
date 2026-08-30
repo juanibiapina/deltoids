@@ -4,16 +4,16 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-dirs = "6"
 git2 = { version = "0.21", optional = true }
 ratatui = { version = "0.30", optional = true }
 toml = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 gix-imara-diff = { version = "0.2", features = ["unified_diff"] }
-syntect = "5"
-bat = { version = "0.26", default-features = false, features = ["regex-fancy"] }
-terminal-colorsaurus = "1.0"
+# The regex engine and bundled syntax/theme assets are selected per target:
+# native uses oniguruma via bat, wasm uses fancy-regex via two-face. Keep the
+# base dep engine-free so wasm never pulls the C oniguruma build.
+syntect = { version = "5", default-features = false }
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
 tree-sitter-c = "0.24"
@@ -36,6 +36,24 @@ tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+
+# Native (non-wasm): oniguruma regex, bat-bundled syntax/theme assets, terminal
+# theme detection, and platform config/cache directories.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = "6"
+syntect = { version = "5", default-features = false, features = ["default-onig"] }
+bat = { version = "0.26", default-features = false, features = ["regex-fancy"] }
+terminal-colorsaurus = "1.0"
+
+# Wasm (browser): pure-Rust fancy-regex engine and two-face's embedded syntect
+# dumps (the same syntaxes/themes bat ships) so there is no filesystem or C
+# oniguruma dependency.
+# Minimal syntect (parsing + fancy-regex only); two-face brings dump-load and
+# the embedded syntax/theme dumps, so syntect's own bundled defaults are left
+# out to keep the wasm data section small.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 
 [dev-dependencies]
 tempfile = "3"

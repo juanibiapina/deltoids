@@ -3,15 +3,21 @@
 //! Loads theme settings from `$XDG_CONFIG_HOME/deltoids/config.toml`.
 //! Also provides syntax highlighting asset loading.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::env;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+#[cfg(not(target_arch = "wasm32"))]
 use bat::assets::HighlightingAssets;
+#[cfg(not(target_arch = "wasm32"))]
 use serde::Deserialize;
 use syntect::highlighting::Theme as SyntectTheme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+#[cfg(not(target_arch = "wasm32"))]
 use terminal_colorsaurus::{QueryOptions, ThemeMode, theme_mode};
 
 /// Whether the surrounding terminal is light or dark.
@@ -130,6 +136,7 @@ impl Theme {
     ///
     /// Per-field hex overrides in the same `[theme]` section then patch the
     /// chosen palette.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
         let (explicit, overlay) = read_user_theme_config().unwrap_or_default();
         resolve_theme(load_color_mode(explicit), &overlay)
@@ -140,12 +147,14 @@ impl Theme {
 ///
 /// Returns `None` if the file is missing, unreadable, or fails to parse so
 /// the caller can fall back to defaults silently.
+#[cfg(not(target_arch = "wasm32"))]
 fn read_user_theme_config() -> Option<(Option<ColorMode>, ThemeConfig)> {
     let path = config_file_path()?;
     let contents = fs::read_to_string(&path).ok()?;
     parse_theme_config(&contents)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_color_mode(explicit: Option<ColorMode>) -> ColorMode {
     if let Some(mode) = explicit {
         mode
@@ -154,10 +163,12 @@ fn load_color_mode(explicit: Option<ColorMode>) -> ColorMode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn resolve_color_mode(explicit: Option<ColorMode>, detected: Option<ColorMode>) -> ColorMode {
     explicit.or(detected).unwrap_or(ColorMode::Dark)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn detect_color_mode() -> Option<ColorMode> {
     theme_mode(QueryOptions::default()).ok().map(|m| match m {
         ThemeMode::Light => ColorMode::Light,
@@ -166,7 +177,9 @@ fn detect_color_mode() -> Option<ColorMode> {
 }
 
 // Delta's defaults for syntax themes.
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_DARK_SYNTAX_THEME: &str = "Monokai Extended";
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_LIGHT_SYNTAX_THEME: &str = "GitHub";
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -184,18 +197,32 @@ impl SyntaxAssets {
     /// Uses `BAT_THEME` if set. Otherwise uses `[theme] mode` (or terminal
     /// detection when mode is `auto`) to choose appropriate defaults: Monokai
     /// Extended for dark, GitHub for light.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
-        let syntax_set = SYNTAX_SET.get_or_init(|| {
-            load_highlighting_assets()
-                .get_syntax_set()
-                .expect("syntax assets should load")
-                .clone()
-        });
+        let syntax_set = SYNTAX_SET.get_or_init(bundled_syntax_set);
 
         let syntax_theme = SYNTAX_THEME.get_or_init(|| {
             let assets = load_highlighting_assets();
             let theme_name = resolve_syntax_theme_name(&assets);
             assets.get_theme(&theme_name).clone()
+        });
+
+        Self {
+            syntax_set,
+            syntax_theme,
+        }
+    }
+
+    /// Load syntax assets on wasm from two-face's embedded syntect dumps (the
+    /// same syntaxes/themes bat ships), avoiding the filesystem and oniguruma.
+    #[cfg(target_arch = "wasm32")]
+    pub fn load() -> Self {
+        let syntax_set = SYNTAX_SET.get_or_init(bundled_syntax_set);
+
+        let syntax_theme = SYNTAX_THEME.get_or_init(|| {
+            two_face::theme::extra()
+                .get(two_face::theme::EmbeddedThemeName::MonokaiExtended)
+                .clone()
         });
 
         Self {
@@ -210,6 +237,23 @@ impl SyntaxAssets {
     }
 }
 
+/// The bundled syntax set used for both highlighting and stable language
+/// detection. Native builds read bat's embedded assets; wasm builds use
+/// two-face's embedded syntect dumps.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn bundled_syntax_set() -> SyntaxSet {
+    load_highlighting_assets()
+        .get_syntax_set()
+        .expect("bundled syntax assets should load")
+        .clone()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn bundled_syntax_set() -> SyntaxSet {
+    two_face::syntax::extra_newlines()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn load_highlighting_assets() -> HighlightingAssets {
     let cache_dir = bat_cache_dir().map(|d| d.join("bat"));
     cache_dir
@@ -220,6 +264,7 @@ fn load_highlighting_assets() -> HighlightingAssets {
 /// Get the cache directory following bat/delta conventions.
 /// On macOS, follows XDG spec (XDG_CACHE_HOME or ~/.cache) rather than native paths.
 /// On other platforms, uses the native cache directory.
+#[cfg(not(target_arch = "wasm32"))]
 fn bat_cache_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -235,6 +280,7 @@ fn bat_cache_dir() -> Option<PathBuf> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
     // 1. Check BAT_THEME
     if let Ok(theme) = env::var("BAT_THEME")
@@ -250,6 +296,7 @@ fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
     default_syntax_theme_name(load_color_mode(explicit)).to_string()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_syntax_theme_name(mode: ColorMode) -> &'static str {
     match mode {
         ColorMode::Light => DEFAULT_LIGHT_SYNTAX_THEME,
@@ -262,11 +309,13 @@ fn default_syntax_theme_name(mode: ColorMode) -> &'static str {
 /// Pure: takes whatever mode the caller has already resolved and patches
 /// per-field hex overrides on top of the chosen built-in palette. The impure
 /// orchestration (file IO, terminal probing) lives in [`Theme::load`].
+#[cfg(not(target_arch = "wasm32"))]
 fn resolve_theme(mode: ColorMode, overlay: &ThemeConfig) -> Theme {
     let base = Theme::for_mode(mode);
     apply_overlay(base, overlay)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
     Theme {
         diff_added_bg: parse_hex_color(&overlay.diff_added_bg).unwrap_or(base.diff_added_bg),
@@ -291,11 +340,13 @@ fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
     theme: Option<ThemeConfig>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
     /// `"light"`, `"dark"`, or `"auto"` (default).
@@ -326,6 +377,7 @@ struct ThemeConfig {
 ///
 /// Returns `None` on TOML parse failure or unknown mode strings, letting the
 /// caller decide whether to ignore the file or surface an error.
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_theme_config(text: &str) -> Option<(Option<ColorMode>, ThemeConfig)> {
     let config: ConfigFile = toml::from_str(text).ok()?;
     let overlay = config.theme.unwrap_or_default();
@@ -343,6 +395,7 @@ fn parse_theme_config(text: &str) -> Option<(Option<ColorMode>, ThemeConfig)> {
 /// `~/.config/deltoids/config.toml`). `None` when no config home can be
 /// resolved. Exposed so the CLI reads the same file for its own sections
 /// (e.g. `[[commands]]`) without duplicating the resolution logic.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn config_file_path() -> Option<PathBuf> {
     let config_home = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -353,6 +406,7 @@ pub fn config_file_path() -> Option<PathBuf> {
 }
 
 /// Parse a hex color string like "#2a4556" into an RGB tuple.
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_hex_color(s: &Option<String>) -> Option<(u8, u8, u8)> {
     let s = s.as_ref()?;
     let s = s.strip_prefix('#').unwrap_or(s);

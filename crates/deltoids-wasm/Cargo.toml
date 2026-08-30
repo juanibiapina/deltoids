@@ -1,0 +1,18 @@
+[package]
+name = "deltoids-wasm"
+version.workspace = true
+edition.workspace = true
+description = "WebAssembly bindings for the deltoids diff engine (browser PR reviewer)"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+deltoids = { path = "../deltoids", features = ["html"] }
+
+[lints]
+workspace = true

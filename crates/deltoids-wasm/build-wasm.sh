@@ -30,10 +30,9 @@ DEST="$REPO_ROOT/site/public/review/deltoids_wasm.wasm"
 
 if command -v wasm-opt >/dev/null; then
   echo "Optimizing with wasm-opt -Oz..."
-  wasm-opt -Oz \
-    --enable-bulk-memory --enable-bulk-memory-opt \
-    --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
-    --strip-debug --strip-producers "$BUILT" -o "$DEST"
+  # --all-features enables the bulk-memory ops the module uses and is portable
+  # across binaryen versions (older ones reject --enable-bulk-memory-opt).
+  wasm-opt -Oz --all-features --strip-debug --strip-producers "$BUILT" -o "$DEST"
 else
   echo "wasm-opt not found; copying unoptimized wasm." >&2
   cp "$BUILT" "$DEST"

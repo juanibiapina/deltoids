@@ -30,9 +30,14 @@ DEST="$REPO_ROOT/site/public/review/deltoids_wasm.wasm"
 
 if command -v wasm-opt >/dev/null; then
   echo "Optimizing with wasm-opt -Oz..."
-  # --all-features enables the bulk-memory ops the module uses and is portable
-  # across binaryen versions (older ones reject --enable-bulk-memory-opt).
-  wasm-opt -Oz --all-features --strip-debug --strip-producers "$BUILT" -o "$DEST"
+  # Enable exactly the features the module uses. Do NOT use --all-features: it
+  # turns on experimental proposals (GC, typed-function-references) whose type
+  # encoding a standard WebAssembly engine rejects. Needs a modern binaryen
+  # (>= ~116) for --enable-bulk-memory-opt; CI pins one rather than using apt.
+  wasm-opt -Oz \
+    --enable-bulk-memory --enable-bulk-memory-opt \
+    --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
+    --strip-debug --strip-producers "$BUILT" -o "$DEST"
 else
   echo "wasm-opt not found; copying unoptimized wasm." >&2
   cp "$BUILT" "$DEST"

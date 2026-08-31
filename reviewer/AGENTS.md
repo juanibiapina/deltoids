@@ -26,8 +26,10 @@ reviewer/
     main.tsx                # React root + imports the stylesheet
     App.tsx                 # app shell: review flow, deep-link, token, prefs
     core/                   # framework-neutral, DOM-free logic
-      engine.ts             #   wasm loader + renderFile/renderFromPatch
-      github.ts             #   GitHub REST client + per-file rendering
+      engine.ts             #   wasm loader + renderFile/renderFromPatch (theme arg)
+      github.ts             #   GitHub REST client + loadSides / renderSides
+      github.test.ts        #   renderSides theme + re-render-from-cache tests
+      themes.ts             #   curated registry theme names + mode defaults
       lib.ts                #   pure helpers (parsePrUrl, base64, badgeClass)
       lib.test.ts           #   Vitest unit tests for lib.ts
       filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror)
@@ -45,7 +47,8 @@ reviewer/
       LazyObserver.tsx      #   shared IntersectionObserver for lazy cards
       components.test.tsx   #   component tests
     hooks/
-      usePrefs.ts           #   wrap + text-size + theme prefs (localStorage)
+      usePrefs.ts           #   wrap + text-size + chrome + syntax-theme prefs
+      usePrefs.test.ts      #   syntax-theme derivation / persistence tests
       useTopbarHeight.ts    #   --topbar-h sync via ResizeObserver
     styles/style.css        # the reviewer stylesheet (deltoids HTML contract)
 ```
@@ -89,6 +92,17 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   `:root[data-theme="light"]` (dark is the plain `:root` default). An inline
   script in `index.html` applies the theme before first paint to avoid a flash —
   keep its `localStorage` key in sync with `usePrefs.ts`.
+- Syntax theme is a separate `usePrefs` pref persisted under
+  `deltoids.review.syntax-theme`. When unset it derives from the chrome mode
+  (dark → Tokyo Night, light → GitHub via `core/themes.ts`); an explicit choice
+  from the toolbar `<select>` (grouped Dark/Light, "Auto" clears it) wins and
+  persists. The name is passed to the wasm engine as the trailing `theme` arg.
+  Switching must not re-hit GitHub: `github.ts` splits `loadSides` (fetch once,
+  cached per `FileCard` in a ref) from the pure `renderSides(engine, sides,
+  theme)`; a `FileCard` `useEffect` keyed on the theme re-runs only
+  `renderSides` from the cached `Sides`. Curated names in `themes.ts` must stay
+  valid registry names (`deltoids::theme_names`, i.e. two-face's `as_name()`
+  strings plus `TokyoNight`).
 - The sidebar is a grouped, collapsible file tree (phase 2) built on
   `react-accessible-treeview`. Grouping/sort/collapse mirror the CLI's
   `crates/deltoids-cli/src/sidebar/tree.rs`, which stays the canonical

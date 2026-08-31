@@ -149,7 +149,12 @@ export function App() {
 
       <main id="app" className={prefs.nowrap ? "nowrap" : undefined} data-size={prefs.size}>
         {data && (
-          <ReviewView data={data} onNavigate={closeDrawer} onProgress={onProgress} />
+          <ReviewView
+            data={data}
+            syntaxTheme={prefs.syntaxTheme}
+            onNavigate={closeDrawer}
+            onProgress={onProgress}
+          />
         )}
       </main>
     </>

@@ -22,6 +22,7 @@
 //!   web app can scroll it to the vertical centre.
 
 use syntect::highlighting::Style as SyntectStyle;
+use syntect::highlighting::Theme as SyntectTheme;
 
 use crate::highlight::HunkHighlighter;
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
@@ -30,14 +31,20 @@ use crate::{DiffLine, Hunk, HunkRun, LineKind, ScopeNode};
 /// Render a list of hunks as the HTML diff body for one trace entry.
 ///
 /// `highlight` is the syntect syntax name (from `Diff::highlight()` /
-/// the stored trace entry). The returned string is the inner HTML the web
-/// app injects into its diff container. The first changed row across all
-/// hunks carries a `data-first-change` attribute.
-pub fn render_entry_html(hunks: &[Hunk], highlight: Option<&str>) -> String {
+/// the stored trace entry). `syntax_theme` is a registry theme name resolved
+/// through [`crate::theme_by_name`]; `None` uses the default. The returned
+/// string is the inner HTML the web app injects into its diff container. The
+/// first changed row across all hunks carries a `data-first-change` attribute.
+pub fn render_entry_html(
+    hunks: &[Hunk],
+    highlight: Option<&str>,
+    syntax_theme: Option<&str>,
+) -> String {
+    let theme = crate::theme_by_name(syntax_theme);
     let mut html = String::new();
     let mut first_change_emitted = false;
     for hunk in hunks {
-        render_hunk_html(hunk, highlight, &mut first_change_emitted, &mut html);
+        render_hunk_html(hunk, highlight, theme, &mut first_change_emitted, &mut html);
     }
     html
 }
@@ -45,13 +52,14 @@ pub fn render_entry_html(hunks: &[Hunk], highlight: Option<&str>) -> String {
 fn render_hunk_html(
     hunk: &Hunk,
     highlight: Option<&str>,
+    syntax_theme: &'static SyntectTheme,
     first_change_emitted: &mut bool,
     html: &mut String,
 ) {
     html.push_str("<div class=\"hunk\">");
     render_header(hunk, html);
 
-    let mut highlighter = HunkHighlighter::new(highlight);
+    let mut highlighter = HunkHighlighter::new(highlight, syntax_theme);
     let mut new_line = hunk.new_start;
     let mut old_line = hunk.old_start;
     for run in hunk.runs() {
@@ -335,7 +343,7 @@ mod tests {
             lines: vec![line(LineKind::Context, "let x = 1;")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None);
+        let html = render_entry_html(&[hunk], None, None);
         assert!(html.contains("class=\"row context\""));
         assert!(!html.contains("data-first-change"));
         // No scope: line-number header.
@@ -361,7 +369,7 @@ mod tests {
                 text: "fn my_func() {".to_string(),
             }],
         };
-        let html = render_entry_html(&[hunk], None);
+        let html = render_entry_html(&[hunk], None, None);
         assert_eq!(html.matches("data-first-change").count(), 1);
         // The marker is on a removed row, before the added rows.
         let marker = html.find("data-first-change").unwrap();
@@ -380,7 +388,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "if a < b && c > d {")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None);
+        let html = render_entry_html(&[hunk], None, None);
         assert!(html.contains("&lt;"));
         assert!(html.contains("&gt;"));
         assert!(html.contains("&amp;"));
@@ -400,7 +408,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None);
+        let html = render_entry_html(&[hunk], None, None);
         assert!(html.contains("class=\"emph\""));
     }
 }

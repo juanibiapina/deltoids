@@ -122,7 +122,10 @@ pub fn render_hunk(
         }
     }
 
-    let mut highlighter = HunkHighlighter::new(highlight);
+    let mut highlighter = HunkHighlighter::new(
+        highlight,
+        crate::theme_by_name(Some(&theme.syntax_theme_name)),
+    );
 
     for run in hunk.runs() {
         match run {
@@ -199,7 +202,11 @@ fn render_breadcrumb_box(b: &Breadcrumb, highlight: Option<&str>, theme: &Theme)
         match row {
             BreadcrumbRow::Scope { line_num, text } => {
                 let num_str = format!("{line_num:>num_col_width$}: ");
-                let highlighted = highlight_line(text, highlight);
+                let highlighted = highlight_line(
+                    text,
+                    highlight,
+                    crate::theme_by_name(Some(&theme.syntax_theme_name)),
+                );
                 let text_width = display_width(text);
                 let padding = content_width.saturating_sub(prefix_width + text_width);
 
@@ -415,10 +422,14 @@ fn render_subhunk(
 /// `FROM`) resolve correctly. State is seeded fresh at the first line of each
 /// hunk, so a hunk that begins *inside* a multi-line construct (its opening
 /// delimiter not part of the hunk) may still mis-highlight the leading lines.
-fn highlight_line(line: &str, highlight: Option<&str>) -> String {
+fn highlight_line(
+    line: &str,
+    highlight: Option<&str>,
+    syntax_theme: &'static syntect::highlighting::Theme,
+) -> String {
     let assets = SyntaxAssets::load();
     let syntax = assets.syntax_for_name(highlight);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
+    let mut highlighter = HighlightLines::new(syntax, syntax_theme);
 
     match highlighter.highlight_line(line, assets.syntax_set) {
         Ok(ranges) => format_ranges(&ranges),
@@ -638,7 +649,7 @@ mod tests {
             },
         ];
         let emph = LineEmphasis::Paired(sections);
-        let mut hl_e = HunkHighlighter::new(Some("TypeScriptReact"));
+        let mut hl_e = HunkHighlighter::new(Some("TypeScriptReact"), crate::theme_by_name(None));
         let ranges_e = hl_e.added(content);
         let emphasized = render_diff_line_with_emphasis(
             &LineKind::Added,
@@ -649,7 +660,7 @@ mod tests {
             BgFill::Spaces,
             &theme,
         );
-        let mut hl_c = HunkHighlighter::new(Some("TypeScriptReact"));
+        let mut hl_c = HunkHighlighter::new(Some("TypeScriptReact"), crate::theme_by_name(None));
         let ranges_c = hl_c.context(content);
         let context = render_diff_line(
             &LineKind::Context,
@@ -815,7 +826,7 @@ mod tests {
         // Regardless of theme, the Ok path clears bold/italic/underline at the
         // end so a trailing styled token cannot bleed into the caller's border
         // or background padding.
-        let out = highlight_line("let x = 1;", Some("Rust"));
+        let out = highlight_line("let x = 1;", Some("Rust"), crate::theme_by_name(None));
         assert!(
             out.ends_with(FONT_STYLE_RESET),
             "expected trailing font-style reset, got {out:?}"

@@ -51,13 +51,15 @@ pub(super) struct DiffCache {
     rows: HashMap<usize, Vec<DiffRow>>,
 }
 
-/// The identity every retained block shares: its render `width` and the
-/// active change `layout`. A change to either invalidates the whole store,
-/// since both alter every block's rendered rows.
+/// The identity every retained block shares: its render `width`, the
+/// active change `layout`, and the selected `syntax_theme` (a `&'static`
+/// registry name). A change to any of them invalidates the whole store,
+/// since each alters every block's rendered rows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CacheEpoch {
     pub(super) width: usize,
     pub(super) layout: ChangeLayout,
+    pub(super) syntax_theme: &'static str,
 }
 
 impl DiffCache {
@@ -513,7 +515,11 @@ impl DiffPane {
         budget: DrawBudget,
         comments: &CommentStore,
     ) -> Vec<DiffRow> {
-        let epoch = CacheEpoch { width, layout };
+        let epoch = CacheEpoch {
+            width,
+            layout,
+            syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
+        };
         let cached = self.cache.contains(epoch, input_idx);
         if should_build_body(budget, cached) {
             if !cached {
@@ -740,6 +746,9 @@ mod tests {
         CacheEpoch {
             width,
             layout: ChangeLayout::Grouped,
+            // Match the theme the render path keys on (test_support `theme()`),
+            // so a render-produced epoch compares equal to this helper's.
+            syntax_theme: deltoids::theme_name_key(&theme().syntax_theme_name),
         }
     }
     use crate::cli::browse::files::{Focus, handle_key};
@@ -934,11 +943,31 @@ mod tests {
             layout: ChangeLayout::Interleaved {
                 group: std::num::NonZeroUsize::new(1).unwrap(),
             },
+            syntax_theme: "",
         };
         assert!(!cache.contains(interleaved, 0));
         cache.insert(interleaved, 1, vec![DiffRow::plain(Line::from("b"))]);
         assert!(!cache.contains(interleaved, 0));
         assert!(cache.contains(interleaved, 1));
+    }
+
+    #[test]
+    fn diff_cache_syntax_theme_change_clears_store() {
+        let mut cache = DiffCache::default();
+        let mono = CacheEpoch {
+            width: 80,
+            layout: ChangeLayout::Grouped,
+            syntax_theme: "Monokai Extended",
+        };
+        let tokyo = CacheEpoch {
+            syntax_theme: "TokyoNight",
+            ..mono
+        };
+        cache.insert(mono, 0, vec![DiffRow::plain(Line::from("a"))]);
+        assert!(cache.contains(mono, 0));
+        // A live theme switch changes the epoch, so the store is dropped and
+        // every block re-highlights under the new theme.
+        assert!(!cache.contains(tokyo, 0));
     }
 
     #[test]

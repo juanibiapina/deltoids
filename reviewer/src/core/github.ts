@@ -105,18 +105,24 @@ async function fetchContent(
   return decodeBase64Utf8(data.content);
 }
 
-// Render one changed file to HTML, or null when it is binary.
-//
-// For modified/renamed files that carry a `patch`, fetch only the head-side
-// content and let the engine reconstruct the before side (one request instead
-// of two). Otherwise resolve both sides.
-export async function renderOneFile(
-  engine: Engine,
+// The fetched content a file's diff renders from. `patch` reconstructs the
+// before side from `after` (one request); `full` carries both sides. Kept
+// separate from rendering so a theme change re-renders without re-fetching.
+export type Sides =
+  | { kind: "patch"; after: string; patch: string; path: string }
+  | { kind: "full"; before: string; after: string; path: string };
+
+// Fetch the content one changed file's diff renders from, or `null` when the
+// file is binary. For modified/renamed files that carry a `patch`, fetch only
+// the head-side content and let the engine reconstruct the before side (one
+// request instead of two). Otherwise resolve both sides. This is the network
+// half of rendering; cache the result and re-run `renderSides` on theme change.
+export async function loadSides(
   repoRef: PrRef,
   file: PrFile,
   baseSha: string,
   headSha: string,
-): Promise<string | null> {
+): Promise<Sides | null> {
   const canPatch =
     (file.status === "modified" || file.status === "renamed") &&
     typeof file.patch === "string" &&
@@ -125,7 +131,7 @@ export async function renderOneFile(
   if (canPatch) {
     const after = await fetchContent(repoRef, file.filename, headSha);
     if (looksBinary(after)) return null;
-    return engine.renderFromPatch(after, file.patch as string, file.filename);
+    return { kind: "patch", after, patch: file.patch as string, path: file.filename };
   }
 
   const { before, after, path } = await resolveSides(
@@ -135,7 +141,16 @@ export async function renderOneFile(
     headSha,
   );
   if (looksBinary(before) || looksBinary(after)) return null;
-  return engine.renderFile(before, after, path);
+  return { kind: "full", before, after, path };
+}
+
+// Render already-fetched `sides` to HTML with the given syntax `theme` (a
+// registry name; "" selects the default). Pure and synchronous, so it can be
+// re-run on a theme switch against cached `Sides`.
+export function renderSides(engine: Engine, sides: Sides, theme: string): string {
+  return sides.kind === "patch"
+    ? engine.renderFromPatch(sides.after, sides.patch, sides.path, theme)
+    : engine.renderFile(sides.before, sides.after, sides.path, theme);
 }
 
 // Resolve before/after content for a changed file based on its status.

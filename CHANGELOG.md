@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- syntax themes: choose the syntax highlighting theme on every surface. Set a default with `[theme] syntax_theme = "..."` in `config.toml` (honored by the pager, TUI, and `serve`), press `t` in the TUI to switch live from a list, or pick one from the toolbar selector in the browser reviewer. Tokyo Night is bundled and available everywhere; in the reviewer your choice is remembered and first-time visitors get Tokyo Night on dark or GitHub on light.
 - review: switch the browser PR reviewer between dark and light themes with a toolbar button; your choice is remembered and first-time visitors match their system setting.
 - diff: add support for SQL
 - TUI: press `\` to toggle how changed lines are laid out, between grouped (all removed, then all added) and interleaved (each removed line next to its replacement). The Diff pane footer shows the current mode.

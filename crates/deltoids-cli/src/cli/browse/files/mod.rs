@@ -865,6 +865,8 @@ mod tests {
         CacheEpoch {
             width,
             layout: ChangeLayout::Grouped,
+            // Match the theme the render path keys on (test_support `theme()`).
+            syntax_theme: deltoids::theme_name_key(&theme().syntax_theme_name),
         }
     }
 

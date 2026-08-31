@@ -34,6 +34,7 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("D", "clear all comments"),
     ("< / >", "narrow / widen sidebar (shared by modes)"),
     ("\\", "cycle diff layout (grouped \u{2194} interleaved)"),
+    ("t", "pick syntax theme"),
     ("q", "quit"),
 ];
 

@@ -51,6 +51,7 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
             let epoch = CacheEpoch {
                 width: right_width,
                 layout: deltoids::ChangeLayout::Grouped,
+                syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
             };
             ensure_diff_cache(active, state, epoch, key, theme);
         }

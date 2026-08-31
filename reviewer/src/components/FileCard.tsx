@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { badgeClass } from "../core/lib";
 import { estimateCardHeight } from "../core/cardHeight";
-import { renderOneFile, type PrFile } from "../core/github";
+import { loadSides, renderSides, type PrFile, type Sides } from "../core/github";
 import type { Engine } from "../core/engine";
 import type { PrRef } from "../core/lib";
 import { useLazy } from "./LazyObserver";
@@ -13,6 +13,7 @@ interface FileCardProps {
   repoRef: PrRef;
   baseSha: string;
   headSha: string;
+  syntaxTheme: string;
   onLoaded: () => void;
 }
 
@@ -28,12 +29,35 @@ export function FileCard({
   repoRef,
   baseSha,
   headSha,
+  syntaxTheme,
   onLoaded,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
   const lazy = useLazy();
   const [body, setBody] = useState<Body>({ kind: "pending" });
   const loadedOnce = useRef(false);
+  // Cached fetched content: `undefined` until loaded, `null` for a binary
+  // file, otherwise the sides to render. Re-rendering on a theme switch reads
+  // this instead of re-fetching from GitHub.
+  const sidesRef = useRef<Sides | null | undefined>(undefined);
+  // Latest theme, read by both the initial load and the theme-change effect so
+  // whichever fires renders with the current selection.
+  const themeRef = useRef(syntaxTheme);
+  themeRef.current = syntaxTheme;
+
+  // Render cached sides (or a notice) into the body with the current theme.
+  const renderInto = (sides: Sides | null) => {
+    if (sides === null) {
+      setBody({ kind: "notice", text: "Binary file not shown." });
+      return;
+    }
+    const html = renderSides(engine, sides, themeRef.current);
+    setBody(
+      html
+        ? { kind: "html", html }
+        : { kind: "notice", text: "No textual changes." },
+    );
+  };
 
   useEffect(() => {
     const el = ref.current;
@@ -44,21 +68,10 @@ export function FileCard({
       if (loadedOnce.current) return;
       loadedOnce.current = true;
       try {
-        const html = await renderOneFile(
-          engine,
-          repoRef,
-          file,
-          baseSha,
-          headSha,
-        );
+        const sides = await loadSides(repoRef, file, baseSha, headSha);
         if (cancelled) return;
-        if (html === null) {
-          setBody({ kind: "notice", text: "Binary file not shown." });
-        } else if (html) {
-          setBody({ kind: "html", html });
-        } else {
-          setBody({ kind: "notice", text: "No textual changes." });
-        }
+        sidesRef.current = sides;
+        renderInto(sides);
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -75,6 +88,15 @@ export function FileCard({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-render from cached sides when the syntax theme changes — no re-fetch.
+  // Skips files not loaded yet (their first render already uses the current
+  // theme) and binary files (nothing to recolor).
+  useEffect(() => {
+    if (sidesRef.current === undefined || sidesRef.current === null) return;
+    renderInto(sidesRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syntaxTheme]);
 
   const badge = badgeClass(file.status);
   const label =

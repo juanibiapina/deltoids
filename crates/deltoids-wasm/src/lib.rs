@@ -54,34 +54,43 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, len: usize) {
     unsafe { std::alloc::dealloc(ptr, layout(len)) }
 }
 
+/// A registry theme name, or `None` when the caller passed an empty string
+/// (the sentinel for "use the default theme").
+fn theme_opt(theme: &str) -> Option<&str> {
+    (!theme.is_empty()).then_some(theme)
+}
+
 /// Render the deltoids diff HTML body from full before/after content.
 ///
-/// This is the safe core behind [`render_file`]; the FFI wrapper only
-/// marshals strings across linear memory.
-pub fn render_html(before: &str, after: &str, path: &str) -> String {
+/// `theme` is a registry theme name (see `deltoids::theme_names`); an empty
+/// string selects the default. This is the safe core behind [`render_file`];
+/// the FFI wrapper only marshals strings across linear memory.
+pub fn render_html(before: &str, after: &str, path: &str, theme: &str) -> String {
     let diff = Diff::compute(before, after, path);
-    render_entry_html(diff.hunks(), diff.highlight())
+    render_entry_html(diff.hunks(), diff.highlight(), theme_opt(theme))
 }
 
 /// Render the diff HTML from `after` content plus a unified `patch` (GitHub's
 /// per-file `patch` field), reconstructing the before side by reverse-applying
 /// the patch. The `patch` is just the `@@` hunks, so a dummy `diff --git`
 /// header is synthesized for the parser; reconstruction ignores the paths.
-pub fn render_html_from_patch(after: &str, patch: &str, path: &str) -> String {
+/// `theme` is a registry theme name (empty = default).
+pub fn render_html_from_patch(after: &str, patch: &str, path: &str, theme: &str) -> String {
     let synthetic = format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{patch}");
     let before = match GitDiff::parse(&synthetic).files.first() {
         Some(file) => reconstruct_before(after, file),
         None => after.to_string(),
     };
-    render_html(&before, after, path)
+    render_html(&before, after, path, theme)
 }
 
 /// Compute the deltoids diff between `before` and `after` for `path` and
 /// return the rendered HTML body as a packed `ptr << 32 | len` handle.
 ///
 /// # Safety
-/// The three `(ptr, len)` pairs must describe valid UTF-8 buffers owned by
-/// this module's linear memory (typically from [`alloc`]).
+/// The four `(ptr, len)` pairs must describe valid UTF-8 buffers owned by
+/// this module's linear memory (typically from [`alloc`]). The `theme` pair
+/// may be `(_, 0)` to select the default theme.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn render_file(
     before_ptr: *const u8,
@@ -90,11 +99,14 @@ pub unsafe extern "C" fn render_file(
     after_len: usize,
     path_ptr: *const u8,
     path_len: usize,
+    theme_ptr: *const u8,
+    theme_len: usize,
 ) -> u64 {
     let before = unsafe { str_from_parts(before_ptr, before_len) };
     let after = unsafe { str_from_parts(after_ptr, after_len) };
     let path = unsafe { str_from_parts(path_ptr, path_len) };
-    pack_bytes(render_html(&before, &after, &path).into_bytes())
+    let theme = unsafe { str_from_parts(theme_ptr, theme_len) };
+    pack_bytes(render_html(&before, &after, &path, &theme).into_bytes())
 }
 
 /// Like [`render_file`], but reconstructs the `before` content from a unified
@@ -102,7 +114,8 @@ pub unsafe extern "C" fn render_file(
 ///
 /// # Safety
 /// The `(ptr, len)` pairs must describe valid buffers owned by this module's
-/// linear memory (typically from [`alloc`]).
+/// linear memory (typically from [`alloc`]). The `theme` pair may be `(_, 0)`
+/// to select the default theme.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn render_from_patch(
     after_ptr: *const u8,
@@ -111,11 +124,14 @@ pub unsafe extern "C" fn render_from_patch(
     patch_len: usize,
     path_ptr: *const u8,
     path_len: usize,
+    theme_ptr: *const u8,
+    theme_len: usize,
 ) -> u64 {
     let after = unsafe { str_from_parts(after_ptr, after_len) };
     let patch = unsafe { str_from_parts(patch_ptr, patch_len) };
     let path = unsafe { str_from_parts(path_ptr, path_len) };
-    pack_bytes(render_html_from_patch(&after, &patch, &path).into_bytes())
+    let theme = unsafe { str_from_parts(theme_ptr, theme_len) };
+    pack_bytes(render_html_from_patch(&after, &patch, &path, &theme).into_bytes())
 }
 
 /// Copy `len` bytes at `ptr` into an owned `String`, lossily decoding any
@@ -151,7 +167,7 @@ mod tests {
 
     #[test]
     fn render_html_emits_diff_rows_and_scope() {
-        let html = render_html(BEFORE, AFTER, "src/main.rs");
+        let html = render_html(BEFORE, AFTER, "src/main.rs", "");
         assert!(html.contains("class=\"row added\""));
         assert!(html.contains("class=\"row removed\""));
         assert!(html.contains("class=\"breadcrumb\""));
@@ -160,9 +176,27 @@ mod tests {
 
     #[test]
     fn render_from_patch_matches_full_render() {
-        let full = render_html(BEFORE, AFTER, "src/main.rs");
-        let from_patch = render_html_from_patch(AFTER, PATCH, "src/main.rs");
+        let full = render_html(BEFORE, AFTER, "src/main.rs", "");
+        let from_patch = render_html_from_patch(AFTER, PATCH, "src/main.rs", "");
         assert_eq!(full, from_patch);
+    }
+
+    #[test]
+    fn theme_name_changes_colors_but_not_structure() {
+        let default = render_html(BEFORE, AFTER, "src/main.rs", "");
+        let tokyo = render_html(BEFORE, AFTER, "src/main.rs", "TokyoNight");
+        let github = render_html(BEFORE, AFTER, "src/main.rs", "GitHub");
+        // Same row structure regardless of theme.
+        for html in [&tokyo, &github] {
+            assert!(html.contains("class=\"row added\""));
+            assert!(html.contains("class=\"breadcrumb\""));
+        }
+        // Different inlined syntect colors between themes.
+        assert_ne!(tokyo, github);
+        // An empty name selects the default (Monokai Extended on wasm), which
+        // differs from Tokyo Night / GitHub.
+        assert_ne!(default, tokyo);
+        assert_ne!(default, github);
     }
 
     // The FFI packs `ptr << 32 | len`, which is only valid for 32-bit wasm

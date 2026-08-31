@@ -124,6 +124,32 @@ note: handle the parse error
 Deltoids reads `$XDG_CONFIG_HOME/deltoids/config.toml` (falling back to
 `~/.config/deltoids/config.toml`).
 
+### Theme
+
+The `[theme]` section selects the light/dark palette and the syntax
+highlighting theme used by the pager, the `deltoids tui`, and `deltoids
+serve`:
+
+```toml
+[theme]
+# "light" | "dark" | "auto" (default: auto — detect from the terminal).
+mode = "auto"
+# Syntax highlighting theme by name. Bundled themes include "TokyoNight"
+# plus every theme bat ships (e.g. "Monokai Extended", "GitHub", "Nord",
+# "Dracula"). When unset, deltoids uses `BAT_THEME`, then a per-mode
+# default (Monokai Extended on dark, GitHub on light).
+syntax_theme = "TokyoNight"
+```
+
+In `deltoids tui`, press `t` to open a picker and switch the syntax theme
+live; the diff recolors immediately without re-parsing. The picker starts
+from the theme resolved above, so `syntax_theme` sets your durable
+default and `t` overrides it for the session.
+
+Individual chrome colors (diff backgrounds, borders, status letters) can
+also be overridden per-field with hex values in the same `[theme]`
+section.
+
 ### Custom commands
 
 Bind a key in `deltoids tui` to a shell command that runs against the
@@ -150,7 +176,7 @@ description = "edit file inline in neovim"
 `subprocess` defaults to `false`. `command` is a shell line (run via
 `sh -c`), not an argv. Custom keys work in both Files and Traces mode
 against the current selection; they cannot override the built-in keys
-(`q`, `[`, `]`, `<`, `>`, `?`) but can shadow a mode's own keys. Press
+(`q`, `[`, `]`, `<`, `>`, `\`, `t`, `?`) but can shadow a mode's own keys. Press
 `?` to see the configured bindings in the help popup.
 
 ## Coding Agent Integrations

@@ -32,7 +32,10 @@ cargo install --path crates/deltoids-cli  # produces the `deltoids` binary
 ```
 crates/
   deltoids/
+    build.rs                  # Converts vendored themes to syntect dumps
+    assets/themes/            # Vendored .tmTheme sources (e.g. Tokyo Night)
     src/lib.rs                # Library exports
+    src/config.rs             # Theme + syntax-theme registry (theme_by_name/theme_names)
     src/engine.rs             # Line-level diff engine
     src/parse.rs              # Git diff parsing
     src/scope.rs              # Hunk types and scope context
@@ -79,6 +82,7 @@ crates/
                              #     reload orchestration (active eager / lazy)
       mode.rs               #   Mode trait + TabStrip + AppCommand
       help.rs               #   shared help popup
+      theme_picker.rs       #   live syntax-theme picker popup (`t`)
       comments.rs           #   review comments
       comment_view.rs       #   comment rows
       diff_cursor.rs        #   the cursor that walks lines

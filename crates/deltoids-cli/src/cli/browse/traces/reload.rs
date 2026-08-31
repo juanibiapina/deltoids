@@ -109,6 +109,7 @@ mod tests {
             crate::cli::browse::traces::detail::CacheEpoch {
                 width: 80,
                 layout: deltoids::ChangeLayout::Grouped,
+                syntax_theme: "",
             },
             (1, 0),
             vec![],
@@ -168,6 +169,7 @@ mod tests {
             crate::cli::browse::traces::detail::CacheEpoch {
                 width: 80,
                 layout: deltoids::ChangeLayout::Grouped,
+                syntax_theme: "",
             },
             (1, 0),
             vec![],

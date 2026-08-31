@@ -301,6 +301,26 @@ main {
   gap: 2px;
   transform: translateX(-100%);
   transition: transform 0.22s ease;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139, 148, 158, 0.35) transparent; /* --muted @ 35%, transparent track */
+}
+@supports selector(::-webkit-scrollbar) {
+  .sidebar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .sidebar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .sidebar::-webkit-scrollbar-thumb {
+    background: rgba(139, 148, 158, 0.35);
+    border-radius: 8px;
+    border: 3px solid transparent; /* inset the thumb */
+    background-clip: padding-box;
+  }
+  .sidebar::-webkit-scrollbar-thumb:hover {
+    background: rgba(139, 148, 158, 0.55);
+  }
 }
 body.drawer-open .sidebar {
   transform: none;

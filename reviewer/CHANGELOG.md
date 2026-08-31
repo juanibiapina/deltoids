@@ -9,4 +9,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- The file-tree sidebar now has a thin, theme-tinted scrollbar instead of the chunky default one.
+- The scrollbars throughout the reviewer are now thin and theme-tinted instead of the chunky default ones.

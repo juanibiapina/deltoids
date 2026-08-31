@@ -14,6 +14,8 @@
   --removed-gutter: #f85149;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --scrollbar-thumb: rgba(139, 148, 158, 0.35); /* --muted @ 35% */
+  --scrollbar-thumb-hover: rgba(139, 148, 158, 0.55); /* --muted @ 55% */
 
   /* Space budget — media queries retune these; the rest of the sheet reads
      them so a breakpoint adjusts a few values instead of duplicating rules. */
@@ -29,6 +31,34 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* Thin, theme-tinted scrollbars across the whole reviewer. The standard
+   properties inherit, so setting them on `html` covers the document scroll and
+   every nested scroll region (sidebar, no-wrap diff blocks). The WebKit
+   fallback uses bare pseudo-elements so old WebKit/Blink styles them all too;
+   modern engines use the standard properties and ignore the pseudo-elements. */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+@supports selector(::-webkit-scrollbar) {
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 8px;
+    border: 3px solid transparent; /* inset the thumb */
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
 }
 
 /* Scroll anchoring: when file cards load lazily above the viewport, the browser
@@ -301,26 +331,6 @@ main {
   gap: 2px;
   transform: translateX(-100%);
   transition: transform 0.22s ease;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(139, 148, 158, 0.35) transparent; /* --muted @ 35%, transparent track */
-}
-@supports selector(::-webkit-scrollbar) {
-  .sidebar::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-  .sidebar::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .sidebar::-webkit-scrollbar-thumb {
-    background: rgba(139, 148, 158, 0.35);
-    border-radius: 8px;
-    border: 3px solid transparent; /* inset the thumb */
-    background-clip: padding-box;
-  }
-  .sidebar::-webkit-scrollbar-thumb:hover {
-    background: rgba(139, 148, 158, 0.55);
-  }
 }
 body.drawer-open .sidebar {
   transform: none;

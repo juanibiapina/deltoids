@@ -247,6 +247,7 @@ fn handle_key(
             AppCommand::Continue
         }
         KeyCode::Char('y') => copy_comments(state, traces),
+        KeyCode::Char('D') => clear_comments(state),
         KeyCode::Tab => {
             state.focus = match state.focus {
                 Focus::Entries => Focus::Traces,
@@ -430,6 +431,20 @@ fn copy_comments(state: &mut AppState, traces: &[LoadedTrace]) -> AppCommand {
             AppCommand::Continue
         }
     }
+}
+
+/// Drop every session comment, recording the count in the footer. Leaves
+/// the diff cache untouched: comments are an overlay, so the notes vanish
+/// on the next render with no rebuild.
+fn clear_comments(state: &mut AppState) -> AppCommand {
+    let count = state.comments.clear();
+    state.status = Some(if count == 0 {
+        "No comments to clear".to_string()
+    } else {
+        let noun = if count == 1 { "comment" } else { "comments" };
+        format!("Cleared {count} {noun}")
+    });
+    AppCommand::Continue
 }
 
 /// Every comment on `trace`, as one prompt ordered by entry then diff
@@ -1183,6 +1198,31 @@ mod tests {
             other => panic!("expected a clipboard copy, got {other:?}"),
         }
         assert_eq!(state.status.as_deref(), Some("Copied 1 comment"));
+    }
+
+    #[test]
+    fn shift_d_clears_every_comment_and_reports_it() {
+        let traces = vec![trace_with_hunks()];
+        let mut state = diff_state(&traces);
+
+        // Nothing to clear yet.
+        let command = handle_key(&mut state, &traces, KeyCode::Char('D'), 40, 10);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("No comments to clear"));
+
+        let anchor = state.cursor_anchor().unwrap();
+        note(&mut state, &traces, &anchor, "look here");
+        assert!(!state.comments.is_empty());
+
+        let command = handle_key(&mut state, &traces, KeyCode::Char('D'), 40, 10);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("Cleared 1 comment"));
+        assert!(state.comments.is_empty());
+
+        // A following copy has nothing to emit.
+        let command = handle_key(&mut state, &traces, KeyCode::Char('y'), 40, 10);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("No comments to copy"));
     }
 
     #[test]

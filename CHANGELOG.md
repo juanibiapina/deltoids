@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - diff: add support for SQL
 - TUI: press `\` to toggle how changed lines are laid out, between grouped (all removed, then all added) and interleaved (each removed line next to its replacement). The Diff pane footer shows the current mode.
-- TUI: Leave review comments on diff lines, in both the working-tree diff and the trace browser (`c` to write, `d` to delete), and copy them all with `y` as a single prompt to hand to a coding agent. In the working-tree diff, comments follow their line as you keep editing and are marked outdated when the line moves on.
+- TUI: Leave review comments on diff lines, in both the working-tree diff and the trace browser (`c` to write, `d` to delete), and copy them all with `y` as a single prompt to hand to a coding agent. In the working-tree diff, comments follow their line as you keep editing and are marked outdated when the line moves on. Press `D` to clear every comment at once.
 
 ### Changed
 

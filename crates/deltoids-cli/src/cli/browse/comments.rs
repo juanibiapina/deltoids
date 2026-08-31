@@ -99,6 +99,15 @@ impl CommentStore {
         self.comments.remove(anchor);
     }
 
+    /// Drop every comment, returning how many were removed. Used by the
+    /// `D` binding after a reviewer has copied notes and wants to hand
+    /// off cleanly without re-emitting them.
+    pub(super) fn clear(&mut self) -> usize {
+        let count = self.comments.len();
+        self.comments.clear();
+        count
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.comments.is_empty()
     }
@@ -385,6 +394,17 @@ mod tests {
         store.remove(&a);
         assert_eq!(store.note(&a), None);
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn clear_empties_the_store_and_returns_the_count() {
+        let mut store = CommentStore::default();
+        note_at(&mut store, anchor("a.rs", LineSide::New, 10), "one", "c");
+        note_at(&mut store, anchor("b.rs", LineSide::New, 20), "two", "c");
+        assert_eq!(store.clear(), 2);
+        assert!(store.is_empty());
+        // Clearing an empty store removes nothing.
+        assert_eq!(store.clear(), 0);
     }
 
     #[test]

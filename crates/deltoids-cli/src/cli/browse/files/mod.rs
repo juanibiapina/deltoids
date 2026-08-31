@@ -399,6 +399,7 @@ fn handle_key(
             AppCommand::Continue
         }
         KeyCode::Char('y') => copy_comments(state),
+        KeyCode::Char('D') => clear_comments(state),
         KeyCode::Tab | KeyCode::BackTab => {
             state.focus = match state.focus {
                 Focus::Sidebar => Focus::Diff,
@@ -557,6 +558,20 @@ fn copy_comments(state: &mut FilesMode) -> AppCommand {
             AppCommand::Continue
         }
     }
+}
+
+/// Drop every session comment, recording the count in the footer. Leaves
+/// the diff cache untouched: comments are an overlay, so the notes vanish
+/// on the next render with no rebuild.
+fn clear_comments(state: &mut FilesMode) -> AppCommand {
+    let count = state.comments.clear();
+    state.status = Some(if count == 0 {
+        "No comments to clear".to_string()
+    } else {
+        let noun = if count == 1 { "comment" } else { "comments" };
+        format!("Cleared {count} {noun}")
+    });
+    AppCommand::Continue
 }
 
 /// Every comment on the working tree, as one prompt ordered by the
@@ -1133,6 +1148,52 @@ mod tests {
             "prompt was:\n{prompt}"
         );
         assert!(prompt.find("note: first").unwrap() < prompt.find("note: second").unwrap());
+    }
+
+    #[test]
+    fn shift_d_clears_every_comment_and_leaves_the_cache_untouched() {
+        let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
+        state.sidebar.set_selected(0, 18);
+        rebuild_window(&mut state);
+
+        // Nothing to clear yet.
+        let command = handle_key(&mut state, KeyCode::Char('D'), 18, 18);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("No comments to clear"));
+
+        let anchor = CommentAnchor {
+            scope: CommentScope::WorkingTree,
+            path: "src/b.txt".to_string(),
+            side: LineSide::New,
+            line: 1,
+        };
+        note(&mut state, &anchor, "look here");
+        assert!(
+            window_text(&state)
+                .iter()
+                .any(|row| row.contains("look here"))
+        );
+
+        let command = handle_key(&mut state, KeyCode::Char('D'), 18, 18);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("Cleared 1 comment"));
+        assert!(state.comments.is_empty());
+        // Comments are an overlay: clearing must not evict the diff cache.
+        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
+        assert!(state.diff.cache.contains(grouped_epoch(80), 1));
+        // The note is gone from screen after the overlay re-renders.
+        rebuild_window(&mut state);
+        assert!(
+            !window_text(&state)
+                .iter()
+                .any(|row| row.contains("look here")),
+            "the cleared note must be off screen"
+        );
+
+        // A following copy has nothing to emit.
+        let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        assert_eq!(command, AppCommand::Continue);
+        assert_eq!(state.status.as_deref(), Some("No comments to copy"));
     }
 
     #[test]

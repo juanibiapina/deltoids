@@ -31,6 +31,7 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("c", "comment on the diff line under the cursor"),
     ("d", "delete that line's comment"),
     ("y", "copy comments as an agent prompt"),
+    ("D", "clear all comments"),
     ("< / >", "narrow / widen sidebar (shared by modes)"),
     ("\\", "cycle diff layout (grouped \u{2194} interleaved)"),
     ("q", "quit"),
@@ -140,6 +141,15 @@ fn build_help_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_keys_document_clear_all_comments() {
+        let clear = HELP_KEYS
+            .iter()
+            .find(|(k, _)| *k == "D")
+            .expect("help popup must document the clear-all binding");
+        assert!(clear.1.contains("clear"));
+    }
 
     #[test]
     fn help_keys_include_mode_toggle() {

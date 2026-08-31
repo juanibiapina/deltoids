@@ -35,6 +35,11 @@ export function App() {
     document.body.classList.toggle("drawer-open", drawerOpen);
   }, [drawerOpen]);
 
+  // Reflect the theme choice on <html> so the CSS palette switches.
+  useEffect(() => {
+    document.documentElement.dataset.theme = prefs.theme;
+  }, [prefs.theme]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeDrawer();

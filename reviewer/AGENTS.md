@@ -45,7 +45,7 @@ reviewer/
       LazyObserver.tsx      #   shared IntersectionObserver for lazy cards
       components.test.tsx   #   component tests
     hooks/
-      usePrefs.ts           #   wrap + text-size prefs (localStorage)
+      usePrefs.ts           #   wrap + text-size + theme prefs (localStorage)
       useTopbarHeight.ts    #   --topbar-h sync via ResizeObserver
     styles/style.css        # the reviewer stylesheet (deltoids HTML contract)
 ```
@@ -83,6 +83,12 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
 
 - The GitHub token lives in `localStorage` under `deltoids.gh.token`. It does
   not cross origin, so users re-enter it once on the new subdomain.
+- Theme is a `usePrefs` pref persisted under `deltoids.review.theme`
+  (`dark`/`light`); first visit follows `prefers-color-scheme`. `App.tsx` sets
+  `data-theme` on `<html>`; the light palette lives in `styles/style.css` under
+  `:root[data-theme="light"]` (dark is the plain `:root` default). An inline
+  script in `index.html` applies the theme before first paint to avoid a flash —
+  keep its `localStorage` key in sync with `usePrefs.ts`.
 - The sidebar is a grouped, collapsible file tree (phase 2) built on
   `react-accessible-treeview`. Grouping/sort/collapse mirror the CLI's
   `crates/deltoids-cli/src/sidebar/tree.rs`, which stays the canonical

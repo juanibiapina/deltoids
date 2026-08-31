@@ -58,6 +58,19 @@ export function Topbar({
             <span className="token-glyph">🔑</span>
             <span className="token-dot" aria-hidden="true"></span>
           </button>
+          <button
+            className="theme-toggle"
+            type="button"
+            aria-pressed={prefs.theme === "light"}
+            title={
+              prefs.theme === "dark"
+                ? "Switch to light theme"
+                : "Switch to dark theme"
+            }
+            onClick={prefs.toggleTheme}
+          >
+            {prefs.theme === "dark" ? "☾" : "☀"}
+          </button>
         </form>
       </div>
       {showToolbar && (

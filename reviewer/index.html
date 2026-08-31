@@ -7,6 +7,23 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>deltoids · review a GitHub PR</title>
+    <script>
+      // Set the theme before first paint so a light-preference user sees no
+      // dark flash. Stored choice wins; else follow the OS. Key kept in sync
+      // with usePrefs.ts (deltoids.review.theme).
+      (function () {
+        try {
+          var stored = localStorage.getItem("deltoids.review.theme");
+          var theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          document.documentElement.dataset.theme = theme;
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -16,6 +16,9 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --scrollbar-thumb: rgba(139, 148, 158, 0.35); /* --muted @ 35% */
   --scrollbar-thumb-hover: rgba(139, 148, 158, 0.55); /* --muted @ 55% */
+  --focus-ring: rgba(210, 153, 34, 0.35); /* --accent @ 35% */
+  --scrim: rgba(1, 4, 9, 0.6);
+  --dir-icon: #54aeff;
 
   /* Space budget — media queries retune these; the rest of the sheet reads
      them so a breakpoint adjusts a few values instead of duplicating rules. */
@@ -27,6 +30,32 @@
   /* Live topbar height; app.js recomputes it from the real element on resize
      so sticky offsets and jump targets track the topbar's reflow. */
   --topbar-h: 96px;
+}
+
+/* Light palette — redeclares the same color variables the rest of the sheet
+   reads. Layout/space variables stay inherited from :root. Values are GitHub
+   Primer light tokens (the same source the dark :root mirrors): opaque canvas
+   + border + fg, and Primer's *solid* diff line/word fills (diffBlob.*),
+   because alpha green/red over a white canvas reads far too saturated. */
+:root[data-theme="light"] {
+  --bg: #ffffff; /* canvas.default */
+  --bg-raised: #f6f8fa; /* canvas.subtle */
+  --bg-row: #f6f8fa; /* canvas.subtle (hunk header / lineno) */
+  --border: #d0d7de; /* border.default */
+  --text: #1f2328; /* fg.default */
+  --muted: #59636e; /* fg.muted */
+  --accent: #9a6700; /* attention.fg */
+  --added-bg: #e6ffec; /* diffBlob.addition.lineBg */
+  --added-emph-bg: #abf2bc; /* diffBlob.addition.wordBg */
+  --added-gutter: #1a7f37; /* success.fg */
+  --removed-bg: #ffebe9; /* diffBlob.deletion.lineBg */
+  --removed-emph-bg: #ffc0bf; /* diffBlob.deletion.wordBg */
+  --removed-gutter: #cf222e; /* danger.fg */
+  --scrollbar-thumb: rgba(89, 99, 110, 0.35); /* --muted @ 35% */
+  --scrollbar-thumb-hover: rgba(89, 99, 110, 0.55); /* --muted @ 55% */
+  --focus-ring: rgba(154, 103, 0, 0.3); /* --accent @ 30% */
+  --scrim: rgba(31, 35, 40, 0.3);
+  --dir-icon: #0969da; /* accent.fg */
 }
 
 * {
@@ -115,6 +144,19 @@ body {
   font-weight: 500;
 }
 
+/* Theme toggle lives in the pr-form's trailing controls so it is always
+   visible (works before a PR loads), grouped with Review + the token button. */
+.theme-toggle {
+  flex: none;
+  padding: 9px 12px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+}
+.theme-toggle:hover {
+  color: var(--text);
+}
+
 .pr-form {
   display: flex;
   gap: 8px;
@@ -140,7 +182,7 @@ body {
 .pr-input:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(210, 153, 34, 0.35);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 button {
@@ -160,7 +202,7 @@ button:hover {
 button:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(210, 153, 34, 0.35);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 /* Token affordance carries a set-state dot so the stored token is visible. */
@@ -445,7 +487,7 @@ body.drawer-open .sidebar {
   margin: 0 6px 0 2px;
 }
 .tree-ico-dir {
-  color: #54aeff;
+  color: var(--dir-icon);
 }
 .tree-ico-file {
   color: var(--muted);
@@ -501,7 +543,7 @@ body.drawer-open .sidebar {
   position: fixed;
   inset: 0;
   z-index: 35;
-  background: rgba(1, 4, 9, 0.6);
+  background: var(--scrim);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.22s ease;

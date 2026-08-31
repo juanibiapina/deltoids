@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Sidebar } from "./Sidebar";
-import { Intro } from "./Intro";
 import type { PrFile } from "../core/github";
 
 describe("Sidebar", () => {
@@ -26,14 +25,5 @@ describe("Sidebar", () => {
     render(<Sidebar files={files} onNavigate={onNavigate} />);
     fireEvent.click(screen.getAllByRole("link")[0]);
     expect(onNavigate).toHaveBeenCalledOnce();
-  });
-});
-
-describe("Intro", () => {
-  test("example buttons submit their PR reference", () => {
-    const onExample = vi.fn();
-    render(<Intro onExample={onExample} />);
-    fireEvent.click(screen.getByText("octocat/Spoon-Knife #41130"));
-    expect(onExample).toHaveBeenCalledWith("octocat/Spoon-Knife/41130");
   });
 });

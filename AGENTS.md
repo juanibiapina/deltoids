@@ -10,7 +10,7 @@ This is a Rust workspace with CLI tools that trace file edits, plus a TUI to bro
   - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by the `tui` subcommand).
   - `html` — adds `render_html` for rendering hunks as semantic HTML (used by the `serve` subcommand and the wasm reviewer).
 - `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (unified scrolling TUI: working-tree diff + trace browser), `serve` (read-only HTTP server + mobile web trace reviewer), `edit`/`write` (agent edit tools). Also holds the trace-management library shared by `edit`/`write`. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
-- `deltoids-wasm` — WebAssembly build of the diff engine for the browser PR reviewer at `deltoids.dev/review/`. A `cdylib` exposing `render_file`/`render_from_patch` over a C-ABI; builds for `wasm32-wasip1` via wasi-sdk. See `crates/deltoids-wasm/AGENTS.md`.
+- `deltoids-wasm` — WebAssembly build of the diff engine for the browser PR reviewer at `review.deltoids.dev` (the React app in `reviewer/`). A `cdylib` exposing `render_file`/`render_from_patch` over a C-ABI; builds for `wasm32-wasip1` via wasi-sdk. See `crates/deltoids-wasm/AGENTS.md`.
 - `tests` — cross-crate integration tests
 
 ## Build & Test
@@ -110,7 +110,7 @@ crates/
 
   deltoids-wasm/
     src/lib.rs               # cdylib: alloc/dealloc + render_file/render_from_patch
-    build-wasm.sh            # wasi-sdk build + wasm-opt -> site/public/review/
+    build-wasm.sh            # wasi-sdk build + wasm-opt -> reviewer/public/ (DEST overridable)
     AGENTS.md                # wasm build, feature setup, and web app notes
 
   tests/
@@ -118,6 +118,11 @@ crates/
     tests/cli_surface.rs      # Integration tests for the public CLI surface
     tests/claude_code_hook.rs # Integration tests for the hook
     fixtures/claude-code/     # Hook test fixtures
+
+reviewer/         # standalone React PR reviewer at review.deltoids.dev (see reviewer/AGENTS.md)
+  src/core/       # framework-neutral core (engine, github, lib)
+  src/components/ # React UI (Topbar, Sidebar, FileCard, ...)
+  src/hooks/      # prefs + topbar-height hooks
 
 plugins/
   pi/             # Pi extension
@@ -131,19 +136,23 @@ plugins/
 
 Marketing/landing site for `deltoids.dev`, under `site/` (bare Astro,
 no integrations, minimal client JS). Deploys to GitHub Pages from the
-`Pages` workflow on push to `main` when `site/**` or the reviewer's
-crates change. Self-hosted IBM Plex Sans + JetBrains Mono.
-
-The browser PR reviewer is served from `site/public/review/` at
-`deltoids.dev/review/`; its wasm engine (`crates/deltoids-wasm`) is
-built by `Pages` (wasi-sdk + wasm-opt) before the Astro build. Helper
-units run via `npm test` (`site/test/`).
+`Pages` workflow on push to `main` when `site/**` changes. Self-hosted
+IBM Plex Sans + JetBrains Mono.
 
 Local dev (from `site/`): `npm install`, `npm run dev` (`:4321`),
 `npm run build`, `npm run preview`, `npx astro check`.
 
 See `site/AGENTS.md` for component conventions and the release
 checklist.
+
+## Reviewer
+
+The browser PR reviewer is the standalone React app in `reviewer/`,
+deployed to `review.deltoids.dev` on Cloudflare Pages by the
+`Reviewer` workflow (`.github/workflows/reviewer.yml`) on `reviewer/**`
+or wasm-crate changes. Its wasm engine (`crates/deltoids-wasm`) is
+built (wasi-sdk + wasm-opt) into `reviewer/public/deltoids_wasm.wasm`
+before the Vite build. See `reviewer/AGENTS.md`.
 
 ## Diff cases (start here when changing the diff engine)
 

@@ -1,8 +1,9 @@
 # deltoids-wasm
 
 WebAssembly build of the deltoids diff engine for the browser PR reviewer at
-`deltoids.dev/review/`. It exposes the engine over a tiny C-ABI so a static web
-app can compute deltoids diffs client-side, with no backend.
+`review.deltoids.dev` (the standalone React app in `reviewer/`). It exposes the
+engine over a tiny C-ABI so a static web app can compute deltoids diffs
+client-side, with no backend.
 
 ## What it is
 
@@ -47,15 +48,17 @@ WASI_SDK=/path/to/wasi-sdk-34.0-<arch>-<os> ./build-wasm.sh
 ```
 
 `build-wasm.sh` builds with the size-tuned `wasm` profile, runs `wasm-opt -Oz`
-(bulk-memory features enabled), and copies the result to
-`site/public/review/deltoids_wasm.wasm`. CI does the same in `pages.yml`. The
+(bulk-memory features enabled), and copies the result to `DEST` (default
+`reviewer/public/deltoids_wasm.wasm`). CI does the same in `reviewer.yml`. The
 `.wasm` is gitignored; it is a build product.
 
 ## The web app
 
-`site/public/review/` is the static reviewer (`index.html`, `app.js`,
-`style.css`, vendored `browser_wasi_shim.js`, and DOM-free helpers in `lib.js`
-tested by `site/test/review-lib.test.mjs`). It:
+`reviewer/` is the standalone React reviewer (Vite + TypeScript). Its
+framework-neutral core lives in `reviewer/src/core/` (`engine.ts` wasm loader,
+`github.ts` REST client, `lib.ts` DOM-free helpers with `lib.test.ts`, and the
+vendored `browser_wasi_shim.js`); the UI is in `reviewer/src/components/`. See
+`reviewer/AGENTS.md`. It:
 
 - parses a PR URL or `owner/repo/number`, or a `?pr=` deep link;
 - calls the GitHub REST API directly (CORS-open), anonymously by default;
@@ -68,7 +71,7 @@ The layout is responsive over a media-query ladder (640 / 1024 / 1440px) driven
 by CSS variables. The file sidebar is a persistent grid column at ≥1024px and an
 off-canvas drawer below (the "Files" button toggles `body.drawer-open`; the DOM
 and IntersectionObserver stay put). `.file-head` is sticky, offset by a live
-`--topbar-h` that `app.js` recomputes from the real topbar with a
+`--topbar-h` that `useTopbarHeight` recomputes from the real topbar with a
 `ResizeObserver` so the offset tracks the form wrapping on phones. A toolbar
 carries a wrap toggle (`main.nowrap` gives container-level horizontal scroll with
 a sticky-left gutter) and a text-size cycle (`main[data-size]`); both persist in

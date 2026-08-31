@@ -1,0 +1,101 @@
+name: Reviewer
+
+# Builds and deploys the standalone React PR reviewer (reviewer/) to Cloudflare
+# Pages at review.deltoids.dev. It ships independently of the marketing Pages
+# deploy (pages.yml). The wasm engine is rebuilt whenever the diff engine or the
+# wasm crate change, so the reviewer and engine move atomically.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'reviewer/**'
+      - 'crates/deltoids/**'
+      - 'crates/deltoids-wasm/**'
+      - '.github/workflows/reviewer.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'reviewer/**'
+      - 'crates/deltoids/**'
+      - 'crates/deltoids-wasm/**'
+      - '.github/workflows/reviewer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reviewer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Build the deltoids wasm engine (crates/deltoids-wasm) ---
+      # The tree-sitter C grammars need a wasi-libc sysroot to compile for wasm,
+      # supplied by wasi-sdk. The result is written to reviewer/public/ and then
+      # bundled into the Vite build below.
+      - name: Install Rust (wasm32-wasip1)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install binaryen (wasm-opt)
+        run: |
+          ver=version_132
+          curl -sL -o binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/${ver}/binaryen-${ver}-x86_64-linux.tar.gz"
+          tar xzf binaryen.tar.gz
+          echo "${{ github.workspace }}/binaryen-${ver}/bin" >> "$GITHUB_PATH"
+
+      - name: Download wasi-sdk
+        run: |
+          ver=34
+          curl -sL -o wasi-sdk.tar.gz \
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${ver}/wasi-sdk-${ver}.0-x86_64-linux.tar.gz"
+          tar xzf wasi-sdk.tar.gz
+          echo "WASI_SDK=${{ github.workspace }}/wasi-sdk-${ver}.0-x86_64-linux" >> "$GITHUB_ENV"
+
+      - name: Build wasm engine
+        env:
+          DEST: ${{ github.workspace }}/reviewer/public/deltoids_wasm.wasm
+        run: bash crates/deltoids-wasm/build-wasm.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: reviewer/package-lock.json
+
+      - name: Install dependencies
+        working-directory: reviewer
+        run: npm ci
+
+      - name: Test
+        working-directory: reviewer
+        run: npm test
+
+      - name: Type-check
+        working-directory: reviewer
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: reviewer
+        run: npx vite build
+
+      - name: Deploy to Cloudflare Pages
+        if: github.event_name != 'pull_request'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy reviewer/dist --project-name=deltoids-reviewer --branch=main

@@ -6,6 +6,7 @@ export const SITE = {
   name: "deltoids",
   domain: "deltoids.dev",
   url: "https://deltoids.dev",
+  reviewUrl: "https://review.deltoids.dev",
   version: "0.12.2",
   license: "MIT",
   tagline: "Diffs for the agentic era.",
@@ -28,7 +29,7 @@ export const SITE = {
 export const NAV_LINKS = [
   { href: "/#pager", label: "Pager" },
   { href: "/#review", label: "Review" },
-  { href: "/review/", label: "Try it live" },
+  { href: SITE.reviewUrl, label: "Try it live" },
   { href: "/#install", label: "Install" },
   { href: "/#faq", label: "FAQ" },
   { href: "/docs/", label: "Docs" },

@@ -3,6 +3,11 @@
 Bare Astro marketing site for `deltoids.dev`. No frameworks beyond Astro
 itself. Minimal client JS. Deploys to GitHub Pages.
 
+The browser PR reviewer no longer lives here. It is the standalone React app in
+`reviewer/`, deployed to `review.deltoids.dev` by `.github/workflows/reviewer.yml`.
+The "Try it live" links point at `SITE.reviewUrl`. `pages.yml` builds only
+`site/**` (no wasm, no rust toolchain).
+
 ## Local dev
 
 ```bash
@@ -76,5 +81,7 @@ After a new tag in the main project:
 ## Deployment
 
 `.github/workflows/pages.yml` builds and deploys on push to `main`
-when files under `site/**` change. The custom domain `deltoids.dev`
-is wired via `public/CNAME` and the GitHub Pages settings.
+when files under `site/**` change. It builds only the Astro site (the
+wasm reviewer moved to `reviewer/` and `reviewer.yml`). The custom
+domain `deltoids.dev` is wired via `public/CNAME` and the GitHub Pages
+settings.

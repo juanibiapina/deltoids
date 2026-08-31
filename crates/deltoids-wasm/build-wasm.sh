@@ -26,7 +26,10 @@ echo "Building deltoids-wasm for ${TARGET}..."
 cargo build -p deltoids-wasm --profile wasm --target "$TARGET"
 
 BUILT="target/$TARGET/wasm/deltoids_wasm.wasm"
-DEST="$REPO_ROOT/site/public/review/deltoids_wasm.wasm"
+# Where to write the optimized engine. Override with DEST=... ; the standalone
+# React reviewer sets it to reviewer/public/deltoids_wasm.wasm.
+DEST="${DEST:-$REPO_ROOT/reviewer/public/deltoids_wasm.wasm}"
+mkdir -p "$(dirname "$DEST")"
 
 if command -v wasm-opt >/dev/null; then
   echo "Optimizing with wasm-opt -Oz..."

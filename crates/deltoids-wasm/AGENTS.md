@@ -78,9 +78,15 @@ a sticky-left gutter) and a text-size cycle (`main[data-size]`); both persist in
 `localStorage`. The PR input is ≥16px to stop iOS focus-zoom, touch targets are
 ≥44px, and safe-area insets are honored.
 
-## Known follow-up
+## Binary size
 
-The wasm is ~15 MB (~3 MB gzipped) because two-face embeds ~200 languages.
-Trimming to deltoids' ~19 languages needs a syntax subset built from source (the
-compiled two-face set cannot be filtered — its contexts cross-reference by
-index).
+The module is ~18 MB uncompressed, dominated by the tree-sitter parser tables
+(the C++, Ruby, and Bash grammars alone are the bulk); the embedded two-face
+syntax dump is a zlib-compressed <1 MB `include_bytes!`, so trimming its ~200
+languages would save under a megabyte and is not worth doing — syntect also
+highlights any language a PR touches independently of the ~19 tree-sitter
+grammars, so trimming would drop that highlighting. The bytes users download are
+already small: Cloudflare Pages serves the `.wasm` Brotli-compressed (~2.2 MB),
+which `WebAssembly.instantiateStreaming` decodes transparently. Cutting the
+uncompressed size further means dropping grammars, which loses scope context for
+those languages.

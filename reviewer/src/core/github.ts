@@ -63,6 +63,8 @@ export interface PrFile {
   previous_filename?: string;
   status: string;
   patch?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 export async function fetchPr(ref: PrRef): Promise<Pr> {

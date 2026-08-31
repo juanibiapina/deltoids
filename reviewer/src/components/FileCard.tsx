@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { badgeClass } from "../core/lib";
+import { estimateCardHeight } from "../core/cardHeight";
 import { renderOneFile, type PrFile } from "../core/github";
 import type { Engine } from "../core/engine";
 import type { PrRef } from "../core/lib";
@@ -81,8 +82,15 @@ export function FileCard({
       ? `${file.previous_filename} → ${file.filename}`
       : file.filename;
 
+  // While pending, reserve the estimated height so cards loading above this one
+  // barely shift the page (keeps jump-to-file accurate).
+  const reserve =
+    body.kind === "pending"
+      ? { minHeight: estimateCardHeight(file.additions, file.deletions) }
+      : undefined;
+
   return (
-    <section className="file" id={`file-${index}`} ref={ref}>
+    <section className="file" id={`file-${index}`} ref={ref} style={reserve}>
       <div className="file-head">
         <span className={`badge ${badge}`}>{file.status}</span>
         <span className="path">{label}</span>

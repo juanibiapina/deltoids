@@ -1,29 +1,40 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { Sidebar } from "./Sidebar";
+import { FileTree } from "./FileTree";
 import type { PrFile } from "../core/github";
 
-describe("Sidebar", () => {
-  const files: PrFile[] = [
-    { filename: "src/a.ts", status: "modified" },
-    { filename: "src/b.ts", status: "added" },
-    { filename: "old.ts", status: "removed" },
-  ];
+const files: PrFile[] = [
+  { filename: "src/a.ts", status: "modified" },
+  { filename: "src/b.ts", status: "added" },
+  { filename: "README.md", status: "modified" },
+];
 
-  test("renders one anchor per file linking to its card", () => {
-    render(<Sidebar files={files} onNavigate={() => {}} />);
-    const links = screen.getAllByRole("link");
-    expect(links).toHaveLength(3);
-    expect(links[0].getAttribute("href")).toBe("#file-0");
-    expect(links[1].getAttribute("href")).toBe("#file-1");
-    expect(links[1].className).toContain("added");
-    expect(links[2].className).toContain("removed");
+describe("FileTree", () => {
+  test("renders directory headers and file leaves, expanded by default", () => {
+    render(<FileTree files={files} onFileSelect={() => {}} />);
+    // Grouped directory header.
+    expect(screen.getByText("src")).toBeTruthy();
+    // Leaves show basenames (visible because dirs default-expanded).
+    expect(screen.getByText("a.ts")).toBeTruthy();
+    expect(screen.getByText("b.ts")).toBeTruthy();
+    expect(screen.getByText("README.md")).toBeTruthy();
+    // The container is a WAI-ARIA tree.
+    expect(screen.getByRole("tree")).toBeTruthy();
   });
 
-  test("clicking a file fires onNavigate (closes the drawer)", () => {
-    const onNavigate = vi.fn();
-    render(<Sidebar files={files} onNavigate={onNavigate} />);
-    fireEvent.click(screen.getAllByRole("link")[0]);
-    expect(onNavigate).toHaveBeenCalledOnce();
+  test("selecting a file leaf reports its index", () => {
+    const onFileSelect = vi.fn();
+    render(<FileTree files={files} onFileSelect={onFileSelect} />);
+    fireEvent.click(screen.getByText("a.ts"));
+    expect(onFileSelect).toHaveBeenCalledWith(0);
+  });
+
+  test("collapsing a directory hides its files", () => {
+    render(<FileTree files={files} onFileSelect={() => {}} />);
+    expect(screen.getByText("a.ts")).toBeTruthy();
+    fireEvent.click(screen.getByText("src"));
+    expect(screen.queryByText("a.ts")).toBeNull();
+    // A top-level file stays visible.
+    expect(screen.getByText("README.md")).toBeTruthy();
   });
 });

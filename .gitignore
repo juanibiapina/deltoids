@@ -1,11 +1,4 @@
 /target
 
-# Built wasm engine for the browser PR reviewer (produced by crates/deltoids-wasm/build-wasm.sh)
-/reviewer/public/deltoids_wasm.wasm
-
-# Node dependencies and build output for the standalone React reviewer
-/reviewer/node_modules
-/reviewer/dist
-
-# Wrangler local cache (Cloudflare Pages deploys)
+# Wrangler local cache (Cloudflare Pages deploy runs from repo root in CI)
 .wrangler/

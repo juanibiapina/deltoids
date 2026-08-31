@@ -1,0 +1,6 @@
+# Node dependencies and build output
+node_modules/
+dist/
+
+# Built wasm engine (produced by crates/deltoids-wasm/build-wasm.sh)
+/public/deltoids_wasm.wasm

@@ -30,10 +30,16 @@ reviewer/
       github.ts             #   GitHub REST client + per-file rendering
       lib.ts                #   pure helpers (parsePrUrl, base64, badgeClass)
       lib.test.ts           #   Vitest unit tests for lib.ts
+      filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror)
+      filetree.test.ts      #   grouping tests ported from tree.rs
+      cardHeight.ts         #   estimate a card's height from changed-line counts
+      cardHeight.test.ts    #   estimate tests
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
       Topbar.tsx            #   brand, PR form, token button, toolbar
-      Sidebar.tsx           #   flat file list (phase 1)
+      FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
+      fileIcons.ts          #   filename -> per-type brand icon (simple-icons)
+      useFileNavigation.ts  #   pin a clicked file under the topbar through lazy loads
       ReviewView.tsx        #   PR meta + lazy file cards
       FileCard.tsx          #   one lazily-rendered file diff
       LazyObserver.tsx      #   shared IntersectionObserver for lazy cards
@@ -77,5 +83,18 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
 
 - The GitHub token lives in `localStorage` under `deltoids.gh.token`. It does
   not cross origin, so users re-enter it once on the new subdomain.
-- Phase 1 is exact parity with the old flat-list reviewer. The virtualized file
-  tree is phase 2 (see the extraction plan).
+- The sidebar is a grouped, collapsible file tree (phase 2) built on
+  `react-accessible-treeview`. Grouping/sort/collapse mirror the CLI's
+  `crates/deltoids-cli/src/sidebar/tree.rs`, which stays the canonical
+  cross-check for `filetree.ts`. No virtualization yet (deferred; the tree is
+  fully expanded by default). File rows show per-type brand icons (`fileIcons.ts`,
+  tree-shaken from `simple-icons`) and a trailing A/M/D/R status letter.
+- Clicking a file must land it under the sticky topbar and keep it there while
+  cards render lazily. Two things cooperate: skeletons reserve an estimated
+  height (`cardHeight.ts`) so the layout barely shifts, and sticky chrome sets
+  `overflow-anchor: none` so the browser's native scroll anchoring anchors to
+  diff content. That is not enough on its own (the boundary card straddling the
+  topbar defeats anchoring, and large diffs finish rendering seconds later), so
+  `useFileNavigation` pins the clicked file with a per-frame `requestAnimationFrame`
+  loop that re-aligns it until the user scrolls (detected via a `scroll` listener
+  that ignores the loop's own scrolls).

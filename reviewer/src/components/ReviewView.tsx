@@ -3,8 +3,9 @@ import type { Engine } from "../core/engine";
 import type { Pr, PrFile } from "../core/github";
 import type { PrRef } from "../core/lib";
 import { LazyObserverProvider } from "./LazyObserver";
-import { Sidebar } from "./Sidebar";
+import { FileTree } from "./FileTree";
 import { FileCard } from "./FileCard";
+import { useFileNavigation } from "./useFileNavigation";
 
 export interface ReviewData {
   ref: PrRef;
@@ -24,18 +25,27 @@ interface ReviewViewProps {
 export function ReviewView({ data, onNavigate, onProgress }: ReviewViewProps) {
   const { ref, pr, files, engine, baseSha, headSha } = data;
   const loaded = useRef(0);
+  const { navigateTo } = useFileNavigation();
 
   const handleLoaded = useCallback(() => {
     loaded.current += 1;
     onProgress(loaded.current, files.length);
   }, [files.length, onProgress]);
 
+  const handleFileSelect = useCallback(
+    (index: number) => {
+      onNavigate(); // close the mobile drawer
+      navigateTo(index);
+    },
+    [onNavigate, navigateTo],
+  );
+
   const capped = files.length >= 3000 ? " (first 3000)" : "";
 
   return (
     <LazyObserverProvider>
       <div className="layout">
-        <Sidebar files={files} onNavigate={onNavigate} />
+        <FileTree files={files} onFileSelect={handleFileSelect} />
         <div className="column">
           <div className="pr-meta">
             <h1>

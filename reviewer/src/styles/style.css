@@ -31,6 +31,19 @@
   box-sizing: border-box;
 }
 
+/* Scroll anchoring: when file cards load lazily above the viewport, the browser
+   keeps the clicked card in place — but only if its anchor node is real diff
+   content, not a pinned chrome element. Exclude every sticky/fixed element so
+   the anchor walk lands inside the content column. */
+.topbar,
+.toolbar,
+.status,
+.sidebar,
+.scrim,
+.file-head {
+  overflow-anchor: none;
+}
+
 html,
 body {
   margin: 0;
@@ -320,6 +333,138 @@ body.drawer-open .sidebar {
 }
 .side-item.renamed {
   border-left-color: var(--accent);
+}
+
+/* --------------------------------------------------------------------- */
+/* File tree (react-accessible-treeview) — GitHub-style rows             */
+/* --------------------------------------------------------------------- */
+
+.filetree,
+.filetree .tree-node-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* Wrappers are focus targets; drop the native outline (rows show focus). */
+.filetree .tree-leaf-list-item,
+.filetree .tree-branch-wrapper {
+  outline: none;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding-right: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.tree-row:hover {
+  background: var(--bg);
+}
+/* Focus ring: leaves carry role=treeitem on the row; branches on their li. */
+.tree-file:focus-visible,
+.filetree .tree-branch-wrapper:focus-visible > .tree-dir {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* One vertical rail per ancestor level, aligned under the parent chevron. */
+.tree-guide {
+  flex: none;
+  align-self: stretch;
+  width: 16px;
+  margin-left: 7px;
+  border-left: 1px solid var(--border);
+}
+.tree-guide + .tree-guide {
+  margin-left: 0;
+}
+
+/* Chevron slot (files get an empty one so their icon aligns with dirs). */
+.tree-twist {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.tree-row:first-child > .tree-twist:first-child,
+.tree-row > .tree-twist:first-child {
+  margin-left: 4px;
+}
+.tree-chev {
+  transition: transform 0.12s ease;
+}
+.tree-chev.open {
+  transform: rotate(90deg);
+}
+
+.tree-ico {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 6px 0 2px;
+}
+.tree-ico-dir {
+  color: #54aeff;
+}
+.tree-ico-file {
+  color: var(--muted);
+}
+
+.tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-dir .tree-name {
+  font-weight: 600;
+}
+
+/* Trailing change badge (A/M/D/R). */
+.tree-badge {
+  flex: none;
+  margin-left: 8px;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.9;
+}
+.tree-badge.added {
+  color: var(--added-gutter);
+}
+.tree-badge.removed {
+  color: var(--removed-gutter);
+}
+.tree-badge.renamed {
+  color: var(--accent);
+}
+.tree-badge.modified {
+  color: var(--muted);
+}
+
+@media (min-width: 1024px) {
+  .tree-row {
+    height: 24px;
+    font-size: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-chev {
+    transition: none;
+  }
 }
 
 .scrim {

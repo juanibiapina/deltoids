@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- diff: a line comment no longer bleeds its gray color onto the lines below it in C, C++, JavaScript, Python, and Ruby; code after a comment is highlighted as code again.
 - diff: When a new section or function is inserted above another change, the hunks no longer overlap. The surrounding region now appears once, in order, with correct line numbers below the insertion.
 
 ## [0.12.2] - 2026-07-31

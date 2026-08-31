@@ -19,6 +19,12 @@
 //! `plus`. Feeding each body line as [`crate::Hunk::runs`] emits it preserves
 //! the correct per-side sequence.
 //!
+//! Lines are highlighted with an appended `\n` so end-of-line-terminated
+//! contexts (line comments like `//`) pop on the newline token instead of
+//! staying on syntect's stack and painting later lines. Both call sites that
+//! feed a state — the new side and the discarded minus-side advance in
+//! [`HunkHighlighter::context`] — go through [`highlight_with_eol`].
+//!
 //! Residual limitation: state is seeded fresh at the first line of each hunk.
 //! If a hunk begins *inside* a multi-line construct (its opening delimiter is
 //! not part of the hunk), the leading lines still mis-highlight. In practice
@@ -61,8 +67,9 @@ impl HunkHighlighter {
     /// in sync) and returns the ranges from the new side.
     pub(crate) fn context<'a>(&mut self, line: &'a str) -> Vec<(Style, &'a str)> {
         // Advance the minus side too so removed lines later in the hunk see
-        // the correct old-side state; discard its ranges.
-        let _ = self.minus.highlight_line(line, self.syntax_set);
+        // the correct old-side state; discard its ranges. Still append the
+        // newline so line-comment contexts pop on this side as well.
+        let _ = highlight_with_eol(&mut self.minus, line, self.syntax_set);
         highlight_or_plain(&mut self.plus, line, self.syntax_set)
     }
 
@@ -85,10 +92,41 @@ fn highlight_or_plain<'a>(
     line: &'a str,
     syntax_set: &SyntaxSet,
 ) -> Vec<(Style, &'a str)> {
-    match state.highlight_line(line, syntax_set) {
+    match highlight_with_eol(state, line, syntax_set) {
         Ok(ranges) => ranges,
         Err(_) => vec![(Style::default(), line)],
     }
+}
+
+/// Highlight `line` with an appended `\n` and remap the resulting ranges back
+/// onto the original `line`.
+///
+/// syntect pops end-of-line-terminated contexts (line comments) only when it
+/// sees the newline token. Feeding a line without `\n` leaves that context on
+/// the parse stack, so every later line in the hunk is painted with the
+/// comment style. We highlight `line + "\n"`, then walk the ranges, clip the
+/// trailing newline byte, and re-borrow slices of the caller's `line` so the
+/// returned text reconstructs `line` byte-exact.
+fn highlight_with_eol<'a>(
+    state: &mut HighlightLines<'static>,
+    line: &'a str,
+    syntax_set: &SyntaxSet,
+) -> Result<Vec<(Style, &'a str)>, syntect::Error> {
+    let owned = format!("{line}\n");
+    let ranges = state.highlight_line(&owned, syntax_set)?;
+
+    let len = line.len();
+    let mut offset = 0;
+    let mut out = Vec::with_capacity(ranges.len());
+    for (style, piece) in ranges {
+        let start = offset.min(len);
+        let end = (offset + piece.len()).min(len);
+        offset += piece.len();
+        if start < end {
+            out.push((style, &line[start..end]));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -122,6 +160,75 @@ mod tests {
                 "interior comment word got a non-comment color"
             );
         }
+    }
+
+    fn distinct_fgs(
+        ranges: &[(Style, &str)],
+    ) -> std::collections::HashSet<syntect::highlighting::Color> {
+        ranges.iter().map(|(style, _)| style.foreground).collect()
+    }
+
+    /// C's grammar keeps its line-comment context on the stack until it sees a
+    /// newline. A full-line `// comment` fed via `context` must not leak the
+    /// comment color onto the following code line: the comment line stays
+    /// uniform, and the code line after it fragments into multiple colors.
+    #[test]
+    fn context_line_comment_does_not_leak_to_next_line() {
+        let mut hl = HunkHighlighter::new(Some("C"));
+        hl.context("int a = 1;");
+        let comment = hl.context("// a full line comment");
+        let after = hl.context("int x = termios;");
+
+        assert_eq!(
+            distinct_fgs(&comment).len(),
+            1,
+            "the comment line should be one uniform comment color, got {:?}",
+            distinct_fgs(&comment)
+        );
+        assert!(
+            distinct_fgs(&after).len() > 1,
+            "code after a line comment should highlight as code, got {:?}",
+            distinct_fgs(&after)
+        );
+    }
+
+    /// Guard for the minus-side advance in `context`: after a context line
+    /// comment, a removed line must highlight as code. This fails if only the
+    /// plus side appends the newline.
+    #[test]
+    fn removed_after_context_line_comment_does_not_leak() {
+        let mut hl = HunkHighlighter::new(Some("C"));
+        hl.context("int a;");
+        hl.context("// a full line comment");
+        let removed = hl.removed("int x = termios;");
+
+        assert!(
+            distinct_fgs(&removed).len() > 1,
+            "removed line after a context line comment should highlight as \
+             code, got {:?}",
+            distinct_fgs(&removed)
+        );
+    }
+
+    /// A trailing comment keeps the code before it colored and lets the next
+    /// line recover.
+    #[test]
+    fn trailing_line_comment_does_not_leak() {
+        let mut hl = HunkHighlighter::new(Some("C"));
+        let trailing = hl.context("int a = 1; // note");
+        let after = hl.context("int x = termios;");
+
+        assert!(
+            distinct_fgs(&trailing).len() > 1,
+            "a line with code then a trailing comment should have multiple \
+             colors, got {:?}",
+            distinct_fgs(&trailing)
+        );
+        assert!(
+            distinct_fgs(&after).len() > 1,
+            "code after a trailing comment should highlight as code, got {:?}",
+            distinct_fgs(&after)
+        );
     }
 
     /// Without state carry, the same second line is highlighted from scratch

@@ -40,13 +40,15 @@ pub(super) struct DiffCache {
     rows: HashMap<(usize, usize), Vec<DiffRow>>,
 }
 
-/// The identity every retained entry shares: its render `width` and the
-/// active change `layout`. A change to either invalidates the whole store,
-/// since both alter every entry's rendered rows.
+/// The identity every retained entry shares: its render `width`, the
+/// active change `layout`, and the selected `syntax_theme` (a `&'static`
+/// registry name). A change to any of them invalidates the whole store,
+/// since each alters every entry's rendered rows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CacheEpoch {
     pub(super) width: usize,
     pub(super) layout: ChangeLayout,
+    pub(super) syntax_theme: &'static str,
 }
 
 impl DiffCache {
@@ -134,6 +136,7 @@ pub(super) fn render_diff_pane(
     let epoch = CacheEpoch {
         width: detail_width,
         layout,
+        syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
     };
     let key = (state.trace_index, state.entry_index());
 
@@ -424,6 +427,7 @@ mod tests {
         CacheEpoch {
             width,
             layout: ChangeLayout::Grouped,
+            syntax_theme: "",
         }
     }
 
@@ -486,6 +490,7 @@ mod tests {
             layout: ChangeLayout::Interleaved {
                 group: std::num::NonZeroUsize::new(1).unwrap(),
             },
+            syntax_theme: "",
         };
         assert!(!cache.contains(interleaved, (0, 0)));
         cache.insert(interleaved, (0, 1), vec![DiffRow::plain(Line::from("b"))]);

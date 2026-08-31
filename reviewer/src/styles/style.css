@@ -271,6 +271,17 @@ button:focus-visible {
 .tool .plus {
   color: var(--muted);
 }
+/* Syntax-theme selector: a native <select> dressed as a toolbar control. */
+.theme-select {
+  max-width: 11rem;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 12px;
+}
+.theme-select:hover {
+  color: var(--text);
+}
 
 /* --------------------------------------------------------------------- */
 /* Status + empty / loading states                                       */

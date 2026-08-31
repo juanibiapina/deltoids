@@ -1,4 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+
+import {
+  DEFAULT_DARK_SYNTAX_THEME,
+  DEFAULT_LIGHT_SYNTAX_THEME,
+} from "../core/themes";
 
 // Reading preferences (wrap + text size), persisted per browser under the same
 // localStorage keys the original reviewer used.
@@ -6,6 +11,7 @@ import { useCallback, useState } from "react";
 const WRAP_KEY = "deltoids.review.nowrap";
 const SIZE_KEY = "deltoids.review.size";
 export const THEME_KEY = "deltoids.review.theme";
+export const SYNTAX_THEME_KEY = "deltoids.review.syntax-theme";
 export const SIZES = ["s", "m", "l"] as const;
 export type Size = (typeof SIZES)[number];
 export type Theme = "dark" | "light";
@@ -15,9 +21,27 @@ export interface Prefs {
   size: Size;
   sizeIndex: number;
   theme: Theme;
+  // Resolved syntax-theme name passed to the wasm engine.
+  syntaxTheme: string;
+  // The user's explicit choice, or `null` when it derives from `theme`.
+  syntaxThemeChoice: string | null;
   toggleWrap: () => void;
   stepSize: (delta: number) => void;
   toggleTheme: () => void;
+  // Set an explicit syntax theme, or `null` to revert to the mode-derived
+  // default. Persists across sessions.
+  setSyntaxTheme: (name: string | null) => void;
+}
+
+// The mode-derived default syntax theme, used when the user has not chosen one.
+function defaultSyntaxTheme(theme: Theme): string {
+  return theme === "dark"
+    ? DEFAULT_DARK_SYNTAX_THEME
+    : DEFAULT_LIGHT_SYNTAX_THEME;
+}
+
+function initialSyntaxThemeChoice(): string | null {
+  return localStorage.getItem(SYNTAX_THEME_KEY);
 }
 
 function initialSizeIndex(): number {
@@ -41,6 +65,9 @@ export function usePrefs(): Prefs {
   );
   const [sizeIndex, setSizeIndex] = useState(initialSizeIndex);
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [syntaxThemeChoice, setSyntaxThemeChoice] = useState<string | null>(
+    initialSyntaxThemeChoice,
+  );
 
   const toggleWrap = useCallback(() => {
     setNowrap((prev) => {
@@ -66,13 +93,32 @@ export function usePrefs(): Prefs {
     });
   }, []);
 
+  const setSyntaxTheme = useCallback((name: string | null) => {
+    if (name === null) {
+      localStorage.removeItem(SYNTAX_THEME_KEY);
+    } else {
+      localStorage.setItem(SYNTAX_THEME_KEY, name);
+    }
+    setSyntaxThemeChoice(name);
+  }, []);
+
+  // The explicit choice wins; otherwise derive from the chrome mode so a fresh
+  // visitor gets Tokyo Night on dark, GitHub on light.
+  const syntaxTheme = useMemo(
+    () => syntaxThemeChoice ?? defaultSyntaxTheme(theme),
+    [syntaxThemeChoice, theme],
+  );
+
   return {
     nowrap,
     size: SIZES[sizeIndex],
     sizeIndex,
     theme,
+    syntaxTheme,
+    syntaxThemeChoice,
     toggleWrap,
     stepSize,
     toggleTheme,
+    setSyntaxTheme,
   };
 }

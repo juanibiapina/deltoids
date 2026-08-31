@@ -254,7 +254,10 @@ pub fn render_hunk_body_rows(
     theme: &Theme,
 ) -> Vec<HunkRow> {
     let mut output = Vec::new();
-    let mut highlighter = HunkHighlighter::new(highlight);
+    let mut highlighter = HunkHighlighter::new(
+        highlight,
+        crate::theme_by_name(Some(&theme.syntax_theme_name)),
+    );
     let mut source_line = 0usize;
 
     for run in hunk.runs() {
@@ -876,13 +879,12 @@ fn produce_emphasized<S: CharSink>(
 /// Single-row, truncating highlighted spans. Used by the breadcrumb box,
 /// whose ancestor text is intentionally capped to the box width (no wrap).
 fn highlighted_spans(
-    theme_ignored: &Theme,
+    theme: &Theme,
     highlight: Option<&str>,
     line: &str,
     base_style: Style,
     max_width: usize,
 ) -> (Vec<Span<'static>>, usize) {
-    let _ = theme_ignored; // accepted for symmetry with the body renderers
     if max_width == 0 {
         return (Vec::new(), 0);
     }
@@ -890,7 +892,8 @@ fn highlighted_spans(
     // mid-construct), so a fresh one-off highlighter is correct here.
     let assets = SyntaxAssets::load();
     let syntax = assets.syntax_for_name(highlight);
-    let mut highlighter = HighlightLines::new(syntax, assets.syntax_theme);
+    let syntax_theme = crate::theme_by_name(Some(&theme.syntax_theme_name));
+    let mut highlighter = HighlightLines::new(syntax, syntax_theme);
     let ranges = highlighter
         .highlight_line(line, assets.syntax_set)
         .unwrap_or_else(|_| vec![(SyntectStyle::default(), line)]);

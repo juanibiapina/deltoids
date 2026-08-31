@@ -47,6 +47,10 @@ pub(crate) enum AppCommand {
     /// since it owns terminal output (the OSC 52 fallback writes there).
     /// The outcome comes back through [`Mode::report_copy`].
     CopyToClipboard(String),
+    /// Apply a new syntax-theme (a `&'static` registry name); handled by the
+    /// `run()` loop since it owns the shared [`Theme`]. The name joins every
+    /// diff cache's epoch, so the next frame re-highlights live.
+    SetSyntaxTheme(&'static str),
 }
 
 /// How much work a mode may spend on this frame.

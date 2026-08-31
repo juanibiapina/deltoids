@@ -18,11 +18,17 @@ export interface ReviewData {
 
 interface ReviewViewProps {
   data: ReviewData;
+  syntaxTheme: string;
   onNavigate: () => void;
   onProgress: (loaded: number, total: number) => void;
 }
 
-export function ReviewView({ data, onNavigate, onProgress }: ReviewViewProps) {
+export function ReviewView({
+  data,
+  syntaxTheme,
+  onNavigate,
+  onProgress,
+}: ReviewViewProps) {
   const { ref, pr, files, engine, baseSha, headSha } = data;
   const loaded = useRef(0);
   const { navigateTo } = useFileNavigation();
@@ -65,6 +71,7 @@ export function ReviewView({ data, onNavigate, onProgress }: ReviewViewProps) {
               repoRef={ref}
               baseSha={baseSha}
               headSha={headSha}
+              syntaxTheme={syntaxTheme}
               onLoaded={handleLoaded}
             />
           ))}

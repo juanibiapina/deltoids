@@ -33,6 +33,7 @@
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Style;
+use syntect::highlighting::Theme as SyntectTheme;
 use syntect::parsing::SyntaxSet;
 
 use crate::config::SyntaxAssets;
@@ -51,14 +52,15 @@ pub(crate) struct HunkHighlighter {
 
 impl HunkHighlighter {
     /// Build a highlighter for a hunk, using `highlight` (a syntect syntax
-    /// name) to pick the grammar. Both sides start from the grammar's initial
-    /// state.
-    pub(crate) fn new(highlight: Option<&str>) -> Self {
+    /// name) to pick the grammar and `syntax_theme` (resolved through
+    /// [`crate::theme_by_name`]) to pick the colors. Both sides start from the
+    /// grammar's initial state.
+    pub(crate) fn new(highlight: Option<&str>, syntax_theme: &'static SyntectTheme) -> Self {
         let assets = SyntaxAssets::load();
         let syntax = assets.syntax_for_name(highlight);
         Self {
-            minus: HighlightLines::new(syntax, assets.syntax_theme),
-            plus: HighlightLines::new(syntax, assets.syntax_theme),
+            minus: HighlightLines::new(syntax, syntax_theme),
+            plus: HighlightLines::new(syntax, syntax_theme),
             syntax_set: assets.syntax_set,
         }
     }
@@ -139,7 +141,8 @@ mod tests {
     /// matches the first line's comment color.
     #[test]
     fn context_lines_carry_block_comment_scope() {
-        let mut hl = HunkHighlighter::new(Some("TypeScriptReact"));
+        let mut hl =
+            HunkHighlighter::new(Some("TypeScriptReact"), crate::config::theme_by_name(None));
         let first = hl.context("/**");
         let second = hl.context(" * VAPID event fetch 404");
 
@@ -174,7 +177,7 @@ mod tests {
     /// uniform, and the code line after it fragments into multiple colors.
     #[test]
     fn context_line_comment_does_not_leak_to_next_line() {
-        let mut hl = HunkHighlighter::new(Some("C"));
+        let mut hl = HunkHighlighter::new(Some("C"), crate::config::theme_by_name(None));
         hl.context("int a = 1;");
         let comment = hl.context("// a full line comment");
         let after = hl.context("int x = termios;");
@@ -197,7 +200,7 @@ mod tests {
     /// plus side appends the newline.
     #[test]
     fn removed_after_context_line_comment_does_not_leak() {
-        let mut hl = HunkHighlighter::new(Some("C"));
+        let mut hl = HunkHighlighter::new(Some("C"), crate::config::theme_by_name(None));
         hl.context("int a;");
         hl.context("// a full line comment");
         let removed = hl.removed("int x = termios;");
@@ -214,7 +217,7 @@ mod tests {
     /// line recover.
     #[test]
     fn trailing_line_comment_does_not_leak() {
-        let mut hl = HunkHighlighter::new(Some("C"));
+        let mut hl = HunkHighlighter::new(Some("C"), crate::config::theme_by_name(None));
         let trailing = hl.context("int a = 1; // note");
         let after = hl.context("int x = termios;");
 
@@ -236,7 +239,8 @@ mod tests {
     /// is what fixes it.
     #[test]
     fn fresh_highlighter_miscolors_second_comment_line() {
-        let mut fresh = HunkHighlighter::new(Some("TypeScriptReact"));
+        let mut fresh =
+            HunkHighlighter::new(Some("TypeScriptReact"), crate::config::theme_by_name(None));
         let standalone = fresh.context(" * VAPID event fetch 404");
         let distinct: std::collections::HashSet<_> = standalone
             .iter()

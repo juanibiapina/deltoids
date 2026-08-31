@@ -3,6 +3,7 @@
 //! Loads theme settings from `$XDG_CONFIG_HOME/deltoids/config.toml`.
 //! Also provides syntax highlighting asset loading.
 
+use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::env;
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,6 +68,12 @@ pub struct Theme {
     pub status_copied: (u8, u8, u8),
     /// Foreground for type-change status (piped-diff fallback letter).
     pub status_typechange: (u8, u8, u8),
+    /// Registry name of the syntax theme used to color diff bodies and
+    /// breadcrumbs. Resolved by [`Theme::load`] (explicit `[theme]
+    /// syntax_theme` key → `BAT_THEME` → mode default) and passed to
+    /// [`crate::theme_by_name`] by the renderers. `default`/`for_mode` set the
+    /// mode default so a plain `Theme::default()` stays self-consistent.
+    pub syntax_theme_name: String,
 }
 
 impl Default for Theme {
@@ -89,6 +96,7 @@ impl Default for Theme {
             status_partial: (224, 175, 104),     // #e0af68
             status_copied: (125, 207, 255),      // #7dcfff
             status_typechange: (187, 154, 247),  // #bb9af7
+            syntax_theme_name: default_syntax_theme_name(ColorMode::Dark).to_string(),
         }
     }
 }
@@ -122,6 +130,7 @@ impl Theme {
                 status_partial: (224, 175, 104),
                 status_copied: (125, 207, 255),
                 status_typechange: (187, 154, 247),
+                syntax_theme_name: default_syntax_theme_name(ColorMode::Light).to_string(),
             },
         }
     }
@@ -139,8 +148,48 @@ impl Theme {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
         let (explicit, overlay) = read_user_theme_config().unwrap_or_default();
-        resolve_theme(load_color_mode(explicit), &overlay)
+        let mode = load_color_mode(explicit);
+        let mut theme = resolve_theme(mode, &overlay);
+        theme.syntax_theme_name = resolve_selected_syntax_theme_name(&overlay, mode);
+        theme
     }
+}
+
+/// Resolve the selected syntax-theme name for [`Theme::load`].
+///
+/// Precedence: an explicit `[theme] syntax_theme` key, then `BAT_THEME`, then
+/// the light/dark mode default. Names are validated against the registry
+/// ([`theme_names`]); an unknown name falls through to the next source so a
+/// typo silently degrades to the mode default rather than a broken theme.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_selected_syntax_theme_name(overlay: &ThemeConfig, mode: ColorMode) -> String {
+    let bat = env::var("BAT_THEME").ok();
+    resolve_syntax_theme_from(overlay.syntax_theme.as_deref(), bat.as_deref(), mode)
+}
+
+/// Pure precedence for the selected syntax-theme name: explicit `[theme]
+/// syntax_theme` key, then `BAT_THEME`, then the mode default. Each candidate
+/// is accepted only when the registry knows it, so a typo degrades to the next
+/// source. Split out from env/config IO so precedence is unit-testable.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_syntax_theme_from(
+    explicit: Option<&str>,
+    bat_theme: Option<&str>,
+    mode: ColorMode,
+) -> String {
+    let known = |name: &str| theme_names().contains(&name);
+
+    if let Some(name) = explicit
+        && known(name)
+    {
+        return name.to_string();
+    }
+    if let Some(name) = bat_theme
+        && known(name)
+    {
+        return name.to_string();
+    }
+    default_syntax_theme_name(mode).to_string()
 }
 
 /// Read the user's `[theme]` config, returning `(explicit_mode, overlay)`.
@@ -176,10 +225,9 @@ fn detect_color_mode() -> Option<ColorMode> {
     })
 }
 
-// Delta's defaults for syntax themes.
-#[cfg(not(target_arch = "wasm32"))]
+// Delta's defaults for syntax themes. Available on both targets so
+// `Theme::default`/`Theme::for_mode` can set the mode default name.
 const DEFAULT_DARK_SYNTAX_THEME: &str = "Monokai Extended";
-#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_LIGHT_SYNTAX_THEME: &str = "GitHub";
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -235,6 +283,112 @@ impl SyntaxAssets {
         name.and_then(|name| self.syntax_set.find_syntax_by_name(name))
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Syntax-theme registry
+//
+// One name-keyed registry of syntect themes, populated identically in spirit
+// on native (from bat's `HighlightingAssets`) and wasm (from two-face's
+// embedded dumps), plus the vendored Tokyo Night converted to a dump by
+// `build.rs`. Every renderer resolves its theme through [`theme_by_name`] as
+// an explicit input; `None` / unknown fall back to today's global default so
+// behaviour is byte-identical until a caller passes a real name.
+// ---------------------------------------------------------------------------
+
+/// Registry key for the vendored Tokyo Night theme. Matches the `name` field
+/// inside `assets/themes/tokyonight.tmTheme`.
+pub const TOKYO_NIGHT_THEME_NAME: &str = "TokyoNight";
+
+/// Compressed syntect dump of the vendored Tokyo Night theme, produced by
+/// `build.rs` from `assets/themes/tokyonight.tmTheme`. Loaded with
+/// `from_binary` (dump-load) on both targets.
+static TOKYO_NIGHT_DUMP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tokyonight.themedump"));
+
+fn tokyo_night_theme() -> SyntectTheme {
+    syntect::dumps::from_binary(TOKYO_NIGHT_DUMP)
+}
+
+struct ThemeRegistry {
+    themes: HashMap<&'static str, SyntectTheme>,
+    names: Vec<&'static str>,
+}
+
+static THEME_REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
+
+fn theme_registry() -> &'static ThemeRegistry {
+    THEME_REGISTRY.get_or_init(build_theme_registry)
+}
+
+fn build_theme_registry() -> ThemeRegistry {
+    let mut themes: HashMap<&'static str, SyntectTheme> = HashMap::new();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let assets = load_highlighting_assets();
+        for name in assets.themes() {
+            let key: &'static str = Box::leak(name.to_string().into_boxed_str());
+            themes.insert(key, assets.get_theme(name).clone());
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let set = two_face::theme::extra();
+        for name in two_face::theme::EmbeddedLazyThemeSet::theme_names() {
+            // `as_name()` is already `&'static str`.
+            themes.insert(name.as_name(), set.get(*name).clone());
+        }
+    }
+
+    // Vendored Tokyo Night on both targets. `or_insert_with` so a same-named
+    // upstream theme (if any) does not get clobbered silently.
+    themes
+        .entry(TOKYO_NIGHT_THEME_NAME)
+        .or_insert_with(tokyo_night_theme);
+
+    let mut names: Vec<&'static str> = themes.keys().copied().collect();
+    names.sort_unstable();
+    ThemeRegistry { themes, names }
+}
+
+/// Today's global default syntax theme: the value the renderers used before
+/// the theme became an explicit parameter. `theme_by_name(None)` returns this,
+/// so unspecified/unknown themes are byte-identical to prior behaviour.
+fn default_syntax_theme() -> &'static SyntectTheme {
+    SyntaxAssets::load().syntax_theme
+}
+
+/// Resolve a syntax theme by registry name. `None` or an unknown name falls
+/// back to [`default_syntax_theme`] (the mode/`BAT_THEME` default on native,
+/// Monokai Extended on wasm), so callers that do not select a theme keep the
+/// prior colors exactly.
+pub fn theme_by_name(name: Option<&str>) -> &'static SyntectTheme {
+    if let Some(name) = name
+        && let Some(theme) = theme_registry().themes.get(name)
+    {
+        return theme;
+    }
+    default_syntax_theme()
+}
+
+/// All registry theme names, sorted. Backs the frontends' theme pickers.
+pub fn theme_names() -> &'static [&'static str] {
+    &theme_registry().names
+}
+
+/// The registry's `&'static` spelling of `name`, or `""` when unknown.
+///
+/// Lets a `Copy` cache key (e.g. the TUI's `CacheEpoch`) carry the theme
+/// identity without owning a `String`: two epochs compare equal iff they
+/// name the same registry theme. Unknown names collapse to `""`, which is
+/// harmless because selection is always constrained to registry names.
+pub fn theme_name_key(name: &str) -> &'static str {
+    theme_names()
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == name)
+        .unwrap_or("")
 }
 
 /// The bundled syntax set used for both highlighting and stable language
@@ -296,7 +450,6 @@ fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
     default_syntax_theme_name(load_color_mode(explicit)).to_string()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn default_syntax_theme_name(mode: ColorMode) -> &'static str {
     match mode {
         ColorMode::Light => DEFAULT_LIGHT_SYNTAX_THEME,
@@ -337,6 +490,9 @@ fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
         status_copied: parse_hex_color(&overlay.status_copied).unwrap_or(base.status_copied),
         status_typechange: parse_hex_color(&overlay.status_typechange)
             .unwrap_or(base.status_typechange),
+        // Carried through unchanged; [`Theme::load`] overwrites it with the
+        // fully-resolved name (explicit key → BAT_THEME → mode default).
+        syntax_theme_name: base.syntax_theme_name,
     }
 }
 
@@ -351,6 +507,9 @@ struct ConfigFile {
 struct ThemeConfig {
     /// `"light"`, `"dark"`, or `"auto"` (default).
     mode: Option<String>,
+    /// Registry name of the syntax theme (e.g. `"TokyoNight"`, `"GitHub"`).
+    /// Takes precedence over `BAT_THEME` and the mode default.
+    syntax_theme: Option<String>,
     diff_added_bg: Option<String>,
     diff_added_emph_bg: Option<String>,
     diff_deleted_bg: Option<String>,
@@ -600,5 +759,103 @@ mod tests {
     #[test]
     fn rgb_to_ansi_bg_produces_correct_sequence() {
         assert_eq!(rgb_to_ansi_bg(32, 48, 59), "\x1b[48;2;32;48;59m");
+    }
+
+    #[test]
+    fn registry_lists_vendored_and_bundled_themes() {
+        let names = theme_names();
+        assert!(
+            names.contains(&TOKYO_NIGHT_THEME_NAME),
+            "registry must include the vendored Tokyo Night, got {names:?}"
+        );
+        // A couple of bat-bundled themes we rely on for defaults.
+        assert!(names.contains(&"GitHub"));
+        assert!(names.contains(&"Monokai Extended"));
+        // Sorted and unique.
+        let mut sorted = names.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted.as_slice());
+    }
+
+    #[test]
+    fn tokyo_night_loads_from_vendored_dump() {
+        let theme = theme_by_name(Some(TOKYO_NIGHT_THEME_NAME));
+        assert_eq!(theme.name.as_deref(), Some("TokyoNight"));
+        // Background from assets/themes/tokyonight.tmTheme: #1a1b26.
+        let bg = theme
+            .settings
+            .background
+            .expect("tokyonight has a background");
+        assert_eq!((bg.r, bg.g, bg.b), (0x1a, 0x1b, 0x26));
+    }
+
+    #[test]
+    fn distinct_names_resolve_to_distinct_themes() {
+        let tokyo = theme_by_name(Some(TOKYO_NIGHT_THEME_NAME));
+        let github = theme_by_name(Some("GitHub"));
+        assert_ne!(
+            tokyo.settings.background, github.settings.background,
+            "Tokyo Night and GitHub should differ in background"
+        );
+    }
+
+    #[test]
+    fn syntax_theme_precedence_explicit_key_wins() {
+        // A valid explicit key beats BAT_THEME and the mode default.
+        let name = resolve_syntax_theme_from(
+            Some(TOKYO_NIGHT_THEME_NAME),
+            Some("GitHub"),
+            ColorMode::Dark,
+        );
+        assert_eq!(name, TOKYO_NIGHT_THEME_NAME);
+    }
+
+    #[test]
+    fn syntax_theme_precedence_bat_theme_beats_mode_default() {
+        // No explicit key: a valid BAT_THEME wins over the mode default.
+        let name = resolve_syntax_theme_from(None, Some("GitHub"), ColorMode::Dark);
+        assert_eq!(name, "GitHub");
+    }
+
+    #[test]
+    fn syntax_theme_precedence_falls_back_to_mode_default() {
+        // Neither source valid: dark → Monokai Extended, light → GitHub.
+        assert_eq!(
+            resolve_syntax_theme_from(None, None, ColorMode::Dark),
+            "Monokai Extended"
+        );
+        assert_eq!(
+            resolve_syntax_theme_from(None, None, ColorMode::Light),
+            "GitHub"
+        );
+    }
+
+    #[test]
+    fn syntax_theme_precedence_unknown_names_degrade() {
+        // Unknown explicit key and unknown BAT_THEME both fall through.
+        let name = resolve_syntax_theme_from(Some("Nope"), Some("AlsoNope"), ColorMode::Light);
+        assert_eq!(name, "GitHub");
+    }
+
+    #[test]
+    fn parse_theme_config_extracts_syntax_theme_key() {
+        let toml = r#"
+            [theme]
+            syntax_theme = "TokyoNight"
+        "#;
+        let (_mode, overlay) = parse_theme_config(toml).expect("valid TOML");
+        assert_eq!(overlay.syntax_theme.as_deref(), Some("TokyoNight"));
+    }
+
+    #[test]
+    fn unknown_and_none_fall_back_to_default() {
+        // Byte-identical to the pre-registry global default, so unspecified /
+        // unknown themes never drift the TUI/pager/serve output.
+        let default = default_syntax_theme();
+        assert_eq!(theme_by_name(None).settings, default.settings);
+        assert_eq!(
+            theme_by_name(Some("no-such-theme-xyz")).settings,
+            default.settings
+        );
     }
 }

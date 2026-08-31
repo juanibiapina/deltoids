@@ -56,7 +56,12 @@ impl HttpResponse {
 
 /// Route a request to a response. `target` is the raw request URL
 /// (`/path?query`).
-pub fn handle(store: &TraceStore, method: &str, target: &str) -> HttpResponse {
+pub fn handle(
+    store: &TraceStore,
+    method: &str,
+    target: &str,
+    syntax_theme: Option<&str>,
+) -> HttpResponse {
     if method != "GET" {
         return HttpResponse::text(405, "method not allowed");
     }
@@ -71,7 +76,9 @@ pub fn handle(store: &TraceStore, method: &str, target: &str) -> HttpResponse {
         ["api", "projects"] => projects(store),
         ["api", "projects", id, "traces"] => project_traces(store, id),
         ["api", "traces", trace_id, "entries"] => trace_entries(store, trace_id),
-        ["api", "traces", trace_id, "entries", index] => trace_entry(store, trace_id, index),
+        ["api", "traces", trace_id, "entries", index] => {
+            trace_entry(store, trace_id, index, syntax_theme)
+        }
         ["api", "feed"] => feed(store, query),
         _ => HttpResponse::not_found(),
     }
@@ -183,7 +190,12 @@ struct EntryDetail {
     html: String,
 }
 
-fn trace_entry(store: &TraceStore, trace_id: &str, index: &str) -> HttpResponse {
+fn trace_entry(
+    store: &TraceStore,
+    trace_id: &str,
+    index: &str,
+    syntax_theme: Option<&str>,
+) -> HttpResponse {
     let Ok(index) = index.parse::<usize>() else {
         return HttpResponse::not_found();
     };
@@ -194,7 +206,7 @@ fn trace_entry(store: &TraceStore, trace_id: &str, index: &str) -> HttpResponse 
     let Some(entry) = entries.get(index) else {
         return HttpResponse::not_found();
     };
-    let html = entry_html(entry);
+    let html = entry_html(entry, syntax_theme);
     HttpResponse::json(&EntryDetail {
         index,
         tool: entry.tool.clone(),
@@ -209,9 +221,9 @@ fn trace_entry(store: &TraceStore, trace_id: &str, index: &str) -> HttpResponse 
 
 /// Render an entry's diff body, or an explanatory placeholder for entries
 /// that carry no hunks (errors, or legacy v1 traces).
-fn entry_html(entry: &HistoryEntry) -> String {
+fn entry_html(entry: &HistoryEntry, syntax_theme: Option<&str>) -> String {
     if !entry.hunks.is_empty() {
-        return render_entry_html(&entry.hunks, entry.highlight.as_deref());
+        return render_entry_html(&entry.hunks, entry.highlight.as_deref(), syntax_theme);
     }
     if !entry.ok {
         return String::new(); // the error text is delivered as a field
@@ -413,13 +425,13 @@ mod tests {
     fn index_and_assets_are_served() {
         let tmp = tempfile::tempdir().unwrap();
         let store = TraceStore::with_root(tmp.path().to_path_buf());
-        assert_eq!(handle(&store, "GET", "/").status, 200);
+        assert_eq!(handle(&store, "GET", "/", None).status, 200);
         assert_eq!(
-            handle(&store, "GET", "/app.js").content_type,
+            handle(&store, "GET", "/app.js", None).content_type,
             "text/javascript; charset=utf-8"
         );
         assert_eq!(
-            handle(&store, "GET", "/style.css").content_type,
+            handle(&store, "GET", "/style.css", None).content_type,
             "text/css; charset=utf-8"
         );
     }
@@ -428,13 +440,13 @@ mod tests {
     fn non_get_is_rejected() {
         let tmp = tempfile::tempdir().unwrap();
         let store = TraceStore::with_root(tmp.path().to_path_buf());
-        assert_eq!(handle(&store, "POST", "/api/projects").status, 405);
+        assert_eq!(handle(&store, "POST", "/api/projects", None).status, 405);
     }
 
     #[test]
     fn projects_endpoint_lists_all_projects() {
         let (_tmp, store) = store_with_entries();
-        let response = handle(&store, "GET", "/api/projects");
+        let response = handle(&store, "GET", "/api/projects", None);
         assert_eq!(response.status, 200);
         let body = body_str(&response);
         assert!(body.contains("/proj"));
@@ -445,7 +457,7 @@ mod tests {
     fn project_traces_endpoint_filters_by_project() {
         let (_tmp, store) = store_with_entries();
         let id = project_id("/proj");
-        let response = handle(&store, "GET", &format!("/api/projects/{id}/traces"));
+        let response = handle(&store, "GET", &format!("/api/projects/{id}/traces"), None);
         assert_eq!(response.status, 200);
         let body = body_str(&response);
         assert!(body.contains("01JAAAAAAAAAAAAAAAAAAAAAAA"));
@@ -456,7 +468,7 @@ mod tests {
     fn unknown_project_id_is_404() {
         let (_tmp, store) = store_with_entries();
         assert_eq!(
-            handle(&store, "GET", "/api/projects/deadbeef/traces").status,
+            handle(&store, "GET", "/api/projects/deadbeef/traces", None).status,
             404
         );
     }
@@ -468,6 +480,7 @@ mod tests {
             &store,
             "GET",
             "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries",
+            None,
         );
         assert_eq!(response.status, 200);
         let body = body_str(&response);
@@ -483,10 +496,25 @@ mod tests {
             &store,
             "GET",
             "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries/0",
+            None,
         );
         assert_eq!(response.status, 200);
         let body = body_str(&response);
         assert!(body.contains("row added"));
+    }
+
+    #[test]
+    fn entry_html_colors_change_with_syntax_theme() {
+        let (_tmp, store) = store_with_entries();
+        let target = "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries/0";
+        let default = body_str(&handle(&store, "GET", target, None));
+        let tokyo = body_str(&handle(&store, "GET", target, Some("TokyoNight")));
+        // Same structure, different inlined syntect foregrounds.
+        assert!(default.contains("row added") && tokyo.contains("row added"));
+        assert_ne!(
+            default, tokyo,
+            "a different syntax theme should change the inlined colors"
+        );
     }
 
     #[test]
@@ -496,7 +524,8 @@ mod tests {
             handle(
                 &store,
                 "GET",
-                "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries/99"
+                "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries/99",
+                None
             )
             .status,
             404
@@ -507,7 +536,12 @@ mod tests {
     fn feed_returns_entries_newer_than_cursor() {
         let (_tmp, store) = store_with_entries();
         // since is url-encoded (: -> %3A).
-        let response = handle(&store, "GET", "/api/feed?since=2026-01-01T00%3A01%3A00Z");
+        let response = handle(
+            &store,
+            "GET",
+            "/api/feed?since=2026-01-01T00%3A01%3A00Z",
+            None,
+        );
         assert_eq!(response.status, 200);
         let body = body_str(&response);
         // The 00:00:00 entry is older and excluded; the 00:01 and other's

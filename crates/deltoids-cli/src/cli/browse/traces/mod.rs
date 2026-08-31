@@ -836,6 +836,7 @@ mod tests {
         CacheEpoch {
             width,
             layout: ChangeLayout::Grouped,
+            syntax_theme: "",
         }
     }
 

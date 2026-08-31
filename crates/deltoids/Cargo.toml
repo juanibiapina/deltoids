@@ -55,6 +55,12 @@ terminal-colorsaurus = "1.0"
 syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 
+# Host-only: parse vendored `.tmTheme` plists and emit compressed syntect dumps
+# in `build.rs`. `plist-load` reads the plist; `dump-create` writes the dump.
+# Resolver v2 keeps these features off the wasm/native normal `syntect` dep.
+[build-dependencies]
+syntect = { version = "5", default-features = false, features = ["parsing", "plist-load", "dump-create", "regex-fancy"] }
+
 [dev-dependencies]
 tempfile = "3"
 

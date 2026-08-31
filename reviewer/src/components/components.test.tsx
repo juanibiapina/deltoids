@@ -48,9 +48,12 @@ function makePrefs(overrides: Partial<Prefs> = {}): Prefs {
     size: "m",
     sizeIndex: 1,
     theme: "dark",
+    syntaxTheme: "TokyoNight",
+    syntaxThemeChoice: null,
     toggleWrap: () => {},
     stepSize: () => {},
     toggleTheme: () => {},
+    setSyntaxTheme: () => {},
     ...overrides,
   };
 }
@@ -84,5 +87,23 @@ describe("Topbar theme toggle", () => {
     renderTopbar(makePrefs({ theme: "light" }));
     const btn = screen.getByTitle("Switch to dark theme");
     expect(btn.getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("Topbar syntax-theme selector", () => {
+  test("choosing a theme calls setSyntaxTheme with its name", () => {
+    const setSyntaxTheme = vi.fn();
+    renderTopbar(makePrefs({ setSyntaxTheme }));
+    const select = screen.getByLabelText("Syntax theme") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "Dracula" } });
+    expect(setSyntaxTheme).toHaveBeenCalledWith("Dracula");
+  });
+
+  test("choosing Auto calls setSyntaxTheme with null", () => {
+    const setSyntaxTheme = vi.fn();
+    renderTopbar(makePrefs({ syntaxThemeChoice: "Dracula", setSyntaxTheme }));
+    const select = screen.getByLabelText("Syntax theme") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "" } });
+    expect(setSyntaxTheme).toHaveBeenCalledWith(null);
   });
 });

@@ -11,10 +11,17 @@ import {
 
 export interface Engine {
   // Compute the deltoids diff HTML body from full before/after content.
-  renderFile(before: string, after: string, path: string): string;
+  // `theme` is a registry theme name; "" selects the default.
+  renderFile(before: string, after: string, path: string, theme: string): string;
   // Compute the diff HTML from after content plus a unified patch, letting the
-  // engine reconstruct the before side (one fewer GitHub request).
-  renderFromPatch(after: string, patch: string, path: string): string;
+  // engine reconstruct the before side (one fewer GitHub request). `theme` is
+  // a registry theme name; "" selects the default.
+  renderFromPatch(
+    after: string,
+    patch: string,
+    path: string,
+    theme: string,
+  ): string;
 }
 
 interface EngineExports {
@@ -85,15 +92,25 @@ async function instantiateEngine(): Promise<Engine> {
     return html;
   }
 
-  function renderFile(before: string, after: string, path: string): string {
-    const args = [put(before), put(after), put(path)];
+  function renderFile(
+    before: string,
+    after: string,
+    path: string,
+    theme: string,
+  ): string {
+    const args = [put(before), put(after), put(path), put(theme)];
     const html = takeResult(render_file(...args.flat()));
     for (const [p, l] of args) dealloc(p, l);
     return html;
   }
 
-  function renderFromPatch(after: string, patch: string, path: string): string {
-    const args = [put(after), put(patch), put(path)];
+  function renderFromPatch(
+    after: string,
+    patch: string,
+    path: string,
+    theme: string,
+  ): string {
+    const args = [put(after), put(patch), put(path), put(theme)];
     const html = takeResult(render_from_patch(...args.flat()));
     for (const [p, l] of args) dealloc(p, l);
     return html;

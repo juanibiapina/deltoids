@@ -70,12 +70,14 @@ mod help;
 pub mod mode;
 mod suspend;
 mod text;
+mod theme_picker;
 pub mod traces;
 mod watch;
 
 use command::{CustomCommand, load_commands};
 use files::FilesMode;
 use mode::{AppCommand, CustomRun, DrawBudget, Mode, ReloadViewport, TAB_LABELS, TabStrip};
+use theme_picker::{PickerAction, ThemePicker};
 use traces::TracesMode;
 
 /// Active-mode index for the Files panel.
@@ -117,7 +119,7 @@ pub fn run_traces_scripted() -> Result<(), String> {
 /// Open the unified TUI seeded with `active_mode` ([`FILES_MODE`] or
 /// [`TRACES_MODE`]).
 pub fn run(active_mode: usize) -> Result<(), String> {
-    let theme = Theme::load();
+    let mut theme = Theme::load();
     let _session = TerminalSession::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal =
@@ -139,7 +141,12 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         Box::new(TracesMode::empty()),
     ];
 
-    let mut shell = Shell::new(active_mode, sidebar_pref, total_width);
+    let mut shell = Shell::new(
+        active_mode,
+        sidebar_pref,
+        total_width,
+        theme.syntax_theme_name.clone(),
+    );
     shell.commands = load_commands();
 
     loop {
@@ -154,6 +161,8 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         // Take the budget (a `&mut` op) before borrowing `commands`.
         let budget = shell.take_draw_budget();
         let commands = &shell.commands;
+        let theme_picker = shell.theme_picker.as_ref();
+        let active_theme = shell.syntax_theme.as_str();
         let area = terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -177,6 +186,9 @@ pub fn run(active_mode: usize) -> Result<(), String> {
                 }
                 if help_visible {
                     help::draw_help_popup(frame, area, &theme, commands);
+                }
+                if let Some(picker) = theme_picker {
+                    theme_picker::draw(frame, area, &theme, picker, active_theme);
                 }
             })
             .map_err(|err| format!("failed to render screen: {err}"))?
@@ -212,28 +224,9 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         // burst means the user is actively navigating, so the next frame
         // draws Fast (deferring expensive rendering).
         shell.note_input(burst.is_empty());
-        match shell.apply_events(&mut modes, burst, vp, &theme)? {
-            AppCommand::Quit => break,
-            // A custom command runs here, in the loop that owns the
-            // terminal. Background: run without touching the terminal, so
-            // the next draw is unchanged (no flicker). Subprocess: suspend,
-            // hand the terminal to the child, restore. Errors are ignored
-            // in v1 (the screen is intact / rebuilt regardless).
-            AppCommand::Run(run) => {
-                if run.subprocess {
-                    let _ = suspend::run_foreground(&mut terminal, &run.command);
-                } else {
-                    let _ = suspend::run_background(&run.command);
-                }
-            }
-            // Clipboard writes also happen here: the OSC 52 fallback goes
-            // to the same stdout the terminal owns. The outcome goes back
-            // to the mode so a failed copy is reported honestly.
-            AppCommand::CopyToClipboard(text) => {
-                let result = clipboard::copy(&text);
-                modes[shell.active].report_copy(result);
-            }
-            AppCommand::Continue => {}
+        let cmd = shell.apply_events(&mut modes, burst, vp, &theme)?;
+        if apply_app_command(cmd, &mut terminal, &mut modes, &mut shell, &mut theme) {
+            break;
         }
 
         // Drain armed watchers; mark the owning mode dirty.
@@ -255,6 +248,53 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply one [`AppCommand`] bubbled up from `apply_events`, in the loop that
+/// owns the terminal. Returns `true` when the app should quit.
+///
+/// Split out of `run()` so the event loop stays readable: custom commands
+/// need the terminal, clipboard writes need the active mode, and a live
+/// theme switch needs the shared [`Theme`] and the shell's force-full flag.
+fn apply_app_command(
+    cmd: AppCommand,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    modes: &mut [Box<dyn Mode>; MODE_COUNT],
+    shell: &mut Shell,
+    theme: &mut Theme,
+) -> bool {
+    match cmd {
+        AppCommand::Quit => return true,
+        // A custom command runs here, in the loop that owns the terminal.
+        // Background: run without touching the terminal, so the next draw is
+        // unchanged (no flicker). Subprocess: suspend, hand the terminal to
+        // the child, restore. Errors are ignored in v1 (the screen is intact
+        // / rebuilt regardless).
+        AppCommand::Run(run) => {
+            if run.subprocess {
+                let _ = suspend::run_foreground(terminal, &run.command);
+            } else {
+                let _ = suspend::run_background(&run.command);
+            }
+        }
+        // Clipboard writes also happen here: the OSC 52 fallback goes to the
+        // same stdout the terminal owns. The outcome goes back to the mode so
+        // a failed copy is reported honestly.
+        AppCommand::CopyToClipboard(text) => {
+            let result = clipboard::copy(&text);
+            modes[shell.active].report_copy(result);
+        }
+        // Apply a live syntax-theme switch. Updating the shared `Theme`
+        // changes every diff cache's epoch (which now includes the theme
+        // name), so the forced `Full` frame re-highlights every cached block
+        // without re-parsing.
+        AppCommand::SetSyntaxTheme(name) => {
+            theme.syntax_theme_name = name.to_string();
+            shell.force_full = true;
+        }
+        AppCommand::Continue => {}
+    }
+    false
+}
+
 /// The shell's owned, mode-agnostic state.
 struct Shell {
     /// Active mode index ([`FILES_MODE`] / [`TRACES_MODE`]).
@@ -265,6 +305,12 @@ struct Shell {
     dragging_divider: bool,
     /// Whether the help popup is shown.
     help_visible: bool,
+    /// Open syntax-theme picker, or `None` when closed.
+    theme_picker: Option<ThemePicker>,
+    /// Current syntax-theme name (mirrors the shared `Theme`'s
+    /// `syntax_theme_name`). Seeds the picker's initial cursor and marks the
+    /// active row; the `run()` loop keeps the shared `Theme` in lockstep.
+    syntax_theme: String,
     /// Current diff change-layout, shared by both modes. Cycled with `\`.
     change_layout: ChangeLayout,
     /// One-shot: force the next frame to draw `Full` (set by a layout
@@ -299,12 +345,19 @@ struct Shell {
 }
 
 impl Shell {
-    fn new(active: usize, sidebar_pref: Preference, total_width: u16) -> Self {
+    fn new(
+        active: usize,
+        sidebar_pref: Preference,
+        total_width: u16,
+        syntax_theme: String,
+    ) -> Self {
         Self {
             active,
             sidebar_pref,
             dragging_divider: false,
             help_visible: false,
+            theme_picker: None,
+            syntax_theme,
             change_layout: ChangeLayout::Grouped,
             force_full: false,
             left_rect: Rect::default(),
@@ -515,9 +568,19 @@ impl Shell {
         if self.help_visible {
             return help::handle_key_help(&mut self.help_visible, key);
         }
+        // The theme picker is modal: while open it owns every key (except
+        // the `q` quit handled above), so navigation never leaks to the mode.
+        if self.theme_picker.is_some() {
+            return self.handle_theme_picker_key(key);
+        }
         match key {
             KeyCode::Char('?') => {
                 self.help_visible = true;
+                AppCommand::Continue
+            }
+            // `t` opens the syntax-theme picker, seeded at the current theme.
+            KeyCode::Char('t') => {
+                self.theme_picker = Some(ThemePicker::open(&self.syntax_theme));
                 AppCommand::Continue
             }
             // `]` cycles to the next mode, `[` to the previous.
@@ -564,6 +627,28 @@ impl Shell {
         }
     }
 
+    /// Drive the open theme picker with one key. Picking bubbles an
+    /// [`AppCommand::SetSyntaxTheme`] to the `run()` loop (which owns the
+    /// shared `Theme`) and mirrors the choice onto the shell so the next
+    /// open highlights it.
+    fn handle_theme_picker_key(&mut self, key: KeyCode) -> AppCommand {
+        let Some(picker) = self.theme_picker.as_mut() else {
+            return AppCommand::Continue;
+        };
+        match picker.handle_key(key) {
+            PickerAction::Stay => AppCommand::Continue,
+            PickerAction::Close => {
+                self.theme_picker = None;
+                AppCommand::Continue
+            }
+            PickerAction::Pick(name) => {
+                self.syntax_theme = name.to_string();
+                self.theme_picker = None;
+                AppCommand::SetSyntaxTheme(name)
+            }
+        }
+    }
+
     /// The custom command bound to `key`, if any.
     fn command_for(&self, key: char) -> Option<&CustomCommand> {
         self.commands.iter().find(|c| c.key == key)
@@ -578,7 +663,7 @@ impl Shell {
         left_viewport: usize,
         right_viewport: usize,
     ) -> AppCommand {
-        if self.help_visible {
+        if self.help_visible || self.theme_picker.is_some() {
             return AppCommand::Continue;
         }
         // A left-click on a tab label in the top-left panel title switches

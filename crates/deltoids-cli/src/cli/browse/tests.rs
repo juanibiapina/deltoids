@@ -102,7 +102,12 @@ fn two_modes() -> ([Box<dyn Mode>; MODE_COUNT], Rec, Rec) {
 }
 
 fn shell() -> Shell {
-    let mut s = Shell::new(FILES_MODE, Preference::seeded(200), 200);
+    let mut s = Shell::new(
+        FILES_MODE,
+        Preference::seeded(200),
+        200,
+        "TokyoNight".to_string(),
+    );
     // Mock modes are already real; mark them built so a cycle never
     // replaces them with a concrete FilesMode/TracesMode.
     s.built = [true, true];
@@ -169,6 +174,44 @@ fn question_mark_toggles_help_and_help_swallows_keys() {
     assert_eq!(cmd, AppCommand::Continue);
     assert!(!s.help_visible);
     assert!(files_rec.borrow().keys.is_empty());
+}
+
+#[test]
+fn t_opens_theme_picker_and_picking_applies_and_closes() {
+    let (mut modes, files_rec, _) = two_modes();
+    let mut s = shell();
+    // `t` opens the modal picker; the key does not reach the active mode.
+    s.handle_key(&mut modes, KeyCode::Char('t'), 4, 4);
+    assert!(s.theme_picker.is_some());
+    assert!(files_rec.borrow().keys.is_empty());
+
+    // Navigation is swallowed by the modal picker.
+    let cmd = s.handle_key(&mut modes, KeyCode::Char('j'), 4, 4);
+    assert_eq!(cmd, AppCommand::Continue);
+    assert!(files_rec.borrow().keys.is_empty());
+
+    // Enter applies the cursor theme, bubbles SetSyntaxTheme, and closes.
+    let cmd = s.handle_key(&mut modes, KeyCode::Enter, 4, 4);
+    match cmd {
+        AppCommand::SetSyntaxTheme(name) => {
+            assert_eq!(name, s.syntax_theme);
+        }
+        other => panic!("expected SetSyntaxTheme, got {other:?}"),
+    }
+    assert!(s.theme_picker.is_none());
+}
+
+#[test]
+fn esc_closes_theme_picker_without_applying() {
+    let (mut modes, _, _) = two_modes();
+    let mut s = shell();
+    s.handle_key(&mut modes, KeyCode::Char('t'), 4, 4);
+    assert!(s.theme_picker.is_some());
+    let before = s.syntax_theme.clone();
+    let cmd = s.handle_key(&mut modes, KeyCode::Esc, 4, 4);
+    assert_eq!(cmd, AppCommand::Continue);
+    assert!(s.theme_picker.is_none());
+    assert_eq!(s.syntax_theme, before, "Esc must not change the theme");
 }
 
 #[test]

@@ -1,5 +1,6 @@
 import { type FormEvent, type Ref, type RefObject } from "react";
 import type { Prefs } from "../hooks/usePrefs";
+import { SYNTAX_THEMES } from "../core/themes";
 
 interface TopbarProps {
   topbarRef: RefObject<HTMLElement | null>;
@@ -114,6 +115,31 @@ export function Topbar({
                 A<span className="plus">+</span>
               </button>
             </div>
+            <select
+              className="tool theme-select"
+              aria-label="Syntax theme"
+              title="Syntax theme"
+              value={prefs.syntaxThemeChoice ?? ""}
+              onChange={(e) =>
+                prefs.setSyntaxTheme(e.target.value === "" ? null : e.target.value)
+              }
+            >
+              <option value="">Auto ({prefs.syntaxTheme})</option>
+              <optgroup label="Dark">
+                {SYNTAX_THEMES.dark.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Light">
+                {SYNTAX_THEMES.light.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
           </div>
         </div>
       )}

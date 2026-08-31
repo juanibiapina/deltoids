@@ -12,15 +12,25 @@ A `cdylib` that wraps `deltoids` and exports three functions over linear memory
 
 - `alloc(len) -> ptr` / `dealloc(ptr, len)` — buffer management. Every `alloc`
   and every render result must be freed with the same `len`.
-- `render_file(before*, after*, path*) -> u64` — full before/after render.
-- `render_from_patch(after*, patch*, path*) -> u64` — reconstructs the before
-  side from a unified patch (GitHub's per-file `patch`), so the client fetches
-  only the head content.
+- `render_file(before*, after*, path*, theme*) -> u64` — full before/after
+  render.
+- `render_from_patch(after*, patch*, path*, theme*) -> u64` — reconstructs the
+  before side from a unified patch (GitHub's per-file `patch`), so the client
+  fetches only the head content.
+
+Each `*` is a `(ptr, len)` pair. The trailing `theme` pair is a `deltoids`
+registry theme name (see `deltoids::theme_names`); pass `(_, 0)` / an empty
+string to use the default (Monokai Extended on wasm). `engine.ts` and the React
+app own the theme choice (a persisted `localStorage` pref); the wasm side just
+takes the name and resolves it through the registry, so switching themes
+re-renders from cached content with no re-fetch.
 
 Each render returns a packed `ptr << 32 | len` handle to the HTML bytes (valid
-only on 32-bit wasm). The safe core is `render_html` / `render_html_from_patch`;
-the `extern "C"` functions are thin marshalling shells. Tests target the safe
-core (the packed pointer is wasm-only).
+only on 32-bit wasm). The safe core is `render_html` / `render_html_from_patch`
+(both take the theme name as a plain `&str`); the `extern "C"` functions are
+thin marshalling shells. Tests target the safe core (the packed pointer is
+wasm-only), including one asserting a theme name changes colors but not row
+structure.
 
 ## How the engine builds for wasm
 
@@ -37,6 +47,14 @@ emphasis, syntect highlighting. Two constraints shape the build, both handled in
 - **No oniguruma, no bat, no filesystem.** On wasm, syntect uses the pure-Rust
   `fancy-regex` engine and assets come from `two-face`'s embedded syntect dumps
   instead of bat. Native builds are unchanged (onig + bat).
+- **One theme registry, both targets.** `deltoids`'s `config.rs` builds a
+  name-keyed `theme_by_name` / `theme_names` registry — from bat's themes on
+  native, from two-face's embedded themes on wasm — plus a vendored Tokyo Night
+  (`crates/deltoids/assets/themes/tokyonight.tmTheme`) that `deltoids`'s
+  `build.rs` converts to a syntect dump at build time and both targets
+  `include_bytes!` + `from_binary` (via `dump-load`, no runtime plist parser).
+  The `plist-load`/`dump-create` build cost is a host-only build-dependency, so
+  resolver v2 keeps it out of the wasm module.
 
 ## Build
 

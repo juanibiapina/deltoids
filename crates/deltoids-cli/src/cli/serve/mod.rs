@@ -56,19 +56,25 @@ pub fn run(args: Args) -> ExitCode {
         }
     };
 
+    // Resolve the syntax-theme name once from config (explicit `[theme]
+    // syntax_theme` → `BAT_THEME` → mode default) and reuse it for every
+    // rendered entry. Cheap to clone per request.
+    let syntax_theme = deltoids::Theme::load().syntax_theme_name;
+
     println!("deltoids serve listening on http://{addr}");
     for request in server.incoming_requests() {
         let store = store.clone();
-        std::thread::spawn(move || respond(store, request));
+        let syntax_theme = syntax_theme.clone();
+        std::thread::spawn(move || respond(store, request, syntax_theme));
     }
 
     ExitCode::SUCCESS
 }
 
-fn respond(store: TraceStore, request: tiny_http::Request) {
+fn respond(store: TraceStore, request: tiny_http::Request, syntax_theme: String) {
     let method = request.method().as_str().to_string();
     let target = request.url().to_string();
-    let response = router::handle(&store, &method, &target);
+    let response = router::handle(&store, &method, &target, Some(&syntax_theme));
 
     let content_type = tiny_http::Header::from_bytes(b"Content-Type", response.content_type)
         .expect("static content type is a valid header");

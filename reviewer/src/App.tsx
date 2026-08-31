@@ -5,7 +5,6 @@ import { parsePrUrl } from "./core/lib";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
 import { Topbar } from "./components/Topbar";
-import { Intro } from "./components/Intro";
 import { ReviewView, type ReviewData } from "./components/ReviewView";
 
 interface Status {
@@ -144,10 +143,8 @@ export function App() {
       </div>
 
       <main id="app" className={prefs.nowrap ? "nowrap" : undefined} data-size={prefs.size}>
-        {data ? (
+        {data && (
           <ReviewView data={data} onNavigate={closeDrawer} onProgress={onProgress} />
-        ) : started ? null : (
-          <Intro onExample={(pr) => submit(pr)} />
         )}
       </main>
     </>

@@ -6,3 +6,6 @@
 # Node dependencies and build output for the standalone React reviewer
 /reviewer/node_modules
 /reviewer/dist
+
+# Wrangler local cache (Cloudflare Pages deploys)
+.wrangler/

@@ -33,7 +33,6 @@ reviewer/
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
       Topbar.tsx            #   brand, PR form, token button, toolbar
-      Intro.tsx             #   first-run empty state
       Sidebar.tsx           #   flat file list (phase 1)
       ReviewView.tsx        #   PR meta + lazy file cards
       FileCard.tsx          #   one lazily-rendered file diff

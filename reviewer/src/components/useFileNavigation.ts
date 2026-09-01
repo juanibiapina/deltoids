@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
+import { setPinning } from "../core/pinSignal";
 
 // Pinning a clicked file under the sticky topbar is not a one-shot scroll:
 // cards render lazily, so content above the target keeps changing height after
@@ -12,8 +13,12 @@ import { useEffect, useRef, useCallback } from "react";
 // keyboard, scrollbar) that ignores the loop's own scrolls by comparing against
 // the last offset it set; anything else is the user, and ends the hold.
 
-function topbarHeight(): number {
-  const raw = getComputedStyle(document.documentElement).getPropertyValue("--topbar-h");
+// Read the effective sticky offset. A pin forces the header shown, so
+// --sticky-top resolves to the topbar height; fall back if it is unset.
+function stickyOffset(): number {
+  const style = getComputedStyle(document.documentElement);
+  const raw =
+    style.getPropertyValue("--sticky-top") || style.getPropertyValue("--topbar-h");
   const n = parseInt(raw, 10);
   return Number.isFinite(n) ? n : 96;
 }
@@ -32,7 +37,7 @@ export function useFileNavigation() {
     if (el) {
       // Explicit offset (not scrollIntoView + scroll-margin) so it stays exact
       // after any reflow.
-      const y = Math.max(0, el.getBoundingClientRect().top + window.scrollY - topbarHeight() - 8);
+      const y = Math.max(0, el.getBoundingClientRect().top + window.scrollY - stickyOffset() - 8);
       lastSetY.current = y;
       // Only scroll when off by more than a pixel, so a settled target does no
       // work frame to frame.
@@ -45,6 +50,7 @@ export function useFileNavigation() {
     (index: number) => {
       pending.current = index;
       lastSetY.current = -1; // adopt whatever the loop sets first
+      setPinning(true); // hold the header shown while we align the target
       if (frame.current === null) frame.current = requestAnimationFrame(tick);
     },
     [tick],
@@ -53,6 +59,7 @@ export function useFileNavigation() {
   useEffect(() => {
     const release = () => {
       pending.current = null;
+      setPinning(false);
       if (frame.current !== null) {
         cancelAnimationFrame(frame.current);
         frame.current = null;

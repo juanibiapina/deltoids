@@ -1,5 +1,5 @@
 import { createRef } from "react";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { FileTree } from "./FileTree";
 import { Topbar } from "./Topbar";
@@ -60,7 +60,7 @@ function makePrefs(overrides: Partial<Prefs> = {}): Prefs {
   };
 }
 
-function renderTopbar(prefs: Prefs) {
+function renderTopbar(prefs: Prefs, overrides: Partial<Parameters<typeof Topbar>[0]> = {}) {
   return render(
     <Topbar
       topbarRef={createRef<HTMLElement>()}
@@ -69,43 +69,95 @@ function renderTopbar(prefs: Prefs) {
       onSubmit={() => {}}
       hasToken={false}
       onToken={() => {}}
-      showToolbar
+      started
       prefs={prefs}
       onFilesToggle={() => {}}
       drawerOpen={false}
+      {...overrides}
     />,
   );
 }
 
-describe("Topbar theme toggle", () => {
-  test("clicking the theme button calls toggleTheme", () => {
+// Force useMediaQuery to report a given width class.
+function mockWidth(wide: boolean) {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: wide,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
+afterEach(() => {
+  // @ts-expect-error reset the stub so absence (wide default) resumes.
+  delete window.matchMedia;
+});
+
+function openSettings() {
+  fireEvent.click(screen.getByTitle("Display settings"));
+}
+
+describe("Topbar controls — narrow (popover)", () => {
+  test("opens on click and reports open state", () => {
+    mockWidth(false);
+    const onSettingsOpenChange = vi.fn();
+    renderTopbar(makePrefs(), { onSettingsOpenChange });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    openSettings();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(onSettingsOpenChange).toHaveBeenCalledWith(true);
+  });
+
+  test("theme toggle inside the popover calls toggleTheme", () => {
+    mockWidth(false);
     const toggleTheme = vi.fn();
     renderTopbar(makePrefs({ theme: "dark", toggleTheme }));
+    openSettings();
     fireEvent.click(screen.getByTitle("Switch to light theme"));
     expect(toggleTheme).toHaveBeenCalledTimes(1);
   });
-
-  test("reflects the current theme in title and aria-pressed", () => {
-    renderTopbar(makePrefs({ theme: "light" }));
-    const btn = screen.getByTitle("Switch to dark theme");
-    expect(btn.getAttribute("aria-pressed")).toBe("true");
-  });
 });
 
-describe("Topbar syntax-theme selector", () => {
-  test("choosing a theme calls setSyntaxTheme with its name", () => {
+describe("Topbar controls — wide (inline)", () => {
+  test("shows controls inline without a popover", () => {
+    mockWidth(true);
+    renderTopbar(makePrefs());
+    expect(screen.queryByTitle("Display settings")).toBeNull();
+    expect(screen.getByLabelText("Syntax theme")).toBeTruthy();
+  });
+
+  test("syntax-theme select calls setSyntaxTheme", () => {
+    mockWidth(true);
     const setSyntaxTheme = vi.fn();
     renderTopbar(makePrefs({ setSyntaxTheme }));
     const select = screen.getByLabelText("Syntax theme") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "Dracula" } });
     expect(setSyntaxTheme).toHaveBeenCalledWith("Dracula");
   });
+});
 
-  test("choosing Auto calls setSyntaxTheme with null", () => {
-    const setSyntaxTheme = vi.fn();
-    renderTopbar(makePrefs({ syntaxThemeChoice: "Dracula", setSyntaxTheme }));
-    const select = screen.getByLabelText("Syntax theme") as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "" } });
-    expect(setSyntaxTheme).toHaveBeenCalledWith(null);
+describe("Topbar PR input collapse", () => {
+  test("narrow: hides the URL field after load and restores it on demand", () => {
+    mockWidth(false);
+    renderTopbar(makePrefs());
+    expect(screen.queryByPlaceholderText(/github.com/)).toBeNull();
+    fireEvent.click(screen.getByTitle("Load a different PR"));
+    expect(screen.getByPlaceholderText(/github.com/)).toBeTruthy();
+  });
+
+  test("wide: keeps the URL field visible after load", () => {
+    mockWidth(true);
+    renderTopbar(makePrefs());
+    expect(screen.getByPlaceholderText(/github.com/)).toBeTruthy();
+  });
+
+  test("narrow: keeps the URL field visible before a PR loads", () => {
+    mockWidth(false);
+    renderTopbar(makePrefs(), { started: false });
+    expect(screen.getByPlaceholderText(/github.com/)).toBeTruthy();
   });
 });

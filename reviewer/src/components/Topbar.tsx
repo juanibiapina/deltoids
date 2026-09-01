@@ -1,6 +1,8 @@
-import { type FormEvent, type Ref, type RefObject } from "react";
+import { type FormEvent, type Ref, type RefObject, useRef, useState } from "react";
 import type { Prefs } from "../hooks/usePrefs";
-import { SYNTAX_THEMES } from "../core/themes";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { SettingsMenu } from "./SettingsMenu";
+import { DisplayControls } from "./DisplayControls";
 
 interface TopbarProps {
   topbarRef: RefObject<HTMLElement | null>;
@@ -9,10 +11,11 @@ interface TopbarProps {
   onSubmit: () => void;
   hasToken: boolean;
   onToken: () => void;
-  showToolbar: boolean;
+  started: boolean;
   prefs: Prefs;
   onFilesToggle: () => void;
   drawerOpen: boolean;
+  onSettingsOpenChange?: (open: boolean) => void;
 }
 
 export function Topbar({
@@ -22,14 +25,31 @@ export function Topbar({
   onSubmit,
   hasToken,
   onToken,
-  showToolbar,
+  started,
   prefs,
   onFilesToggle,
   drawerOpen,
+  onSettingsOpenChange,
 }: TopbarProps) {
+  // Wide screens have room to show every control inline; narrow screens fold
+  // them into the settings popover so the bar stays one row.
+  const wide = useMediaQuery("(min-width: 640px)", true);
+
+  // On narrow screens the URL field folds away after a PR loads; a search
+  // affordance brings it back. Wide screens always keep it visible.
+  const [editing, setEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const formOpen = wide || !started || editing;
+
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     onSubmit();
+    setEditing(false);
+  };
+
+  const openEditor = () => {
+    setEditing(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   return (
@@ -38,120 +58,63 @@ export function Topbar({
         <div className="brand">
           deltoids<span className="brand-dim"> review</span>
         </div>
-        <form className="pr-form" onSubmit={handleSubmit}>
-          <input
-            className="pr-input"
-            type="text"
-            placeholder="github.com/owner/repo/pull/123"
-            autoComplete="off"
-            spellCheck={false}
-            value={input}
-            onChange={(e) => onInput(e.target.value)}
-          />
-          <button type="submit">Review</button>
-          <button
-            type="button"
-            title="GitHub token"
-            className={hasToken ? "has-token" : undefined}
-            id="token-btn"
-            onClick={onToken}
-          >
-            <span className="token-glyph">🔑</span>
-            <span className="token-dot" aria-hidden="true"></span>
-          </button>
-          <button
-            className="theme-toggle"
-            type="button"
-            aria-pressed={prefs.theme === "light"}
-            title={
-              prefs.theme === "dark"
-                ? "Switch to light theme"
-                : "Switch to dark theme"
-            }
-            onClick={prefs.toggleTheme}
-          >
-            {prefs.theme === "dark" ? "☾" : "☀"}
-          </button>
-        </form>
-      </div>
-      {showToolbar && (
-        <div className="toolbar">
-          <button
-            className="tool"
-            type="button"
-            aria-expanded={drawerOpen}
-            id="files-btn"
-            onClick={onFilesToggle}
-          >
-            Files
-          </button>
-          <div className="tool-group">
+
+        {formOpen && (
+          <form className="pr-form" onSubmit={handleSubmit}>
+            <input
+              className="pr-input"
+              type="text"
+              placeholder="github.com/owner/repo/pull/123"
+              autoComplete="off"
+              spellCheck={false}
+              value={input}
+              ref={inputRef}
+              onChange={(e) => onInput(e.target.value)}
+            />
+            <button type="submit">Review</button>
+          </form>
+        )}
+
+        <div className="topbar-actions">
+          {started && !wide && !editing && (
+            <button
+              type="button"
+              className="tool"
+              title="Load a different PR"
+              onClick={openEditor}
+            >
+              <span aria-hidden="true">⌕</span>
+              <span className="sr-only">Load a different PR</span>
+            </button>
+          )}
+          {started && (
             <button
               className="tool"
               type="button"
-              aria-pressed={!prefs.nowrap}
-              title="Wrap long lines"
-              onClick={prefs.toggleWrap}
+              aria-expanded={drawerOpen}
+              id="files-btn"
+              onClick={onFilesToggle}
             >
-              Wrap
+              Files
             </button>
-            <button
-              className="tool"
-              type="button"
-              aria-pressed={prefs.hideLineNumbers}
-              title="Show line numbers on diff rows"
-              onClick={prefs.toggleLineNumbers}
-            >
-              Line #
-            </button>
-            <div className="size-cycle" role="group" aria-label="Text size">
-              <button
-                className="tool"
-                type="button"
-                title="Smaller text"
-                disabled={prefs.sizeIndex === 0}
-                onClick={() => prefs.stepSize(-1)}
-              >
-                A<span className="minus">−</span>
-              </button>
-              <button
-                className="tool"
-                type="button"
-                title="Larger text"
-                disabled={prefs.sizeIndex === 2}
-                onClick={() => prefs.stepSize(1)}
-              >
-                A<span className="plus">+</span>
-              </button>
-            </div>
-            <select
-              className="tool theme-select"
-              aria-label="Syntax theme"
-              title="Syntax theme"
-              value={prefs.syntaxThemeChoice ?? ""}
-              onChange={(e) =>
-                prefs.setSyntaxTheme(e.target.value === "" ? null : e.target.value)
-              }
-            >
-              <option value="">Auto ({prefs.syntaxTheme})</option>
-              <optgroup label="Dark">
-                {SYNTAX_THEMES.dark.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="Light">
-                {SYNTAX_THEMES.light.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
+          )}
+          {wide ? (
+            <DisplayControls
+              prefs={prefs}
+              hasToken={hasToken}
+              onToken={onToken}
+              variant="bar"
+            />
+          ) : (
+            <SettingsMenu
+              prefs={prefs}
+              hasToken={hasToken}
+              onToken={onToken}
+              onOpenChange={onSettingsOpenChange}
+            />
+          )}
         </div>
-      )}
+      </div>
     </header>
   );
 }

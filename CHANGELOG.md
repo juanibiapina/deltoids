@@ -25,10 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: `j` / `k` now step between diff lines in the diff pane, so the cursor marks the line a comment attaches to; `Shift+J` / `Shift+K` and PgUp / PgDn still scroll.
 - agent tools: Remove the line-anchored read and edit commands and the corresponding pi edit mode.
 - TUI: Esc no longer quits; press q to quit from anywhere.
+- review: the browser PR reviewer's header is now a single compact row at every width. On phones the display controls fold into a settings menu and the PR field tucks away after a PR loads; on wider screens every control stays inline, one tap away.
+- review: the header slides out of the way as you scroll down into a diff and returns the moment you scroll up, so more of the screen shows code.
 
 ### Fixed
-
-- review: the browser PR reviewer's toolbar no longer overflows on narrow screens; its controls wrap onto more rows so opening the syntax-theme selector on a phone no longer makes the page scroll sideways.
 - diff: a line comment no longer bleeds its gray color onto the lines below it in C, C++, JavaScript, Python, and Ruby; code after a comment is highlighted as code again.
 - diff: When a new section or function is inserted above another change, the hunks no longer overlap. The surrounding region now appears once, in order, with correct line numbers below the insertion.
 

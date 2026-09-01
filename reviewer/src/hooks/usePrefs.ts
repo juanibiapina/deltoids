@@ -9,6 +9,7 @@ import {
 // localStorage keys the original reviewer used.
 
 const WRAP_KEY = "deltoids.review.nowrap";
+const HIDE_LN_KEY = "deltoids.review.hide-ln";
 const SIZE_KEY = "deltoids.review.size";
 export const THEME_KEY = "deltoids.review.theme";
 export const SYNTAX_THEME_KEY = "deltoids.review.syntax-theme";
@@ -18,6 +19,7 @@ export type Theme = "dark" | "light";
 
 export interface Prefs {
   nowrap: boolean;
+  hideLineNumbers: boolean;
   size: Size;
   sizeIndex: number;
   theme: Theme;
@@ -26,6 +28,7 @@ export interface Prefs {
   // The user's explicit choice, or `null` when it derives from `theme`.
   syntaxThemeChoice: string | null;
   toggleWrap: () => void;
+  toggleLineNumbers: () => void;
   stepSize: (delta: number) => void;
   toggleTheme: () => void;
   // Set an explicit syntax theme, or `null` to revert to the mode-derived
@@ -63,6 +66,10 @@ export function usePrefs(): Prefs {
   const [nowrap, setNowrap] = useState(
     () => localStorage.getItem(WRAP_KEY) === "1",
   );
+  // Line numbers are hidden by default; only an explicit "0" shows them.
+  const [hideLineNumbers, setHideLineNumbers] = useState(
+    () => localStorage.getItem(HIDE_LN_KEY) !== "0",
+  );
   const [sizeIndex, setSizeIndex] = useState(initialSizeIndex);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [syntaxThemeChoice, setSyntaxThemeChoice] = useState<string | null>(
@@ -73,6 +80,14 @@ export function usePrefs(): Prefs {
     setNowrap((prev) => {
       const next = !prev;
       localStorage.setItem(WRAP_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
+
+  const toggleLineNumbers = useCallback(() => {
+    setHideLineNumbers((prev) => {
+      const next = !prev;
+      localStorage.setItem(HIDE_LN_KEY, next ? "1" : "0");
       return next;
     });
   }, []);
@@ -111,12 +126,14 @@ export function usePrefs(): Prefs {
 
   return {
     nowrap,
+    hideLineNumbers,
     size: SIZES[sizeIndex],
     sizeIndex,
     theme,
     syntaxTheme,
     syntaxThemeChoice,
     toggleWrap,
+    toggleLineNumbers,
     stepSize,
     toggleTheme,
     setSyntaxTheme,

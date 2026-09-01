@@ -103,6 +103,13 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   `renderSides` from the cached `Sides`. Curated names in `themes.ts` must stay
   valid registry names (`deltoids::theme_names`, i.e. two-face's `as_name()`
   strings plus `TokyoNight`).
+- Row line numbers are a `usePrefs` pref persisted under
+  `deltoids.review.hide-ln` (default hidden; only an explicit `"0"` shows
+  them). It is CSS-only: `App.tsx` adds `hide-ln` to `<main>`, and
+  `main.hide-ln .row .ln { display: none }` drops the gutter on every row so
+  columns stay aligned. Line numbers then live only in the hunk headers —
+  `.lineno` (scope-less) and `.crumb-lineno` (the hunk start number added to
+  breadcrumb headers in `render_html.rs`, shared with `deltoids serve`).
 - The sidebar is a grouped, collapsible file tree (phase 2) built on
   `react-accessible-treeview`. Grouping/sort/collapse mirror the CLI's
   `crates/deltoids-cli/src/sidebar/tree.rs`, which stays the canonical

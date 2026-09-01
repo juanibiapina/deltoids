@@ -45,12 +45,14 @@ describe("FileTree", () => {
 function makePrefs(overrides: Partial<Prefs> = {}): Prefs {
   return {
     nowrap: false,
+    hideLineNumbers: true,
     size: "m",
     sizeIndex: 1,
     theme: "dark",
     syntaxTheme: "TokyoNight",
     syntaxThemeChoice: null,
     toggleWrap: () => {},
+    toggleLineNumbers: () => {},
     stepSize: () => {},
     toggleTheme: () => {},
     setSyntaxTheme: () => {},

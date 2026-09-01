@@ -95,6 +95,15 @@ export function Topbar({
             >
               Wrap
             </button>
+            <button
+              className="tool"
+              type="button"
+              aria-pressed={prefs.hideLineNumbers}
+              title="Show line numbers on diff rows"
+              onClick={prefs.toggleLineNumbers}
+            >
+              Line #
+            </button>
             <div className="size-cycle" role="group" aria-label="Text size">
               <button
                 className="tool"

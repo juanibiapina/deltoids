@@ -12,6 +12,7 @@
 //! - `.hunk`            one hunk block
 //! - `.breadcrumb`      scope-context header (ancestor opening lines)
 //! - `.lineno`          the line-number-only header when a hunk has no scope
+//! - `.crumb-lineno`    the hunk start line number shown inside a breadcrumb
 //! - `.row`             a body line; carries `.context` / `.added` / `.removed`
 //! - `.ln`              the gutter line number inside a row
 //! - `.code`            the code cell inside a row; the stylesheet owns
@@ -104,6 +105,9 @@ fn render_header(hunk: &Hunk, html: &mut String) {
     }
 
     html.push_str("<div class=\"breadcrumb\">");
+    html.push_str("<span class=\"crumb-lineno\">");
+    html.push_str(&hunk.new_start.to_string());
+    html.push_str("</span>");
     for (index, ancestor) in hunk.ancestors.iter().enumerate() {
         if index > 0 {
             html.push_str("<span class=\"crumb-sep\"> \u{203a} </span>");
@@ -375,9 +379,10 @@ mod tests {
         let marker = html.find("data-first-change").unwrap();
         let removed = html.find("class=\"row removed\"").unwrap();
         assert!(removed <= marker && marker < html.find("class=\"row added\"").unwrap());
-        // Breadcrumb shows the scope name.
+        // Breadcrumb shows the scope name and the hunk start line number.
         assert!(html.contains("class=\"breadcrumb\""));
         assert!(html.contains("my_func"));
+        assert!(html.contains("class=\"crumb-lineno\">5</span>"));
     }
 
     #[test]

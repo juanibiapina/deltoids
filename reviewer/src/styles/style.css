@@ -675,6 +675,11 @@ main[data-size="l"] {
 .crumb-sep {
   color: var(--border);
 }
+.crumb-lineno {
+  margin-right: 1ch;
+  color: var(--muted);
+  opacity: 0.75;
+}
 
 .row {
   display: flex;
@@ -739,6 +744,12 @@ main.nowrap .row .code {
 main.nowrap .breadcrumb,
 main.nowrap .lineno {
   white-space: nowrap;
+}
+
+/* Hide row line numbers entirely; the gutter disappears for every row so
+   columns stay aligned. Line numbers remain in the hunk headers. */
+main.hide-ln .row .ln {
+  display: none;
 }
 
 .notice {

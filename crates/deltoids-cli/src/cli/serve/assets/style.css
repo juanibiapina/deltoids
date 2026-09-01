@@ -243,6 +243,12 @@ body {
   touch-action: pan-x pan-y;
 }
 
+.crumb-lineno {
+  margin-right: 1ch;
+  color: var(--muted);
+  opacity: 0.75;
+}
+
 .crumb-sep {
   color: var(--border);
 }

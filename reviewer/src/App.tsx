@@ -147,7 +147,15 @@ export function App() {
         {status.text}
       </div>
 
-      <main id="app" className={prefs.nowrap ? "nowrap" : undefined} data-size={prefs.size}>
+      <main
+        id="app"
+        className={
+          [prefs.nowrap && "nowrap", prefs.hideLineNumbers && "hide-ln"]
+            .filter(Boolean)
+            .join(" ") || undefined
+        }
+        data-size={prefs.size}
+      >
         {data && (
           <ReviewView
             data={data}

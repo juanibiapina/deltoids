@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { SYNTAX_THEME_KEY, usePrefs } from "./usePrefs";
 
+const HIDE_LN_KEY = "deltoids.review.hide-ln";
+
 // Stub `matchMedia` (jsdom does not implement it) so the initial chrome theme
 // is deterministic per test.
 function mockColorScheme(prefersLight: boolean) {
@@ -64,5 +66,33 @@ describe("usePrefs syntax theme", () => {
     act(() => result.current.toggleTheme());
     expect(result.current.theme).toBe("light");
     expect(result.current.syntaxTheme).toBe("GitHub");
+  });
+});
+
+describe("usePrefs hide line numbers", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockColorScheme(false);
+  });
+
+  test("hides line numbers by default when unset", () => {
+    const { result } = renderHook(() => usePrefs());
+    expect(result.current.hideLineNumbers).toBe(true);
+  });
+
+  test("an explicit '0' shows line numbers", () => {
+    localStorage.setItem(HIDE_LN_KEY, "0");
+    const { result } = renderHook(() => usePrefs());
+    expect(result.current.hideLineNumbers).toBe(false);
+  });
+
+  test("toggle flips and persists", () => {
+    const { result } = renderHook(() => usePrefs());
+    act(() => result.current.toggleLineNumbers());
+    expect(result.current.hideLineNumbers).toBe(false);
+    expect(localStorage.getItem(HIDE_LN_KEY)).toBe("0");
+    act(() => result.current.toggleLineNumbers());
+    expect(result.current.hideLineNumbers).toBe(true);
+    expect(localStorage.getItem(HIDE_LN_KEY)).toBe("1");
   });
 });

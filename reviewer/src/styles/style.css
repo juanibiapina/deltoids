@@ -819,7 +819,6 @@ main.hide-ln .row .ln {
 @media (min-width: 1024px) {
   :root {
     --pad-x: 24px;
-    --content-max: 1200px;
   }
   #files-btn {
     display: none;
@@ -851,14 +850,22 @@ main.hide-ln .row .ln {
   }
 }
 
-/* Large / ultrawide: raise the cap so wide diffs breathe, widen the
-   sidebar and gutters, and keep the content centered rather than sprawling. */
+/* Large: widen the sidebar and gutters. The shell stays fluid (--content-max
+   is never capped) so cards + sidebar always fill the width. */
 @media (min-width: 1440px) {
   :root {
     --pad-x: 32px;
     --gap: 28px;
     --sidebar-w: 280px;
-    --content-max: 1560px;
+  }
+}
+
+/* Ultrawide: step the gutters and sidebar up again so the tree breathes. */
+@media (min-width: 1920px) {
+  :root {
+    --pad-x: 40px;
+    --gap: 32px;
+    --sidebar-w: 320px;
   }
 }
 

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - review: the browser PR reviewer now lives at its own address, `review.deltoids.dev`. It works exactly as before; you will re-enter your GitHub token once on the new site.
 - review: the browser PR reviewer no longer shows a line number on every diff row, freeing horizontal space and keeping columns aligned; each hunk still shows its starting line number in the header, and a toolbar button brings the per-row numbers back.
+- review: the browser PR reviewer now fills the full width of large and ultrawide screens instead of centering in a fixed column, so diffs and the file tree use the available space.
 - review: the changed-files list is now a collapsible tree grouped by folder, with file-type icons and a status letter per file. Clicking a file jumps to its diff and keeps it in view while the rest load.
 - serve: long lines now wrap on screen, so reviewing a diff on a phone needs no horizontal scrolling. Two buttons in the reviewer let you switch back to unwrapped lines and pick one of three font sizes; both choices are remembered.
 - TUI: `j` / `k` now step between diff lines in the diff pane, so the cursor marks the line a comment attaches to; `Shift+J` / `Shift+K` and PgUp / PgDn still scroll.

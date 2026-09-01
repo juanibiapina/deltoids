@@ -10,6 +10,7 @@ import {
 
 const WRAP_KEY = "deltoids.review.nowrap";
 const HIDE_LN_KEY = "deltoids.review.hide-ln";
+const HIDE_VIEWED_KEY = "deltoids.review.hide-viewed";
 const SIZE_KEY = "deltoids.review.size";
 export const THEME_KEY = "deltoids.review.theme";
 export const SYNTAX_THEME_KEY = "deltoids.review.syntax-theme";
@@ -20,6 +21,7 @@ export type Theme = "dark" | "light";
 export interface Prefs {
   nowrap: boolean;
   hideLineNumbers: boolean;
+  hideViewed: boolean;
   size: Size;
   sizeIndex: number;
   theme: Theme;
@@ -29,6 +31,7 @@ export interface Prefs {
   syntaxThemeChoice: string | null;
   toggleWrap: () => void;
   toggleLineNumbers: () => void;
+  toggleHideViewed: () => void;
   stepSize: (delta: number) => void;
   toggleTheme: () => void;
   // Set an explicit syntax theme, or `null` to revert to the mode-derived
@@ -70,6 +73,10 @@ export function usePrefs(): Prefs {
   const [hideLineNumbers, setHideLineNumbers] = useState(
     () => localStorage.getItem(HIDE_LN_KEY) !== "0",
   );
+  // Reviewed files are hidden by default; only an explicit "0" shows them.
+  const [hideViewed, setHideViewed] = useState(
+    () => localStorage.getItem(HIDE_VIEWED_KEY) !== "0",
+  );
   const [sizeIndex, setSizeIndex] = useState(initialSizeIndex);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [syntaxThemeChoice, setSyntaxThemeChoice] = useState<string | null>(
@@ -88,6 +95,14 @@ export function usePrefs(): Prefs {
     setHideLineNumbers((prev) => {
       const next = !prev;
       localStorage.setItem(HIDE_LN_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
+
+  const toggleHideViewed = useCallback(() => {
+    setHideViewed((prev) => {
+      const next = !prev;
+      localStorage.setItem(HIDE_VIEWED_KEY, next ? "1" : "0");
       return next;
     });
   }, []);
@@ -127,6 +142,7 @@ export function usePrefs(): Prefs {
   return {
     nowrap,
     hideLineNumbers,
+    hideViewed,
     size: SIZES[sizeIndex],
     sizeIndex,
     theme,
@@ -134,6 +150,7 @@ export function usePrefs(): Prefs {
     syntaxThemeChoice,
     toggleWrap,
     toggleLineNumbers,
+    toggleHideViewed,
     stepSize,
     toggleTheme,
     setSyntaxTheme,

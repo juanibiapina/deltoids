@@ -65,6 +65,10 @@ export interface PrFile {
   patch?: string;
   additions?: number;
   deletions?: number;
+  // Blob sha of the file at the PR head. Content-addressed, so it changes iff
+  // the file's content changes — used to reset a file's "reviewed" mark when a
+  // new commit touches it. Always present on the `/pulls/{n}/files` response.
+  sha?: string;
 }
 
 export async function fetchPr(ref: PrRef): Promise<Pr> {

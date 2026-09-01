@@ -3,6 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import { SYNTAX_THEME_KEY, usePrefs } from "./usePrefs";
 
 const HIDE_LN_KEY = "deltoids.review.hide-ln";
+const HIDE_VIEWED_KEY = "deltoids.review.hide-viewed";
 
 // Stub `matchMedia` (jsdom does not implement it) so the initial chrome theme
 // is deterministic per test.
@@ -94,5 +95,33 @@ describe("usePrefs hide line numbers", () => {
     act(() => result.current.toggleLineNumbers());
     expect(result.current.hideLineNumbers).toBe(true);
     expect(localStorage.getItem(HIDE_LN_KEY)).toBe("1");
+  });
+});
+
+describe("usePrefs hide viewed", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockColorScheme(false);
+  });
+
+  test("hides reviewed files by default when unset", () => {
+    const { result } = renderHook(() => usePrefs());
+    expect(result.current.hideViewed).toBe(true);
+  });
+
+  test("an explicit '0' shows reviewed files", () => {
+    localStorage.setItem(HIDE_VIEWED_KEY, "0");
+    const { result } = renderHook(() => usePrefs());
+    expect(result.current.hideViewed).toBe(false);
+  });
+
+  test("toggle flips and persists", () => {
+    const { result } = renderHook(() => usePrefs());
+    act(() => result.current.toggleHideViewed());
+    expect(result.current.hideViewed).toBe(false);
+    expect(localStorage.getItem(HIDE_VIEWED_KEY)).toBe("0");
+    act(() => result.current.toggleHideViewed());
+    expect(result.current.hideViewed).toBe(true);
+    expect(localStorage.getItem(HIDE_VIEWED_KEY)).toBe("1");
   });
 });

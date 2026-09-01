@@ -1,12 +1,21 @@
 import { useMemo } from "react";
 import TreeView, { type INode } from "react-accessible-treeview";
-import { buildTree, directoryIds, type TreeMeta } from "../core/filetree";
+import {
+  buildTree,
+  directoryIds,
+  pruneReviewed,
+  type TreeMeta,
+} from "../core/filetree";
 import { fileIcon } from "./fileIcons";
 import type { PrFile } from "../core/github";
 
 interface FileTreeProps {
   files: PrFile[];
   onFileSelect: (index: number) => void;
+  isReviewed?: (index: number) => boolean;
+  // When set, reviewed files are dropped from the tree (mirrors the global
+  // "Hide viewed" toggle) instead of shown dimmed.
+  hideReviewed?: boolean;
 }
 
 // A per-file-type brand logo, or the generic file glyph when unmapped.
@@ -81,16 +90,37 @@ function guides(level: number) {
 // Grouped, collapsible file tree (phase 2). Directory rows toggle open; file
 // leaves select-to-scroll their `#file-{i}` card into view. Fully expanded by
 // default so every changed file is visible at once, like the old flat list.
-export function FileTree({ files, onFileSelect }: FileTreeProps) {
-  const data = useMemo(
+export function FileTree({
+  files,
+  onFileSelect,
+  isReviewed,
+  hideReviewed,
+}: FileTreeProps) {
+  const fullData = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
     [files],
   );
+  const data = useMemo(
+    () =>
+      hideReviewed && isReviewed
+        ? pruneReviewed(fullData, isReviewed)
+        : fullData,
+    [fullData, hideReviewed, isReviewed],
+  );
   const expandedIds = useMemo(() => directoryIds(data), [data]);
+  // react-accessible-treeview keeps internal selection/focus state keyed by
+  // node id. If the selected node is pruned from `data` (e.g. it was marked
+  // viewed while "Hide viewed" is on) the library dereferences the missing id
+  // and throws, unmounting the app. Remount the tree whenever the visible node
+  // set changes so no stale selection can outlive a prune. The key is stable
+  // across ordinary re-renders (data is memoized), so collapse state persists
+  // except when a file actually enters or leaves the tree.
+  const treeKey = useMemo(() => data.map((n) => n.id).join("|"), [data]);
 
   return (
     <nav className="sidebar">
       <TreeView
+        key={treeKey}
         data={data as unknown as INode[]}
         className="filetree"
         aria-label="Changed files"
@@ -122,17 +152,27 @@ export function FileTree({ files, onFileSelect }: FileTreeProps) {
             );
           }
 
+          const reviewed =
+            meta?.fileIndex !== undefined &&
+            (isReviewed?.(meta.fileIndex) ?? false);
+
           return (
             <div
               {...getNodeProps()}
-              className="tree-row tree-file"
+              className={`tree-row tree-file${reviewed ? " reviewed" : ""}`}
               title={meta?.path ?? element.name}
             >
               {guides(level)}
               <span className="tree-twist" />
               <TypeIcon name={element.name} />
               <span className="tree-name">{element.name}</span>
-              {statusBadge(meta?.status)}
+              {reviewed ? (
+                <span className="tree-badge reviewed" title="Reviewed">
+                  ✓
+                </span>
+              ) : (
+                statusBadge(meta?.status)
+              )}
             </div>
           );
         }}

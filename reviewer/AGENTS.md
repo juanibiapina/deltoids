@@ -47,8 +47,10 @@ reviewer/
       LazyObserver.tsx      #   shared IntersectionObserver for lazy cards
       components.test.tsx   #   component tests
     hooks/
-      usePrefs.ts           #   wrap + text-size + chrome + syntax-theme prefs
+      usePrefs.ts           #   wrap + text-size + chrome + syntax-theme + hide-viewed prefs
       usePrefs.test.ts      #   syntax-theme derivation / persistence tests
+      useReviewed.ts        #   per-file "Viewed" state (per-PR blob-sha map)
+      useReviewed.test.ts   #   sha-match / reset / toggle / clear tests
       useTopbarHeight.ts    #   --topbar-h sync via ResizeObserver
     styles/style.css        # the reviewer stylesheet (deltoids HTML contract)
 ```
@@ -110,6 +112,22 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   columns stay aligned. Line numbers then live only in the hunk headers —
   `.lineno` (scope-less) and `.crumb-lineno` (the hunk start number added to
   breadcrumb headers in `render_html.rs`, shared with `deltoids serve`).
+- "Viewed" (reviewed) state marks a file done so it stops drawing the eye.
+  `useReviewed(ref, files)` stores a per-PR map `{ filename: blobSha }` in
+  `localStorage` under `deltoids.review.viewed:${owner}/${repo}/${number}`
+  (JSON; a corrupt value is read as empty). A file counts reviewed only while
+  its stored sha equals the current `file.sha` (the content-addressed blob sha
+  the `/pulls/{n}/files` API returns, now typed on `PrFile`), so a new commit
+  that changes the file auto-unmarks only that file — GitHub/Bitbucket reset
+  semantics at file granularity. A reviewed card keeps a per-file `Viewed`
+  checkbox in its header, gets the `reviewed` class, and CSS collapses the diff
+  and slims/mutes the header (`.file.reviewed`); the sidebar row dims and its
+  A/M/D/R letter becomes a check. The card stays mounted so sidebar jumps still
+  land. `.pr-meta` shows an "N of M reviewed" line with a Clear button. A
+  toolbar toggle (`usePrefs.hideViewed`, key `deltoids.review.hide-viewed`,
+  **on by default**; only an explicit `"0"` shows them) adds `hide-viewed` to
+  `<main>` so `main.hide-viewed .file.reviewed { display: none }` removes
+  reviewed cards from the column entirely (sidebar still lists them).
 - The sidebar is a grouped, collapsible file tree (phase 2) built on
   `react-accessible-treeview`. Grouping/sort/collapse mirror the CLI's
   `crates/deltoids-cli/src/sidebar/tree.rs`, which stays the canonical

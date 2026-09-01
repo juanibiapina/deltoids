@@ -155,7 +155,11 @@ export function App() {
       <main
         id="app"
         className={
-          [prefs.nowrap && "nowrap", prefs.hideLineNumbers && "hide-ln"]
+          [
+            prefs.nowrap && "nowrap",
+            prefs.hideLineNumbers && "hide-ln",
+            prefs.hideViewed && "hide-viewed",
+          ]
             .filter(Boolean)
             .join(" ") || undefined
         }
@@ -165,6 +169,7 @@ export function App() {
           <ReviewView
             data={data}
             syntaxTheme={prefs.syntaxTheme}
+            hideViewed={prefs.hideViewed}
             onNavigate={closeDrawer}
             onProgress={onProgress}
           />

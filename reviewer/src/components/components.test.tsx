@@ -40,12 +40,68 @@ describe("FileTree", () => {
     // A top-level file stays visible.
     expect(screen.getByText("README.md")).toBeTruthy();
   });
+
+  test("a reviewed file row is dimmed and shows a check", () => {
+    render(
+      <FileTree
+        files={files}
+        onFileSelect={() => {}}
+        isReviewed={(index) => index === 0}
+      />,
+    );
+    const row = screen.getByText("a.ts").closest(".tree-file");
+    expect(row?.classList.contains("reviewed")).toBe(true);
+    expect(screen.getByTitle("Reviewed").textContent).toBe("✓");
+    // An unreviewed file keeps its status letter, no reviewed class.
+    const other = screen.getByText("b.ts").closest(".tree-file");
+    expect(other?.classList.contains("reviewed")).toBe(false);
+  });
+
+  test("hideReviewed drops reviewed files from the tree", () => {
+    render(
+      <FileTree
+        files={files}
+        onFileSelect={() => {}}
+        isReviewed={(index) => index === 0}
+        hideReviewed
+      />,
+    );
+    // src/a.ts (index 0) is reviewed → gone; its sibling b.ts stays.
+    expect(screen.queryByText("a.ts")).toBeNull();
+    expect(screen.getByText("b.ts")).toBeTruthy();
+  });
+
+  test("pruning the selected file does not crash the tree", () => {
+    const { rerender } = render(
+      <FileTree
+        files={files}
+        onFileSelect={() => {}}
+        isReviewed={() => false}
+        hideReviewed
+      />,
+    );
+    // Select a.ts, then mark it reviewed so it is pruned from the tree. Without
+    // remounting, react-accessible-treeview dereferences the removed selected
+    // node id and throws, unmounting the app.
+    fireEvent.click(screen.getByText("a.ts"));
+    rerender(
+      <FileTree
+        files={files}
+        onFileSelect={() => {}}
+        isReviewed={(index) => index === 0}
+        hideReviewed
+      />,
+    );
+    expect(screen.queryByText("a.ts")).toBeNull();
+    expect(screen.getByText("b.ts")).toBeTruthy();
+  });
 });
 
 function makePrefs(overrides: Partial<Prefs> = {}): Prefs {
   return {
     nowrap: false,
     hideLineNumbers: true,
+    hideViewed: true,
     size: "m",
     sizeIndex: 1,
     theme: "dark",
@@ -53,6 +109,7 @@ function makePrefs(overrides: Partial<Prefs> = {}): Prefs {
     syntaxThemeChoice: null,
     toggleWrap: () => {},
     toggleLineNumbers: () => {},
+    toggleHideViewed: () => {},
     stepSize: () => {},
     toggleTheme: () => {},
     setSyntaxTheme: () => {},
@@ -128,6 +185,27 @@ describe("Topbar controls — wide (inline)", () => {
     renderTopbar(makePrefs());
     expect(screen.queryByTitle("Display settings")).toBeNull();
     expect(screen.getByLabelText("Syntax theme")).toBeTruthy();
+  });
+
+  test("Viewed toggle calls toggleHideViewed", () => {
+    mockWidth(true);
+    const toggleHideViewed = vi.fn();
+    renderTopbar(makePrefs({ toggleHideViewed }));
+    fireEvent.click(screen.getByTitle("Show files you've marked viewed"));
+    expect(toggleHideViewed).toHaveBeenCalledTimes(1);
+  });
+
+  test("Viewed is pressed when viewed files are shown, not when hidden", () => {
+    mockWidth(true);
+    const { unmount } = renderTopbar(makePrefs({ hideViewed: true }));
+    expect(
+      screen.getByTitle("Show files you've marked viewed").getAttribute("aria-pressed"),
+    ).toBe("false");
+    unmount();
+    renderTopbar(makePrefs({ hideViewed: false }));
+    expect(
+      screen.getByTitle("Show files you've marked viewed").getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 
   test("syntax-theme select calls setSyntaxTheme", () => {

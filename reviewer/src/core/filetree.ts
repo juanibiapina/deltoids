@@ -153,3 +153,51 @@ export function directoryIds(nodes: TreeNode[]): string[] {
     .filter((n) => n.metadata.isDir && n.id !== ROOT_ID)
     .map((n) => n.id);
 }
+
+// Drop reviewed file leaves (and any directory that becomes empty as a result)
+// from an already-built tree. Used to keep the sidebar aligned with the global
+// "Hide viewed" toggle: a hidden file card should not leave a dead row behind.
+// Returns the original array when nothing is reviewed, so the common case does
+// no work.
+export function pruneReviewed(
+  nodes: TreeNode[],
+  isReviewed: (fileIndex: number) => boolean,
+): TreeNode[] {
+  const drop = new Set<string>();
+  for (const n of nodes) {
+    if (
+      !n.metadata.isDir &&
+      n.metadata.fileIndex !== undefined &&
+      isReviewed(n.metadata.fileIndex)
+    ) {
+      drop.add(n.id);
+    }
+  }
+  if (drop.size === 0) return nodes;
+
+  // Clone each node with a children list that omits dropped ids.
+  const byId = new Map(
+    nodes.map((n) => [n.id, { ...n, children: n.children.filter((c) => !drop.has(c)) }]),
+  );
+
+  // Cascade: a non-root directory with no surviving children is itself dropped,
+  // which may in turn empty its parent — repeat until stable.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of byId.values()) {
+      if (drop.has(n.id)) continue;
+      if (n.metadata.isDir && n.id !== ROOT_ID && n.children.length === 0) {
+        drop.add(n.id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      for (const n of byId.values()) {
+        n.children = n.children.filter((c) => !drop.has(c));
+      }
+    }
+  }
+
+  return nodes.filter((n) => !drop.has(n.id)).map((n) => byId.get(n.id)!);
+}

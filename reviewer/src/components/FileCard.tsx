@@ -14,6 +14,8 @@ interface FileCardProps {
   baseSha: string;
   headSha: string;
   syntaxTheme: string;
+  reviewed: boolean;
+  onToggleReviewed: () => void;
   onLoaded: () => void;
 }
 
@@ -30,6 +32,8 @@ export function FileCard({
   baseSha,
   headSha,
   syntaxTheme,
+  reviewed,
+  onToggleReviewed,
   onLoaded,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
@@ -107,15 +111,28 @@ export function FileCard({
   // While pending, reserve the estimated height so cards loading above this one
   // barely shift the page (keeps jump-to-file accurate).
   const reserve =
-    body.kind === "pending"
+    body.kind === "pending" && !reviewed
       ? { minHeight: estimateCardHeight(file.additions, file.deletions) }
       : undefined;
 
   return (
-    <section className="file" id={`file-${index}`} ref={ref} style={reserve}>
+    <section
+      className={reviewed ? "file reviewed" : "file"}
+      id={`file-${index}`}
+      ref={ref}
+      style={reserve}
+    >
       <div className="file-head">
         <span className={`badge ${badge}`}>{file.status}</span>
         <span className="path">{label}</span>
+        <label className="review-toggle">
+          <input
+            type="checkbox"
+            checked={reviewed}
+            onChange={onToggleReviewed}
+          />
+          Viewed
+        </label>
       </div>
       {body.kind === "html" ? (
         <div className="diff" dangerouslySetInnerHTML={{ __html: body.html }} />

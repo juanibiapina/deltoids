@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { buildTree, directoryIds, ROOT_ID, type TreeNode } from "./filetree";
+import {
+  buildTree,
+  directoryIds,
+  pruneReviewed,
+  ROOT_ID,
+  type TreeNode,
+} from "./filetree";
 
 function files(...specs: [string, string?][]): { filename: string; status: string }[] {
   return specs.map(([filename, status]) => ({ filename, status: status ?? "modified" }));
@@ -101,4 +107,33 @@ describe("leaf metadata", () => {
 test("directoryIds lists branches, excluding the root", () => {
   const nodes = buildTree(files(["src/a.rs"], ["crates/x/y/z.rs"]));
   expect(directoryIds(nodes).sort()).toEqual(["crates/x/y", "src"]);
+});
+
+describe("pruneReviewed", () => {
+  test("returns the same array when nothing is reviewed", () => {
+    const nodes = buildTree(files(["src/a.rs"], ["src/b.rs"]));
+    expect(pruneReviewed(nodes, () => false)).toBe(nodes);
+  });
+
+  test("drops a reviewed leaf but keeps the directory with siblings", () => {
+    const nodes = buildTree(files(["src/a.rs"], ["src/b.rs"]));
+    // a.rs is fileIndex 0.
+    const pruned = pruneReviewed(nodes, (i) => i === 0);
+    expect(outline(pruned)).toEqual([
+      ["src", true],
+      ["b.rs", false],
+    ]);
+    // The surviving directory no longer references the dropped child.
+    expect(byId(pruned, "src").children).toEqual(["src/b.rs"]);
+  });
+
+  test("removes a directory that becomes empty, cascading upward", () => {
+    const nodes = buildTree(files(["crates/x/y/z.rs"], ["src/a.rs"]));
+    // z.rs is fileIndex 0; pruning it should drop the whole crates/x/y chain.
+    const pruned = pruneReviewed(nodes, (i) => i === 0);
+    expect(outline(pruned)).toEqual([
+      ["src", true],
+      ["a.rs", false],
+    ]);
+  });
 });

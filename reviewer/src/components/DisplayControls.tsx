@@ -105,6 +105,15 @@ export function DisplayControls({
         >
           Line #
         </button>
+        <button
+          type="button"
+          className="tool"
+          aria-pressed={!prefs.hideViewed}
+          title="Show files you've marked viewed"
+          onClick={prefs.toggleHideViewed}
+        >
+          Viewed
+        </button>
         {!menu && sizeGroup}
       </div>
       {menu && wrap("Text size", sizeGroup)}

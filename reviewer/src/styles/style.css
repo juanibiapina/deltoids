@@ -853,6 +853,104 @@ main.hide-ln .row .ln {
   display: none;
 }
 
+/* --------------------------------------------------------------------- */
+/* Reviewed ("Viewed") state                                             */
+/* --------------------------------------------------------------------- */
+
+/* The per-file Viewed checkbox, pushed to the right of the file header. */
+.review-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.review-toggle input {
+  accent-color: var(--added-gutter);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* A reviewed card collapses its diff and shrinks to a slim, muted line so it
+   stops drawing the eye. It stays in the DOM, so sidebar jumps still land. */
+.file.reviewed {
+  opacity: 0.72;
+}
+.file.reviewed .diff {
+  display: none;
+}
+.file.reviewed .file-head {
+  padding: 6px 14px;
+  background: var(--bg);
+  color: var(--muted);
+  border-bottom: none;
+}
+.file.reviewed .file-head .path {
+  font-weight: 500;
+  color: var(--muted);
+}
+.file.reviewed .file-head .badge {
+  opacity: 0.6;
+}
+.file.reviewed .review-toggle {
+  color: var(--added-gutter);
+}
+
+/* Hide reviewed files entirely (toolbar "Viewed" toggle, on by default). The
+   sidebar still lists them (dimmed) so they remain reachable. */
+main.hide-viewed .file.reviewed {
+  display: none;
+}
+
+/* Reviewed rows in the sidebar recede; the status letter becomes a check. */
+.tree-file.reviewed {
+  opacity: 0.5;
+}
+.tree-badge.reviewed {
+  color: var(--added-gutter);
+}
+
+/* Reviewed progress under the PR meta. */
+.review-progress {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.review-bar {
+  flex: 0 1 200px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.review-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--added-gutter);
+}
+.review-clear {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.review-clear:hover {
+  color: var(--text);
+}
+
 .notice {
   padding: 12px 14px;
   color: var(--muted);

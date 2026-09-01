@@ -107,6 +107,11 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  /* The page itself never scrolls sideways: any horizontal overflow is a bug.
+     Long lines with wrap off scroll inside their own `.diff` box instead.
+     `clip` (not `hidden`) forbids the scroll without making body a scroll
+     container, so the sticky topbar keeps working. */
+  overflow-x: clip;
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);

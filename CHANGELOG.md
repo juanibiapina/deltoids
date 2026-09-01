@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - review: the header slides out of the way as you scroll down into a diff and returns the moment you scroll up, so more of the screen shows code.
 
 ### Fixed
+- review: the toolbar's line-number toggle now lights up when row line numbers are shown, not when they are hidden, so its highlight matches the other display toggles.
 - diff: a line comment no longer bleeds its gray color onto the lines below it in C, C++, JavaScript, Python, and Ruby; code after a comment is highlighted as code again.
 - diff: When a new section or function is inserted above another change, the hunks no longer overlap. The surrounding region now appears once, in order, with correct line numbers below the insertion.
 

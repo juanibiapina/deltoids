@@ -208,6 +208,19 @@ describe("Topbar controls — wide (inline)", () => {
     ).toBe("true");
   });
 
+  test("Line # is pressed when row numbers are shown, not when hidden", () => {
+    mockWidth(true);
+    const { unmount } = renderTopbar(makePrefs({ hideLineNumbers: true }));
+    expect(
+      screen.getByTitle("Show line numbers on diff rows").getAttribute("aria-pressed"),
+    ).toBe("false");
+    unmount();
+    renderTopbar(makePrefs({ hideLineNumbers: false }));
+    expect(
+      screen.getByTitle("Show line numbers on diff rows").getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
   test("syntax-theme select calls setSyntaxTheme", () => {
     mockWidth(true);
     const setSyntaxTheme = vi.fn();

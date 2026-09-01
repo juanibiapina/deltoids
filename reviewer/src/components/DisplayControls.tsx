@@ -99,7 +99,7 @@ export function DisplayControls({
         <button
           type="button"
           className="tool"
-          aria-pressed={prefs.hideLineNumbers}
+          aria-pressed={!prefs.hideLineNumbers}
           title="Show line numbers on diff rows"
           onClick={prefs.toggleLineNumbers}
         >

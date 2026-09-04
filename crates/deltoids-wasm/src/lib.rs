@@ -19,7 +19,7 @@ use std::alloc::Layout;
 
 use deltoids::Diff;
 use deltoids::parse::GitDiff;
-use deltoids::render_html::render_entry_html;
+use deltoids::render_html::{render_context_html, render_entry_html_with_file_len};
 use deltoids::reverse::reconstruct_before;
 
 /// Layout for a raw byte buffer of `len` bytes (align 1). Allocation and
@@ -67,7 +67,12 @@ fn theme_opt(theme: &str) -> Option<&str> {
 /// the FFI wrapper only marshals strings across linear memory.
 pub fn render_html(before: &str, after: &str, path: &str, theme: &str) -> String {
     let diff = Diff::compute(before, after, path);
-    render_entry_html(diff.hunks(), diff.highlight(), theme_opt(theme))
+    render_entry_html_with_file_len(
+        diff.hunks(),
+        diff.highlight(),
+        theme_opt(theme),
+        after.lines().count(),
+    )
 }
 
 /// Render the diff HTML from `after` content plus a unified `patch` (GitHub's
@@ -82,6 +87,23 @@ pub fn render_html_from_patch(after: &str, patch: &str, path: &str, theme: &str)
         None => after.to_string(),
     };
     render_html(&before, after, path, theme)
+}
+
+/// Render new-file lines `start..=end` (1-based, inclusive) of `after` as
+/// highlighted context rows, so the client can reveal the lines a `.gap`
+/// divider stands in for. The highlight syntax is detected from `path` (the
+/// before side is irrelevant — gap lines are unchanged context). `theme` is a
+/// registry theme name (empty = default). This is the safe core behind
+/// [`render_context`].
+pub fn render_context_rows(
+    after: &str,
+    path: &str,
+    theme: &str,
+    start: usize,
+    end: usize,
+) -> String {
+    let highlight = deltoids::Language::detect_highlight_name(path, after);
+    render_context_html(after, highlight.as_deref(), theme_opt(theme), start, end)
 }
 
 /// Compute the deltoids diff between `before` and `after` for `path` and
@@ -132,6 +154,32 @@ pub unsafe extern "C" fn render_from_patch(
     let path = unsafe { str_from_parts(path_ptr, path_len) };
     let theme = unsafe { str_from_parts(theme_ptr, theme_len) };
     pack_bytes(render_html_from_patch(&after, &patch, &path, &theme).into_bytes())
+}
+
+/// Render a range of new-file context lines as HTML rows and return a packed
+/// `ptr << 32 | len` handle. Backs the reviewer's gap expansion.
+///
+/// # Safety
+/// The `(ptr, len)` pairs must describe valid buffers owned by this module's
+/// linear memory (typically from [`alloc`]). The `theme` pair may be `(_, 0)`
+/// to select the default theme. `start`/`end` are 1-based inclusive new-file
+/// line numbers; the range is clamped to `after` and a reversed range renders
+/// nothing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn render_context(
+    after_ptr: *const u8,
+    after_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+    theme_ptr: *const u8,
+    theme_len: usize,
+    start: usize,
+    end: usize,
+) -> u64 {
+    let after = unsafe { str_from_parts(after_ptr, after_len) };
+    let path = unsafe { str_from_parts(path_ptr, path_len) };
+    let theme = unsafe { str_from_parts(theme_ptr, theme_len) };
+    pack_bytes(render_context_rows(&after, &path, &theme, start, end).into_bytes())
 }
 
 /// Copy `len` bytes at `ptr` into an owned `String`, lossily decoding any
@@ -197,6 +245,47 @@ mod tests {
         // differs from Tokyo Night / GitHub.
         assert_ne!(default, tokyo);
         assert_ne!(default, github);
+    }
+
+    /// Strip HTML tags so assertions ignore the syntect token spans.
+    fn strip_tags(html: &str) -> String {
+        let mut out = String::new();
+        let mut in_tag = false;
+        for ch in html.chars() {
+            match ch {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => out.push(ch),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn render_context_renders_line_range_as_context_rows() {
+        let after = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n";
+        let html = render_context_rows(after, "src/main.rs", "", 2, 4);
+        assert_eq!(html.matches("class=\"row context\"").count(), 3);
+        let text = strip_tags(&html);
+        assert!(text.contains("let a = 1;"));
+        assert!(text.contains("let c = 3;"));
+        // Line outside the range is absent.
+        assert!(!text.contains("fn main()"));
+    }
+
+    #[test]
+    fn render_context_clamps_and_handles_empty_range() {
+        let after = "a\nb\n";
+        // End past EOF clamps to the last line.
+        assert_eq!(
+            render_context_rows(after, "x.txt", "", 1, 99)
+                .matches("class=\"row context\"")
+                .count(),
+            2
+        );
+        // Reversed range renders nothing.
+        assert_eq!(render_context_rows(after, "x.txt", "", 2, 1), "");
     }
 
     // The FFI packs `ptr << 32 | len`, which is only valid for 32-bit wasm

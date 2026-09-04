@@ -763,6 +763,15 @@ main[data-size="l"] {
 .hunk:first-child {
   border-top: none;
 }
+/* A hunk whose preceding gap was expanded continues straight from the revealed
+   lines: drop its header and top seam so the two read as one file. */
+.hunk.joined {
+  border-top: none;
+}
+.hunk.joined > .breadcrumb,
+.hunk.joined > .lineno {
+  display: none;
+}
 
 .breadcrumb,
 .lineno {
@@ -780,6 +789,32 @@ main[data-size="l"] {
   margin-right: 1ch;
   color: var(--muted);
   opacity: 0.75;
+}
+
+/* Divider standing in for the unshown lines between two hunks. Clickable in
+   the reviewer to reveal the skipped code as context rows. */
+.gap {
+  margin: 4px 0;
+  padding: 6px 14px;
+  color: var(--muted);
+  background: var(--bg-row);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85em;
+  cursor: pointer;
+  user-select: none;
+}
+.gap:hover {
+  color: var(--text);
+  background: var(--bg);
+}
+.gap-label {
+  opacity: 0.85;
+}
+.gap::before {
+  content: "⋯";
+  margin-right: 1ch;
+  opacity: 0.7;
 }
 
 .row {

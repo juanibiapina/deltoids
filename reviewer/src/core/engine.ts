@@ -22,6 +22,15 @@ export interface Engine {
     path: string,
     theme: string,
   ): string;
+  // Render new-file lines start..=end (1-based, inclusive) of `after` as
+  // highlighted context rows, revealing the lines a `.gap` divider skips.
+  renderContext(
+    after: string,
+    path: string,
+    start: number,
+    end: number,
+    theme: string,
+  ): string;
 }
 
 interface EngineExports {
@@ -30,6 +39,7 @@ interface EngineExports {
   dealloc(ptr: number, len: number): void;
   render_file(...args: number[]): bigint;
   render_from_patch(...args: number[]): bigint;
+  render_context(...args: number[]): bigint;
 }
 
 // Lazily instantiated deltoids wasm module wrapped in a `renderFile` helper.
@@ -69,7 +79,7 @@ async function instantiateEngine(): Promise<Engine> {
   }
   wasi.initialize(instance);
 
-  const { memory, alloc, dealloc, render_file, render_from_patch } =
+  const { memory, alloc, dealloc, render_file, render_from_patch, render_context } =
     instance.exports as unknown as EngineExports;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -116,5 +126,20 @@ async function instantiateEngine(): Promise<Engine> {
     return html;
   }
 
-  return { renderFile, renderFromPatch };
+  function renderContext(
+    after: string,
+    path: string,
+    start: number,
+    end: number,
+    theme: string,
+  ): string {
+    const strs = [put(after), put(path), put(theme)];
+    const html = takeResult(
+      render_context(...strs.flat(), start >>> 0, end >>> 0),
+    );
+    for (const [p, l] of strs) dealloc(p, l);
+    return html;
+  }
+
+  return { renderFile, renderFromPatch, renderContext };
 }

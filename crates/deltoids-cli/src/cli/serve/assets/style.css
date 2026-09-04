@@ -236,6 +236,18 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* Divider standing in for the unshown lines between two hunks. */
+.gap {
+  padding: 4px 14px;
+  color: var(--muted);
+  background: var(--bg-row);
+  border-top: 1px solid var(--border);
+  font-size: 0.85em;
+}
+.gap-label {
+  opacity: 0.8;
+}
+
 .diff.nowrap .breadcrumb,
 .diff.nowrap .lineno {
   white-space: nowrap;

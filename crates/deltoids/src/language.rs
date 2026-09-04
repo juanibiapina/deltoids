@@ -156,7 +156,7 @@ impl Language {
 
     /// Detect the syntect syntax name (the highlight key), independent of
     /// tree-sitter support. The path is never read from disk.
-    pub(crate) fn detect_highlight_name(path: &str, source: &str) -> Option<String> {
+    pub fn detect_highlight_name(path: &str, source: &str) -> Option<String> {
         let syntax_set = detection_syntax_set();
         detect_syntax_by_path(syntax_set, path)
             .or_else(|| detect_syntax_by_first_line(syntax_set, source))

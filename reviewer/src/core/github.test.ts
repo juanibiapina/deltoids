@@ -7,6 +7,7 @@ describe("renderSides", () => {
     const engine = {
       renderFile: vi.fn().mockReturnValue("<full>"),
       renderFromPatch: vi.fn(),
+    renderContext: vi.fn(),
     } satisfies Engine;
     const sides: Sides = { kind: "full", before: "a", after: "b", path: "x.rs" };
 
@@ -21,6 +22,7 @@ describe("renderSides", () => {
     const engine = {
       renderFile: vi.fn(),
       renderFromPatch: vi.fn().mockReturnValue("<patch>"),
+    renderContext: vi.fn(),
     } satisfies Engine;
     const sides: Sides = {
       kind: "patch",
@@ -45,6 +47,7 @@ describe("renderSides", () => {
     const engine = {
       renderFile: vi.fn().mockReturnValue("<html>"),
       renderFromPatch: vi.fn(),
+    renderContext: vi.fn(),
     } satisfies Engine;
     const sides: Sides = { kind: "full", before: "a", after: "b", path: "x.rs" };
 

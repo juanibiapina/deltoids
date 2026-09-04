@@ -1,10 +1,19 @@
 import { createRef } from "react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi, type Mock } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { FileTree } from "./FileTree";
 import { Topbar } from "./Topbar";
+import { FileCard } from "./FileCard";
+import { LazyObserverProvider } from "./LazyObserver";
+import * as github from "../core/github";
+import type { Engine } from "../core/engine";
 import type { Prefs } from "../hooks/usePrefs";
 import type { PrFile } from "../core/github";
+
+vi.mock("../core/github", async (orig) => {
+  const actual = await orig<typeof import("../core/github")>();
+  return { ...actual, loadSides: vi.fn(), renderSides: vi.fn() };
+});
 
 const files: PrFile[] = [
   { filename: "src/a.ts", status: "modified" },
@@ -94,6 +103,114 @@ describe("FileTree", () => {
     );
     expect(screen.queryByText("a.ts")).toBeNull();
     expect(screen.getByText("b.ts")).toBeTruthy();
+  });
+});
+
+describe("FileCard gap expansion", () => {
+  const AFTER = "l1\nl2\nl3\nl4\nl5\n";
+  const GAP_HTML =
+    '<div class="hunk"><div class="lineno">1</div></div>' +
+    '<div class="gap" data-gap-lines="2" data-gap-new-start="2" ' +
+    'data-gap-new-end="3"><span class="gap-label">2 unmodified lines</span></div>' +
+    '<div class="hunk"><div class="lineno">4</div></div>';
+
+  function mockEngine(): Engine {
+    return {
+      renderFile: vi.fn(),
+      renderFromPatch: vi.fn(),
+      renderContext: vi
+        .fn()
+        .mockReturnValue(
+          '<div class="row context"><span class="ln">2</span>' +
+            '<span class="code">l2</span></div>' +
+            '<div class="row context"><span class="ln">3</span>' +
+            '<span class="code">l3</span></div>',
+        ),
+    };
+  }
+
+  function renderCard(engine: Engine, syntaxTheme = "TokyoNight") {
+    (github.loadSides as Mock).mockResolvedValue({
+      kind: "full",
+      before: "",
+      after: AFTER,
+      path: "x.rs",
+    });
+    // The real engine inlines theme colours, so its HTML differs per theme;
+    // tag the output so a theme switch changes the string and React rebuilds
+    // the `.gap` nodes (identical strings would skip the innerHTML reset).
+    (github.renderSides as Mock).mockImplementation(
+      (_engine: Engine, _sides: unknown, theme: string) =>
+        `${GAP_HTML}<!--${theme}-->`,
+    );
+    return render(
+      <LazyObserverProvider>
+        <FileCard
+          index={0}
+          file={{ filename: "x.rs", status: "modified" }}
+          engine={engine}
+          repoRef={{ owner: "o", repo: "r", number: 1 }}
+          baseSha="base"
+          headSha="head"
+          syntaxTheme={syntaxTheme}
+          reviewed={false}
+          onToggleReviewed={() => {}}
+          onLoaded={() => {}}
+        />
+      </LazyObserverProvider>,
+    );
+  }
+
+  test("clicking a gap reveals its lines via renderContext", async () => {
+    const engine = mockEngine();
+    renderCard(engine);
+    const gap = await screen.findByText("2 unmodified lines");
+    fireEvent.click(gap);
+    expect(engine.renderContext).toHaveBeenCalledWith(
+      AFTER,
+      "x.rs",
+      2,
+      3,
+      "TokyoNight",
+    );
+    // The revealed context rows are injected and the divider is gone.
+    expect(screen.getByText("l2")).toBeTruthy();
+    expect(screen.getByText("l3")).toBeTruthy();
+    expect(screen.queryByText("2 unmodified lines")).toBeNull();
+    // The hunk that followed the gap is joined, folding its header away.
+    expect(document.querySelectorAll(".hunk.joined").length).toBe(1);
+  });
+
+  test("a theme change re-applies the expansion with the new theme", async () => {
+    const engine = mockEngine();
+    const { rerender } = renderCard(engine);
+    fireEvent.click(await screen.findByText("2 unmodified lines"));
+    (engine.renderContext as Mock).mockClear();
+    // Re-render with a different syntax theme; the card re-renders the diff
+    // (new `.gap` nodes) and must re-expand with the new theme.
+    rerender(
+      <LazyObserverProvider>
+        <FileCard
+          index={0}
+          file={{ filename: "x.rs", status: "modified" }}
+          engine={engine}
+          repoRef={{ owner: "o", repo: "r", number: 1 }}
+          baseSha="base"
+          headSha="head"
+          syntaxTheme="GitHub"
+          reviewed={false}
+          onToggleReviewed={() => {}}
+          onLoaded={() => {}}
+        />
+      </LazyObserverProvider>,
+    );
+    expect(engine.renderContext).toHaveBeenCalledWith(
+      AFTER,
+      "x.rs",
+      2,
+      3,
+      "GitHub",
+    );
   });
 });
 

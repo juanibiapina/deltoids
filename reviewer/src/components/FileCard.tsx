@@ -37,8 +37,13 @@ export function FileCard({
   onLoaded,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
+  const diffRef = useRef<HTMLDivElement>(null);
   const lazy = useLazy();
   const [body, setBody] = useState<Body>({ kind: "pending" });
+  // New-file start lines of the gap dividers the user has expanded. Kept in
+  // state (not the DOM) so an expansion survives a theme re-render, which
+  // replaces the injected HTML.
+  const [expandedGaps, setExpandedGaps] = useState<Set<number>>(new Set());
   const loadedOnce = useRef(false);
   // Cached fetched content: `undefined` until loaded, `null` for a binary
   // file, otherwise the sides to render. Re-rendering on a theme switch reads
@@ -102,6 +107,56 @@ export function FileCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syntaxTheme]);
 
+  // Record a clicked gap divider so the expansion effect reveals it.
+  const onDiffClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const gap = (event.target as HTMLElement).closest?.(".gap") as
+      | HTMLElement
+      | null;
+    if (!gap) return;
+    const start = Number(gap.dataset.gapNewStart);
+    if (!Number.isFinite(start)) return;
+    setExpandedGaps((prev) => {
+      if (prev.has(start)) return prev;
+      const next = new Set(prev);
+      next.add(start);
+      return next;
+    });
+  };
+
+  // After each diff render (or expansion change), reveal every expanded gap by
+  // rendering its new-file range as context rows and injecting them where the
+  // divider stood. A theme re-render replaces the HTML and rebuilds the `.gap`
+  // nodes, so this runs again and re-applies with the current theme.
+  useEffect(() => {
+    const root = diffRef.current;
+    const sides = sidesRef.current;
+    if (!root || body.kind !== "html" || !sides) return;
+    root.querySelectorAll<HTMLElement>(".gap").forEach((gap) => {
+      const start = Number(gap.dataset.gapNewStart);
+      const end = Number(gap.dataset.gapNewEnd);
+      if (!expandedGaps.has(start) || !Number.isFinite(end)) return;
+      // The hunk right after the gap now continues directly from the revealed
+      // lines, so its header (breadcrumb / line number) and top seam become
+      // redundant — mark it "joined" to fold them away.
+      const nextHunk = gap.nextElementSibling;
+      const rows = engine.renderContext(
+        sides.after,
+        sides.path,
+        start,
+        end,
+        themeRef.current,
+      );
+      const template = document.createElement("template");
+      template.innerHTML = rows;
+      gap.after(template.content);
+      gap.remove();
+      if (nextHunk?.classList.contains("hunk")) {
+        nextHunk.classList.add("joined");
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, expandedGaps]);
+
   const badge = badgeClass(file.status);
   const label =
     file.status === "renamed"
@@ -135,7 +190,12 @@ export function FileCard({
         </label>
       </div>
       {body.kind === "html" ? (
-        <div className="diff" dangerouslySetInnerHTML={{ __html: body.html }} />
+        <div
+          className="diff"
+          ref={diffRef}
+          onClick={onDiffClick}
+          dangerouslySetInnerHTML={{ __html: body.html }}
+        />
       ) : (
         <div className="diff">
           {body.kind === "pending" ? (

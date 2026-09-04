@@ -10,6 +10,11 @@
 //!
 //! Class contract (styled by the web app's CSS):
 //! - `.hunk`            one hunk block
+//! - `.gap`             divider between two hunks standing in for the unshown
+//!   lines; carries `data-gap-lines` (count) and `data-gap-new-start` /
+//!   `data-gap-new-end` / `data-gap-old-start` so a client can render that
+//!   range as context rows on demand
+//! - `.gap-label`       the "N unmodified lines" text inside a `.gap`
 //! - `.breadcrumb`      scope-context header (ancestor opening lines)
 //! - `.lineno`          the line-number-only header when a hunk has no scope
 //! - `.crumb-lineno`    the hunk start line number shown inside a breadcrumb
@@ -41,11 +46,166 @@ pub fn render_entry_html(
     highlight: Option<&str>,
     syntax_theme: Option<&str>,
 ) -> String {
+    render_entry_html_inner(hunks, highlight, syntax_theme, None)
+}
+
+/// Like [`render_entry_html`], but also emits a trailing gap divider down to
+/// `total_new_lines` (the new-file line count) when the last hunk stops before
+/// end of file. Callers that know the file length — the web reviewer, which
+/// holds the after content — use this so the end-of-file unshown lines are
+/// shown and expandable too. Callers rendering from stored hunks alone (e.g.
+/// `deltoids serve`) use [`render_entry_html`], which omits the trailing gap.
+pub fn render_entry_html_with_file_len(
+    hunks: &[Hunk],
+    highlight: Option<&str>,
+    syntax_theme: Option<&str>,
+    total_new_lines: usize,
+) -> String {
+    render_entry_html_inner(hunks, highlight, syntax_theme, Some(total_new_lines))
+}
+
+fn render_entry_html_inner(
+    hunks: &[Hunk],
+    highlight: Option<&str>,
+    syntax_theme: Option<&str>,
+    total_new_lines: Option<usize>,
+) -> String {
     let theme = crate::theme_by_name(syntax_theme);
     let mut html = String::new();
     let mut first_change_emitted = false;
+
+    // Leading gap: unshown lines above the first hunk. Before the first change
+    // both sides are in lockstep, so the old side starts at the same offset.
+    if let Some(first) = hunks.first()
+        && first.new_start > 1
+    {
+        let old_start = 1 + first.old_start.saturating_sub(first.new_start);
+        render_gap(1, old_start, first.new_start - 1, &mut html);
+    }
+
+    // End (exclusive, 1-based) of the previous hunk in new/old line space, so
+    // the gap before the next hunk is a pure function of the hunk list.
+    let mut prev_end: Option<(usize, usize)> = None;
     for hunk in hunks {
+        if let Some((prev_new_end, prev_old_end)) = prev_end {
+            let count = hunk.new_start.saturating_sub(prev_new_end);
+            if count > 0 {
+                render_gap(prev_new_end, prev_old_end, count, &mut html);
+            }
+        }
         render_hunk_html(hunk, highlight, theme, &mut first_change_emitted, &mut html);
+        prev_end = Some((
+            hunk.new_start + hunk_new_span(hunk),
+            hunk.old_start + hunk_old_span(hunk),
+        ));
+    }
+
+    // Trailing gap: unshown lines below the last hunk, when the file length is
+    // known.
+    if let (Some((prev_new_end, prev_old_end)), Some(total)) = (prev_end, total_new_lines)
+        && total >= prev_new_end
+    {
+        render_gap(
+            prev_new_end,
+            prev_old_end,
+            total - prev_new_end + 1,
+            &mut html,
+        );
+    }
+
+    html
+}
+
+/// Number of new-file lines a hunk advances through (added + context).
+fn hunk_new_span(hunk: &Hunk) -> usize {
+    hunk.lines
+        .iter()
+        .filter(|l| matches!(l.kind, LineKind::Added | LineKind::Context))
+        .count()
+}
+
+/// Number of old-file lines a hunk advances through (removed + context).
+fn hunk_old_span(hunk: &Hunk) -> usize {
+    hunk.lines
+        .iter()
+        .filter(|l| matches!(l.kind, LineKind::Removed | LineKind::Context))
+        .count()
+}
+
+/// Render the divider that stands in for the unshown lines between two hunks.
+///
+/// `new_start` / `old_start` are the first unshown line (1-based) on each side;
+/// `count` is how many new-file lines are skipped. The `data-gap-*` attributes
+/// carry the exact new-file range so a client can render that range as context
+/// rows on demand. `data-gap-old-start` is recorded for symmetry; expanding
+/// only needs the new-side range.
+fn render_gap(new_start: usize, old_start: usize, count: usize, html: &mut String) {
+    let new_end = new_start + count - 1;
+    html.push_str("<div class=\"gap\" data-gap-lines=\"");
+    html.push_str(&count.to_string());
+    html.push_str("\" data-gap-new-start=\"");
+    html.push_str(&new_start.to_string());
+    html.push_str("\" data-gap-new-end=\"");
+    html.push_str(&new_end.to_string());
+    html.push_str("\" data-gap-old-start=\"");
+    html.push_str(&old_start.to_string());
+    html.push_str("\"><span class=\"gap-label\">");
+    html.push_str(&count.to_string());
+    html.push_str(if count == 1 {
+        " unmodified line"
+    } else {
+        " unmodified lines"
+    });
+    html.push_str("</span></div>");
+}
+
+/// Render new-file lines `start..=end` (1-based, inclusive) of `after` as
+/// context rows, so a client can reveal the unshown lines a `.gap` divider
+/// stands in for. Rows reuse the same `.row.context` markup, gutter, and
+/// syntect highlighting as the diff body.
+///
+/// The range is clamped to the content; an empty or reversed range renders
+/// nothing. `highlight` is the syntect syntax name and `syntax_theme` a
+/// registry theme name (`None` = default), matching [`render_entry_html`].
+///
+/// Highlighting starts fresh at `start`, so a range that opens mid block
+/// comment or string may mis-colour — acceptable for revealed context.
+pub fn render_context_html(
+    after: &str,
+    highlight: Option<&str>,
+    syntax_theme: Option<&str>,
+    start: usize,
+    end: usize,
+) -> String {
+    if start == 0 || end < start {
+        return String::new();
+    }
+    let lines: Vec<&str> = after.lines().collect();
+    if start > lines.len() {
+        return String::new();
+    }
+    let end = end.min(lines.len());
+
+    let theme = crate::theme_by_name(syntax_theme);
+    let mut highlighter = HunkHighlighter::new(highlight, theme);
+    let mut html = String::new();
+    // Context rows never carry the first-change marker; keep it "already
+    // emitted" so render_row can never add one.
+    let mut suppress_marker = true;
+    for number in start..=end {
+        let line = DiffLine {
+            kind: LineKind::Context,
+            content: lines[number - 1].to_string(),
+        };
+        let ranges = highlighter.context(&line.content);
+        render_row(
+            &line,
+            Some(number),
+            &ranges,
+            None,
+            &mut suppress_marker,
+            &mut html,
+        );
     }
     html
 }
@@ -398,6 +558,214 @@ mod tests {
         assert!(html.contains("&gt;"));
         assert!(html.contains("&amp;"));
         assert!(!html.contains("< b"));
+    }
+
+    // -----------------------------------------------------------------------
+    // render_context_html tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn context_html_renders_requested_range_as_context_rows() {
+        let after = "one\ntwo\nthree\nfour\nfive\n";
+        let html = render_context_html(after, None, None, 2, 4);
+        // Three context rows for lines 2, 3, 4.
+        assert_eq!(html.matches("class=\"row context\"").count(), 3);
+        assert!(html.contains(">2</span>"));
+        assert!(html.contains(">3</span>"));
+        assert!(html.contains(">4</span>"));
+        assert!(html.contains("two"));
+        assert!(html.contains("three"));
+        assert!(html.contains("four"));
+        // Lines outside the range are not rendered.
+        assert!(!html.contains(">one<") && !html.contains(">1</span>"));
+        assert!(!html.contains("five"));
+        // Context expansion never marks a first change.
+        assert!(!html.contains("data-first-change"));
+    }
+
+    #[test]
+    fn context_html_clamps_range_past_end_of_file() {
+        let after = "a\nb\nc\n";
+        let html = render_context_html(after, None, None, 2, 99);
+        // Only lines 2 and 3 exist.
+        assert_eq!(html.matches("class=\"row context\"").count(), 2);
+        assert!(html.contains(">b<") || html.contains(">b</span>"));
+        assert!(html.contains(">c<") || html.contains(">c</span>"));
+    }
+
+    #[test]
+    fn context_html_empty_range_is_empty() {
+        let after = "a\nb\nc\n";
+        assert_eq!(render_context_html(after, None, None, 3, 2), "");
+        assert_eq!(render_context_html(after, None, None, 0, 0), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap divider tests
+    // -----------------------------------------------------------------------
+
+    /// Two hunks separated by unshown lines emit exactly one `.gap` divider
+    /// carrying the skipped-line count and the new/old range it covers.
+    #[test]
+    fn gap_divider_between_hunks_reports_skipped_count_and_range() {
+        // First hunk covers new lines 1..=2 (context + added), second hunk
+        // starts at new line 10, so 7 lines (3..=9) are unshown.
+        let first = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                line(LineKind::Context, "alpha"),
+                line(LineKind::Added, "beta"),
+            ],
+            ancestors: Vec::new(),
+        };
+        let second = Hunk {
+            old_start: 9,
+            new_start: 10,
+            lines: vec![line(LineKind::Context, "omega")],
+            ancestors: Vec::new(),
+        };
+        let html = render_entry_html(&[first, second], None, None);
+
+        assert_eq!(html.matches("class=\"gap\"").count(), 1);
+        assert!(html.contains("data-gap-lines=\"7\""));
+        // Gap starts at the first unshown new line (3) and ends before the
+        // next hunk (9).
+        assert!(html.contains("data-gap-new-start=\"3\""));
+        assert!(html.contains("data-gap-new-end=\"9\""));
+        assert!(html.contains("7 unmodified lines"));
+        // The divider sits before the second hunk's header.
+        let gap = html.find("class=\"gap\"").unwrap();
+        let second_hunk = html.rfind("class=\"hunk\"").unwrap();
+        assert!(gap < second_hunk);
+    }
+
+    #[test]
+    fn leading_gap_divider_covers_lines_above_first_hunk() {
+        // First hunk starts at new line 5, so lines 1..=4 are unshown above it.
+        let hunk = Hunk {
+            old_start: 5,
+            new_start: 5,
+            lines: vec![line(LineKind::Added, "x")],
+            ancestors: Vec::new(),
+        };
+        let html = render_entry_html(&[hunk], None, None);
+        assert_eq!(html.matches("class=\"gap\"").count(), 1);
+        assert!(html.contains("data-gap-lines=\"4\""));
+        assert!(html.contains("data-gap-new-start=\"1\""));
+        assert!(html.contains("data-gap-new-end=\"4\""));
+        // The leading divider sits before the hunk.
+        assert!(html.find("class=\"gap\"").unwrap() < html.find("class=\"hunk\"").unwrap());
+    }
+
+    #[test]
+    fn first_hunk_at_line_one_has_no_leading_gap() {
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![line(LineKind::Added, "x")],
+            ancestors: Vec::new(),
+        };
+        assert!(!render_entry_html(&[hunk], None, None).contains("class=\"gap\""));
+    }
+
+    #[test]
+    fn trailing_gap_divider_covers_lines_below_last_hunk() {
+        // Hunk covers new lines 1..=3; the file has 10 lines, so 4..=10 (7
+        // lines) are unshown below it. Only the file-length-aware renderer
+        // emits this.
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                line(LineKind::Context, "a"),
+                line(LineKind::Context, "b"),
+                line(LineKind::Added, "c"),
+            ],
+            ancestors: Vec::new(),
+        };
+        let html = render_entry_html_with_file_len(&[hunk], None, None, 10);
+        assert_eq!(html.matches("class=\"gap\"").count(), 1);
+        assert!(html.contains("data-gap-lines=\"7\""));
+        assert!(html.contains("data-gap-new-start=\"4\""));
+        assert!(html.contains("data-gap-new-end=\"10\""));
+        // The trailing divider sits after the hunk.
+        assert!(html.rfind("class=\"gap\"").unwrap() > html.find("class=\"hunk\"").unwrap());
+    }
+
+    #[test]
+    fn last_hunk_reaching_eof_has_no_trailing_gap() {
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![line(LineKind::Context, "a"), line(LineKind::Added, "b")],
+            ancestors: Vec::new(),
+        };
+        // Hunk covers new lines 1..=2 and the file is 2 lines: nothing below.
+        assert!(!render_entry_html_with_file_len(&[hunk], None, None, 2).contains("class=\"gap\""));
+    }
+
+    #[test]
+    fn plain_render_omits_trailing_gap() {
+        // render_entry_html has no file length, so it never emits a trailing
+        // gap even when the last hunk stops early.
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![line(LineKind::Added, "a")],
+            ancestors: Vec::new(),
+        };
+        assert!(!render_entry_html(&[hunk], None, None).contains("class=\"gap\""));
+    }
+
+    #[test]
+    fn single_hunk_has_no_gap_divider() {
+        let hunk = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![line(LineKind::Added, "solo")],
+            ancestors: Vec::new(),
+        };
+        let html = render_entry_html(&[hunk], None, None);
+        assert!(!html.contains("class=\"gap\""));
+    }
+
+    #[test]
+    fn abutting_hunks_have_no_gap_divider() {
+        // First hunk covers new lines 1..=2; second starts at new line 3, so
+        // there is nothing unshown between them.
+        let first = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![line(LineKind::Context, "a"), line(LineKind::Added, "b")],
+            ancestors: Vec::new(),
+        };
+        let second = Hunk {
+            old_start: 2,
+            new_start: 3,
+            lines: vec![line(LineKind::Added, "c")],
+            ancestors: Vec::new(),
+        };
+        let html = render_entry_html(&[first, second], None, None);
+        assert!(!html.contains("class=\"gap\""));
+    }
+
+    #[test]
+    fn gap_of_one_line_uses_singular_label() {
+        let first = Hunk {
+            old_start: 1,
+            new_start: 1,
+            lines: vec![line(LineKind::Added, "a")],
+            ancestors: Vec::new(),
+        };
+        let second = Hunk {
+            old_start: 3,
+            new_start: 3,
+            lines: vec![line(LineKind::Added, "c")],
+            ancestors: Vec::new(),
+        };
+        let html = render_entry_html(&[first, second], None, None);
+        assert!(html.contains("1 unmodified line<"));
     }
 
     #[test]

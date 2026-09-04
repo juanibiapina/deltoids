@@ -17,6 +17,11 @@ A `cdylib` that wraps `deltoids` and exports three functions over linear memory
 - `render_from_patch(after*, patch*, path*, theme*) -> u64` — reconstructs the
   before side from a unified patch (GitHub's per-file `patch`), so the client
   fetches only the head content.
+- `render_context(after*, path*, theme*, start, end) -> u64` — renders new-file
+  lines `start..=end` (1-based inclusive scalars) of `after` as highlighted
+  context rows, backing the reviewer's gap expansion (revealing the unshown
+  lines a `.gap` divider stands in for). The highlight syntax is detected from
+  `path`.
 
 Each `*` is a `(ptr, len)` pair. The trailing `theme` pair is a `deltoids`
 registry theme name (see `deltoids::theme_names`); pass `(_, 0)` / an empty

@@ -1,7 +1,8 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Engine } from "../core/engine";
 import type { Pr, PrFile } from "../core/github";
 import type { PrRef } from "../core/lib";
+import { pickActiveIndex } from "../core/activeFile";
 import { useReviewed } from "../hooks/useReviewed";
 import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
@@ -37,6 +38,69 @@ export function ReviewView({
   const { navigateTo } = useFileNavigation();
   const { isReviewed, toggle, count, clear } = useReviewed(ref, files);
 
+  // Scrollspy: highlight the file currently at the top of the diff column in
+  // the tree. A continuous IntersectionObserver (separate from the one-shot
+  // lazy-load observer) watches every card against a thin band under the
+  // topbar; the topmost card crossing it is active. jsdom has no
+  // IntersectionObserver, so this stays inert in tests.
+  const columnRef = useRef<HTMLDivElement>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const activeRef = useRef<number | null>(null);
+  activeRef.current = activeIndex;
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const column = columnRef.current;
+    if (!column) return;
+
+    const build = () => {
+      const intersecting = new Set<number>();
+      // Detection band: from just below the sticky topbar down through the
+      // upper third of the viewport. Starting at the topbar height (not 0) is
+      // essential — otherwise the band sits *behind* the topbar and tracks the
+      // card sliding up out of view instead of the one at the readable top,
+      // lagging the highlight by a file or two. The band's height only needs to
+      // be tall enough that some card edge always falls inside it; the topmost
+      // (smallest) intersecting index is the active file, so the tail does not
+      // make the pick eager.
+      const topbar =
+        parseInt(
+          getComputedStyle(document.documentElement).getPropertyValue("--topbar-h"),
+          10,
+        ) || 60;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            const idx = Number((entry.target as HTMLElement).id.slice("file-".length));
+            if (!Number.isFinite(idx)) continue;
+            if (entry.isIntersecting) intersecting.add(idx);
+            else intersecting.delete(idx);
+          }
+          const next = pickActiveIndex(intersecting, activeRef.current);
+          if (next !== activeRef.current) setActiveIndex(next);
+        },
+        { rootMargin: `-${topbar}px 0px -70% 0px` },
+      );
+      column
+        .querySelectorAll<HTMLElement>('section.file[id^="file-"]')
+        .forEach((el) => observer.observe(el));
+      return observer;
+    };
+
+    let observer = build();
+    // The topbar height (baked into rootMargin) can change when the layout
+    // reflows at a breakpoint; rebuild so the band stays under the bar.
+    const onResize = () => {
+      observer.disconnect();
+      observer = build();
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      observer.disconnect();
+    };
+  }, [files]);
+
   // Stable index-keyed lookup for the sidebar (both dimming and pruning).
   const isReviewedByIndex = useCallback(
     (index: number) => isReviewed(files[index]),
@@ -66,8 +130,9 @@ export function ReviewView({
           onFileSelect={handleFileSelect}
           isReviewed={isReviewedByIndex}
           hideReviewed={hideViewed}
+          activeIndex={activeIndex}
         />
-        <div className="column">
+        <div className="column" ref={columnRef}>
           <div className="pr-meta">
             <h1>
               #{pr.number} · {pr.title}

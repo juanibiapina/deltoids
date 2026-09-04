@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import TreeView, { type INode } from "react-accessible-treeview";
 import {
   buildTree,
@@ -7,6 +7,7 @@ import {
   type TreeMeta,
 } from "../core/filetree";
 import { fileIcon } from "./fileIcons";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import type { PrFile } from "../core/github";
 
 interface FileTreeProps {
@@ -16,6 +17,9 @@ interface FileTreeProps {
   // When set, reviewed files are dropped from the tree (mirrors the global
   // "Hide viewed" toggle) instead of shown dimmed.
   hideReviewed?: boolean;
+  // Index of the file currently at the top of the diff column; its row is
+  // highlighted so the tree tracks where the reader is.
+  activeIndex?: number | null;
 }
 
 // A per-file-type brand logo, or the generic file glyph when unmapped.
@@ -95,6 +99,7 @@ export function FileTree({
   onFileSelect,
   isReviewed,
   hideReviewed,
+  activeIndex,
 }: FileTreeProps) {
   const fullData = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -117,8 +122,30 @@ export function FileTree({
   // except when a file actually enters or leaves the tree.
   const treeKey = useMemo(() => data.map((n) => n.id).join("|"), [data]);
 
+  // Keep the highlighted row visible without moving the page. On wide screens
+  // the sidebar is its own sticky scroll container, so nudge *its* scrollTop
+  // (never `scrollIntoView`, which would also scroll the window). On the narrow
+  // drawer the sidebar is off-canvas, so skip it entirely.
+  const navRef = useRef<HTMLElement>(null);
+  const wide = useMediaQuery("(min-width: 1024px)");
+  useEffect(() => {
+    if (!wide || activeIndex === undefined || activeIndex === null) return;
+    const nav = navRef.current;
+    if (!nav) return;
+    const row = nav.querySelector<HTMLElement>(".tree-file.active");
+    if (!row) return;
+    const navRect = nav.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const margin = 8;
+    if (rowRect.top < navRect.top + margin) {
+      nav.scrollTop -= navRect.top + margin - rowRect.top;
+    } else if (rowRect.bottom > navRect.bottom - margin) {
+      nav.scrollTop += rowRect.bottom - (navRect.bottom - margin);
+    }
+  }, [wide, activeIndex]);
+
   return (
-    <nav className="sidebar">
+    <nav className="sidebar" ref={navRef}>
       <TreeView
         key={treeKey}
         data={data as unknown as INode[]}
@@ -155,11 +182,14 @@ export function FileTree({
           const reviewed =
             meta?.fileIndex !== undefined &&
             (isReviewed?.(meta.fileIndex) ?? false);
+          const active =
+            meta?.fileIndex !== undefined && meta.fileIndex === activeIndex;
 
           return (
             <div
               {...getNodeProps()}
-              className={`tree-row tree-file${reviewed ? " reviewed" : ""}`}
+              className={`tree-row tree-file${reviewed ? " reviewed" : ""}${active ? " active" : ""}`}
+              aria-current={active ? "true" : undefined}
               title={meta?.path ?? element.name}
             >
               {guides(level)}

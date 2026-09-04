@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- review: the file tree highlights the file you are currently reading and follows along as you scroll, keeping the highlighted row in view, so you always know where you are in the pull request.
 - serve + review: hunks are separated by a divider showing how many unchanged lines are hidden between them, so you can tell how much of a file is skipped. In the browser reviewer, click a divider to reveal those lines in place — the hunks then merge into one continuous view.
 - review: mark a file as viewed to fold its diff away and keep it from pulling your attention. Marks are remembered per pull request and clear automatically when a new commit changes that file. Viewed files are hidden by default (both their diff and their file-tree row); a toolbar toggle brings them back, shown dimmed, and a "N of M reviewed" progress line with a Clear button tracks how far along you are.
 - syntax themes: choose the syntax highlighting theme on every surface. Set a default with `[theme] syntax_theme = "..."` in `config.toml` (honored by the pager, TUI, and `serve`), press `t` in the TUI to switch live from a list, or pick one from the toolbar selector in the browser reviewer. Tokyo Night is bundled and available everywhere; in the reviewer your choice is remembered and first-time visitors get Tokyo Night on dark or GitHub on light.

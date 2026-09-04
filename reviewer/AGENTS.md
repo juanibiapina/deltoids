@@ -34,6 +34,8 @@ reviewer/
       lib.test.ts           #   Vitest unit tests for lib.ts
       filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror)
       filetree.test.ts      #   grouping tests ported from tree.rs
+      activeFile.ts         #   pure scrollspy picker (topmost intersecting file)
+      activeFile.test.ts    #   pickActiveIndex tests
       cardHeight.ts         #   estimate a card's height from changed-line counts
       cardHeight.test.ts    #   estimate tests
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
@@ -134,6 +136,21 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   cross-check for `filetree.ts`. No virtualization yet (deferred; the tree is
   fully expanded by default). File rows show per-type brand icons (`fileIcons.ts`,
   tree-shaken from `simple-icons`) and a trailing A/M/D/R status letter.
+- The tree highlights the file currently at the top of the diff column (a
+  `.tree-file.active` row with an accent bar). A scrollspy in `ReviewView` owns
+  a *second*, continuous `IntersectionObserver` (distinct from the one-shot
+  lazy-load one in `LazyObserver.tsx`) over every `#file-{i}` section; the pure
+  `core/activeFile.ts::pickActiveIndex` picks the topmost intersecting index and
+  holds its previous value when nothing intersects (no flicker in the gaps). Its
+  `rootMargin` band **must start at the topbar height** (read from `--topbar-h`,
+  rebuilt on resize) — starting at `0` puts the band behind the sticky topbar
+  and lags the highlight by a file or two. The index flows `ReviewView` →
+  `FileTree` as `activeIndex` and is rendered as a plain class, not the library's
+  controlled `selectedIds` (which would fight the prune-remount `key` and focus).
+  `FileTree` keeps the active row visible by nudging the sidebar's own
+  `scrollTop` (never `scrollIntoView`, which would also scroll the page), on wide
+  screens only. jsdom has no `IntersectionObserver`, so the scrollspy is inert in
+  tests; only `pickActiveIndex` and the active-class rendering are unit-tested.
 - Clicking a file must land it under the sticky topbar and keep it there while
   cards render lazily. Two things cooperate: skeletons reserve an estimated
   height (`cardHeight.ts`) so the layout barely shifts, and sticky chrome sets

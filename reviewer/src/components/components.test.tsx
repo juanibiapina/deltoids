@@ -66,6 +66,21 @@ describe("FileTree", () => {
     expect(other?.classList.contains("reviewed")).toBe(false);
   });
 
+  test("the active file row is highlighted, others are not", () => {
+    render(
+      <FileTree files={files} onFileSelect={() => {}} activeIndex={1} />,
+    );
+    const active = screen.getByText("b.ts").closest(".tree-file");
+    expect(active?.classList.contains("active")).toBe(true);
+    const other = screen.getByText("a.ts").closest(".tree-file");
+    expect(other?.classList.contains("active")).toBe(false);
+  });
+
+  test("no row is highlighted when activeIndex is undefined", () => {
+    render(<FileTree files={files} onFileSelect={() => {}} />);
+    expect(document.querySelectorAll(".tree-file.active").length).toBe(0);
+  });
+
   test("hideReviewed drops reviewed files from the tree", () => {
     render(
       <FileTree

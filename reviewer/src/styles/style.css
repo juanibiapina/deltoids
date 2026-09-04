@@ -951,6 +951,22 @@ main.hide-viewed .file.reviewed {
   color: var(--added-gutter);
 }
 
+/* The file currently at the top of the diff column: accent bar + tint so the
+   tree tracks where the reader is. Distinct from the plain-bg hover. */
+.tree-file.active {
+  background: var(--focus-ring);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tree-file.active .tree-name {
+  color: var(--text);
+  font-weight: 600;
+}
+/* A reviewed row is dimmed; when it is also the active one, lift it back so the
+   highlight stays legible. */
+.tree-file.reviewed.active {
+  opacity: 0.85;
+}
+
 /* Reviewed progress under the PR meta. */
 .review-progress {
   margin-top: 10px;

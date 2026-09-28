@@ -25,6 +25,10 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("Tab / 1 / 2", "focus panes in the current mode"),
     ("j / k", "move (list, or between diff lines)"),
     ("Shift+J / K", "scroll diff three lines (any focus)"),
+    (
+        "Shift / Ctrl+wheel",
+        "step through files (Files) or edits (Traces)",
+    ),
     ("PgDn / PgUp", "page in current pane"),
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),

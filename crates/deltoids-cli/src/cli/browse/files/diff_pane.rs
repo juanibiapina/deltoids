@@ -1417,6 +1417,53 @@ mod tests {
     }
 
     #[test]
+    fn shift_horizontal_wheel_steps_files_over_diff() {
+        let resolved: Vec<_> = ["a.txt", "b.txt", "c.txt"]
+            .into_iter()
+            .map(|path| ResolvedFile {
+                file: file_diff(path),
+                before: "old\n".to_string(),
+                after: "new\n".to_string(),
+            })
+            .collect();
+        let mut state = make_state_with_rects(&resolved);
+        state.focus = Focus::Diff;
+        state.diff.cursor.scroll = 4;
+
+        let right = make_mouse_mods(
+            crossterm::event::MouseEventKind::ScrollRight,
+            50,
+            5,
+            crossterm::event::KeyModifiers::SHIFT,
+        );
+        crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
+        assert_eq!(state.sidebar.selected_file_index(), Some(1));
+        assert_eq!(state.diff.cursor.scroll, 0);
+        assert_eq!(state.focus, Focus::Diff);
+
+        crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
+        assert_eq!(state.sidebar.selected_file_index(), Some(2));
+        crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
+        assert_eq!(state.sidebar.selected_file_index(), Some(2));
+
+        let left = make_mouse_mods(
+            crossterm::event::MouseEventKind::ScrollLeft,
+            50,
+            5,
+            crossterm::event::KeyModifiers::SHIFT,
+        );
+        crate::cli::browse::files::handle_mouse(&mut state, left, 18, 18);
+        assert_eq!(state.sidebar.selected_file_index(), Some(1));
+        crate::cli::browse::files::handle_mouse(
+            &mut state,
+            make_mouse(crossterm::event::MouseEventKind::ScrollRight, 50, 5),
+            18,
+            18,
+        );
+        assert_eq!(state.sidebar.selected_file_index(), Some(1));
+    }
+
+    #[test]
     fn ctrl_scroll_on_diff_moves_sidebar() {
         // Hovering the diff with Ctrl held redirects the wheel to the
         // sidebar list instead of scrolling the diff.

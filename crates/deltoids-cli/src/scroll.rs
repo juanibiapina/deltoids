@@ -33,10 +33,13 @@ pub enum ScrollDir {
 ///
 /// - [`List`](ScrollKind::List): stepped and slow — one selection move per
 ///   [`LIST_QUOTA`] events.
+/// - [`Discrete`](ScrollKind::Discrete): one selection move per event, for
+///   Shift+horizontal wheel events that arrive once per physical tick.
 /// - [`Content`](ScrollKind::Content): smooth — one unit of motion per event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollKind {
     List,
+    Discrete,
     Content,
 }
 
@@ -44,7 +47,7 @@ impl ScrollKind {
     fn quota(self) -> usize {
         match self {
             ScrollKind::List => LIST_QUOTA,
-            ScrollKind::Content => CONTENT_QUOTA,
+            ScrollKind::Discrete | ScrollKind::Content => CONTENT_QUOTA,
         }
     }
 }
@@ -52,15 +55,14 @@ impl ScrollKind {
 /// Translates the burst of wheel events from one physical tick into
 /// proportional motion.
 ///
-/// Holds the in-progress gesture (which pane key `K` and direction it is
-/// counting) and the running event count. Generic over the pane key so each TUI
-/// passes its own `Focus` value; only equality is required to detect a gesture
-/// change.
+/// Holds the in-progress gesture (pane key `K`, direction, and scroll kind)
+/// and the running event count. Generic over the pane key so each TUI passes
+/// its own `Focus` value; only equality is required to detect a gesture change.
 #[derive(Debug, Clone)]
 pub struct WheelScroll<K> {
-    /// Pane and direction the accumulator is counting. Changing either restarts
-    /// the count so a reversal or a move to another pane responds at once.
-    gesture: Option<(K, ScrollDir)>,
+    /// Pane, direction, and kind the accumulator is counting. Changing any
+    /// of them restarts the count so the next event responds at once.
+    gesture: Option<(K, ScrollDir, ScrollKind)>,
     /// Events counted toward the next motion step. One step is emitted each time
     /// it reaches the active pane's quota; the remainder carries over so no
     /// scrolling is lost.
@@ -85,12 +87,12 @@ impl<K: Copy + Eq> WheelScroll<K> {
     /// given its `kind`. The caller applies that pane's own step (move a
     /// selection once, scroll one line) the returned number of times.
     ///
-    /// A change of `key` or `dir` restarts the count primed so the first event
-    /// of a new gesture moves immediately. The remainder carries over between
-    /// events so movement is proportional at any speed.
+    /// A change of `key`, `dir`, or `kind` restarts the count primed so the
+    /// first event of a new gesture moves immediately. The remainder carries
+    /// over between events so movement is proportional at any speed.
     pub fn advance(&mut self, key: K, dir: ScrollDir, kind: ScrollKind) -> usize {
-        if self.gesture != Some((key, dir)) {
-            self.gesture = Some((key, dir));
+        if self.gesture != Some((key, dir, kind)) {
+            self.gesture = Some((key, dir, kind));
             // Prime so the first event of a new gesture moves at once.
             self.accum = kind.quota().saturating_sub(1);
         }
@@ -138,6 +140,23 @@ mod tests {
         let mut wheel = WheelScroll::new();
         assert_eq!(wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::List), 1);
         assert_eq!(wheel.advance(Pane::A, ScrollDir::Up, ScrollKind::List), 1);
+    }
+
+    #[test]
+    fn switching_scroll_kind_reprimes_the_selection() {
+        let mut wheel = WheelScroll::new();
+        assert_eq!(wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::List), 1);
+        assert_eq!(wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::List), 0);
+        assert_eq!(
+            wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::Discrete),
+            1
+        );
+        assert_eq!(
+            wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::Discrete),
+            1
+        );
+        assert_eq!(wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::List), 1);
+        assert_eq!(wheel.advance(Pane::A, ScrollDir::Down, ScrollKind::List), 0);
     }
 
     #[test]

@@ -621,16 +621,27 @@ fn handle_mouse(
     if matches!(state.input, InputState::Commenting { .. }) {
         return AppCommand::Continue;
     }
-    // Ctrl + wheel redirects the scroll to the sidebar list regardless
-    // of hover position, so the diff can be scrolled by hovering it while
-    // Ctrl steps through files. (Shift+wheel is swallowed by common
-    // terminals/tmux as a mouse-mode bypass, so Ctrl is used instead.)
-    let is_scroll = matches!(
-        mouse.kind,
-        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-    );
-    let modified = mouse.modifiers.contains(KeyModifiers::CONTROL);
-    let target = if is_scroll && modified {
+    // Ghostty/macOS sends Shift+vertical wheel as horizontal wheel events.
+    // Both shapes step through files; Ctrl+vertical wheel does too.
+    let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+    let direction = match mouse.kind {
+        MouseEventKind::ScrollDown => Some(ScrollDir::Down),
+        MouseEventKind::ScrollUp => Some(ScrollDir::Up),
+        MouseEventKind::ScrollRight if shift => Some(ScrollDir::Down),
+        MouseEventKind::ScrollLeft if shift => Some(ScrollDir::Up),
+        _ => None,
+    };
+    let modified = shift || mouse.modifiers.contains(KeyModifiers::CONTROL);
+    let list_kind = if shift
+        && matches!(
+            mouse.kind,
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight
+        ) {
+        ScrollKind::Discrete
+    } else {
+        ScrollKind::List
+    };
+    let target = if direction.is_some() && modified {
         Focus::Sidebar
     } else {
         match pane_at(state, mouse.column, mouse.row) {
@@ -639,12 +650,10 @@ fn handle_mouse(
         }
     };
 
-    match mouse.kind {
-        MouseEventKind::ScrollDown => match target {
+    match direction {
+        Some(ScrollDir::Down) => match target {
             Focus::Sidebar => {
-                let steps = state
-                    .wheel
-                    .advance(target, ScrollDir::Down, ScrollKind::List);
+                let steps = state.wheel.advance(target, ScrollDir::Down, list_kind);
                 for _ in 0..steps {
                     state.sidebar.move_down(sidebar_viewport);
                     state.snap_diff_to_selected_file();
@@ -661,9 +670,9 @@ fn handle_mouse(
                 AppCommand::Continue
             }
         },
-        MouseEventKind::ScrollUp => match target {
+        Some(ScrollDir::Up) => match target {
             Focus::Sidebar => {
-                let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
+                let steps = state.wheel.advance(target, ScrollDir::Up, list_kind);
                 for _ in 0..steps {
                     state.sidebar.move_up(sidebar_viewport);
                     state.snap_diff_to_selected_file();
@@ -680,7 +689,7 @@ fn handle_mouse(
                 AppCommand::Continue
             }
         },
-        MouseEventKind::Down(MouseButton::Left) => {
+        None if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
             state.focus = target;
             match target {
                 Focus::Sidebar => {

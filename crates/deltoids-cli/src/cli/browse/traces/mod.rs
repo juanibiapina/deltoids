@@ -525,17 +525,27 @@ fn handle_mouse(
     if matches!(state.input, InputState::Commenting { .. }) {
         return AppCommand::Continue;
     }
-    // Ctrl + wheel redirects the scroll to the entries (edits) list
-    // regardless of hover position, so the diff can be scrolled by
-    // hovering it while Ctrl steps through entries. (Shift+wheel is
-    // swallowed by common terminals/tmux as a mouse-mode bypass, so
-    // Ctrl is used instead.)
-    let is_scroll = matches!(
-        mouse.kind,
-        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-    );
-    let modified = mouse.modifiers.contains(KeyModifiers::CONTROL);
-    let target = if is_scroll && modified {
+    // Ghostty/macOS sends Shift+vertical wheel as horizontal wheel events.
+    // Both shapes step through entries; Ctrl+vertical wheel does too.
+    let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+    let direction = match mouse.kind {
+        MouseEventKind::ScrollDown => Some(ScrollDir::Down),
+        MouseEventKind::ScrollUp => Some(ScrollDir::Up),
+        MouseEventKind::ScrollRight if shift => Some(ScrollDir::Down),
+        MouseEventKind::ScrollLeft if shift => Some(ScrollDir::Up),
+        _ => None,
+    };
+    let modified = shift || mouse.modifiers.contains(KeyModifiers::CONTROL);
+    let list_kind = if shift
+        && matches!(
+            mouse.kind,
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight
+        ) {
+        ScrollKind::Discrete
+    } else {
+        ScrollKind::List
+    };
+    let target = if direction.is_some() && modified {
         Focus::Entries
     } else {
         match pane_at(state, mouse.column, mouse.row) {
@@ -544,15 +554,22 @@ fn handle_mouse(
         }
     };
 
-    match mouse.kind {
-        MouseEventKind::ScrollDown => {
-            handle_mouse_scroll_down(state, traces, target, detail_row_count, detail_height)
-        }
-        MouseEventKind::ScrollUp => handle_mouse_scroll_up(state, target),
-        MouseEventKind::Down(MouseButton::Left) => {
-            handle_mouse_click(state, traces, target, mouse.row)
-        }
-        _ => AppCommand::Continue,
+    match direction {
+        Some(ScrollDir::Down) => handle_mouse_scroll_down(
+            state,
+            traces,
+            target,
+            list_kind,
+            detail_row_count,
+            detail_height,
+        ),
+        Some(ScrollDir::Up) => handle_mouse_scroll_up(state, target, list_kind),
+        None => match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                handle_mouse_click(state, traces, target, mouse.row)
+            }
+            _ => AppCommand::Continue,
+        },
     }
 }
 
@@ -560,22 +577,19 @@ fn handle_mouse_scroll_down(
     state: &mut AppState,
     traces: &[LoadedTrace],
     target: Focus,
+    list_kind: ScrollKind,
     detail_row_count: usize,
     detail_height: usize,
 ) -> AppCommand {
     match target {
         Focus::Entries => {
-            let steps = state
-                .wheel
-                .advance(target, ScrollDir::Down, ScrollKind::List);
+            let steps = state.wheel.advance(target, ScrollDir::Down, list_kind);
             for _ in 0..steps {
                 move_entry_down(state, traces);
             }
         }
         Focus::Traces => {
-            let steps = state
-                .wheel
-                .advance(target, ScrollDir::Down, ScrollKind::List);
+            let steps = state.wheel.advance(target, ScrollDir::Down, list_kind);
             for _ in 0..steps {
                 move_trace_down(state, traces);
             }
@@ -592,16 +606,20 @@ fn handle_mouse_scroll_down(
     AppCommand::Continue
 }
 
-fn handle_mouse_scroll_up(state: &mut AppState, target: Focus) -> AppCommand {
+fn handle_mouse_scroll_up(
+    state: &mut AppState,
+    target: Focus,
+    list_kind: ScrollKind,
+) -> AppCommand {
     match target {
         Focus::Entries => {
-            let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
+            let steps = state.wheel.advance(target, ScrollDir::Up, list_kind);
             for _ in 0..steps {
                 move_entry_up(state);
             }
         }
         Focus::Traces => {
-            let steps = state.wheel.advance(target, ScrollDir::Up, ScrollKind::List);
+            let steps = state.wheel.advance(target, ScrollDir::Up, list_kind);
             for _ in 0..steps {
                 move_trace_up(state);
             }
@@ -1363,6 +1381,67 @@ mod tests {
             state.cursor.scroll, 0,
             "ctrl+scroll should not scroll the diff"
         );
+    }
+
+    #[test]
+    fn shift_horizontal_wheel_steps_entries_over_diff() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 3, "a"),
+            entries: vec![edit_entry(), write_entry(), edit_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+        state.focus = Focus::Diff;
+        state.cursor.scroll = 4;
+
+        let right = make_mouse_mods(MouseEventKind::ScrollRight, 50, 5, KeyModifiers::SHIFT);
+        handle_mouse(&mut state, &traces, right, 20, 10);
+        assert_eq!(state.entry_index(), 1);
+        assert_eq!(state.cursor.scroll, 0, "new entry starts at its top");
+        assert_eq!(state.focus, Focus::Diff);
+
+        handle_mouse(&mut state, &traces, right, 20, 10);
+        assert_eq!(state.entry_index(), 2);
+        handle_mouse(&mut state, &traces, right, 20, 10);
+        assert_eq!(state.entry_index(), 2, "selection stops at the last entry");
+
+        let left = make_mouse_mods(MouseEventKind::ScrollLeft, 50, 5, KeyModifiers::SHIFT);
+        handle_mouse(&mut state, &traces, left, 20, 10);
+        assert_eq!(state.entry_index(), 1);
+        assert_eq!(state.cursor.scroll, 0);
+    }
+
+    #[test]
+    fn shift_vertical_wheel_steps_entries_but_plain_horizontal_does_not() {
+        let traces = vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
+            entries: vec![edit_entry(), write_entry()],
+        }];
+        let mut state = state_with_rects(&traces);
+
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse(MouseEventKind::ScrollRight, 50, 5),
+            20,
+            10,
+        );
+        assert_eq!(state.entry_index(), 0);
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse_mods(MouseEventKind::ScrollDown, 50, 5, KeyModifiers::SHIFT),
+            20,
+            10,
+        );
+        assert_eq!(state.entry_index(), 1);
+        handle_mouse(
+            &mut state,
+            &traces,
+            make_mouse_mods(MouseEventKind::ScrollUp, 50, 5, KeyModifiers::SHIFT),
+            20,
+            10,
+        );
+        assert_eq!(state.entry_index(), 0);
     }
 
     #[test]

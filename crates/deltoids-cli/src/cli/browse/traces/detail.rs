@@ -12,12 +12,12 @@ use ratatui::{
 };
 
 use deltoids::render_tui::{
-    pane_block_with_footer, pane_border_color, render_hunk_rows, render_pane_scrollbar,
-    rgb_to_color,
+    pane_block_with_footer, pane_border_color, render_hunk_rows, rgb_to_color,
 };
 use deltoids::{ChangeLayout, Theme};
 
 use crate::HistoryEntry;
+use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 use crate::cli::browse::text::wrap_text;
 
@@ -132,7 +132,8 @@ pub(super) fn render_diff_pane(
     theme: &Theme,
     budget: DrawBudget,
 ) {
-    let detail_width = area.width.saturating_sub(2) as usize;
+    let body_area = diff_scrollbar::body_area(area);
+    let detail_width = body_area.width as usize;
     let epoch = CacheEpoch {
         width: detail_width,
         layout,
@@ -177,13 +178,13 @@ pub(super) fn render_diff_pane(
                     }
                 })
                 .collect();
-            frame.render_widget(Paragraph::new(visible_lines).block(block), area);
-            render_pane_scrollbar(
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new(visible_lines), body_area);
+            diff_scrollbar::render(
                 frame,
                 area,
-                detail_row_count,
+                rows,
                 state.cursor.scroll,
-                diff_viewport,
                 state.focus == Focus::Diff,
                 theme,
             );
@@ -195,7 +196,8 @@ pub(super) fn render_diff_pane(
             let placeholder = render_detail_placeholder(active_trace, key.1, detail_width, theme);
             let visible: Vec<Line<'static>> =
                 placeholder.into_iter().take(diff_viewport.max(1)).collect();
-            frame.render_widget(Paragraph::new(visible).block(block), area);
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new(visible), body_area);
         }
     }
 }
@@ -346,6 +348,7 @@ fn push_hunk_rows(
         };
         rows.push(DiffRow::line_row(
             row.line,
+            hunk.lines[index].kind.clone(),
             anchors[index].clone(),
             row.first_row.then(|| LinePlace {
                 file: entry.path.clone(),
@@ -429,6 +432,59 @@ mod tests {
             layout: ChangeLayout::Grouped,
             syntax_theme: "",
         }
+    }
+
+    #[test]
+    fn trace_overview_marks_wrapped_changes_and_clears_them_on_entry_switch() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+        let mut trace = trace_with_hunks();
+        trace.entries[0].hunks[0].lines[1].content = "old ".repeat(20);
+        trace.entries[0].hunks[0].lines[2].content = "new ".repeat(20);
+        trace.entries.push(edit_entry());
+        let theme = Theme::default();
+        let mut state = AppState::new(1);
+        state.focus = Focus::Diff;
+        let mut terminal = Terminal::new(TestBackend::new(30, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_diff_pane(
+                    frame,
+                    Rect::new(0, 0, 30, 40),
+                    &trace,
+                    &mut state,
+                    ChangeLayout::Grouped,
+                    &theme,
+                    DrawBudget::Full,
+                )
+            })
+            .unwrap();
+        for color in [theme.status_added, theme.status_deleted] {
+            let count = (1..39)
+                .filter(|&y| {
+                    let cell = &terminal.backend().buffer()[(28, y)];
+                    cell.symbol() == "█" && cell.fg == rgb_to_color(color)
+                })
+                .count();
+            assert!(
+                count > 1,
+                "trace changes must retain their kinds across wrapping"
+            );
+        }
+        state.set_entry_index(1);
+        terminal
+            .draw(|frame| {
+                render_diff_pane(
+                    frame,
+                    frame.area(),
+                    &trace,
+                    &mut state,
+                    ChangeLayout::Grouped,
+                    &theme,
+                    DrawBudget::Full,
+                )
+            })
+            .unwrap();
+        assert!((1..39).all(|y| terminal.backend().buffer()[(28, y)].symbol() == " "));
     }
 
     #[test]

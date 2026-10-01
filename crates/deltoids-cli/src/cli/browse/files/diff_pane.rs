@@ -14,15 +14,12 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crossterm::event::KeyCode;
-use ratatui::layout::{Alignment, Margin, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use deltoids::render_tui::{
-    self, pane_block_with_footer, pane_border_color, pane_inner_height, render_pane_scrollbar,
-    rgb_to_color,
-};
+use deltoids::render_tui::{self, pane_block_with_footer, pane_border_color, rgb_to_color};
 use deltoids::{ChangeLayout, Hunk, Theme};
 
 use deltoids::parse::FileDiff;
@@ -32,6 +29,7 @@ use crate::cli::browse::comments::{CommentAnchor, CommentScope, CommentStore, hu
 use crate::cli::browse::diff_cursor::{
     Cursor, DiffRow, LinePlace, Step, keep_visible, restore_cursor, select_row, step_cursor,
 };
+use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
@@ -266,6 +264,7 @@ fn push_hunk_rows(
         };
         rows.push(DiffRow::line_row(
             row.line,
+            hunk.lines[index].kind.clone(),
             anchors[index].clone(),
             row.first_row.then(|| LinePlace {
                 file: file.to_string(),
@@ -672,10 +671,7 @@ impl DiffPane {
             return;
         }
 
-        let inner = area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
+        let inner = diff_scrollbar::body_area(area);
         let viewport = inner.height as usize;
 
         if std::mem::take(&mut self.reveal_cursor) {
@@ -704,20 +700,13 @@ impl DiffPane {
             .map(|status| format!(" {status} "))
             .or_else(|| self.footer());
         let block = pane_block_with_footer("─[2]─Diff─", color, footer);
-        frame.render_widget(Paragraph::new(visible).block(block), area);
+        frame.render_widget(block, area);
+        frame.render_widget(Paragraph::new(visible), inner);
 
         // Vertical scrollbar reflects the assembled window: when the
         // sidebar is on a directory the scrollbar tracks progress through
         // that subtree's files.
-        render_pane_scrollbar(
-            frame,
-            area,
-            self.window_rows(),
-            scroll,
-            pane_inner_height(area),
-            focused,
-            theme,
-        );
+        diff_scrollbar::render(frame, area, &self.window, scroll, focused, theme);
     }
 
     /// Build the diff pane's bottom-right footer: `" line X of Y "` for the
@@ -822,6 +811,63 @@ mod tests {
             !text.contains("No local changes."),
             "loading state must not show the clean message: {text:?}"
         );
+    }
+
+    #[test]
+    fn file_overview_marks_wrapped_changes_in_both_layouts_and_palettes() {
+        use crate::cli::browse::mode::{Mode, TabStrip};
+        use deltoids::ColorMode;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let resolved = vec![ResolvedFile {
+            file: file_diff("a.txt"),
+            before: format!("context\n{}\n", "old ".repeat(20)),
+            after: format!("context\n{}\n", "new ".repeat(20)),
+        }];
+        let mut state = make_state(&resolved);
+        let interleaved = ChangeLayout::Interleaved {
+            group: std::num::NonZeroUsize::new(1).unwrap(),
+        };
+        for (mode, layout) in [
+            (ColorMode::Dark, ChangeLayout::Grouped),
+            (ColorMode::Light, ChangeLayout::Grouped),
+            (ColorMode::Dark, interleaved),
+            (ColorMode::Light, interleaved),
+        ] {
+            let theme = Theme::for_mode(mode);
+            let mut terminal = Terminal::new(TestBackend::new(60, 40)).unwrap();
+            terminal
+                .draw(|frame| {
+                    state.draw(
+                        frame,
+                        Rect::new(0, 0, 30, 40),
+                        Rect::new(30, 0, 30, 40),
+                        TabStrip { active: 0 },
+                        layout,
+                        &theme,
+                        DrawBudget::Full,
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let added_count = (1..39)
+                .filter(|&y| {
+                    buffer[(58, y)].symbol() == "█"
+                        && buffer[(58, y)].fg == rgb_to_color(theme.status_added)
+                })
+                .count();
+            let removed_count = (1..39)
+                .filter(|&y| {
+                    buffer[(58, y)].symbol() == "█"
+                        && buffer[(58, y)].fg == rgb_to_color(theme.status_deleted)
+                })
+                .count();
+            assert!(added_count > 1);
+            assert!(removed_count > 1);
+            assert_eq!(state.diff.cached_width, 27);
+            assert_eq!(buffer[(59, 0)].symbol(), "╮");
+            assert_eq!(buffer[(59, 39)].symbol(), "╯");
+        }
     }
 
     #[test]

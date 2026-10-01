@@ -18,6 +18,7 @@
 //! Both modes drive the same cursor through [`step_cursor`], so `j`/`k`
 //! feel identical in the working-tree diff and the trace browser.
 
+use deltoids::LineKind;
 use ratatui::text::Line;
 
 use super::comments::CommentAnchor;
@@ -40,6 +41,8 @@ pub(super) struct LinePlace {
 #[derive(Debug, Clone)]
 pub(super) struct DiffRow {
     pub(super) line: Line<'static>,
+    /// Source kind on every wrapped row; absent on chrome and comments.
+    pub(super) kind: Option<LineKind>,
     /// The file line this row renders. Every row of a wrapped line
     /// carries it; `None` for header, spacer, and inline-comment rows.
     pub(super) anchor: Option<CommentAnchor>,
@@ -54,6 +57,7 @@ impl DiffRow {
     pub(super) fn plain(line: Line<'static>) -> Self {
         Self {
             line,
+            kind: None,
             anchor: None,
             place: None,
             ends_line: false,
@@ -65,12 +69,14 @@ impl DiffRow {
     /// last (an inline comment goes after the whole wrapped line).
     pub(super) fn line_row(
         line: Line<'static>,
+        kind: LineKind,
         anchor: CommentAnchor,
         place: Option<LinePlace>,
         ends_line: bool,
     ) -> Self {
         Self {
             line,
+            kind: Some(kind),
             anchor: Some(anchor),
             place,
             ends_line,
@@ -246,6 +252,7 @@ mod tests {
     fn diff_line(text: &str, index: usize) -> DiffRow {
         DiffRow::line_row(
             Line::from(text.to_string()),
+            LineKind::Context,
             anchor(index + 1),
             Some(place(index)),
             true,
@@ -360,6 +367,7 @@ mod tests {
     fn a_new_file_before_the_current_file_does_not_move_the_cursor() {
         let original = vec![DiffRow::line_row(
             Line::from("b line"),
+            LineKind::Context,
             anchor_in("b.rs", 1),
             Some(LinePlace {
                 file: "b.rs".to_string(),
@@ -372,6 +380,7 @@ mod tests {
         let rebuilt = vec![
             DiffRow::line_row(
                 Line::from("a line"),
+                LineKind::Context,
                 anchor_in("a.rs", 1),
                 Some(LinePlace {
                     file: "a.rs".to_string(),
@@ -382,6 +391,7 @@ mod tests {
             ),
             DiffRow::line_row(
                 Line::from("b line"),
+                LineKind::Context,
                 anchor_in("b.rs", 1),
                 Some(LinePlace {
                     file: "b.rs".to_string(),
@@ -422,11 +432,18 @@ mod tests {
             diff_line("line 1", 0),
             DiffRow::line_row(
                 Line::from("line 1 again"),
+                LineKind::Context,
                 anchor(1),
                 Some(other_hunk(0)),
                 true,
             ),
-            DiffRow::line_row(Line::from("line 2"), anchor(2), Some(other_hunk(1)), true),
+            DiffRow::line_row(
+                Line::from("line 2"),
+                LineKind::Context,
+                anchor(2),
+                Some(other_hunk(1)),
+                true,
+            ),
         ];
         let mut cursor = cursor_at(&rows, 0, 0);
 

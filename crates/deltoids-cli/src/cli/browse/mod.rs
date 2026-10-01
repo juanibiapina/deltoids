@@ -62,6 +62,7 @@ mod command;
 mod comment_view;
 mod comments;
 mod diff_cursor;
+mod diff_scrollbar;
 pub mod files;
 mod help;
 pub mod mode;
@@ -114,7 +115,8 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     let total_width = terminal.size().map(|s| s.width).unwrap_or(120);
     let sidebar_pref = Preference::seeded(total_width);
     let sidebar_w = sidebar_pref.effective(total_width);
-    let initial_diff_width = sidebar_width::diff_pane_width(sidebar_w, total_width);
+    let initial_diff_width =
+        diff_scrollbar::body_width(sidebar_width::diff_pane_width(sidebar_w, total_width));
 
     // Both modes start as cheap empty placeholders. Neither is built yet,
     // so the loop's first iteration draws a loading frame and then builds
@@ -194,7 +196,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         let vp = ReloadViewport {
             left_viewport: pane_viewport,
             right_viewport: pane_viewport,
-            right_width: sidebar_width::diff_pane_width(sw, area.width),
+            right_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
         };
 
         // The loading frame is now on screen; build the mode for real, then
@@ -498,10 +500,10 @@ impl Shell {
         let dw = if vp.right_width > 0 {
             vp.right_width
         } else {
-            sidebar_width::diff_pane_width(
+            diff_scrollbar::body_width(sidebar_width::diff_pane_width(
                 self.sidebar_pref.effective(self.total_width),
                 self.total_width,
-            )
+            ))
         };
         modes[i] = build_mode(i, theme, dw);
         self.built[i] = true;

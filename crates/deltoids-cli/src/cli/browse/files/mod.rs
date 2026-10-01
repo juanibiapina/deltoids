@@ -714,7 +714,7 @@ impl Mode for FilesMode {
         theme: &Theme,
         budget: DrawBudget,
     ) {
-        let diff_width = right.width.saturating_sub(2) as usize;
+        let diff_width = super::diff_scrollbar::body_area(right).width as usize;
         self.ensure_width(diff_width);
 
         self.sidebar_rect = left;

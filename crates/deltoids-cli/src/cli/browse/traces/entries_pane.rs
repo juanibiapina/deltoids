@@ -48,7 +48,7 @@ pub(super) fn render_entries_pane(
     let entry_items = active_trace
         .entries
         .iter()
-        .map(|entry| ListItem::new(entry_label_line(entry)))
+        .map(|entry| ListItem::new(entry_label_line(entry, theme)))
         .collect::<Vec<_>>();
     let entries_count = active_trace.entries.len();
     let entries_position = if entries_count == 0 {
@@ -88,17 +88,41 @@ fn entry_icon(ok: bool) -> (&'static str, Color) {
     }
 }
 
-fn entry_label_line(entry: &HistoryEntry) -> Line<'static> {
+fn entry_path_parts(entry: &HistoryEntry) -> (String, String) {
+    let path = super::detail::display_path(&entry.path, &entry.cwd);
+    match path.rsplit_once('/') {
+        Some((parent, filename)) if !filename.is_empty() => (
+            filename.to_string(),
+            if parent.is_empty() { "/" } else { parent }.to_string(),
+        ),
+        _ => (path, String::new()),
+    }
+}
+
+fn entry_label_line(entry: &HistoryEntry, theme: &Theme) -> Line<'static> {
     let (icon, icon_color) = entry_icon(entry.ok);
-    Line::from(vec![
+    let (filename, parent) = entry_path_parts(entry);
+    let mut spans = vec![
         Span::styled(icon.to_string(), Style::default().fg(icon_color)),
-        Span::raw(format!(" {}", entry.reason)),
-    ])
+        Span::raw(format!(" {filename}")),
+    ];
+    if !parent.is_empty() {
+        spans.push(Span::styled(
+            format!("  {parent}"),
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ));
+    }
+    Line::from(spans)
 }
 
 pub(super) fn entry_label_plain(entry: &HistoryEntry) -> String {
     let (icon, _) = entry_icon(entry.ok);
-    format!("{icon} {}", entry.reason)
+    let (filename, parent) = entry_path_parts(entry);
+    if parent.is_empty() {
+        format!("{icon} {filename}")
+    } else {
+        format!("{icon} {filename}  {parent}")
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +131,72 @@ mod tests {
     use crate::cli::browse::traces::test_support::*;
     use crate::cli::browse::traces::{handle_key, handle_mouse};
     use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
+
+    #[test]
+    fn entries_render_filenames_before_muted_directories() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let theme = test_theme();
+        let mut nested = edit_entry();
+        nested.path = "/tmp/project/src/main.rs".to_string();
+        let mut other = nested.clone();
+        other.path = "/tmp/project/tests/main.rs".to_string();
+        other.ok = false;
+        let mut outside = nested.clone();
+        outside.path = "/outside/main.rs".to_string();
+        let mut relative = nested.clone();
+        relative.path = "lib/main.rs".to_string();
+        let mut fallback = nested.clone();
+        fallback.path = "/".to_string();
+        let trace = LoadedTrace {
+            trace: trace_summary("trace", 6, "description"),
+            entries: vec![nested, other, write_entry(), outside, relative, fallback],
+        };
+        let labels = [
+            "✓ main.rs  src",
+            "✗ main.rs  tests",
+            "✓ config.json",
+            "✓ main.rs  /outside",
+            "✓ main.rs  lib",
+            "✓ /",
+        ];
+        for (entry, label) in trace.entries.iter().zip(labels) {
+            assert_eq!(entry_label_plain(entry), label);
+        }
+
+        for width in [40, 11] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+            let mut state = AppState::new(1);
+            terminal
+                .draw(|frame| {
+                    render_entries_pane(
+                        frame,
+                        frame.area(),
+                        &trace,
+                        &mut state,
+                        Line::from("Entries"),
+                        &theme,
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for (index, label) in labels.iter().enumerate() {
+                let visible: String = (1..width - 1)
+                    .map(|x| buffer[(x, index as u16 + 1)].symbol())
+                    .collect();
+                let expected: String = label.chars().take((width - 2) as usize).collect();
+                assert_eq!(visible.trim_end(), expected.trim_end());
+            }
+            assert_eq!(buffer[(1, 1)].fg, Color::Green);
+            assert_eq!(buffer[(1, 2)].fg, Color::Red);
+            assert_eq!(buffer[(3, 1)].bg, rgb_to_color(theme.selection_bg));
+            if width == 40 {
+                for y in [1, 2, 4, 5] {
+                    assert_eq!(buffer[(12, y)].fg, rgb_to_color(theme.muted));
+                }
+            }
+        }
+    }
 
     #[test]
     fn j_moves_entries_when_focused_on_entries() {

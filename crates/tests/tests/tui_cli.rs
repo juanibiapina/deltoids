@@ -124,9 +124,10 @@ fn renders_traces_and_entries_for_current_directory() {
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
     assert!(stdout.contains("[1] Entries 1 of 2"));
     assert!(stdout.contains("[2] Traces 1 of 1"));
-    // Entries list shows each entry's reason.
-    assert!(stdout.contains("\u{2713} Update x constant"));
-    assert!(stdout.contains("\u{2713} Rewrite config"));
+    // Entries list shows each entry's filename.
+    assert!(stdout.contains("\u{2713} app.txt"));
+    assert!(stdout.contains("\u{2713} config.json"));
+    assert!(stdout.contains("Update x constant"));
     assert!(stdout.contains(&trace_id[..10]));
     // Detail header shows the selected entry's path.
     assert!(stdout.contains("app.txt"));
@@ -185,8 +186,9 @@ fn j_navigates_entries_by_default_then_tab_switches_to_traces() {
 
     assert!(tui_output.status.success());
     let stdout = String::from_utf8(tui_output.stdout).unwrap();
-    // The entries pane lists each entry by its reason, marked selected.
-    assert!(stdout.contains("> \u{2713} Rewrite config"));
+    // The entries pane lists each entry by its filename, marked selected.
+    assert!(stdout.contains("> \u{2713} config.json"));
+    assert!(stdout.contains("Rewrite config"));
     // The detail header shows the selected entry's path.
     assert!(stdout.contains("config.json"));
     assert!(stdout.contains("\"version\": 2"));

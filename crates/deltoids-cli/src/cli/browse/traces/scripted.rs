@@ -265,9 +265,10 @@ mod tests {
         let theme = test_theme();
         let output = render_scripted(&traces, &state, 140, 30, &theme);
 
-        // Entries list shows each entry's reason.
-        assert!(output.contains("\u{2713} Update x constant"));
-        assert!(output.contains("\u{2713} Rewrite config"));
+        // Entries list shows each entry's filename.
+        assert!(output.contains("\u{2713} app.txt"));
+        assert!(output.contains("\u{2713} config.json"));
+        assert!(output.contains("Update x constant"));
         assert!(output.contains("01JTESTTRA"));
         assert!(output.contains("[1] Entries 1 of 2"));
         assert!(output.contains("[2] Traces 1 of 2"));
@@ -298,6 +299,6 @@ mod tests {
         let theme = test_theme();
         let output = render_scripted(&traces, &state, 140, 30, &theme);
 
-        assert!(output.contains("> \u{2713} Rewrite config"));
+        assert!(output.contains("> \u{2713} config.json"));
     }
 }

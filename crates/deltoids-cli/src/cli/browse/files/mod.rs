@@ -98,21 +98,6 @@ enum InputState {
 /// generous so a burst of transient races never trips it.
 const STARTUP_LOADING_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Whether the discovered repo has any local working-tree changes
-/// against `HEAD`. False outside a repo or on any git error. Cheap: it
-/// runs `working_tree_diff` but skips the expensive model build, so it
-/// can drive the smart starting-mode choice without paying Files mode's
-/// full startup cost.
-pub(in crate::cli::browse) fn working_tree_has_changes() -> bool {
-    git::Repo::discover().is_some_and(|repo| repo_has_changes(&repo))
-}
-
-fn repo_has_changes(repo: &git::Repo) -> bool {
-    repo.working_tree_diff()
-        .ok()
-        .is_some_and(|diff| !diff.trim().is_empty())
-}
-
 /// Files-mode state plus the data it renders. Owns the model, the repo
 /// (for blob resolution and reload), and the reload bookkeeping; the
 /// shell owns sidebar width, focus across modes, help, and the divider.
@@ -1571,21 +1556,6 @@ mod tests {
         let state = FilesMode::new(model, input, Some(wrapper), false, &Theme::default(), 80);
 
         assert_eq!(Mode::selected_path(&state), Some(expected));
-    }
-
-    #[test]
-    fn repo_has_changes_detects_working_tree_edits() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = init_repo(dir.path());
-        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        stage_all(&repo);
-        commit_index(&repo, "init");
-
-        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
-        assert!(!repo_has_changes(&wrapper), "clean tree has no changes");
-
-        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
-        assert!(repo_has_changes(&wrapper), "edited tree has changes");
     }
 
     /// The reload viewport used by the startup self-heal tests.

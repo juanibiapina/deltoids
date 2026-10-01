@@ -1,5 +1,4 @@
-//! The unified scrolling TUI shared by `deltoids review` and
-//! `deltoids traces`.
+//! The unified scrolling TUI opened by `deltoids tui`.
 //!
 //! The left panel cycles, lazygit-style, between two **modes**:
 //!
@@ -13,8 +12,6 @@
 //! label switches directly to that mode. The right pane follows whichever
 //! mode is active. The active mode's top-left panel title shows a
 //! `Files - Traces` tab strip with the active label highlighted.
-//! Both subcommands open this same TUI, seeded with a different starting
-//! mode: `review` → Files, `traces` → Traces.
 //!
 //! ## Module layout
 //!
@@ -86,17 +83,6 @@ pub const FILES_MODE: usize = 0;
 pub const TRACES_MODE: usize = 1;
 /// Number of left-panel modes the shell cycles through.
 pub const MODE_COUNT: usize = TAB_LABELS.len();
-
-/// Pick the starting mode: Files when the working tree has local changes,
-/// otherwise Traces. Outside a repo (or on any git error) Traces, since
-/// there is no working-tree diff to show.
-pub fn smart_initial_mode() -> usize {
-    if files::working_tree_has_changes() {
-        FILES_MODE
-    } else {
-        TRACES_MODE
-    }
-}
 
 /// Idle poll timeout for the event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);

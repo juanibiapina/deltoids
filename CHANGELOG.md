@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- TUI: always opens in Files mode, including in a clean repository or outside Git. Press `[` / `]` to switch to Traces.
 - review: the browser PR reviewer now lives at its own address, `review.deltoids.dev`. It works exactly as before; you will re-enter your GitHub token once on the new site.
 - review: the browser PR reviewer no longer shows a line number on every diff row, freeing horizontal space and keeping columns aligned; each hunk still shows its starting line number in the header, and a toolbar button brings the per-row numbers back.
 - review: the browser PR reviewer now fills the full width of large and ultrawide screens instead of centering in a fixed column, so diffs and the file tree use the available space.

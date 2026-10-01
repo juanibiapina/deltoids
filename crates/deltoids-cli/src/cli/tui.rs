@@ -1,8 +1,8 @@
 //! `deltoids tui`: the unified scrolling TUI.
 //!
-//! Interactive (TTY stdout): opens on the working-tree diff (Files mode)
-//! when there are local changes, otherwise on the trace browser (Traces
-//! mode); press `[` / `]` to toggle. Headless (non-TTY stdout): renders
+//! Interactive (TTY stdout): opens on the working-tree diff (Files mode);
+//! press `[` / `]` to toggle to the trace browser (Traces mode).
+//! Headless (non-TTY stdout): renders
 //! the Traces scripted snapshot from stdin keys, used by tests and
 //! non-interactive callers.
 
@@ -15,8 +15,7 @@ use crate::cli::browse;
 
 const OVERVIEW: &str = r#"Unified scrolling TUI.
 
-Opens on the working-tree diff (Files mode) when you have local changes,
-otherwise on the trace browser (Traces mode). Press ] to cycle the left
+Opens on the working-tree diff (Files mode). Press ] to cycle the left
 panel forward (Files -> Traces) and [ to cycle back.
 
 Keys:
@@ -59,7 +58,7 @@ pub fn run(_args: Args) -> ExitCode {
 
 fn run_inner() -> Result<(), String> {
     if io::stdout().is_terminal() {
-        browse::run(browse::smart_initial_mode())
+        browse::run(browse::FILES_MODE)
     } else {
         browse::run_traces_scripted()
     }

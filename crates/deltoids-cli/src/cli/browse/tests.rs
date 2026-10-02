@@ -21,6 +21,7 @@ struct Recorder {
     mouse: usize,
     reloads: usize,
     read_failures: usize,
+    stable_reads: usize,
     watch_failures: usize,
 }
 
@@ -96,6 +97,10 @@ impl Mode for RecordingMode {
             rec.read_failures -= 1;
             return Err("read lost a race".into());
         }
+        if rec.stable_reads > 0 {
+            rec.stable_reads -= 1;
+            return Ok(false);
+        }
         Ok(true)
     }
 
@@ -103,6 +108,9 @@ impl Mode for RecordingMode {
         self.selected.clone()
     }
 }
+
+#[path = "tests/focus.rs"]
+mod focus;
 
 type Rec = Rc<RefCell<Recorder>>;
 

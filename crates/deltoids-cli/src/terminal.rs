@@ -18,7 +18,8 @@ impl TerminalSession {
             io::stdout(),
             crossterm::terminal::EnterAlternateScreen,
             crossterm::cursor::Hide,
-            crossterm::event::EnableMouseCapture
+            crossterm::event::EnableMouseCapture,
+            crossterm::event::EnableFocusChange
         )
         .map_err(|err| format!("failed to enter screen: {err}"))?;
         Ok(Self)
@@ -30,6 +31,7 @@ impl Drop for TerminalSession {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             io::stdout(),
+            crossterm::event::DisableFocusChange,
             crossterm::event::DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::cursor::Show

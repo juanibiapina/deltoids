@@ -1,16 +1,17 @@
 //! Run helpers for custom commands: the background (no-terminal) path and
 //! the foreground (suspend/restore) path.
 //!
-//! Not unit-tested: correctness here is the terminal sequencing
-//! (foreground) and the stdio-null discipline (background), verified by
-//! manual acceptance. The pure logic (parsing, expansion, routing) lives
-//! in [`super::command`] and the shell.
+//! The focus CPU probe verifies foreground terminal sequencing and the
+//! restored screen. Parsing, expansion, and routing live in
+//! [`super::command`] and the shell.
 
 use std::io::{self, Stdout, Write};
 use std::process::{Command, Stdio};
 
 use crossterm::cursor;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -71,6 +72,7 @@ fn leave_tui() -> Result<(), String> {
     disable_raw_mode().map_err(|err| format!("failed to disable raw mode: {err}"))?;
     execute!(
         io::stdout(),
+        DisableFocusChange,
         DisableMouseCapture,
         LeaveAlternateScreen,
         cursor::Show
@@ -89,7 +91,8 @@ fn enter_tui() -> Result<(), String> {
         io::stdout(),
         EnterAlternateScreen,
         cursor::Hide,
-        EnableMouseCapture
+        EnableMouseCapture,
+        EnableFocusChange
     )
     .map_err(|err| format!("failed to re-enter screen: {err}"))?;
     Ok(())

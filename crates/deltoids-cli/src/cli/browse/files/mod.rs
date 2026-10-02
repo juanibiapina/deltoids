@@ -327,8 +327,9 @@ impl FilesMode {
                 // A successful diff that matched `last_input`. At startup
                 // (`last_input == ""`) this confirms a clean tree, so leave
                 // Loading for the "No local changes." state.
+                let changed = self.startup_pending;
                 self.promote_from_loading();
-                false
+                changed
             }
             ReloadOutcome::Failed(msg) => {
                 // A build error that persists past the loading window is
@@ -339,6 +340,7 @@ impl FilesMode {
                     let comments = std::mem::take(&mut self.comments);
                     *self = Self::error(theme, width, msg);
                     self.comments = comments;
+                    return true;
                 }
                 false
             }
@@ -1631,7 +1633,7 @@ mod tests {
         let mut mode = FilesMode::loading(wrapper, &theme, 80);
 
         let changed = mode.reload(reload_vp(), &theme).unwrap();
-        assert!(!changed, "a clean tree has nothing to rebuild");
+        assert!(changed, "leaving Loading changes the visible state");
         assert!(
             !mode.startup_pending,
             "a confirmed clean tree leaves Loading"
@@ -1675,7 +1677,7 @@ mod tests {
             &theme,
             80,
         );
-        assert!(!changed);
+        assert!(changed, "the error state requires a repaint");
         assert!(
             mode.is_static,
             "a failure that persists past the window degrades to a static error"

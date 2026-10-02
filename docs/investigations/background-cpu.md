@@ -153,4 +153,33 @@ Baseline fixture: `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu
 
 `python3 docs/investigations/background-trace-refresh-probe.py` automatically verifies initial loading, selection of a new local trace, an appended local entry, and recovery after deleting the selected trace in the real release TUI. It waits for the first interactive frame before switching modes and asserts distinctive emitted text because terminal redraws emit only changed portions of lines. Filesystem changes receive no additional input.
 
-The browse suite passes 280 tests. Full workspace tests, production Clippy, formatting, and diff checks pass. Default all-target Clippy remains blocked by the unchanged test nesting lint described above; all-target Clippy passes with that lint allowed. Focus deferral and conditional drawing remain deferred.
+The browse suite passes 280 tests. Full workspace tests, production Clippy, formatting, and diff checks pass. Default all-target Clippy remains blocked by the unchanged test nesting lint described above; all-target Clippy passes with that lint allowed. Focus deferral and conditional drawing remained deferred at this checkpoint.
+
+## Third fix: focus deferral and conditional drawing
+
+The terminal requests focus reporting on entry, disables it for foreground children and exit, and restores it when a child returns. Unknown focus permits normal operation. Focus loss postpones refreshes, watcher recovery, history loading, and drawing. Notifications remain in bounded watcher accumulators until focus returns. Keyboard or mouse input resumes interaction if a focus-gain report is missing.
+
+The shell processes an input burst before scheduling expensive work and retains late focus reports even after a custom command consumes its key. Background waits exclude expired dirty and retry deadlines. Focus return services pending active-mode work and repaints in full; inactive modes remain lazy. A clean focus return does not read histories or compute a new Git diff. Foreground-command return resets focus knowledge, services pending changes, and repaints the recreated terminal.
+
+Startup, input, resize, popup/theme/layout changes, visible refreshes, and refresh-error changes request frames. A fast navigation frame gets one settled full frame. Other idle timeouts produce no drawings. Loading-to-clean and loading-to-error transitions now report a visible change even without a rebuilt patch.
+
+The automated focus probe was run against the prior selective-trace release and the updated release in the existing 30,000-file fixture. The probe injects terminal focus sequences, writes a tracked file approximately every 300 ms, records local traces, and checks emitted terminal text and focus-control sequences.
+
+| Case | Before average CPU | After average CPU | Before terminal bytes | After terminal bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Focused Files idle | 0.12% | 0.00% | 800 | 0 |
+| Focused tracked writes | 28.49% | 28.75% | 1,181 | 952 |
+| Unfocused tracked writes | 29.98% | 0.00% | 1,266 | 0 |
+| Unfocused local traced writes | 0.25% | 0.12% | 2,843 | 0 |
+
+Each case lasts approximately eight seconds. The updated idle and unfocused Files cases record 0.00 process CPU seconds at `ps`'s 0.01-second resolution; this indicates work below that measurement resolution. Unfocused trace writes record 0.01 CPU seconds. The traced-write CPU difference is one measurement quantum, so the useful direct evidence there is deferred reads in the shell tests and zero terminal output during the real stream.
+
+The latest file content appears 210.3 ms after Files regains focus. A new matching trace appears 0.7 ms after Traces regains focus. The probe asserts that a foreground child runs with focus reporting disabled, that the updated file appears after terminal restoration, that reporting is re-enabled, and that exit disables it again. It accounts for terminal updates that emit only changed characters and for histories whose timestamps have one-second resolution.
+
+Baseline fixture configuration: `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu-nqbo53kh`. Updated fixture configuration: `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu-zpl2etw3`.
+
+Run `python3 docs/investigations/background-focus-cpu-probe.py` for automated focus, idle, catch-up, child, and exit assertions. It creates a small temporary Git fixture by default. Set `DELTOIDS_FOCUS_REPO` to an existing temporary large fixture to repeat the large-repository measurements; the probe writes `main.txt` and `trace.txt` there. For an older binary, set `DELTOIDS_CPU_BINARY` and `DELTOIDS_FOCUS_EXPECT_DEFER=0` to collect baseline measurements without asserting the new behavior.
+
+`python3 docs/investigations/background-idle-draw-probe.py` measures sixty settled seconds and asserts zero terminal bytes. It accepts the same temporary-fixture override. The updated release passed in the large fixture: 60.00 seconds, 0.00 process CPU seconds at the 0.01-second measurement resolution, and zero terminal bytes.
+
+Full workspace tests and production Clippy pass. The browse suite now has 290 tests, covering clean returns, bounded retained work, late focus loss, deferred deadlines, input fallback, stable refreshes, loading transitions, and child-return repainting. Default all-target Clippy retains the existing test nesting limitation described above. Physical GUI focus forwarding remains unverified; the injected-event proof and the earlier isolated tmux forwarding proof establish the tested focus paths.

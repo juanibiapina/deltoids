@@ -90,6 +90,15 @@ git:
     pager: deltoids
 ```
 
+### Automatic refresh
+
+The TUI refreshes after file edits and trace updates. When the terminal
+reports focus loss, deltoids retains notifications and pauses refreshes
+and drawing. Returning to the window refreshes the active view; keyboard
+or mouse input also resumes it. Terminals that do not send focus events
+continue refreshing normally. Idle windows redraw only when their view
+changes.
+
 ### Review comments
 
 Works the same on both diffs: the working tree in Files mode and a trace

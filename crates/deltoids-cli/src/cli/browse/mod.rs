@@ -36,7 +36,9 @@
 //! takes bounded notification batches each loop, reloads the active mode
 //! after a debounce, and leaves inactive modes dirty until activation.
 //! Healthy watchers cause no periodic reloads; failures trigger explicit
-//! watcher recovery or read retries.
+//! watcher recovery or read retries. Focus loss defers refreshes, recovery,
+//! and drawing while bounded watcher batches retain changes. Idle timeouts
+//! draw only the single settled frame after fast rendering.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -135,103 +137,113 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     );
     shell.commands = load_commands();
 
+    let mut vp = ReloadViewport::default();
     loop {
-        let active = shell.active;
-        let help_visible = shell.help_visible;
-        let pref = shell.sidebar_pref;
-        let layout = shell.change_layout;
-        // When the active mode hasn't been built yet (just toggled to), draw
-        // a loading frame instead. The tab strip already shows the switch,
-        // so the UI feels responsive while the (possibly slow) build runs.
-        let building = !shell.built[active];
-        // Take the budget (a `&mut` op) before borrowing `commands`.
-        let budget = shell.take_draw_budget();
-        let commands = &shell.commands;
-        let theme_picker = shell.theme_picker.as_ref();
-        let active_theme = shell.syntax_theme.as_str();
-        let refresh_error = shell.refresh_error();
-        let area = terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let sw = pref.effective(area.width);
-                let cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Length(sw), Constraint::Min(10)])
-                    .split(area);
-                if building {
-                    draw_loading(frame, cols[0], cols[1], TabStrip { active }, &theme);
-                } else {
-                    modes[active].draw(
-                        frame,
-                        cols[0],
-                        cols[1],
-                        TabStrip { active },
-                        layout,
-                        &theme,
-                        budget,
-                    );
-                }
-                if help_visible {
-                    help::draw_help_popup(frame, area, &theme, commands);
-                }
-                if let Some(picker) = theme_picker {
-                    theme_picker::draw(frame, area, &theme, picker, active_theme);
-                }
-                if let Some(error) = &refresh_error {
-                    frame.render_widget(
-                        Paragraph::new(error.as_str()),
-                        Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
-                    );
-                }
-            })
-            .map_err(|err| format!("failed to render screen: {err}"))?
-            .area;
+        // Drain queued input before refreshes, including focus loss that
+        // arrived while the previous synchronous operation was finishing.
+        let queued = read_event_burst(Duration::ZERO)?;
+        if !queued.is_empty() {
+            shell.note_input(false);
+            let cmd = shell.apply_events(&mut modes, queued, vp, &theme)?;
+            if apply_app_command(cmd, &mut terminal, &mut modes, &mut shell, &mut theme) {
+                break;
+            }
+        }
+        shell.drain_watchers(&mut modes);
+        shell.reload_active_if_due(&mut modes, vp, &theme)?;
 
-        // Recompute the layout split from the drawn area: the closure can't
-        // return a value, so derive the divider rect and viewports here.
-        shell.total_width = area.width;
-        let sw = shell.sidebar_pref.effective(area.width);
-        shell.left_rect = Rect {
-            x: area.x,
-            y: area.y,
-            width: sw,
-            height: area.height,
-        };
-        let pane_viewport = area.height.saturating_sub(2) as usize;
-        let vp = ReloadViewport {
-            left_viewport: pane_viewport,
-            right_viewport: pane_viewport,
-            right_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
-        };
-
-        // The loading frame is now on screen; build the mode for real, then
-        // loop back to draw its content.
-        if building {
-            shell.build_active(&mut modes, vp, &theme);
-            continue;
+        if shell.needs_redraw() {
+            vp = draw_frame(&mut terminal, &mut modes, &mut shell, &theme)?;
+            if !shell.built[shell.active] {
+                shell.build_active(&mut modes, vp, &theme);
+                continue;
+            }
         }
 
-        let timeout = shell.poll_timeout();
-        let burst = read_event_burst(timeout)?;
-        // An empty burst is a poll timeout: input has settled. A non-empty
-        // burst means the user is actively navigating, so the next frame
-        // draws Fast (deferring expensive rendering).
+        let burst = read_event_burst(shell.poll_timeout())?;
         shell.note_input(burst.is_empty());
         let cmd = shell.apply_events(&mut modes, burst, vp, &theme)?;
         if apply_app_command(cmd, &mut terminal, &mut modes, &mut shell, &mut theme) {
             break;
         }
-
-        // Drain armed watchers; mark the owning mode dirty.
-        shell.drain_watchers(&mut modes);
-
-        // Reload the active mode eagerly once its debounce elapses (or
-        // immediately after a toggle). The inactive mode stays dirty and
-        // reloads on its next activation.
-        shell.reload_active_if_due(&mut modes, vp, &theme)?;
     }
 
     Ok(())
+}
+
+fn draw_frame(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    modes: &mut [Box<dyn Mode>; MODE_COUNT],
+    shell: &mut Shell,
+    theme: &Theme,
+) -> Result<ReloadViewport, String> {
+    let active = shell.active;
+    let help_visible = shell.help_visible;
+    let pref = shell.sidebar_pref;
+    let layout = shell.change_layout;
+    // When the active mode hasn't been built yet (just toggled to), draw
+    // a loading frame instead. The tab strip already shows the switch,
+    // so the UI feels responsive while the (possibly slow) build runs.
+    let building = !shell.built[active];
+    // Take the budget (a `&mut` op) before borrowing `commands`.
+    let budget = shell.take_draw_budget();
+    let commands = &shell.commands;
+    let theme_picker = shell.theme_picker.as_ref();
+    let active_theme = shell.syntax_theme.as_str();
+    let refresh_error = shell.refresh_error();
+    let area = terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let sw = pref.effective(area.width);
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(sw), Constraint::Min(10)])
+                .split(area);
+            if building {
+                draw_loading(frame, cols[0], cols[1], TabStrip { active }, theme);
+            } else {
+                modes[active].draw(
+                    frame,
+                    cols[0],
+                    cols[1],
+                    TabStrip { active },
+                    layout,
+                    theme,
+                    budget,
+                );
+            }
+            if help_visible {
+                help::draw_help_popup(frame, area, theme, commands);
+            }
+            if let Some(picker) = theme_picker {
+                theme_picker::draw(frame, area, theme, picker, active_theme);
+            }
+            if let Some(error) = &refresh_error {
+                frame.render_widget(
+                    Paragraph::new(error.as_str()),
+                    Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+                );
+            }
+        })
+        .map_err(|err| format!("failed to render screen: {err}"))?
+        .area;
+
+    // Recompute the layout split from the drawn area: the closure can't
+    // return a value, so derive the divider rect and viewports here.
+    shell.total_width = area.width;
+    let sw = shell.sidebar_pref.effective(area.width);
+    shell.left_rect = Rect {
+        x: area.x,
+        y: area.y,
+        width: sw,
+        height: area.height,
+    };
+    let pane_viewport = area.height.saturating_sub(2) as usize;
+    Ok(ReloadViewport {
+        left_viewport: pane_viewport,
+        right_viewport: pane_viewport,
+        right_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
+    })
 }
 
 /// Apply one [`AppCommand`] bubbled up from `apply_events`, in the loop that
@@ -257,6 +269,7 @@ fn apply_app_command(
         AppCommand::Run(run) => {
             if run.subprocess {
                 let _ = suspend::run_foreground(terminal, &run.command);
+                shell.foreground_returned();
             } else {
                 let _ = suspend::run_background(&run.command);
             }
@@ -275,6 +288,7 @@ fn apply_app_command(
         AppCommand::SetSyntaxTheme(name) => {
             theme.syntax_theme_name = name.to_string();
             shell.force_full = true;
+            shell.repaint = true;
         }
         AppCommand::Continue => {}
     }
@@ -327,6 +341,10 @@ struct Shell {
     /// false, the user is actively navigating and the next frame draws
     /// `Fast`; when true, it draws `Full`.
     input_idle: bool,
+    /// Unknown focus permits interaction when the terminal sends no reports.
+    focused: Option<bool>,
+    repaint: bool,
+    settle_pending: bool,
     /// User-configured custom key commands (from `config.toml`).
     commands: Vec<CustomCommand>,
 }
@@ -360,8 +378,35 @@ impl Shell {
             dirty_since: [None, None],
             toggle_pending: false,
             input_idle: true,
+            focused: None,
+            repaint: true,
+            settle_pending: false,
             commands: Vec::new(),
         }
+    }
+
+    fn interactive(&self) -> bool {
+        self.focused != Some(false)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.interactive() && self.repaint
+    }
+
+    fn resume(&mut self) {
+        if !self.interactive() {
+            self.toggle_pending = true;
+            self.force_full = true;
+        }
+        self.focused = Some(true);
+        self.repaint = true;
+    }
+
+    fn foreground_returned(&mut self) {
+        self.focused = None;
+        self.toggle_pending = true;
+        self.force_full = true;
+        self.repaint = true;
     }
 
     fn refresh_error(&self) -> Option<String> {
@@ -406,6 +451,10 @@ impl Shell {
     /// Take one bounded batch per watcher. Events arriving during a reload
     /// remain in the accumulator until the next loop.
     fn drain_watchers(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT]) {
+        if !self.interactive() {
+            return;
+        }
+        let previous_error = self.refresh_error();
         for index in 0..MODE_COUNT {
             if self.built[index]
                 && !self.armed[index]
@@ -428,6 +477,7 @@ impl Shell {
                 self.dirty_since[index].get_or_insert_with(Instant::now);
             }
         }
+        self.repaint |= self.refresh_error() != previous_error;
     }
 
     /// The draw budget for the current frame: `Full` when input has
@@ -439,12 +489,12 @@ impl Shell {
     /// rebuilds fully at once instead of flashing `Fast` placeholders (whose
     /// short window would clamp the saved scroll to the top).
     fn take_draw_budget(&mut self) -> DrawBudget {
-        if std::mem::take(&mut self.force_full) {
-            return DrawBudget::Full;
-        }
-        if self.input_idle {
+        self.repaint = false;
+        if std::mem::take(&mut self.force_full) || self.input_idle {
+            self.settle_pending = false;
             DrawBudget::Full
         } else {
+            self.settle_pending = true;
             DrawBudget::Fast
         }
     }
@@ -453,11 +503,17 @@ impl Shell {
     /// i.e. input settled). Drives the next frame's [`Shell::draw_budget`].
     fn note_input(&mut self, burst_empty: bool) {
         self.input_idle = burst_empty;
+        if burst_empty && self.settle_pending {
+            self.repaint = true;
+        }
     }
 
     /// Pick the loop's poll timeout: short while a reload is pending,
     /// otherwise the idle timeout.
     fn poll_timeout(&self) -> Duration {
+        if !self.interactive() {
+            return POLL_TIMEOUT;
+        }
         let mut timeout = if self.input_idle {
             POLL_TIMEOUT
         } else {
@@ -524,7 +580,7 @@ impl Shell {
         theme: &Theme,
     ) {
         let i = self.active;
-        if self.built[i] {
+        if self.built[i] || !self.interactive() {
             return;
         }
         let dw = if vp.right_width > 0 {
@@ -543,6 +599,7 @@ impl Shell {
             self.reload_retry_at[i] = Some(Instant::now() + DEBOUNCE_DELAY);
         }
         self.toggle_pending = false;
+        self.repaint = true;
     }
 
     /// Reload the active mode if its debounce has elapsed or a toggle
@@ -553,16 +610,23 @@ impl Shell {
         vp: ReloadViewport,
         theme: &Theme,
     ) -> Result<(), String> {
+        if !self.interactive() {
+            return Ok(());
+        }
         let active = self.active;
         let due = self.dirty_since[active].is_some_and(|s| s.elapsed() >= DEBOUNCE_DELAY);
         let retry_due = self.reload_retry_at[active].is_some_and(|at| Instant::now() >= at);
         if due || retry_due || self.toggle_pending {
             if self.dirty_since[active].is_some() || self.reload_retry_at[active].is_some() {
+                let previous_error = self.refresh_error();
                 let result = modes[active].reload(vp, theme);
+                let changed = result.as_ref().is_ok_and(|changed| *changed);
                 self.dirty_since[active] = None;
                 let failed = result.is_err() || modes[active].retry_reload();
                 self.reload_errors[active] = result.err();
                 self.reload_retry_at[active] = failed.then(|| Instant::now() + READ_RETRY_DELAY);
+                self.repaint |= changed || self.refresh_error() != previous_error;
+                self.force_full |= changed;
             }
             self.toggle_pending = false;
         }
@@ -727,25 +791,32 @@ impl Shell {
         modes: &mut [Box<dyn Mode>; MODE_COUNT],
         events: impl IntoIterator<Item = Event>,
         vp: ReloadViewport,
-        theme: &Theme,
+        _theme: &Theme,
     ) -> Result<AppCommand, String> {
         let mut resized = false;
+        let mut command = AppCommand::Continue;
         for event in events {
+            if command != AppCommand::Continue
+                && !matches!(
+                    event,
+                    Event::FocusLost | Event::FocusGained | Event::Resize(_, _)
+                )
+            {
+                continue;
+            }
             // Coalesce sidebar-resize keys to one step per burst.
             if is_resize_key(&event) && std::mem::replace(&mut resized, true) {
                 continue;
             }
             let cmd = self.dispatch(modes, event, vp);
-            // A toggle may have armed a lazy reload mid-burst; service it
-            // before the next draw so the now-active mode is fresh.
-            self.reload_active_if_due(modes, vp, theme)?;
-            // Bubble Quit and Run up to the run() loop (which owns the
-            // terminal); keep draining the burst only on Continue.
-            if cmd != AppCommand::Continue {
+            if cmd == AppCommand::Quit {
                 return Ok(cmd);
             }
+            if command == AppCommand::Continue {
+                command = cmd;
+            }
         }
-        Ok(AppCommand::Continue)
+        Ok(command)
     }
 
     /// Dispatch one input event to the global handlers / active mode.
@@ -756,10 +827,26 @@ impl Shell {
         vp: ReloadViewport,
     ) -> AppCommand {
         match event {
+            Event::FocusLost => {
+                self.focused = Some(false);
+                AppCommand::Continue
+            }
+            Event::FocusGained => {
+                self.resume();
+                self.force_full = true;
+                AppCommand::Continue
+            }
+            Event::Resize(_, _) => {
+                self.repaint = true;
+                self.force_full = true;
+                AppCommand::Continue
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                self.resume();
                 self.handle_key(modes, key.code, vp.left_viewport, vp.right_viewport)
             }
             Event::Mouse(mouse) => {
+                self.resume();
                 self.handle_mouse(modes, mouse, vp.left_viewport, vp.right_viewport)
             }
             _ => AppCommand::Continue,

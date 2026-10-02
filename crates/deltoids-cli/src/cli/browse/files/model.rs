@@ -3,6 +3,7 @@
 //! [`Model`] is rebuilt wholesale on each working-tree reload.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
@@ -33,8 +34,9 @@ pub(super) struct Model {
 /// diff pane and the sidebar always agree: a computed text diff, or a
 /// symlink change view (which bypasses `Diff::compute` and content
 /// resolution entirely).
+#[derive(Clone)]
 pub(super) enum FileBody {
-    Diff(Diff),
+    Diff(Arc<Diff>),
     Symlink(SymlinkView),
     /// A binary change: no textual diff. Decided from the parsed diff, so
     /// content resolution never touches the ODB or the working tree.
@@ -204,7 +206,11 @@ pub(super) fn precompute_bodies(files: &[ResolvedFile]) -> Vec<FileBody> {
             }
             match SymlinkView::from_file_diff(&f.file) {
                 Some(view) => FileBody::Symlink(view),
-                None => FileBody::Diff(Diff::compute(&f.before, &f.after, display_path(&f.file))),
+                None => FileBody::Diff(Arc::new(Diff::compute(
+                    &f.before,
+                    &f.after,
+                    display_path(&f.file),
+                ))),
             }
         })
         .collect()

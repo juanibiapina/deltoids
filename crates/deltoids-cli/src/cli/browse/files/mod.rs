@@ -56,11 +56,12 @@ use super::comment_view::render_comment_editor;
 use super::comments::{
     CommentAnchor, CommentScope, CommentStore, PromptSection, build_prompt, hunk_lines, reanchor,
 };
-use super::mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TabStrip};
+use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport, TabStrip};
 
 mod diff_pane;
 mod model;
 mod reload;
+mod render;
 mod sidebar_pane;
 #[cfg(test)]
 mod test_support;
@@ -297,6 +298,18 @@ impl FilesMode {
             budget,
             &self.comments,
         );
+        while budget == DrawBudget::Full && self.diff.cache.pending() {
+            test_support::wait_for_render(&mut self.diff);
+            self.diff.assemble_window(
+                self.sidebar.selection_display_range(),
+                &self.model,
+                width,
+                ChangeLayout::Grouped,
+                &Theme::default(),
+                budget,
+                &self.comments,
+            );
+        }
         self.diff
             .rows()
             .iter()
@@ -714,6 +727,17 @@ fn handle_mouse(
 }
 
 impl Mode for FilesMode {
+    fn background(&mut self, active: bool) -> BackgroundWork {
+        if !active {
+            self.diff.cache.pause();
+            return BackgroundWork::default();
+        }
+        BackgroundWork {
+            changed: self.diff.cache.collect(),
+            pending: self.diff.cache.pending(),
+        }
+    }
+
     fn draw(
         &mut self,
         frame: &mut ratatui::Frame<'_>,
@@ -871,6 +895,190 @@ mod tests {
     use crate::cli::browse::files::test_support::*;
     use model::ResolvedFile;
 
+    fn large_file(path: &str) -> ResolvedFile {
+        ResolvedFile {
+            file: file_diff(path),
+            before: String::new(),
+            after: (0..10_000).map(|line| format!("line {line}\n")).collect(),
+        }
+    }
+
+    #[test]
+    fn navigation_away_from_pending_large_render_shows_the_latest_file() {
+        let mut state = make_state(&[large_file("a.txt"), edited("b.txt")]);
+        let initial = state.visible_diff_window(DrawBudget::Fast);
+        assert!(
+            initial
+                .iter()
+                .any(|line| line_text(line).contains("Rendering"))
+        );
+        handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        let immediate = state.visible_diff_window(DrawBudget::Fast);
+        assert_eq!(line_text(&immediate[0]), "b.txt");
+        wait_for_render(&mut state.diff);
+        let ready = state.visible_diff_window(DrawBudget::Fast);
+        assert!(
+            ready
+                .iter()
+                .any(|line| line_text(line).contains("const x = 2"))
+        );
+        assert!(
+            !ready
+                .iter()
+                .any(|line| line_text(line).contains("line 9999"))
+        );
+    }
+
+    #[test]
+    fn reload_discards_pending_content_even_when_file_indices_are_reused() {
+        let mut state = make_state(&[large_file("a.txt")]);
+        state.visible_diff_window(DrawBudget::Fast);
+        state.diff.cache.clear();
+        state.diff.reset_window();
+        state.model = model_from(&[edited("a.txt")]);
+        let ready = state.visible_diff_window(DrawBudget::Full);
+        assert!(
+            ready
+                .iter()
+                .any(|line| line_text(line).contains("const x = 2"))
+        );
+        assert!(
+            !ready
+                .iter()
+                .any(|line| line_text(line).contains("line 9999"))
+        );
+    }
+
+    #[test]
+    fn hidden_pending_render_resumes_without_another_navigation_key() {
+        let mut state = make_state(&[large_file("a.txt")]);
+        state.visible_diff_window(DrawBudget::Fast);
+        assert!(state.background(true).pending);
+        let paused = state.background(false);
+        assert!(!paused.pending && !paused.changed);
+        state.visible_diff_window(DrawBudget::Fast);
+        wait_for_render(&mut state.diff);
+        let ready = state.visible_diff_window(DrawBudget::Fast);
+        assert!(
+            ready
+                .iter()
+                .any(|line| line_text(line).contains("line 9999"))
+        );
+        assert!(!state.background(true).pending);
+    }
+
+    #[test]
+    fn render_settings_preserve_the_selected_line_while_replacement_rows_are_pending() {
+        let mut state = diff_state(&[edited("app.rs")]);
+        handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let mut next_theme = theme();
+        next_theme.syntax_theme_name = "TokyoNight".into();
+        let next_layout = ChangeLayout::Interleaved {
+            group: std::num::NonZeroUsize::new(1).unwrap(),
+        };
+        state.ensure_width(8);
+        state.diff.assemble_window(
+            state.sidebar.selection_display_range(),
+            &state.model,
+            8,
+            next_layout,
+            &next_theme,
+            DrawBudget::Fast,
+            &state.comments,
+        );
+        assert_eq!(state.diff.cursor_anchor(), Some(&anchor));
+        wait_for_render(&mut state.diff);
+        state.diff.assemble_window(
+            state.sidebar.selection_display_range(),
+            &state.model,
+            8,
+            next_layout,
+            &next_theme,
+            DrawBudget::Fast,
+            &state.comments,
+        );
+        assert_eq!(state.diff.cursor_anchor(), Some(&anchor));
+    }
+
+    #[test]
+    fn directory_reload_keeps_the_cursor_when_another_file_finishes_first() {
+        let mut state = make_state(&[edited("src/a.rs"), large_file("src/b.rs")]);
+        state.sidebar.set_selected(0, 18);
+        state.visible_diff_window(DrawBudget::Full);
+        let last = state
+            .diff
+            .rows()
+            .iter()
+            .rposition(|row| row.is_selectable())
+            .unwrap();
+        state.diff.select_row(last);
+        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        state.diff.cache.clear();
+        state.diff.reset_window();
+        state.diff.after_reload();
+        state.visible_diff_window(DrawBudget::Fast);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !state.diff.cache.contains(grouped_epoch(80), 0) {
+            state.background(true);
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        state.visible_diff_window(DrawBudget::Fast);
+        assert_eq!(state.diff.cursor.file(), Some("src/b.rs"));
+        state.visible_diff_window(DrawBudget::Full);
+        assert_eq!(state.diff.cursor_anchor(), Some(&anchor));
+    }
+
+    #[test]
+    #[ignore = "release performance probe; run with --release --ignored --nocapture"]
+    fn navigation_frame_costs() {
+        let files: Vec<_> = (0..100)
+            .map(|index| ResolvedFile {
+                file: file_diff(&format!("src/f{index:03}.rs")),
+                before: String::new(),
+                after: (0..300)
+                    .map(|line| format!("fn item_{line}() {{ let value = \"syntax\"; }}\n"))
+                    .collect(),
+            })
+            .collect();
+        let mut state = make_state(&files);
+        state.sidebar.set_selected(0, 18);
+        let start = Instant::now();
+        state.visible_diff_window(DrawBudget::Fast);
+        let pending = start.elapsed();
+        let render_start = Instant::now();
+        state.visible_diff_window(DrawBudget::Full);
+        let ready = render_start.elapsed();
+        let assemble = |state: &mut FilesMode| {
+            state.diff.assemble_window(
+                state.sidebar.selection_display_range(),
+                &state.model,
+                80,
+                ChangeLayout::Grouped,
+                &Theme::default(),
+                DrawBudget::Fast,
+                &state.comments,
+            );
+        };
+        state.diff.snap_to_top();
+        let assemble_start = Instant::now();
+        assemble(&mut state);
+        let assembly = assemble_start.elapsed();
+        let retained_start = Instant::now();
+        assemble(&mut state);
+        println!(
+            "directory: pending={pending:?}, complete={ready:?}, assembly={assembly:?}, retained={:?}, rows={}",
+            retained_start.elapsed(),
+            state.diff.window_rows()
+        );
+        assert!(
+            assembly < Duration::from_millis(33),
+            "directory assembly exceeded frame target: {assembly:?}"
+        );
+    }
+
     fn grouped_epoch(width: usize) -> CacheEpoch {
         CacheEpoch {
             width,
@@ -905,6 +1113,16 @@ mod tests {
         let width = state.diff.cached_width;
         state.diff.assemble_window(
             range,
+            &state.model,
+            width,
+            ChangeLayout::Grouped,
+            &Theme::default(),
+            DrawBudget::Full,
+            &state.comments,
+        );
+        wait_for_render(&mut state.diff);
+        state.diff.assemble_window(
+            state.sidebar.selection_display_range(),
             &state.model,
             width,
             ChangeLayout::Grouped,
@@ -1406,6 +1624,17 @@ mod tests {
 
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        mode.ensure_width(67);
+        mode.diff.assemble_window(
+            mode.sidebar.selection_display_range(),
+            &mode.model,
+            67,
+            ChangeLayout::Grouped,
+            &theme,
+            DrawBudget::Fast,
+            &mode.comments,
+        );
+        wait_for_render(&mut mode.diff);
         term.draw(|frame| {
             let area = frame.area();
             let cols = Layout::default()

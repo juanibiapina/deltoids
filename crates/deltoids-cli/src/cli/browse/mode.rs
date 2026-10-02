@@ -70,8 +70,8 @@ pub(crate) enum DrawBudget {
 /// Whether to build (highlight) a deferrable diff body this frame. Always
 /// build on a `Full` frame; on a `Fast` frame (input streaming) build only
 /// when it is already cached, so navigation never blocks on highlighting an
-/// unseen large item. Shared by both mode adapters (Files keys the cache by
-/// file index, Traces by `(trace, entry)`).
+/// unseen large item. Traces keys its cache by `(trace, entry)`; Files
+/// renders asynchronously and ignores this heuristic.
 pub(crate) fn should_build_body(budget: DrawBudget, already_cached: bool) -> bool {
     budget == DrawBudget::Full || already_cached
 }
@@ -285,10 +285,23 @@ pub(crate) struct ReloadViewport {
     pub(crate) right_width: usize,
 }
 
+/// Changes and outstanding work reported by a mode's background renderer.
+#[derive(Default)]
+pub(crate) struct BackgroundWork {
+    pub(crate) changed: bool,
+    pub(crate) pending: bool,
+}
+
 /// A cyclable left-panel mode. The shell holds one boxed adapter per
 /// mode and cycles between them; each adapter owns its own selection,
 /// scroll, focus, and reload machinery.
 pub(crate) trait Mode {
+    /// Collect render completions while active; pause speculative work otherwise.
+    /// `changed` requests a frame; `pending` requests a short input poll.
+    fn background(&mut self, _active: bool) -> BackgroundWork {
+        BackgroundWork::default()
+    }
+
     /// Render the left column into `left` and the diff/detail into
     /// `right`. The mode subdivides `left` itself (Files: one panel;
     /// Traces: two stacked panels) and caches its sub-rects for mouse

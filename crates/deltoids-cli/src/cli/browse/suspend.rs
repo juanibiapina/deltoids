@@ -5,9 +5,10 @@
 //! restored screen. Parsing, expansion, and routing live in
 //! [`super::command`] and the shell.
 
-use std::io::{self, Stdout, Write};
+use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
+use super::{BrowseTerminal, buffered_backend};
 use crossterm::cursor;
 use crossterm::event::{
     DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
@@ -17,7 +18,6 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 
 /// Run `command` in the background without touching the terminal.
 ///
@@ -46,10 +46,7 @@ pub(super) fn run_background(command: &str) -> Result<(), String> {
 /// `ESC[6n` cursor query that busy-spins forever on macOS. A fresh
 /// `Terminal` has empty buffers, so the next `draw` repaints every cell,
 /// identical to the startup path.
-pub(super) fn run_foreground(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    command: &str,
-) -> Result<(), String> {
+pub(super) fn run_foreground(terminal: &mut BrowseTerminal, command: &str) -> Result<(), String> {
     leave_tui()?;
     let status = Command::new("sh")
         .arg("-c")
@@ -61,7 +58,7 @@ pub(super) fn run_foreground(
     enter_tui()?;
     // Recreate the terminal so the next draw repaints every cell without
     // the cursor-query hang of `Terminal::clear()`.
-    *terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
+    *terminal = Terminal::new(buffered_backend())
         .map_err(|err| format!("failed to restore screen: {err}"))?;
     status.map_err(|err| format!("failed to run command: {err}"))?;
     Ok(())

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- TUI: More performance improvements when navigating between files
+
 ## [0.13.0] - 2026-10-02
 
 ### Added

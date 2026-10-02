@@ -491,11 +491,20 @@ pub enum LineEmphasis {
 ///
 /// Takes minus lines and plus lines (without the leading `-`/`+` prefix).
 /// Returns emphasis info for each minus line and each plus line, in order.
-#[allow(clippy::mut_range_bound)] // plus_cursor mutation is for next outer-loop iteration
 pub fn compute_subhunk_emphasis(
     minus_lines: &[&str],
     plus_lines: &[&str],
 ) -> (Vec<LineEmphasis>, Vec<LineEmphasis>) {
+    compute_subhunk_emphasis_while(minus_lines, plus_lines, &|| true)
+        .expect("uninterrupted emphasis")
+}
+
+#[allow(clippy::mut_range_bound)] // plus_cursor mutation is for next outer-loop iteration
+pub(crate) fn compute_subhunk_emphasis_while(
+    minus_lines: &[&str],
+    plus_lines: &[&str],
+    keep_going: &impl Fn() -> bool,
+) -> Option<(Vec<LineEmphasis>, Vec<LineEmphasis>)> {
     let mut minus_emphasis: Vec<LineEmphasis> = vec![LineEmphasis::Plain; minus_lines.len()];
     let mut plus_emphasis: Vec<LineEmphasis> = vec![LineEmphasis::Plain; plus_lines.len()];
 
@@ -505,6 +514,9 @@ pub fn compute_subhunk_emphasis(
     for (mi, minus_line) in minus_lines.iter().enumerate() {
         let mut found = false;
         for pi in plus_cursor..plus_lines.len() {
+            if !keep_going() {
+                return None;
+            }
             let result = annotate(minus_line, plus_lines[pi]);
             if result.distance <= MAX_LINE_DISTANCE {
                 // Accept this pair.
@@ -520,7 +532,7 @@ pub fn compute_subhunk_emphasis(
         }
     }
 
-    (minus_emphasis, plus_emphasis)
+    Some((minus_emphasis, plus_emphasis))
 }
 
 fn sections_to_emphasis(sections: &[AnnotatedSection]) -> LineEmphasis {

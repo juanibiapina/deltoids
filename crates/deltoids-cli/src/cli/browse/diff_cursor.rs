@@ -109,6 +109,14 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
+    pub(super) fn place(&self) -> Option<&LinePlace> {
+        self.place.as_ref()
+    }
+
+    pub(super) fn file(&self) -> Option<&str> {
+        self.place.as_ref().map(|place| place.file.as_str())
+    }
+
     /// Record the line the cursor now sits on. Every move ends here, so a
     /// pane can never forget to keep the two in step.
     fn sync_place(&mut self, rows: &[DiffRow]) {

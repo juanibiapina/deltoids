@@ -20,6 +20,18 @@ use crate::cli::browse::comments::CommentStore;
 use super::model::{Model, ResolvedFile, body_deltas, precompute_bodies};
 use super::{FilesMode, Focus, InputState};
 
+pub(super) fn wait_for_render(diff: &mut DiffPane) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while diff.cache.pending() {
+        diff.cache.collect();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "render did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 pub(super) fn theme() -> Theme {
     Theme::default()
 }

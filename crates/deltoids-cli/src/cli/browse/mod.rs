@@ -97,6 +97,15 @@ const MAX_WATCH_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// short so the first idle frame after release lands quickly and rebuilds
 /// any diff deferred during the hold.
 const SETTLE_TIMEOUT: Duration = Duration::from_millis(80);
+const RENDER_POLL_TIMEOUT: Duration = Duration::from_millis(8);
+
+type BrowseTerminal = Terminal<CrosstermBackend<io::BufWriter<io::Stdout>>>;
+
+fn buffered_backend() -> CrosstermBackend<io::BufWriter<io::Stdout>> {
+    // Ratatui flushes after each frame. Buffer ANSI fragments so drawing does
+    // not block input on hundreds of small writes to the terminal.
+    CrosstermBackend::new(io::BufWriter::with_capacity(128 * 1024, io::stdout()))
+}
 
 /// Run the headless (non-TTY) scripted render path for Traces mode.
 pub fn run_traces_scripted() -> Result<(), String> {
@@ -108,7 +117,7 @@ pub fn run_traces_scripted() -> Result<(), String> {
 pub fn run(active_mode: usize) -> Result<(), String> {
     let mut theme = Theme::load();
     let _session = TerminalSession::enter()?;
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = buffered_backend();
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("failed to create screen: {err}"))?;
 
@@ -151,6 +160,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         }
         shell.drain_watchers(&mut modes);
         shell.reload_active_if_due(&mut modes, vp, &theme)?;
+        shell.poll_background(&mut modes);
 
         if shell.needs_redraw() {
             vp = draw_frame(&mut terminal, &mut modes, &mut shell, &theme)?;
@@ -160,7 +170,16 @@ pub fn run(active_mode: usize) -> Result<(), String> {
             }
         }
 
-        let burst = read_event_burst(shell.poll_timeout())?;
+        let pending = shell.poll_background(&mut modes);
+        if shell.needs_redraw() {
+            continue;
+        }
+        let timeout = if pending {
+            shell.poll_timeout().min(RENDER_POLL_TIMEOUT)
+        } else {
+            shell.poll_timeout()
+        };
+        let burst = read_event_burst(timeout)?;
         shell.note_input(burst.is_empty());
         let cmd = shell.apply_events(&mut modes, burst, vp, &theme)?;
         if apply_app_command(cmd, &mut terminal, &mut modes, &mut shell, &mut theme) {
@@ -168,11 +187,13 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         }
     }
 
+    // Restore the user's terminal before watcher teardown finishes.
+    drop(_session);
     Ok(())
 }
 
 fn draw_frame(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut BrowseTerminal,
     modes: &mut [Box<dyn Mode>; MODE_COUNT],
     shell: &mut Shell,
     theme: &Theme,
@@ -254,7 +275,7 @@ fn draw_frame(
 /// theme switch needs the shared [`Theme`] and the shell's force-full flag.
 fn apply_app_command(
     cmd: AppCommand,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut BrowseTerminal,
     modes: &mut [Box<dyn Mode>; MODE_COUNT],
     shell: &mut Shell,
     theme: &mut Theme,
@@ -391,6 +412,19 @@ impl Shell {
 
     fn needs_redraw(&self) -> bool {
         self.interactive() && self.repaint
+    }
+
+    fn poll_background(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT]) -> bool {
+        let mut pending = false;
+        for (index, mode) in modes.iter_mut().enumerate() {
+            let active = self.interactive() && index == self.active && self.built[index];
+            let work = mode.background(active);
+            if active {
+                self.repaint |= work.changed;
+                pending |= work.pending;
+            }
+        }
+        pending
     }
 
     fn resume(&mut self) {

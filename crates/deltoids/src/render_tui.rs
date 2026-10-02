@@ -43,7 +43,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::config::{SyntaxAssets, Theme};
 use crate::highlight::HunkHighlighter;
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader};
-use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
+use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis_while};
 use crate::symlink::SymlinkView;
 use crate::{ChangeLayout, Hunk, HunkRun, LineKind, arrange_change};
 
@@ -204,6 +204,43 @@ pub fn render_hunk_rows(
     layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<HunkRow> {
+    render_hunk_rows_while(hunk, highlight, width, layout, theme, &|| true)
+        .expect("uninterrupted hunk render")
+}
+
+/// Render a hunk while `keep_going` is true. Cancellation discards its rows.
+/// Checks occur between source lines and intraline pair comparisons.
+pub fn render_hunk_rows_while(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+    keep_going: &impl Fn() -> bool,
+) -> Option<Vec<HunkRow>> {
+    render_hunk_rows_with_preview(hunk, highlight, width, layout, theme, keep_going, None)
+}
+
+/// Number of rows published in the first render preview.
+pub const PREVIEW_ROWS: usize = 64;
+
+/// Receives a hunk preview while rendering continues.
+pub type HunkPreview<'a> = &'a mut dyn FnMut(&[HunkRow]);
+
+/// Render a hunk and optionally publish its first [`PREVIEW_ROWS`] rows once.
+/// Preview rows use the same highlighting and line identities as the final rows.
+pub fn render_hunk_rows_with_preview(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+    keep_going: &impl Fn() -> bool,
+    preview: Option<HunkPreview<'_>>,
+) -> Option<Vec<HunkRow>> {
+    if !keep_going() {
+        return None;
+    }
     let mut output = Vec::new();
     match HunkHeader::plan(hunk, width) {
         HunkHeader::LineNumber { line_num } => {
@@ -221,8 +258,19 @@ pub fn render_hunk_rows(
             );
         }
     }
-    output.extend(render_hunk_body_rows(hunk, highlight, width, layout, theme));
-    output
+    let mut preview = Preview::new(&output, preview);
+    output.extend(render_hunk_body_into(
+        hunk,
+        highlight,
+        RenderSettings {
+            width,
+            layout,
+            theme,
+        },
+        keep_going,
+        &mut preview,
+    )?);
+    Some(output)
 }
 
 /// Render only a hunk's diff body (context lines + intraline-emphasised
@@ -253,6 +301,99 @@ pub fn render_hunk_body_rows(
     layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<HunkRow> {
+    render_hunk_body_rows_while(hunk, highlight, width, layout, theme, &|| true)
+        .expect("uninterrupted hunk body render")
+}
+
+/// Render a body while `keep_going` is true, discarding cancelled work.
+pub fn render_hunk_body_rows_while(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+    keep_going: &impl Fn() -> bool,
+) -> Option<Vec<HunkRow>> {
+    render_hunk_body_rows_with_preview(hunk, highlight, width, layout, theme, keep_going, None)
+}
+
+/// Render a body and optionally publish its first [`PREVIEW_ROWS`] rows once.
+pub fn render_hunk_body_rows_with_preview(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    width: usize,
+    layout: ChangeLayout,
+    theme: &Theme,
+    keep_going: &impl Fn() -> bool,
+    preview: Option<HunkPreview<'_>>,
+) -> Option<Vec<HunkRow>> {
+    render_hunk_body_into(
+        hunk,
+        highlight,
+        RenderSettings {
+            width,
+            layout,
+            theme,
+        },
+        keep_going,
+        &mut Preview::new(&[], preview),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct RenderSettings<'a> {
+    width: usize,
+    layout: ChangeLayout,
+    theme: &'a Theme,
+}
+
+struct Preview<'a> {
+    header: Vec<HunkRow>,
+    callback: Option<HunkPreview<'a>>,
+    published: bool,
+}
+
+impl<'a> Preview<'a> {
+    fn new(header: &[HunkRow], callback: Option<HunkPreview<'a>>) -> Self {
+        let published = callback.is_none();
+        Self {
+            header: if published {
+                Vec::new()
+            } else {
+                header.to_vec()
+            },
+            callback,
+            published,
+        }
+    }
+
+    fn publish(&mut self, prefix: &[HunkRow], rows: &[HunkRow]) {
+        if self.published || self.header.len() + prefix.len() + rows.len() < PREVIEW_ROWS {
+            return;
+        }
+        self.published = true;
+        if let Some(callback) = &mut self.callback {
+            let preview: Vec<_> = self
+                .header
+                .iter()
+                .chain(prefix)
+                .chain(rows)
+                .take(PREVIEW_ROWS)
+                .cloned()
+                .collect();
+            callback(&preview);
+        }
+    }
+}
+
+fn render_hunk_body_into(
+    hunk: &Hunk,
+    highlight: Option<&str>,
+    settings: RenderSettings<'_>,
+    keep_going: &impl Fn() -> bool,
+    preview: &mut Preview<'_>,
+) -> Option<Vec<HunkRow>> {
+    let RenderSettings { width, theme, .. } = settings;
     let mut output = Vec::new();
     let mut highlighter = HunkHighlighter::new(
         highlight,
@@ -261,6 +402,9 @@ pub fn render_hunk_body_rows(
     let mut source_line = 0usize;
 
     for run in hunk.runs() {
+        if !keep_going() {
+            return None;
+        }
         match run {
             HunkRun::Context(line) => {
                 let ranges = highlighter.context(&line.content);
@@ -269,21 +413,22 @@ pub fn render_hunk_body_rows(
                 source_line += 1;
             }
             HunkRun::Change(slice) => {
-                render_subhunk(
+                output.extend(render_subhunk(
                     slice,
                     source_line,
                     &mut highlighter,
-                    width,
-                    layout,
-                    theme,
-                    &mut output,
-                );
+                    settings,
+                    keep_going,
+                    preview,
+                    &output,
+                )?);
                 source_line += slice.len();
             }
         }
+        preview.publish(&[], &output);
     }
 
-    output
+    Some(output)
 }
 
 /// Render a blank-separated list of hunks as the diff body.
@@ -397,11 +542,17 @@ fn render_subhunk(
     lines: &[crate::DiffLine],
     first_source_line: usize,
     highlighter: &mut HunkHighlighter,
-    width: usize,
-    layout: ChangeLayout,
-    theme: &Theme,
-    rendered: &mut Vec<HunkRow>,
-) {
+    settings: RenderSettings<'_>,
+    keep_going: &impl Fn() -> bool,
+    preview: &mut Preview<'_>,
+    prefix: &[HunkRow],
+) -> Option<Vec<HunkRow>> {
+    let RenderSettings {
+        width,
+        layout,
+        theme,
+    } = settings;
+    let mut rendered = Vec::new();
     let minus_contents: Vec<&str> = lines
         .iter()
         .filter(|l| l.kind == LineKind::Removed)
@@ -413,7 +564,8 @@ fn render_subhunk(
         .map(|l| l.content.as_str())
         .collect();
 
-    let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_contents, &plus_contents);
+    let (minus_emphasis, plus_emphasis) =
+        compute_subhunk_emphasis_while(&minus_contents, &plus_contents, keep_going)?;
 
     // Bind each line to its emphasis in stored order, then reorder for the
     // chosen layout. Binding before the reorder keeps emphasis aligned with
@@ -454,6 +606,9 @@ fn render_subhunk(
     for &(line, emphasis, source_line) in
         arrange_change(&annotated, |(l, _, _)| l.kind.clone(), layout)
     {
+        if !keep_going() {
+            return None;
+        }
         match line.kind {
             LineKind::Removed => {
                 let ranges = highlighter.removed(&line.content);
@@ -465,7 +620,7 @@ fn render_subhunk(
                     width,
                     theme,
                 );
-                push_source_rows(rendered, emitted, source_line);
+                push_source_rows(&mut rendered, emitted, source_line);
             }
             LineKind::Added => {
                 let ranges = highlighter.added(&line.content);
@@ -477,11 +632,13 @@ fn render_subhunk(
                     width,
                     theme,
                 );
-                push_source_rows(rendered, emitted, source_line);
+                push_source_rows(&mut rendered, emitted, source_line);
             }
             LineKind::Context => {}
         }
+        preview.publish(prefix, &rendered);
     }
+    Some(rendered)
 }
 
 /// Render a single diff line with emphasis information.
@@ -1070,6 +1227,107 @@ pub fn render_pane_scrollbar(
 mod tests {
     use super::*;
     use crate::{Diff, DiffLine, Language, ScopeNode};
+
+    #[test]
+    fn a_preview_matches_final_rows_and_can_arrive_before_rendering_stops() {
+        use std::cell::Cell;
+        let original = (0..250)
+            .map(|line| format!("let value_{line} = \"old 雪\";\n"))
+            .collect::<String>();
+        let updated = original.replace("old", "new");
+        let diff = crate::Diff::compute(&original, &updated, "a.rs");
+        let hunk = &diff.hunks()[0];
+        let project = |rows: &[HunkRow]| {
+            rows.iter()
+                .map(|row| {
+                    (
+                        row.line.clone(),
+                        row.source_line,
+                        row.first_row,
+                        row.last_row,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for layout in [
+            ChangeLayout::Grouped,
+            ChangeLayout::Interleaved {
+                group: std::num::NonZeroUsize::new(1).unwrap(),
+            },
+        ] {
+            let mut preview = Vec::new();
+            let complete = render_hunk_rows_with_preview(
+                hunk,
+                diff.highlight(),
+                12,
+                layout,
+                &Theme::default(),
+                &|| true,
+                Some(&mut |rows| preview = project(rows)),
+            )
+            .unwrap();
+            assert_eq!(preview, project(&complete[..PREVIEW_ROWS]));
+            assert_eq!(
+                project(&complete),
+                project(&render_hunk_rows(
+                    hunk,
+                    diff.highlight(),
+                    12,
+                    layout,
+                    &Theme::default()
+                ))
+            );
+            let stopped = Cell::new(false);
+            let cancelled = render_hunk_rows_with_preview(
+                hunk,
+                diff.highlight(),
+                12,
+                layout,
+                &Theme::default(),
+                &|| !stopped.get(),
+                Some(&mut |_| stopped.set(true)),
+            );
+            assert!(stopped.get() && cancelled.is_none());
+        }
+    }
+
+    #[test]
+    fn rendering_can_stop_during_a_large_change_run() {
+        use std::cell::Cell;
+        let original = (0..200)
+            .map(|line| format!("let old_{line} = {line};\n"))
+            .collect::<String>();
+        let updated = (0..200)
+            .map(|line| format!("let new_{line} = {line};\n"))
+            .collect::<String>();
+        let diff = crate::Diff::compute(&original, &updated, "a.rs");
+        let checks = Cell::new(0);
+        let keep_going = || {
+            checks.set(checks.get() + 1);
+            checks.get() < 8
+        };
+        assert!(
+            render_hunk_rows_while(
+                &diff.hunks()[0],
+                diff.highlight(),
+                80,
+                ChangeLayout::Grouped,
+                &Theme::default(),
+                &keep_going,
+            )
+            .is_none()
+        );
+        assert!(
+            !render_hunk_rows(
+                &diff.hunks()[0],
+                diff.highlight(),
+                80,
+                ChangeLayout::Grouped,
+                &Theme::default(),
+            )
+            .is_empty()
+        );
+    }
 
     fn rust_function_hunk() -> Hunk {
         Hunk {

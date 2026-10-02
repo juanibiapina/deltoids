@@ -4,13 +4,10 @@
 //! the shell passes that selection range in as a plain value so this slice
 //! never reaches into the sidebar's fields.
 //!
-//! Rendering is lazy and budget-aware, mirroring Traces mode: only the
-//! files the current selection needs are highlighted, and highlighting is
-//! deferred while navigation input streams (`DrawBudget::Fast`), filling in
-//! and being retained once input settles (`Full`). The lazy unit is the
-//! *file*, keyed by input file index in [`DiffCache`].
+//! Rendering runs in a worker owned by [`DiffCache`]. A draw submits the
+//! selection and uses ready blocks or cheap placeholders. The assembled
+//! window survives cursor and focus changes; comments remain an overlay.
 
-use std::collections::HashMap;
 use std::ops::Range;
 
 use crossterm::event::KeyCode;
@@ -30,24 +27,14 @@ use crate::cli::browse::diff_cursor::{
     Cursor, DiffRow, LinePlace, Step, keep_visible, restore_cursor, select_row, step_cursor,
 };
 use crate::cli::browse::diff_scrollbar;
-use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
+use crate::cli::browse::mode::{DrawBudget, layout_label};
 use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
 use super::model::{FileBody, Model, ResolvedFile};
+use super::render::DiffCache;
 
 pub(super) const SCROLL_STEP_SMALL: usize = 1;
 pub(super) const SCROLL_STEP_LARGE: usize = 3;
-
-/// Retained store of rendered per-file diff blocks, keyed by *input* file
-/// index. Every retained block shares one `width`; a width change clears
-/// the store (mirroring Traces mode's `DiffCache`). Retaining rendered
-/// files makes revisiting a file instant instead of re-highlighting it on
-/// every selection change.
-#[derive(Debug, Default)]
-pub(super) struct DiffCache {
-    epoch: CacheEpoch,
-    rows: HashMap<usize, Vec<DiffRow>>,
-}
 
 /// The identity every retained block shares: its render `width`, the
 /// active change `layout`, and the selected `syntax_theme` (a `&'static`
@@ -60,43 +47,6 @@ pub(super) struct CacheEpoch {
     pub(super) syntax_theme: &'static str,
 }
 
-impl DiffCache {
-    /// Rendered rows for file `key` at `epoch`, or `None` on an epoch
-    /// mismatch or a miss.
-    fn get(&self, epoch: CacheEpoch, key: usize) -> Option<&Vec<DiffRow>> {
-        if self.epoch != epoch {
-            return None;
-        }
-        self.rows.get(&key)
-    }
-
-    /// Whether file `key` is already rendered at `epoch`.
-    pub(super) fn contains(&self, epoch: CacheEpoch, key: usize) -> bool {
-        self.epoch == epoch && self.rows.contains_key(&key)
-    }
-
-    /// Store rendered `rows` for file `key`. A width or layout change
-    /// clears the store first so every retained block shares one epoch.
-    fn insert(&mut self, epoch: CacheEpoch, key: usize, rows: Vec<DiffRow>) {
-        if self.epoch != epoch {
-            self.rows.clear();
-            self.epoch = epoch;
-        }
-        self.rows.insert(key, rows);
-    }
-
-    /// Drop all retained blocks (used on reload, when disk data changed).
-    pub(super) fn clear(&mut self) {
-        self.rows.clear();
-    }
-
-    /// Whether the store holds no retained blocks.
-    #[cfg(test)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-}
-
 /// Render one file's block: file header, an optional rename header, then
 /// the body — either each hunk (blank-separated) for a text diff, or the
 /// symlink view for a symlink change. The text-diff path carries the
@@ -105,50 +55,47 @@ impl DiffCache {
 /// Every row of a diff line is tagged with the [`CommentAnchor`] it
 /// belongs to; saved comments are spliced in later by
 /// [`crate::cli::browse::comment_view::with_comments`].
-fn render_file_block(
-    resolved: &ResolvedFile,
+pub(super) fn render_file_block(
+    file: &FileDiff,
     body: &FileBody,
     width: usize,
     layout: ChangeLayout,
     theme: &Theme,
-) -> Vec<DiffRow> {
-    let path = display_path(&resolved.file);
+    keep_going: &impl Fn() -> bool,
+    publish: &mut dyn FnMut(Vec<DiffRow>),
+) -> Option<Vec<DiffRow>> {
+    let mut render = FileRender {
+        width,
+        layout,
+        theme,
+        keep_going,
+        preview: FilePreview {
+            publish,
+            published: false,
+        },
+    };
+    let path = display_path(file);
     let mut rows: Vec<DiffRow> = render_tui::render_file_header(path, width, theme)
         .into_iter()
         .map(DiffRow::plain)
         .collect();
 
-    if let Some(old_path) = &resolved.file.rename_from {
+    if let Some(old_path) = &file.rename_from {
         rows.push(DiffRow::plain(render_tui::render_rename_header(
             old_path,
-            &resolved.file.new_path,
+            &file.new_path,
             theme,
         )));
     }
     // A type change renders as a content diff, but its note box stands in
     // for the per-hunk line-number box: render the note box, then the hunk
     // bodies without their own boxes (avoiding a second, redundant box).
-    if let Some(note) = typechange_note(&resolved.file, theme) {
+    if let Some(note) = typechange_note(file, theme) {
         rows.push(DiffRow::plain(Line::from("")));
         rows.extend(note.into_iter().map(DiffRow::plain));
         match body {
             FileBody::Diff(diff) => {
-                for (index, hunk) in diff.hunks().iter().enumerate() {
-                    rows.push(DiffRow::plain(Line::from("")));
-                    push_hunk_rows(
-                        &mut rows,
-                        render_tui::render_hunk_body_rows(
-                            hunk,
-                            diff.highlight(),
-                            width,
-                            layout,
-                            theme,
-                        ),
-                        hunk,
-                        (path, index),
-                        path,
-                    );
-                }
+                render.hunks(&mut rows, diff, path, false)?;
             }
             // A type change *into* a submodule (regular → submodule) has no
             // textual body; render the placeholder below the note box so the
@@ -166,22 +113,13 @@ fn render_file_block(
             }
             _ => {}
         }
-        return rows;
+        return Some(rows);
     }
 
     match body {
         // Mirrors `render_hunk_list`: a blank separator before each hunk.
         FileBody::Diff(diff) => {
-            for (index, hunk) in diff.hunks().iter().enumerate() {
-                rows.push(DiffRow::plain(Line::from("")));
-                push_hunk_rows(
-                    &mut rows,
-                    render_tui::render_hunk_rows(hunk, diff.highlight(), width, layout, theme),
-                    hunk,
-                    (path, index),
-                    path,
-                );
-            }
+            render.hunks(&mut rows, diff, path, true)?;
         }
         FileBody::Symlink(view) => {
             rows.push(DiffRow::plain(Line::from("")));
@@ -211,7 +149,99 @@ fn render_file_block(
         }
     }
 
-    rows
+    Some(rows)
+}
+
+struct FileRender<'a> {
+    width: usize,
+    layout: ChangeLayout,
+    theme: &'a Theme,
+    keep_going: &'a dyn Fn() -> bool,
+    preview: FilePreview<'a>,
+}
+
+impl FileRender<'_> {
+    fn hunks(
+        &mut self,
+        rows: &mut Vec<DiffRow>,
+        diff: &deltoids::Diff,
+        path: &str,
+        header: bool,
+    ) -> Option<()> {
+        let keep = self.keep_going;
+        let keep_going = || keep();
+        for (index, hunk) in diff.hunks().iter().enumerate() {
+            rows.push(DiffRow::plain(Line::from("")));
+            let enabled = !self.preview.published;
+            let mut publish_hunk = |partial: &[render_tui::HunkRow]| {
+                self.preview.hunk(rows, hunk, index, path, partial)
+            };
+            let callback = if enabled {
+                Some(&mut publish_hunk as render_tui::HunkPreview<'_>)
+            } else {
+                None
+            };
+            let rendered = if header {
+                render_tui::render_hunk_rows_with_preview(
+                    hunk,
+                    diff.highlight(),
+                    self.width,
+                    self.layout,
+                    self.theme,
+                    &keep_going,
+                    callback,
+                )
+            } else {
+                render_tui::render_hunk_body_rows_with_preview(
+                    hunk,
+                    diff.highlight(),
+                    self.width,
+                    self.layout,
+                    self.theme,
+                    &keep_going,
+                    callback,
+                )
+            }?;
+            push_hunk_rows(rows, rendered, hunk, (path, index), path);
+            self.preview.rows(rows);
+        }
+        Some(())
+    }
+}
+
+struct FilePreview<'a> {
+    publish: &'a mut dyn FnMut(Vec<DiffRow>),
+    published: bool,
+}
+
+impl FilePreview<'_> {
+    fn rows(&mut self, rows: &[DiffRow]) {
+        if self.published || rows.len() < render_tui::PREVIEW_ROWS {
+            return;
+        }
+        self.published = true;
+        (self.publish)(rows[..render_tui::PREVIEW_ROWS].to_vec());
+    }
+
+    fn hunk(
+        &mut self,
+        prefix: &[DiffRow],
+        hunk: &Hunk,
+        index: usize,
+        path: &str,
+        partial: &[render_tui::HunkRow],
+    ) {
+        if self.published {
+            return;
+        }
+        let mut rows: Vec<_> = prefix
+            .iter()
+            .take(render_tui::PREVIEW_ROWS)
+            .cloned()
+            .collect();
+        push_hunk_rows(&mut rows, partial.to_vec(), hunk, (path, index), path);
+        self.rows(&rows);
+    }
 }
 
 /// The text of the diff line `anchor` points at, as the working tree has
@@ -232,8 +262,9 @@ fn line_content<'a>(model: &'a Model, anchor: &CommentAnchor) -> Option<&'a str>
 }
 
 /// The comment anchor for every logical line of `hunk`, in line order.
-fn hunk_anchors(hunk: &Hunk, path: &str) -> Vec<CommentAnchor> {
+fn hunk_anchors(hunk: &Hunk, path: &str, limit: usize) -> Vec<CommentAnchor> {
     hunk_lines(hunk)
+        .take(limit)
         .map(|line| CommentAnchor {
             scope: CommentScope::WorkingTree,
             path: path.to_string(),
@@ -256,7 +287,12 @@ fn push_hunk_rows(
     path: &str,
 ) {
     let (file, hunk_index) = place;
-    let anchors = hunk_anchors(hunk, path);
+    let limit = rendered
+        .iter()
+        .filter_map(|row| row.source_line)
+        .max()
+        .map_or(0, |index| index + 1);
+    let anchors = hunk_anchors(hunk, path, limit);
     for row in rendered {
         let Some(index) = row.source_line else {
             rows.push(DiffRow::plain(row.line));
@@ -367,6 +403,14 @@ fn placeholder_file_block(
 /// diff (a repo was found but the initial build lost a race); a build
 /// error is the error message, painted top-aligned and wrapped so
 /// multi-line text (a message plus a `hint:` line) is fully visible.
+#[derive(PartialEq, Eq)]
+struct WindowKey {
+    range: Option<Range<usize>>,
+    epoch: CacheEpoch,
+    blocks: u64,
+    comments: u64,
+}
+
 enum EmptyPane {
     NoChanges,
     Loading,
@@ -386,9 +430,12 @@ pub(super) struct DiffPane {
     /// The diff cursor's row and the pane's scroll offset, both relative
     /// to the top of the current selection's assembled window.
     pub(super) cursor: Cursor,
+    cursor_ready: bool,
     /// The last-assembled window. Retained so key handling between draws
     /// works against exactly the rows on screen.
     window: Vec<DiffRow>,
+    window_key: Option<WindowKey>,
+    file_starts: Vec<(usize, usize)>,
     /// Set by a reload: the next render scrolls the restored cursor back
     /// into view. Ordinary scrolling deliberately leaves the cursor
     /// behind, so this is only armed when the window was rebuilt under
@@ -407,7 +454,10 @@ impl DiffPane {
             display_order,
             cached_width: width,
             cursor: Cursor::default(),
+            cursor_ready: true,
             window: Vec::new(),
+            window_key: None,
+            file_starts: Vec::new(),
             reveal_cursor: false,
             current_layout: ChangeLayout::Grouped,
             empty_state: EmptyPane::NoChanges,
@@ -433,10 +483,10 @@ impl DiffPane {
     }
 
     /// Assemble the selected window's file blocks into one line vector and
-    /// record its length in `window_rows`. Files the window needs are
-    /// highlighted and retained on a `Full` frame; on a `Fast` frame an
-    /// uncached file contributes a cheap placeholder block instead (and is
-    /// not cached). `display_range` is the sidebar's selection range in
+    /// record its length in `window_rows`. Missing blocks render outside
+    /// the UI thread and contribute placeholders until ready. Reuse the
+    /// assembled window while its rows stay unchanged. `display_range` is
+    /// the sidebar's selection range in
     /// display order: a single file, a directory subtree, or `None`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble_window(
@@ -446,37 +496,117 @@ impl DiffPane {
         width: usize,
         layout: ChangeLayout,
         theme: &Theme,
-        budget: DrawBudget,
+        _budget: DrawBudget,
         comments: &CommentStore,
     ) {
         self.current_layout = layout;
+        let mut key = WindowKey {
+            range: display_range.clone(),
+            epoch: CacheEpoch {
+                width,
+                layout,
+                syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
+            },
+            blocks: self.cache.revision,
+            comments: comments.revision(),
+        };
+        let same_selection = self
+            .window_key
+            .as_ref()
+            .is_some_and(|old| old.range == key.range);
+        let old_top = same_selection
+            .then(|| {
+                self.file_starts
+                    .iter()
+                    .rev()
+                    .find(|(_, start)| *start <= self.cursor.scroll)
+                    .map(|(file, start)| (*file, self.cursor.scroll - start))
+            })
+            .flatten();
+        self.cache.request(
+            key.epoch,
+            model,
+            &self.display_order,
+            display_range.clone(),
+            old_top.map(|(file, _)| file),
+            theme,
+        );
+        if same_selection
+            && self
+                .window_key
+                .as_ref()
+                .is_some_and(|old| old.epoch != key.epoch)
+            && self.window.iter().any(DiffRow::is_selectable)
+            && key.range.as_ref().is_some_and(|range| {
+                range
+                    .clone()
+                    .any(|pos| !self.cache.complete(key.epoch, self.display_order[pos]))
+            })
+        {
+            return;
+        }
+        if self.window_key.as_ref() == Some(&key) {
+            return;
+        }
         let Some(range) = display_range else {
-            self.set_window(Vec::new());
+            self.set_window(Vec::new(), false);
             return;
         };
         if range.is_empty() || self.display_order.is_empty() {
-            self.set_window(Vec::new());
+            self.set_window(Vec::new(), false);
             return;
         }
 
         let mut window = Vec::new();
+        let mut starts = Vec::new();
         for (i, pos) in range.clone().enumerate() {
             let input_idx = self.display_order[pos];
             if i > 0 {
                 window.push(DiffRow::plain(Line::from("")));
             }
-            window
-                .extend(self.file_block(input_idx, model, width, layout, theme, budget, comments));
+            starts.push((input_idx, window.len()));
+            window.extend(self.file_block(input_idx, model, key.epoch, theme, comments));
         }
-        self.set_window(window);
+        if let Some((file, offset)) = old_top
+            && let Some((_, start)) = starts.iter().find(|(index, _)| *index == file)
+        {
+            self.cursor.scroll = start + offset;
+        }
+        self.reveal_cursor |= same_selection
+            && self
+                .window_key
+                .as_ref()
+                .is_some_and(|old| old.epoch != key.epoch);
+        self.file_starts = starts;
+        let cursor_present = self
+            .cursor
+            .place()
+            .is_none_or(|place| window.iter().any(|row| row.place.as_ref() == Some(place)));
+        let cursor_ready = cursor_present
+            || self
+                .cursor
+                .file()
+                .and_then(|path| {
+                    model
+                        .files
+                        .iter()
+                        .position(|file| display_path(&file.file) == path)
+                })
+                .is_none_or(|index| self.cache.complete(key.epoch, index));
+        self.set_window(window, cursor_ready);
+        key.blocks = self.cache.revision;
+        self.window_key = Some(key);
     }
 
     /// Adopt a freshly-assembled window and put the cursor back on the
     /// diff line it was on, falling back to the nearest line to its old
     /// row when that line is gone.
-    fn set_window(&mut self, window: Vec<DiffRow>) {
+    fn set_window(&mut self, window: Vec<DiffRow>, cursor_ready: bool) {
         self.window = window;
-        restore_cursor(&self.window, &mut self.cursor);
+        self.cursor_ready = cursor_ready;
+        if cursor_ready && self.window.iter().any(DiffRow::is_selectable) {
+            restore_cursor(&self.window, &mut self.cursor);
+        }
     }
 
     /// Row count of the last-assembled window.
@@ -487,6 +617,8 @@ impl DiffPane {
     /// Drop the assembled window (a reload invalidates every row).
     pub(super) fn reset_window(&mut self) {
         self.window.clear();
+        self.file_starts.clear();
+        self.window_key = None;
     }
 
     /// The rows currently on screen.
@@ -497,53 +629,28 @@ impl DiffPane {
 
     /// The diff line under the cursor, when it sits on one.
     pub(super) fn cursor_anchor(&self) -> Option<&CommentAnchor> {
+        if !self.cursor_ready {
+            return None;
+        }
         self.window.get(self.cursor.row)?.anchor.as_ref()
     }
 
     /// One file's block for the current frame: the retained highlighted
-    /// lines when cached; a fresh highlight (retained) when the budget
-    /// allows building; otherwise a cheap placeholder.
-    #[allow(clippy::too_many_arguments)]
+    /// lines when ready; otherwise a cheap placeholder.
     fn file_block(
-        &mut self,
+        &self,
         input_idx: usize,
         model: &Model,
-        width: usize,
-        layout: ChangeLayout,
+        epoch: CacheEpoch,
         theme: &Theme,
-        budget: DrawBudget,
         comments: &CommentStore,
     ) -> Vec<DiffRow> {
-        let epoch = CacheEpoch {
-            width,
-            layout,
-            syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
-        };
-        let cached = self.cache.contains(epoch, input_idx);
-        if should_build_body(budget, cached) {
-            if !cached {
-                let rows = render_file_block(
-                    &model.files[input_idx],
-                    &model.bodies[input_idx],
-                    width,
-                    layout,
-                    theme,
-                );
-                self.cache.insert(epoch, input_idx, rows);
-            }
-            let cached = self
-                .cache
-                .get(epoch, input_idx)
-                .cloned()
-                .unwrap_or_default();
-            // Comments are drawn over the retained render, never into it.
-            with_comments(&cached, comments, width, theme, |anchor, comment| {
-                // A note the working tree has moved past no longer
-                // describes the line it points at.
+        if let Some(rows) = self.cache.get(epoch, input_idx) {
+            with_comments(rows, comments, epoch.width, theme, |anchor, comment| {
                 line_content(model, anchor).is_some_and(|content| content != comment.code)
             })
         } else {
-            placeholder_file_block(&model.files[input_idx], width, theme)
+            placeholder_file_block(&model.files[input_idx], epoch.width, theme)
                 .into_iter()
                 .map(DiffRow::plain)
                 .collect()
@@ -565,12 +672,14 @@ impl DiffPane {
     /// Move the diff cursor one diff line, keeping it in view.
     pub(super) fn step_cursor(&mut self, step: Step, viewport: usize) {
         step_cursor(&self.window, step, viewport, &mut self.cursor);
+        self.cursor_ready = true;
     }
 
     /// Put the cursor on `row` when that row starts a diff line. Used by
     /// a click in the pane.
     pub(super) fn select_row(&mut self, row: usize) {
         select_row(&self.window, row, &mut self.cursor);
+        self.cursor_ready = true;
     }
 
     fn scroll_to_top(&mut self) {
@@ -587,6 +696,7 @@ impl DiffPane {
     /// window's first diff line.
     pub(super) fn snap_to_top(&mut self) {
         self.cursor = Cursor::default();
+        self.window_key = None;
         self.reveal_cursor = false;
     }
 
@@ -674,7 +784,13 @@ impl DiffPane {
         let inner = diff_scrollbar::body_area(area);
         let viewport = inner.height as usize;
 
-        if std::mem::take(&mut self.reveal_cursor) {
+        if self.cursor_ready
+            && self
+                .window
+                .get(self.cursor.row)
+                .is_some_and(DiffRow::is_selectable)
+            && std::mem::take(&mut self.reveal_cursor)
+        {
             keep_visible(&mut self.cursor, viewport.max(1));
         }
         let scroll = self.cursor.scroll.min(self.max_scroll(viewport));
@@ -688,7 +804,11 @@ impl DiffPane {
             .iter()
             .enumerate()
             .map(|(offset, row)| {
-                if focused && scroll + offset == self.cursor.row && row.is_selectable() {
+                if focused
+                    && self.cursor_ready
+                    && scroll + offset == self.cursor.row
+                    && row.is_selectable()
+                {
                     highlight_row(row.line.clone(), width, cursor_bg)
                 } else {
                     row.line.clone()
@@ -720,8 +840,13 @@ impl DiffPane {
         }
         let pos = self.cursor.scroll.min(span.saturating_sub(1)) + 1;
         let layout = layout_label(self.current_layout);
+        let progress = if self.cache.visible_pending() {
+            "  ·  Rendering…"
+        } else {
+            ""
+        };
         Some(format!(
-            " line {pos} of {span}  \u{00b7}  {layout}  \u{00b7}  ? help "
+            " line {pos} of {span}{progress}  \u{00b7}  {layout}  \u{00b7}  ? help "
         ))
     }
 }
@@ -836,6 +961,17 @@ mod tests {
         ] {
             let theme = Theme::for_mode(mode);
             let mut terminal = Terminal::new(TestBackend::new(60, 40)).unwrap();
+            state.ensure_width(27);
+            state.diff.assemble_window(
+                state.sidebar.selection_display_range(),
+                &state.model,
+                27,
+                layout,
+                &theme,
+                DrawBudget::Fast,
+                &state.comments,
+            );
+            wait_for_render(&mut state.diff);
             terminal
                 .draw(|frame| {
                     state.draw(
@@ -1183,18 +1319,18 @@ mod tests {
     }
 
     #[test]
-    fn assemble_window_full_frame_builds_and_retains() {
+    fn completed_render_is_retained() {
         let resolved = vec![resolved("a.txt")];
         let mut state = make_state(&resolved);
         assert!(state.diff.cache.is_empty());
 
-        // A Full frame highlights the selected file and retains it.
+        // The test helper waits for completion before reading retained rows.
         let _ = state.visible_diff_window(DrawBudget::Full);
         assert!(state.diff.cache.contains(grouped_epoch(80), 0));
     }
 
     #[test]
-    fn assemble_window_fast_frame_shows_placeholder_without_caching() {
+    fn fast_frame_starts_rendering_and_completion_is_usable_without_settling() {
         let resolved = vec![ResolvedFile {
             file: file_diff("a.txt"),
             before: "hello\n".to_string(),
@@ -1203,8 +1339,7 @@ mod tests {
         let mut state = make_state(&resolved);
         assert!(state.diff.cache.is_empty());
 
-        // A Fast frame on an uncached file shows the header placeholder and
-        // does not populate the cache.
+        // An uncached file submits work and immediately shows its header.
         let window = state.visible_diff_window(DrawBudget::Fast);
         let texts: Vec<String> = window.iter().map(line_text).collect();
         assert!(
@@ -1224,8 +1359,9 @@ mod tests {
             "Fast frame must not cache the file"
         );
 
-        // The settling Full frame renders and retains it.
-        let _ = state.visible_diff_window(DrawBudget::Full);
+        wait_for_render(&mut state.diff);
+        let ready = state.visible_diff_window(DrawBudget::Fast);
+        assert!(ready.iter().any(|line| line_text(line).contains("world")));
         assert!(state.diff.cache.contains(grouped_epoch(80), 0));
     }
 

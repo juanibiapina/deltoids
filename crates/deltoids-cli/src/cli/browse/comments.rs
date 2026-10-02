@@ -66,9 +66,14 @@ pub(super) struct Comment {
 #[derive(Debug, Default, Clone)]
 pub(super) struct CommentStore {
     comments: HashMap<CommentAnchor, Comment>,
+    revision: u64,
 }
 
 impl CommentStore {
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub(super) fn get(&self, anchor: &CommentAnchor) -> Option<&Comment> {
         self.comments.get(anchor)
     }
@@ -92,11 +97,14 @@ impl CommentStore {
             self.remove(&anchor);
         } else {
             self.comments.insert(anchor, Comment { note, code, kind });
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
     pub(super) fn remove(&mut self, anchor: &CommentAnchor) {
-        self.comments.remove(anchor);
+        if self.comments.remove(anchor).is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
 
     /// Drop every comment, returning how many were removed. Used by the
@@ -105,6 +113,9 @@ impl CommentStore {
     pub(super) fn clear(&mut self) -> usize {
         let count = self.comments.len();
         self.comments.clear();
+        if count > 0 {
+            self.revision = self.revision.wrapping_add(1);
+        }
         count
     }
 
@@ -260,6 +271,7 @@ pub(super) fn reanchor(store: &mut CommentStore, sections: &[PromptSection<'_>])
     for (from, to) in moves {
         if let Some(comment) = store.comments.remove(&from) {
             store.comments.insert(to, comment);
+            store.revision = store.revision.wrapping_add(1);
         }
     }
 }

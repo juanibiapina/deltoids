@@ -51,11 +51,14 @@ pub(super) enum FileBody {
 
 /// Parse `input`, resolve every file's before/after content against
 /// `repo`, and compute per-file [`Diff`]s.
-pub(super) fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model, String> {
+pub(super) fn build_model(
+    input: &str,
+    repo: Option<&git::Repo>,
+    stages: HashMap<String, StageStatus>,
+) -> Result<Model, String> {
     let parsed = GitDiff::parse(input);
     let files = resolve(parsed, repo)?;
     let bodies = precompute_bodies(&files);
-    let stages = stage_map(repo);
     Ok(Model {
         files,
         bodies,
@@ -63,16 +66,8 @@ pub(super) fn build_model(input: &str, repo: Option<&git::Repo>) -> Result<Model
     })
 }
 
-/// Query the repo's per-file staging status and index it by path for
-/// the sidebar join. Returns an empty map with no repo or on any git
-/// error (the sidebar then falls back to single-letter status).
-pub(super) fn stage_map(repo: Option<&git::Repo>) -> HashMap<String, StageStatus> {
-    let Some(repo) = repo else {
-        return HashMap::new();
-    };
-    let Ok(statuses) = repo.working_tree_status() else {
-        return HashMap::new();
-    };
+/// Index supplied staging records by path for the sidebar join.
+pub(super) fn stage_map(statuses: Vec<git::FileStageStatus>) -> HashMap<String, StageStatus> {
     statuses
         .into_iter()
         .map(|s| {
@@ -256,7 +251,7 @@ mod tests {
 
     #[test]
     fn build_model_empty_input_yields_no_files() {
-        let model = build_model("", None).expect("empty model");
+        let model = build_model("", None, HashMap::new()).expect("empty model");
         assert!(model.files.is_empty(), "expected zero files");
         assert!(model.bodies.is_empty(), "expected zero bodies");
     }
@@ -309,40 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn stage_map_joins_stage_status_by_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = init_repo(dir.path());
-        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        stage_all(&repo);
-        commit_index(&repo, "init");
-
-        // a.txt: unstaged modify. b.txt: staged add.
-        std::fs::write(dir.path().join("a.txt"), "world\n").unwrap();
-        std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
-        {
-            let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new("b.txt")).unwrap();
-            index.write().unwrap();
-        }
-
-        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
-        let stages = stage_map(Some(&wrapper));
-
-        let a = stages.get("a.txt").expect("a.txt staged entry");
-        assert_eq!(a.staged, None);
-        assert_eq!(a.unstaged, Some(ChangeKind::Modified));
-
-        let b = stages.get("b.txt").expect("b.txt staged entry");
-        assert_eq!(b.staged, Some(ChangeKind::Added));
-        assert_eq!(b.unstaged, None);
-    }
-
-    #[test]
-    fn stage_map_empty_without_repo() {
-        assert!(stage_map(None).is_empty());
-    }
-
-    #[test]
     fn build_model_keeps_binary_file_without_blanking() {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
@@ -359,7 +320,12 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).expect("binary edit must not error");
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .expect("binary edit must not error");
 
         assert_eq!(model.files.len(), 2, "both files must survive");
         let bin_idx = model
@@ -387,7 +353,12 @@ mod tests {
         let input = wrapper.working_tree_diff().unwrap();
         // The core guarantee: a submodule commit bump must not error the
         // whole panel (it did before the gitlink short-circuit).
-        let model = build_model(&input, Some(&wrapper)).expect("submodule bump must not error");
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .expect("submodule bump must not error");
 
         let sub_idx = model
             .files
@@ -424,7 +395,12 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .unwrap();
 
         assert_eq!(model.files.len(), 1);
         assert_eq!(display_path(&model.files[0].file), "a.txt");
@@ -456,7 +432,12 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .unwrap();
 
         assert_eq!(model.files.len(), 1, "rename must be a single row");
         assert_eq!(display_path(&model.files[0].file), "new.txt");
@@ -491,7 +472,12 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .unwrap();
 
         assert_eq!(model.files.len(), 1, "type change must be a single row");
         assert_eq!(display_path(&model.files[0].file), "f.txt");
@@ -521,7 +507,12 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .unwrap();
 
         assert_eq!(model.files.len(), 1, "type change must be a single row");
         assert_eq!(display_path(&model.files[0].file), "f.txt");
@@ -553,7 +544,12 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let model = build_model(
+            &input,
+            Some(&wrapper),
+            stage_map(wrapper.working_tree_snapshot().unwrap().stages),
+        )
+        .unwrap();
 
         assert_eq!(model.files.len(), 1, "rename must be a single row");
         assert_eq!(display_path(&model.files[0].file), "new.txt");

@@ -182,4 +182,114 @@ Run `python3 docs/investigations/background-focus-cpu-probe.py` for automated fo
 
 `python3 docs/investigations/background-idle-draw-probe.py` measures sixty settled seconds and asserts zero terminal bytes. It accepts the same temporary-fixture override. The updated release passed in the large fixture: 60.00 seconds, 0.00 process CPU seconds at the 0.01-second measurement resolution, and zero terminal bytes.
 
-Full workspace tests and production Clippy pass. The browse suite now has 290 tests, covering clean returns, bounded retained work, late focus loss, deferred deadlines, input fallback, stable refreshes, loading transitions, and child-return repainting. Default all-target Clippy retains the existing test nesting limitation described above. Physical GUI focus forwarding remains unverified; the injected-event proof and the earlier isolated tmux forwarding proof establish the tested focus paths.
+Full workspace tests and production Clippy pass. The browse suite now has 290 tests, covering clean returns, bounded retained work, late focus loss, deferred deadlines, input fallback, stable refreshes, loading transitions, and child-return repainting. Default all-target Clippy retains the existing test nesting limitation described above. At this checkpoint, physical GUI focus forwarding remained unverified; the injected-event proof and the earlier isolated tmux forwarding proof established the tested focus paths.
+
+## Native focus verification and remaining active-edit cost
+
+Native focus forwarding and actual background deferral are verified on the user's Ghostty client through tmux. Before the shared-scan change below, active-edit cost was dominated by two full repository queries: patch generation and sidebar staging/status collection.
+
+### Actual application focus
+
+The attached client reports `xterm-ghostty`, tmux reports `next-3.9`, and `focus-events` is enabled. The native recorder first switches between two tmux windows as a positive control. It then activates Finder and Ghostty through AppKit, verifies which application is frontmost, and observes real focus-loss (`ESC[O`) and focus-gain (`ESC[I`) notifications. The driver restores the original tmux session and foreground application afterward. No focus sequences are injected.
+
+`python3 docs/investigations/background-native-focus-probe.py` repeats that check. It temporarily attaches the Ghostty client to an isolated recorder session, requires a running Finder and Ghostty, and records only focus sequences. The successful original log is under `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-native-focus-2llix94z`.
+
+The separate native TUI probe runs the actual release executable on that attached client with isolated configuration. It checks the tmux screen and captures the executable's output while editing `main.txt` in the existing large fixture. A separate sampling phase captures the caller chain during focused edits.
+
+| Real application state | Wall time | Process CPU time | Average CPU | Terminal bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Ghostty foreground, tracked writes every 300 ms | 8.00 s | 2.37 s | 29.62% | 963 |
+| Finder foreground, tracked writes every 300 ms | 8.00 s | 0.00 s | 0.00% | 0 |
+
+The background CPU value is below `ps`'s 0.01-second resolution. While Finder remains foreground, the probe writes `NATIVE_RETURN_READY` and asserts that the TUI screen still lacks it. After native Ghostty activation, the TUI displays that latest content. Activation request to observed updated frame takes 426.4 ms, including the probe's 300 ms AppKit settling period and command-launch overhead; it is not directly comparable to the injected-event latency above.
+
+Run `python3 docs/investigations/background-native-tui-probe.py` for this application-level check. Set `DELTOIDS_FOCUS_REPO` to a temporary large fixture for the large-repository case; the driver edits `main.txt`, temporarily switches the attached client and foreground application, then restores them. Default runs use a fresh small fixture.
+
+### Named active-edit cause
+
+The sampling artifact is `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu-f544isfv/active-edit.sample.txt`, produced with `/usr/bin/sample` over a separate five-second focused-write phase. Of 1,229 main-thread samples within refresh branches, 620 enter `Repo::working_tree_diff` and 494 enter `build_model → stage_map → Repo::working_tree_status`. Together these account for 90.6% of refresh-branch samples. Sampling includes waiting and system calls, so these percentages describe sampled stacks rather than an exact division of CPU time.
+
+The observed branches map to:
+
+- `files/reload.rs:115` calls `Repo::working_tree_diff` for every refresh.
+- `git.rs:177` runs `diff_tree_to_workdir_with_index`; its libgit2 iterator walks the working tree and calls `lstat`.
+- For a changed patch, `files/model.rs:58` calls `stage_map`, which queries status again.
+- `git.rs:224` calls `statuses`; the sample shows a second `git_diff_index_to_workdir` walk and more `lstat` calls.
+
+The other 115 refresh samples enter content retrieval, mostly waiting for `git cat-file --filters` subprocesses. The sample records two additional main-thread samples in drawing. This fixture's first optimization target is repository refresh work.
+
+A direct probe calls the real public repository methods twenty times each after warming them, on the same temporary repository:
+
+| Method | Average wall time per call |
+| --- | ---: |
+| `Repo::working_tree_diff` | 89.20 ms |
+| `Repo::working_tree_status` | 89.88 ms |
+| Combined cost of the two queries | 179.08 ms |
+
+The probe source is `docs/investigations/background-active-query-probe.rs`. It uses the release library artifact from this checkout. The tested compilation command is:
+
+```bash
+LIBRARY_PATH=/opt/homebrew/opt/libgit2/lib rustc --edition=2024 -O docs/investigations/background-active-query-probe.rs --extern deltoids=target/release/deps/libdeltoids-afb92e041c260c61.rlib -L dependency=target/release/deps -L native=/opt/homebrew/opt/libgit2/lib -o /tmp/deltoids-active-query-probe
+/tmp/deltoids-active-query-probe <temporary-repository>
+```
+
+The release artifact hash can change after rebuilding. These timings are average wall time in a warm, unchanged snapshot; they are separate from the real TUI CPU measurement.
+
+### Implemented shared repository snapshot
+
+Files startup and refresh now call `Repo::working_tree_snapshot` once. It supplies patch text and both staging columns from one index-to-workdir enumeration per successful attempt. A second HEAD-to-index diff against the same captured index preserves the independent status rename policy. Merge/printing use copied deltas; staging uses the retained raw workdir diff. The index is conditionally refreshed and never written by these reads. Files model construction receives the staging map and does not query status.
+
+The public query probe above now measures the implemented snapshot as well. Twenty warm calls on the same approximately 30,000-file fixture, using native libgit2 1.9.7, yielded:
+
+| Query | Average wall time |
+| --- | ---: |
+| Existing patch method | 95.09 ms |
+| Existing status method | 89.22 ms |
+| Combined separate queries | 184.31 ms |
+| Implemented snapshot | 97.05 ms |
+
+The implemented query is **47.35% faster** than the combined separate queries in this measurement. Compile the current probe with `--extern deltoids=target/release/deps/libdeltoids-65171fa05f41b693.rlib` after a release build; the artifact hash can change.
+
+#### Real TUI comparison
+
+A fresh baseline release was built with `cargo build --locked --release -p deltoids-cli` before editing production source, then copied to `/tmp/deltoids-shared-scan-baseline`. The candidate uses the same checkout dependencies, compiler, and system libgit2. Both ran sequentially on controlling PTYs against the same large fixture, with writes every 300 ms and no debounce or rendering-policy changes.
+
+`shared-scan-tui-probe.py` checks actual output, counts emitted frame boundaries by the cursor-hide command issued for each draw, and asserts final content, quiet idle/background phases, and catch-up on focus return.
+
+| Eight-second phase | Baseline | Candidate |
+| --- | ---: | ---: |
+| Focused edit CPU time | 2.27 s | 1.39 s |
+| Focused edit average CPU | 28.30% | 17.34% |
+| Produced writes | 26 | 26 |
+| Emitted frames during edits | 12 | 13 |
+| Focused idle CPU / output | 0.00 s / 0 bytes | 0.00 s / 0 bytes |
+| Unfocused edit CPU / output | 0.00 s / 0 bytes | 0.00 s / 0 bytes |
+| Final-content write to observed output | 622.5 ms | 485.4 ms |
+| Focus return to latest content | 212.0 ms | 128.1 ms |
+
+CPU while editing decreased by approximately **39%**, with one more delivered frame. Zero CPU readings are below the `ps` clock's 0.01-second resolution. These are fixture-specific eight-second measurements; latency values are single observations. They include Files model construction, content resolution, and drawing, which the direct query probe excludes.
+
+Run the comparison with:
+
+```bash
+DELTOIDS_CPU_BINARY=/tmp/deltoids-shared-scan-baseline DELTOIDS_FOCUS_REPO=<temporary-large-repository> python3 docs/investigations/shared-scan-tui-probe.py
+DELTOIDS_CPU_BINARY=<candidate-release-binary> DELTOIDS_FOCUS_REPO=<temporary-large-repository> python3 docs/investigations/shared-scan-tui-probe.py
+```
+
+The probe edits `main.txt`; use a disposable fixture. The final complete baseline run used evidence root `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu-s6w7f_a4`; the candidate run used `deltoids-cpu-yksv8l8w` under the same temporary parent. An earlier baseline attempt failed only because an incremental terminal update split its catch-up marker; the corrected marker shares no cells with the previous content. A subsequent attempt timed out and is excluded from the completed comparison above.
+
+#### Correctness and gates
+
+Repository-interface tests cover staging columns, net cancellation, external index writes through retained handles, unchanged index bytes/mtime, unborn/detached HEAD, additions/deletions/recreation, renames and configuration, case/chained renames, type changes, binaries, conflicts, filters, submodules, many changed files, and concurrent-write reads. Files Mode tests prove staging-only redraw, unchanged-snapshot suppression, view retention on a real damaged-reference failure, recovery after repair, and startup recovery from Loading.
+
+The implemented library also passed the verification driver: 30 macOS fixture cases, with invalid-UTF-8 filenames unsupported locally. That gap is closed by **12 passing Linux snapshot tests**, including the actual invalid-UTF-8 filename test, in `rust:1.92-slim` with the pinned vendored libgit2 1.9.4. The container mounts source read-only and places Cargo output outside the workspace. Its log is `/tmp/deltoids-shared-linux/linux-tests.log`.
+
+The Linux Cargo command is:
+
+```bash
+cargo test --locked --manifest-path /work/Cargo.toml -p deltoids --features blob-resolve,git2/vendored-libgit2 git::tests::snapshot
+```
+
+All workspace tests and the workspace build pass. Formatting, production Clippy, and `git diff --check` pass. Default all-target Clippy still reports the unchanged nesting violation in `traces/entries_pane.rs:194`; all-target Clippy passes with `-A clippy::excessive_nesting`.
+
+The measured candidate was built at `target/release/deltoids`. After verification, the user installed the updated executable with `make`. Existing user sessions were not replaced. Selective per-file refresh and filter subprocess caching remain possible later work; this change shares work within each full refresh.

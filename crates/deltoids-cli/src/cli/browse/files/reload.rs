@@ -65,7 +65,7 @@ pub(super) enum ReloadOutcome {
 
 /// Re-diff the working tree and rebuild the view in place, preserving the
 /// selected file by path. Computes a fresh model from
-/// `repo.working_tree_diff()` via [`compute_reload`], then applies it via
+/// `repo.working_tree_snapshot()` via [`compute_reload`], then applies it via
 /// [`apply_reload`].
 ///
 /// Deduplicates on patch text and sidebar staging status. A notification
@@ -101,9 +101,9 @@ pub(super) fn reload_working_tree(
     )
 }
 
-/// The fallible half of a reload: re-diff the working tree and, when the
-/// diff changed, rebuild the model. Returns `Ok(None)` for a stable tree
-/// (diff unchanged from `last_input`), `Ok(Some(..))` for a fresh model,
+/// The fallible half of a reload: read patch and stages together, then
+/// rebuild the model when either changed. Returns `Ok(None)` for a stable
+/// snapshot, `Ok(Some(..))` for a fresh model,
 /// or `Err` when either the diff read or the model build lost a race with
 /// on-disk churn. Reads nothing the caller mutates, so a failure here is
 /// safe to discard.
@@ -112,12 +112,13 @@ fn compute_reload(
     last_input: &str,
     model: &Model,
 ) -> Result<Option<(String, Model)>, String> {
-    let input = repo.working_tree_diff()?;
-    if !reload_needed(&input, last_input) && stage_map(Some(repo)) == model.stages {
+    let snapshot = repo.working_tree_snapshot()?;
+    let stages = stage_map(snapshot.stages);
+    if !reload_needed(&snapshot.patch, last_input) && stages == model.stages {
         return Ok(None);
     }
-    let model = build_model(&input, Some(repo))?;
-    Ok(Some((input, model)))
+    let model = build_model(&snapshot.patch, Some(repo), stages)?;
+    Ok(Some((snapshot.patch, model)))
 }
 
 /// The infallible half of a reload: apply a `computed` result to the view.
@@ -430,7 +431,12 @@ mod tests {
         raw.blob(b"after\n").unwrap();
         let repo = git::Repo::discover_at(dir.path()).unwrap();
         let patch = repo.working_tree_diff().unwrap();
-        let model = build_model(&patch, Some(&repo)).unwrap();
+        let model = build_model(
+            &patch,
+            Some(&repo),
+            stage_map(repo.working_tree_snapshot().unwrap().stages),
+        )
+        .unwrap();
         assert!(compute_reload(&repo, &patch, &model).unwrap().is_none());
 
         index.read(true).unwrap();

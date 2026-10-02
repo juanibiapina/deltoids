@@ -178,9 +178,10 @@ impl FilesMode {
     /// Compute the working-tree diff and its model, or an error when the
     /// diff read or model build loses a race with on-disk churn.
     fn try_model(repo: &git::Repo) -> Result<(String, Model), String> {
-        let input = repo.working_tree_diff()?;
-        let model = build_model(&input, Some(repo))?;
-        Ok((input, model))
+        let snapshot = repo.working_tree_snapshot()?;
+        let stages = model::stage_map(snapshot.stages);
+        let model = build_model(&snapshot.patch, Some(repo), stages)?;
+        Ok((snapshot.patch, model))
     }
 
     /// A cheap empty Files mode: no repo, no diff, static. Used as the
@@ -1566,7 +1567,7 @@ mod tests {
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let input = wrapper.working_tree_diff().unwrap();
-        let model = build_model(&input, Some(&wrapper)).unwrap();
+        let model = build_model(&input, Some(&wrapper), std::collections::HashMap::new()).unwrap();
         let expected = wrapper.workdir().unwrap().join("a.txt");
         let state = FilesMode::new(model, input, Some(wrapper), false, &Theme::default(), 80);
 
@@ -1580,6 +1581,80 @@ mod tests {
             right_viewport: 20,
             right_width: 80,
         }
+    }
+
+    #[test]
+    fn staging_only_reload_updates_the_view_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
+        stage_all(&raw);
+        commit_index(&raw, "initial");
+        std::fs::write(dir.path().join("a.txt"), "after\n").unwrap();
+        raw.blob(b"after\n").unwrap();
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let (input, model) = FilesMode::try_model(&wrapper).unwrap();
+        let theme = theme();
+        let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), false, &theme, 80);
+        let selected = mode.selected_path();
+        assert!(!mode.reload(reload_vp(), &theme).unwrap());
+        stage_all(&raw);
+        assert!(mode.reload(reload_vp(), &theme).unwrap());
+        assert_eq!(mode.last_input, input);
+        assert_eq!(mode.selected_path(), selected);
+        let status = mode.model.stages.get("a.txt").unwrap();
+        assert_eq!(status.staged, Some(crate::sidebar::ChangeKind::Modified));
+        assert_eq!(status.unstaged, None);
+        assert!(!mode.reload(reload_vp(), &theme).unwrap());
+    }
+
+    #[test]
+    fn failed_snapshot_retains_live_view_and_recovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
+        stage_all(&raw);
+        commit_index(&raw, "initial");
+        std::fs::write(dir.path().join("a.txt"), "after\n").unwrap();
+        raw.blob(b"after\n").unwrap();
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let (input, model) = FilesMode::try_model(&wrapper).unwrap();
+        let stages = model.stages.clone();
+        let theme = theme();
+        let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), false, &theme, 80);
+        let reference = raw.head().unwrap().name().unwrap().to_string();
+        let path = raw.path().join(reference);
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "not-an-object-id\n").unwrap();
+        assert!(!mode.reload(reload_vp(), &theme).unwrap());
+        assert_eq!(mode.last_input, input);
+        assert_eq!(mode.model.stages, stages);
+        assert!(mode.retry_reload());
+        std::fs::write(path, original).unwrap();
+        assert!(!mode.reload(reload_vp(), &theme).unwrap());
+        assert!(!mode.retry_reload());
+    }
+
+    #[test]
+    fn snapshot_failure_at_startup_recovers_from_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
+        stage_all(&raw);
+        commit_index(&raw, "initial");
+        let path = raw.path().join(raw.head().unwrap().name().unwrap());
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "not-an-object-id\n").unwrap();
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        assert!(FilesMode::try_model(&wrapper).is_err());
+        let theme = theme();
+        let mut mode = FilesMode::loading(wrapper, &theme, 80);
+        assert!(!mode.reload(reload_vp(), &theme).unwrap());
+        assert!(mode.startup_pending);
+        std::fs::write(path, original).unwrap();
+        assert!(mode.reload(reload_vp(), &theme).unwrap());
+        assert!(!mode.startup_pending);
+        assert!(!mode.retry_reload());
     }
 
     #[test]

@@ -13,6 +13,18 @@ use git2::{
 /// A discovered git repository, used to look up blobs by hash.
 pub struct Repo(Repository);
 
+mod snapshot;
+
+/// Patch and staging columns from one working-tree enumeration.
+///
+/// Reads HEAD and the index once per attempt; concurrent filesystem writes
+/// can still race content reads. No index changes are written by this read.
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkingTreeSnapshot {
+    pub patch: String,
+    pub stages: Vec<FileStageStatus>,
+}
+
 /// One change column of a file's `git status --porcelain` XY code:
 /// either the staged column (HEAD → index) or the worktree column
 /// (index → workdir). `Untracked` only appears in the worktree column.
@@ -132,27 +144,19 @@ impl Repo {
     /// the common single-save-mid-diff case. A non-race error, or an
     /// exhausted retry budget, maps to one boundary message.
     pub fn working_tree_diff(&self) -> Result<String, String> {
-        // A single save mid-diff is cleared by one fresh diff; a few
-        // attempts with single-digit-ms backoff cover it without adding
-        // noticeable latency to the common (no-race) path.
-        const MAX_ATTEMPTS: usize = 4;
-        let mut attempt = 0usize;
-        loop {
-            attempt += 1;
-            let err = match self.diff_once() {
-                Ok(out) => return Ok(out),
-                Err(err) => err,
-            };
-            // Only the content-load step raises `Filesystem`; a fresh diff
-            // re-stats the tree and deterministically clears a one-save
-            // race. Anything else is a real failure — surface it now.
-            let racing = err.class() == git2::ErrorClass::Filesystem;
-            if racing && attempt < MAX_ATTEMPTS {
-                std::thread::sleep(Duration::from_millis(attempt as u64));
-                continue;
-            }
-            return Err(format!("failed to compute working-tree diff: {err}"));
-        }
+        retry_worktree_read(|| self.diff_once(), "failed to compute working-tree diff")
+    }
+
+    /// Read the net patch and both staging columns with one workdir scan.
+    ///
+    /// Filesystem races retry the entire snapshot with the same bounded
+    /// budget as [`Self::working_tree_diff`]. Other failures return an error
+    /// so callers can retain the last complete view.
+    pub fn working_tree_snapshot(&self) -> Result<WorkingTreeSnapshot, String> {
+        retry_worktree_read(
+            || snapshot::read(&self.0),
+            "failed to read working-tree snapshot",
+        )
     }
 
     /// One working-tree diff pass: peel `HEAD`, diff against the working
@@ -166,40 +170,11 @@ impl Repo {
             Err(_) => None,
         };
 
-        let mut opts = DiffOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .show_untracked_content(true)
-            .include_typechange(true);
-
-        let mut diff = self
+        let mut opts = working_tree_diff_options();
+        let diff = self
             .0
             .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
-
-        // Coalesce a delete + add of similar content into one rename
-        // delta so a rename shows as a single `old → new` entry, matching
-        // `working_tree_status` (which keys renames by the new path) and
-        // `git diff -M`. Explicit `renames(true)` keeps behavior
-        // independent of the user's `diff.renames` git config.
-        let mut find_opts = DiffFindOptions::new();
-        find_opts.renames(true);
-        diff.find_similar(Some(&mut find_opts))?;
-
-        let mut out = String::new();
-        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-            // For +/-/context lines git2 strips the origin prefix; the
-            // file and hunk headers already carry their full text.
-            match line.origin() {
-                '+' | '-' | ' ' => out.push(line.origin()),
-                _ => {}
-            }
-            if let Ok(text) = std::str::from_utf8(line.content()) {
-                out.push_str(text);
-            }
-            true
-        })?;
-
-        Ok(out)
+        print_working_tree_patch(diff)
     }
 
     /// Per-file staging status for the working tree, mirroring
@@ -246,6 +221,53 @@ impl Repo {
         }
         Ok(out)
     }
+}
+
+fn retry_worktree_read<T>(
+    mut read: impl FnMut() -> Result<T, git2::Error>,
+    context: &str,
+) -> Result<T, String> {
+    const MAX_ATTEMPTS: usize = 4;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let error = match read() {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        // A fresh enumeration retries lazy-content size races.
+        if error.class() != git2::ErrorClass::Filesystem || attempt == MAX_ATTEMPTS {
+            return Err(format!("{context}: {error}"));
+        }
+        std::thread::sleep(Duration::from_millis(attempt as u64));
+    }
+    unreachable!("the last attempt returns its result")
+}
+
+fn working_tree_diff_options() -> DiffOptions {
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
+        .include_typechange(true);
+    opts
+}
+
+fn print_working_tree_patch(mut diff: git2::Diff<'_>) -> Result<String, git2::Error> {
+    // Explicit rename detection keeps the patch independent of diff.renames.
+    let mut find = DiffFindOptions::new();
+    find.renames(true);
+    diff.find_similar(Some(&mut find))?;
+    let mut out = String::new();
+    diff.print(DiffFormat::Patch, |_, _, line| {
+        // Content lines need their origin prefix; headers already include it.
+        if matches!(line.origin(), '+' | '-' | ' ') {
+            out.push(line.origin());
+        }
+        if let Ok(text) = std::str::from_utf8(line.content()) {
+            out.push_str(text);
+        }
+        true
+    })?;
+    Ok(out)
 }
 
 /// Workdir-relative path of a status entry, preferring the post-image
@@ -353,6 +375,8 @@ fn cat_file_filtered(workdir: &Path, hash: &str, path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    mod snapshot;
+
     use super::*;
     use std::fs;
     use std::path::Path;
@@ -480,11 +504,13 @@ mod tests {
 
         let wrapper = Repo(Repository::open(dir.path()).unwrap());
         for _ in 0..30 {
-            let result = wrapper.working_tree_diff();
+            let patch = wrapper.working_tree_diff();
+            let snapshot = wrapper.working_tree_snapshot();
             assert!(
-                result.is_ok(),
-                "paced writer must not surface the Filesystem race: {:?}",
-                result.err()
+                patch.is_ok() && snapshot.is_ok(),
+                "paced writer must not surface the Filesystem race: patch={:?}, snapshot={:?}",
+                patch.err(),
+                snapshot.err()
             );
         }
 

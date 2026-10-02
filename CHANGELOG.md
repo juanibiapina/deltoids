@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- TUI: Files uses less CPU while idle and still refreshes after edits, commits, and staging changes. Automatic refresh failures are shown and retried.
+- TUI: Files uses less CPU while idle and while files are being edited, and still refreshes after commits and staging changes. Automatic refresh failures are shown and retried.
 - TUI: Traces uses less CPU when another project records edits and preserves cached diffs and review position as histories update.
 - TUI: Background windows pause refreshes until focus returns, and unchanged idle windows stop redrawing.
 - review: the toolbar's line-number toggle now lights up when row line numbers are shown, not when they are hidden, so its highlight matches the other display toggles.

@@ -190,10 +190,11 @@ mod tests {
             assert_eq!(buffer[(1, 1)].fg, Color::Green);
             assert_eq!(buffer[(1, 2)].fg, Color::Red);
             assert_eq!(buffer[(3, 1)].bg, rgb_to_color(theme.selection_bg));
-            if width == 40 {
-                for y in [1, 2, 4, 5] {
-                    assert_eq!(buffer[(12, y)].fg, rgb_to_color(theme.muted));
-                }
+            if width != 40 {
+                continue;
+            }
+            for y in [1, 2, 4, 5] {
+                assert_eq!(buffer[(12, y)].fg, rgb_to_color(theme.muted));
             }
         }
     }

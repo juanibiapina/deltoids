@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-02
+
 ### Added
 
 - review: the file tree highlights the file you are currently reading and follows along as you scroll, keeping the highlighted row in view, so you always know where you are in the pull request.

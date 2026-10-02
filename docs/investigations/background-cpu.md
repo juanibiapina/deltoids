@@ -127,4 +127,30 @@ The live probe then changed a tracked file and observed its new content without 
 
 Formatting and production-code Clippy passed. Unmodified `traces/entries_pane.rs:194` has an existing `clippy::excessive_nesting` test lint that blocks the default all-target check. The all-target check passed with that single lint allowed.
 
-This fix does not implement focus deferral, incremental trace-history reads, or redraw scheduling. The original cross-project trace-loading cost remains a separate planned optimization. Existing processes still run their previously loaded executables; the implementation was built into `target/release/deltoids`.
+At this checkpoint, focus deferral, selective trace-history reads, and redraw scheduling remained deferred. The release executable was built into `target/release/deltoids`.
+
+## Second fix: selective trace loading
+
+The Traces reader classifies existing histories once and retains parsed entry content only for the current project. Notifications accumulate at most 4,096 changed trace IDs. Lock-file notifications are ignored. Explicit rescans, ambiguous root notifications, overflow, and watcher recovery reconcile file metadata and read only new or changed histories.
+
+A changed history is read in full to validate its committed prefix, which detects rewrites that preserve inode or length and rewrites that grow the file. An unchanged prefix reuses earlier parsed records and parses only appended records. Unrelated histories retain compact metadata, a committed offset, and a prefix fingerprint. Large changed histories still incur a full byte read; this implementation removes global rereads and repeated parsing of their earlier records.
+
+Complete records without a final newline remain accepted. Blank lines, the historical `summary` alias, and defaulted fields use the shared parser. Incomplete JSON or UTF-8 retains its uncommitted offset and retries without another event. Malformed complete records preserve the last successful snapshot and report a refresh error through the shell's existing retry policy.
+
+Rendered rows use `(trace_id, project_entry_index)` as their identity. Refreshes retain the unchanged entry prefix for each trace and evict rewritten or removed entries. Appends preserve earlier renders, selection, and scroll even when activity reorders the list. A new newest trace still becomes selected.
+
+The existing Traces CPU probe was run sequentially against the release executable from the first fix and the new release executable. Each run creates 500 unrelated histories with 100 entries each, uses an isolated configuration and a controlling pseudo-terminal, then records another project's traced writes approximately every 300 ms.
+
+| Case | Before average CPU | After average CPU | Measurement interval |
+| --- | ---: | ---: | ---: |
+| Traces idle with 50,000 unrelated entries | 0.12% | 0.12% | 8 s each |
+| Ordinary writes in another project | 0.12% | 0.12% | 8 s each |
+| Traced writes in another project | 13.47% | 0.12% | 8.02 s before; 8.00 s after |
+
+The traced-write measurement drops from 1.08 CPU seconds to 0.01 CPU seconds, a 99.1% reduction in average CPU. These are short macOS process measurements with 0.01-second CPU-time resolution; they establish the fixture's improvement, not a guarantee for every repository.
+
+Baseline fixture: `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu-qdyo74sn`. Updated fixture: `/var/folders/ks/t5mwll9d0ys7xs_ng16n_qkc0000gn/T/deltoids-cpu-_oxhw8bg`.
+
+`python3 docs/investigations/background-trace-refresh-probe.py` automatically verifies initial loading, selection of a new local trace, an appended local entry, and recovery after deleting the selected trace in the real release TUI. It waits for the first interactive frame before switching modes and asserts distinctive emitted text because terminal redraws emit only changed portions of lines. Filesystem changes receive no additional input.
+
+The browse suite passes 280 tests. Full workspace tests, production Clippy, formatting, and diff checks pass. Default all-target Clippy remains blocked by the unchanged test nesting lint described above; all-target Clippy passes with that lint allowed. Focus deferral and conditional drawing remain deferred.

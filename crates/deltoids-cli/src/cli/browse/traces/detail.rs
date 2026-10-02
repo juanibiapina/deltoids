@@ -29,7 +29,7 @@ use super::model::LoadedTrace;
 use super::{AppState, Focus};
 
 /// Retained store of rendered entry diffs, keyed by
-/// `(trace_index, entry_index)`. Every retained entry shares one `epoch`
+/// `(trace_id, entry_index)`. Every retained entry shares one `epoch`
 /// (render width plus change layout); a change to either clears the store
 /// (mirroring Files mode's `cached_width` rebuild). Retaining rendered
 /// entries makes revisiting an entry instant instead of re-highlighting it
@@ -37,7 +37,7 @@ use super::{AppState, Focus};
 #[derive(Debug, Default, Clone)]
 pub(super) struct DiffCache {
     epoch: CacheEpoch,
-    rows: HashMap<(usize, usize), Vec<DiffRow>>,
+    rows: HashMap<String, HashMap<usize, Vec<DiffRow>>>,
 }
 
 /// The identity every retained entry shares: its render `width`, the
@@ -54,31 +54,40 @@ pub(super) struct CacheEpoch {
 impl DiffCache {
     /// Rendered rows for `(trace, entry)` at `epoch`, or `None` on an
     /// epoch mismatch or a miss.
-    pub(super) fn get(&self, epoch: CacheEpoch, key: (usize, usize)) -> Option<&Vec<DiffRow>> {
+    pub(super) fn get(&self, epoch: CacheEpoch, key: (&str, usize)) -> Option<&Vec<DiffRow>> {
         if self.epoch != epoch {
             return None;
         }
-        self.rows.get(&key)
+        self.rows.get(key.0)?.get(&key.1)
     }
 
     /// Whether `(trace, entry)` is already rendered at `epoch`.
-    pub(super) fn contains(&self, epoch: CacheEpoch, key: (usize, usize)) -> bool {
-        self.epoch == epoch && self.rows.contains_key(&key)
+    pub(super) fn contains(&self, epoch: CacheEpoch, key: (&str, usize)) -> bool {
+        self.get(epoch, key).is_some()
     }
 
     /// Store rendered `rows` for `(trace, entry)`. A width or layout change
     /// clears the store first so every retained entry shares one epoch.
-    pub(super) fn insert(&mut self, epoch: CacheEpoch, key: (usize, usize), rows: Vec<DiffRow>) {
+    pub(super) fn insert(&mut self, epoch: CacheEpoch, key: (&str, usize), rows: Vec<DiffRow>) {
         if self.epoch != epoch {
             self.rows.clear();
             self.epoch = epoch;
         }
-        self.rows.insert(key, rows);
+        self.rows
+            .entry(key.0.to_owned())
+            .or_default()
+            .insert(key.1, rows);
     }
 
-    /// Drop all retained entries (used on reload, when disk data changed).
-    pub(super) fn clear(&mut self) {
-        self.rows.clear();
+    /// Keep only entries whose recorded source survived this refresh.
+    pub(super) fn retain(&mut self, prefixes: &[(String, usize)]) {
+        self.rows.retain(|id, entries| {
+            let Some((_, prefix)) = prefixes.iter().find(|(trace, _)| trace == id) else {
+                return false;
+            };
+            entries.retain(|index, _| index < prefix);
+            !entries.is_empty()
+        });
     }
 
     /// Whether the store holds no retained entries.
@@ -103,6 +112,7 @@ pub(super) fn ensure_diff_cache(
     key: (usize, usize),
     theme: &Theme,
 ) {
+    let key = (active_trace.trace.trace_id.as_str(), key.1);
     if !state.diff_cache.contains(epoch, key) {
         let rows = build_diff_rows(active_trace, key.1, epoch.width, epoch.layout, theme);
         state.diff_cache.insert(epoch, key, rows);
@@ -141,7 +151,12 @@ pub(super) fn render_diff_pane(
     };
     let key = (state.trace_index, state.entry_index());
 
-    if should_build_body(budget, state.diff_cache.contains(epoch, key)) {
+    if should_build_body(
+        budget,
+        state
+            .diff_cache
+            .contains(epoch, (active_trace.trace.trace_id.as_str(), key.1)),
+    ) {
         ensure_diff_cache(active_trace, state, epoch, key, theme);
     }
 
@@ -491,10 +506,14 @@ mod tests {
     fn diff_cache_retains_entries_across_selection_changes() {
         let mut cache = DiffCache::default();
         let e = grouped_epoch(80);
-        cache.insert(e, (0, 0), vec![DiffRow::plain(Line::from("a"))]);
         cache.insert(
             e,
-            (0, 1),
+            ("01JTESTTRACE00000000000000", 0),
+            vec![DiffRow::plain(Line::from("a"))],
+        );
+        cache.insert(
+            e,
+            ("01JTESTTRACE00000000000000", 1),
             vec![
                 DiffRow::plain(Line::from("b")),
                 DiffRow::plain(Line::from("b2")),
@@ -502,10 +521,20 @@ mod tests {
         );
 
         // Both entries stay retained: revisiting the first is a cache hit.
-        assert!(cache.contains(e, (0, 0)));
-        assert!(cache.contains(e, (0, 1)));
-        assert_eq!(cache.get(e, (0, 0)).map(|rows| rows.len()), Some(1));
-        assert_eq!(cache.get(e, (0, 1)).map(|rows| rows.len()), Some(2));
+        assert!(cache.contains(e, ("01JTESTTRACE00000000000000", 0)));
+        assert!(cache.contains(e, ("01JTESTTRACE00000000000000", 1)));
+        assert_eq!(
+            cache
+                .get(e, ("01JTESTTRACE00000000000000", 0))
+                .map(|rows| rows.len()),
+            Some(1)
+        );
+        assert_eq!(
+            cache
+                .get(e, ("01JTESTTRACE00000000000000", 1))
+                .map(|rows| rows.len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -513,21 +542,25 @@ mod tests {
         let mut cache = DiffCache::default();
         cache.insert(
             grouped_epoch(80),
-            (0, 0),
+            ("01JTESTTRACE00000000000000", 0),
             vec![DiffRow::plain(Line::from("a"))],
         );
-        assert!(cache.contains(grouped_epoch(80), (0, 0)));
+        assert!(cache.contains(grouped_epoch(80), ("01JTESTTRACE00000000000000", 0)));
 
         // A different width drops the stale entry and rebuilds at the new width.
-        assert!(!cache.contains(grouped_epoch(79), (0, 0)));
-        assert!(cache.get(grouped_epoch(79), (0, 0)).is_none());
+        assert!(!cache.contains(grouped_epoch(79), ("01JTESTTRACE00000000000000", 0)));
+        assert!(
+            cache
+                .get(grouped_epoch(79), ("01JTESTTRACE00000000000000", 0))
+                .is_none()
+        );
         cache.insert(
             grouped_epoch(79),
-            (0, 1),
+            ("01JTESTTRACE00000000000000", 1),
             vec![DiffRow::plain(Line::from("b"))],
         );
-        assert!(!cache.contains(grouped_epoch(79), (0, 0)));
-        assert!(cache.contains(grouped_epoch(79), (0, 1)));
+        assert!(!cache.contains(grouped_epoch(79), ("01JTESTTRACE00000000000000", 0)));
+        assert!(cache.contains(grouped_epoch(79), ("01JTESTTRACE00000000000000", 1)));
     }
 
     #[test]
@@ -535,10 +568,10 @@ mod tests {
         let mut cache = DiffCache::default();
         cache.insert(
             grouped_epoch(80),
-            (0, 0),
+            ("01JTESTTRACE00000000000000", 0),
             vec![DiffRow::plain(Line::from("a"))],
         );
-        assert!(cache.contains(grouped_epoch(80), (0, 0)));
+        assert!(cache.contains(grouped_epoch(80), ("01JTESTTRACE00000000000000", 0)));
 
         // Same width, different layout: the stale entry is dropped.
         let interleaved = CacheEpoch {
@@ -548,10 +581,14 @@ mod tests {
             },
             syntax_theme: "",
         };
-        assert!(!cache.contains(interleaved, (0, 0)));
-        cache.insert(interleaved, (0, 1), vec![DiffRow::plain(Line::from("b"))]);
-        assert!(!cache.contains(interleaved, (0, 0)));
-        assert!(cache.contains(interleaved, (0, 1)));
+        assert!(!cache.contains(interleaved, ("01JTESTTRACE00000000000000", 0)));
+        cache.insert(
+            interleaved,
+            ("01JTESTTRACE00000000000000", 1),
+            vec![DiffRow::plain(Line::from("b"))],
+        );
+        assert!(!cache.contains(interleaved, ("01JTESTTRACE00000000000000", 0)));
+        assert!(cache.contains(interleaved, ("01JTESTTRACE00000000000000", 1)));
     }
 
     #[test]
@@ -565,12 +602,24 @@ mod tests {
         let mut state = AppState::new(1);
         let e = grouped_epoch(80);
 
-        assert!(!state.diff_cache.contains(e, (0, 0)));
+        assert!(
+            !state
+                .diff_cache
+                .contains(e, ("01JTESTTRACE00000000000000", 0))
+        );
         ensure_diff_cache(&trace, &mut state, e, (0, 0), &theme);
-        assert!(state.diff_cache.contains(e, (0, 0)));
+        assert!(
+            state
+                .diff_cache
+                .contains(e, ("01JTESTTRACE00000000000000", 0))
+        );
         // Second call is a no-op hit; the store still holds the one entry.
         ensure_diff_cache(&trace, &mut state, e, (0, 0), &theme);
-        assert!(state.diff_cache.contains(e, (0, 0)));
+        assert!(
+            state
+                .diff_cache
+                .contains(e, ("01JTESTTRACE00000000000000", 0))
+        );
     }
 
     /// Concatenate the visible text of a `Line<'static>` (ignoring styles).

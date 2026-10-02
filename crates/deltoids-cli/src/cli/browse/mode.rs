@@ -350,6 +350,11 @@ pub(crate) trait Mode {
     /// Whether a batch of changed paths warrants a reload of this mode.
     fn should_reload(&self, paths: &[PathBuf]) -> bool;
 
+    /// Retain changes for a later refresh, including explicit reconciliation.
+    fn notify_changes(&mut self, paths: &[PathBuf], rescan: bool) -> bool {
+        rescan || self.should_reload(paths)
+    }
+
     /// Whether a failed read needs another attempt without a new event.
     fn retry_reload(&self) -> bool {
         false

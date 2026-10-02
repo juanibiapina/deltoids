@@ -14,7 +14,8 @@
 //! reload, and implements [`super::mode::Mode`]. Each pane owns its
 //! slice:
 //!
-//! - [`model`]: load traces/entries for the current directory.
+//! - [`model`]: loaded trace shape and headless snapshot loading.
+//! - [`reader`]: selective history reads and project membership.
 //! - [`entries_pane`] / [`traces_pane`]: the two list slices.
 //! - [`detail`]: the detail/diff slice (cache + renderers).
 //! - [`reload`]: reload from disk, preserving selection.
@@ -50,6 +51,7 @@ use super::mode::{AppCommand, DrawBudget, Mode, ReloadViewport, TabStrip};
 mod detail;
 mod entries_pane;
 mod model;
+mod reader;
 mod reload;
 mod scripted;
 #[cfg(test)]
@@ -64,7 +66,8 @@ use super::diff_cursor::{Cursor, DiffRow, Step, select_row, step_cursor};
 use detail::{DiffCache, max_detail_scroll, render_diff_pane};
 use entries_pane::{move_entry_down, move_entry_up, render_entries_pane};
 use model::{LoadedTrace, current_cwd_or_empty, load_traces_for_cwd};
-use reload::reload_traces;
+use reader::TraceReader;
+use reload::apply_refresh;
 use scripted::run_scripted;
 use traces_pane::{move_trace_down, move_trace_up, render_traces_pane};
 
@@ -187,6 +190,7 @@ pub(super) struct TracesMode {
     state: AppState,
     traces: Vec<LoadedTrace>,
     cwd: String,
+    reader: Option<TraceReader>,
     /// Keeps the trace-root watcher alive for the session.
     _watcher: Option<ChangeWatcher>,
 }
@@ -196,12 +200,17 @@ impl TracesMode {
     pub(super) fn build() -> Result<Self, String> {
         let cwd = current_cwd_or_empty();
         let watcher = Self::spawn_watcher().ok();
-        let traces = load_traces_for_cwd(&cwd)?;
+        let mut reader = TraceReader::new(crate::TraceStore::from_env()?, cwd.clone());
+        let traces = reader
+            .refresh()?
+            .map(|refresh| refresh.traces)
+            .unwrap_or_default();
         let state = AppState::new(traces.len());
         Ok(Self {
             state,
             traces,
             cwd,
+            reader: Some(reader),
             _watcher: watcher,
         })
     }
@@ -213,6 +222,7 @@ impl TracesMode {
             state: AppState::new(0),
             traces: Vec::new(),
             cwd: current_cwd_or_empty(),
+            reader: None,
             _watcher: None,
         }
     }
@@ -790,14 +800,32 @@ impl Mode for TracesMode {
         Ok(self._watcher.as_ref().map(ChangeWatcher::receiver))
     }
 
-    fn should_reload(&self, _paths: &[PathBuf]) -> bool {
-        // Any change under the trace root warrants a reload; reload_traces
-        // restores the selection.
-        true
+    fn should_reload(&self, paths: &[PathBuf]) -> bool {
+        !paths.is_empty()
+    }
+
+    fn notify_changes(&mut self, paths: &[PathBuf], rescan: bool) -> bool {
+        match &mut self.reader {
+            Some(reader) => reader.notify(paths, rescan),
+            None => true,
+        }
+    }
+
+    fn retry_reload(&self) -> bool {
+        self.reader.as_ref().is_none_or(TraceReader::needs_retry)
     }
 
     fn reload(&mut self, _viewport: ReloadViewport, _theme: &Theme) -> Result<bool, String> {
-        reload_traces(&mut self.traces, &mut self.state, &self.cwd)?;
+        if self.reader.is_none() {
+            self.reader = Some(TraceReader::new(
+                crate::TraceStore::from_env()?,
+                self.cwd.clone(),
+            ));
+        }
+        let Some(refresh) = self.reader.as_mut().unwrap().refresh()? else {
+            return Ok(false);
+        };
+        apply_refresh(&mut self.traces, &mut self.state, refresh);
         Ok(true)
     }
 
@@ -1154,7 +1182,10 @@ mod tests {
         let mut state = diff_state(&traces);
         let key = state.diff_key();
         assert!(
-            state.diff_cache.contains(grouped_epoch(80), key),
+            state.diff_cache.contains(
+                grouped_epoch(80),
+                (traces[key.0].trace.trace_id.as_str(), key.1)
+            ),
             "warm after the draw"
         );
 
@@ -1162,7 +1193,10 @@ mod tests {
         note(&mut state, &traces, &anchor, "explain this");
 
         assert!(
-            state.diff_cache.contains(grouped_epoch(80), key),
+            state.diff_cache.contains(
+                grouped_epoch(80),
+                (traces[key.0].trace.trace_id.as_str(), key.1)
+            ),
             "the render survives a comment"
         );
         assert!(
@@ -1181,6 +1215,7 @@ mod tests {
             state: mode_state,
             traces: traces.clone(),
             cwd: "/tmp/project".to_string(),
+            reader: None,
             _watcher: None,
         };
         let anchor = mode.state.cursor_anchor().unwrap();
@@ -1253,6 +1288,7 @@ mod tests {
             state: diff_state(&traces),
             traces,
             cwd: "/tmp/project".to_string(),
+            reader: None,
             _watcher: None,
         };
         mode.state.status = Some("Copied 1 comment".to_string());
@@ -1281,7 +1317,7 @@ mod tests {
 
         // Reload drops every retained render; the next draw rebuilds and
         // re-snaps the cursor.
-        state.diff_cache.clear();
+        state.diff_cache.retain(&[]);
         rebuild_rows(&mut state, &traces);
 
         assert_eq!(state.comments.note(&anchor), Some("still here"));
@@ -1532,6 +1568,7 @@ mod tests {
             state: diff_state(&traces),
             traces,
             cwd: "/tmp/project".to_string(),
+            reader: None,
             _watcher: None,
         };
         // Land on the removed line (old-file line 11) and start typing.
@@ -1554,6 +1591,7 @@ mod tests {
             state: diff_state(&traces),
             traces,
             cwd: "/tmp/project".to_string(),
+            reader: None,
             _watcher: None,
         };
         Mode::handle_key(&mut mode, KeyCode::Char('y'), 10, 18);
@@ -1570,6 +1608,7 @@ mod tests {
             state: AppState::new(traces.len()),
             traces,
             cwd: "/tmp/project".to_string(),
+            reader: None,
             _watcher: None,
         };
         // edit_entry's path is already absolute.
@@ -1592,6 +1631,7 @@ mod tests {
             state: AppState::new(traces.len()),
             traces,
             cwd: "/tmp/project".to_string(),
+            reader: None,
             _watcher: None,
         };
         assert_eq!(

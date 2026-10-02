@@ -1,390 +1,181 @@
-//! Refresh axis: reload traces from disk and restore the user's
-//! selection and scroll position.
+//! Apply a project snapshot while retaining review selection and rendered rows.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::AppState;
-use super::model::{LoadedTrace, load_traces_for_cwd};
+use super::model::LoadedTrace;
+use super::reader::Refresh;
 
-/// Reload traces from disk unconditionally. When a new trace appears at
-/// index 0 (newest), automatically switches to it. Otherwise preserves the
-/// current selection by trace id and entry index when the selected trace
-/// still exists; falls back to index 0 otherwise.
-pub(super) fn reload_traces(
-    traces: &mut Vec<LoadedTrace>,
-    state: &mut AppState,
-    cwd: &str,
-) -> Result<(), String> {
-    // Collect known trace IDs before reload.
-    let known_ids: HashSet<_> = traces.iter().map(|t| t.trace.trace_id.as_str()).collect();
-
-    let new_traces = load_traces_for_cwd(cwd)?;
-
-    // Check if the newest trace is new (unknown before reload).
-    let newest_is_new = new_traces
+pub(super) fn apply_refresh(traces: &mut Vec<LoadedTrace>, state: &mut AppState, refresh: Refresh) {
+    let known: HashSet<_> = traces
+        .iter()
+        .map(|trace| trace.trace.trace_id.as_str())
+        .collect();
+    let newest_is_new = refresh
+        .traces
         .first()
-        .is_some_and(|t| !known_ids.contains(t.trace.trace_id.as_str()));
-
-    // Remember current selection.
-    let prev_trace_id = traces
+        .is_some_and(|trace| !known.contains(trace.trace.trace_id.as_str()));
+    let previous_id = traces
         .get(state.trace_index)
-        .map(|t| t.trace.trace_id.clone());
-    let prev_entry_index = state.entry_index();
-
-    // Replace traces.
-    *traces = new_traces;
-
-    // Rebuild entry_indices for the new trace count.
-    state.entry_indices = vec![0; traces.len()];
-
-    if newest_is_new {
-        // New trace arrived: switch to it.
-        state.trace_index = 0;
-        state.traces_list_state.select(Some(0));
-        state.set_entry_index(0);
-        state.reset_diff_view();
-        state.diff_cache.clear();
-        return Ok(());
-    }
-
-    // Restore trace selection by id, or fall back to 0.
-    state.trace_index = prev_trace_id
-        .as_deref()
-        .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
-        .unwrap_or(0);
-    state.traces_list_state.select(Some(state.trace_index));
-
-    // Restore entry index, clamped to the new entry count.
-    let entry_count = traces
-        .get(state.trace_index)
-        .map(|t| t.entries.len())
-        .unwrap_or(0);
-    let clamped = if entry_count == 0 {
+        .map(|trace| trace.trace.trace_id.clone());
+    let previous_entry = state.entry_index();
+    let entries: HashMap<_, _> = traces
+        .iter()
+        .enumerate()
+        .map(|(index, trace)| {
+            (
+                trace.trace.trace_id.clone(),
+                state.entry_indices.get(index).copied().unwrap_or(0),
+            )
+        })
+        .collect();
+    let source_changed = previous_id.as_ref().is_some_and(|id| {
+        refresh
+            .retained
+            .iter()
+            .find(|(trace, _)| trace == id)
+            .is_none_or(|(_, prefix)| previous_entry >= *prefix)
+    });
+    state.diff_cache.retain(&refresh.retained);
+    *traces = refresh.traces;
+    state.entry_indices = traces
+        .iter()
+        .map(|trace| {
+            entries
+                .get(&trace.trace.trace_id)
+                .copied()
+                .unwrap_or(0)
+                .min(trace.entries.len().saturating_sub(1))
+        })
+        .collect();
+    state.trace_index = if newest_is_new {
         0
     } else {
-        prev_entry_index.min(entry_count - 1)
+        previous_id
+            .as_ref()
+            .and_then(|id| traces.iter().position(|trace| &trace.trace.trace_id == id))
+            .unwrap_or(0)
     };
-    state.set_entry_index(clamped);
-
-    // Invalidate caches.
-    state.diff_cache.clear();
-
-    // Reset scroll only when the selected entry changed (trace disappeared
-    // or entry index was clamped). When the same entry is still selected the
-    // user may be reviewing the diff, so preserve their scroll position.
-    let selection_changed = prev_trace_id.as_deref()
-        != traces
-            .get(state.trace_index)
-            .map(|t| t.trace.trace_id.as_str())
-        || clamped != prev_entry_index;
-    if selection_changed {
+    state
+        .traces_list_state
+        .select((!traces.is_empty()).then_some(state.trace_index));
+    if newest_is_new {
+        state.set_entry_index(0);
+    }
+    let selected_id = traces
+        .get(state.trace_index)
+        .map(|trace| &trace.trace.trace_id);
+    if newest_is_new
+        || selected_id != previous_id.as_ref()
+        || state.entry_index() != previous_entry
+        || source_changed
+    {
         state.reset_diff_view();
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::browse::diff_cursor::DiffRow;
+    use crate::cli::browse::traces::detail::CacheEpoch;
     use crate::cli::browse::traces::test_support::*;
+    use ratatui::text::Line;
 
-    #[test]
-    fn reload_preserves_selection() {
-        let trace_a = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
-            entries: vec![edit_entry(), write_entry()],
-        };
-        let trace_b = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
-            entries: vec![edit_entry()],
-        };
-
-        // Start with two traces, select the second trace at entry 0.
-        let mut traces = vec![trace_a.clone(), trace_b.clone()];
-        let mut state = AppState::new(traces.len());
-        state.trace_index = 1;
-        state.set_entry_index(0);
-        state.diff_cache.insert(
-            crate::cli::browse::traces::detail::CacheEpoch {
-                width: 80,
-                layout: deltoids::ChangeLayout::Grouped,
-                syntax_theme: "",
-            },
-            (1, 0),
-            vec![],
-        );
-
-        // Simulate a reload where trace_b gains an entry.
-        let trace_b_updated = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 2, "b updated"),
-            entries: vec![edit_entry(), write_entry()],
-        };
-        // Swap in the new data (simulates what reload_traces does without disk IO).
-        let prev_trace_id = traces
-            .get(state.trace_index)
-            .map(|t| t.trace.trace_id.clone());
-        let prev_entry_index = state.entry_index();
-
-        traces = vec![trace_a.clone(), trace_b_updated];
-        state.entry_indices = vec![0; traces.len()];
-        state.trace_index = prev_trace_id
-            .as_deref()
-            .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
-            .unwrap_or(0);
-
-        let entry_count = traces
-            .get(state.trace_index)
-            .map(|t| t.entries.len())
-            .unwrap_or(0);
-        let clamped = if entry_count == 0 {
-            0
-        } else {
-            prev_entry_index.min(entry_count - 1)
-        };
-        state.set_entry_index(clamped);
-        state.diff_cache.clear();
-
-        // Selection stays on the same trace.
-        assert_eq!(state.trace_index, 1);
-        assert_eq!(state.entry_index(), 0);
-        assert!(state.diff_cache.is_empty());
-    }
-
-    #[test]
-    fn reload_handles_removed_trace() {
-        let trace_a = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
-            entries: vec![edit_entry()],
-        };
-        let trace_b = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
-            entries: vec![edit_entry()],
-        };
-
-        let mut traces = vec![trace_a.clone(), trace_b.clone()];
-        let mut state = AppState::new(traces.len());
-        state.trace_index = 1; // select trace_b
-        state.diff_cache.insert(
-            crate::cli::browse::traces::detail::CacheEpoch {
-                width: 80,
-                layout: deltoids::ChangeLayout::Grouped,
-                syntax_theme: "",
-            },
-            (1, 0),
-            vec![],
-        );
-
-        // Simulate trace_b disappearing.
-        let prev_trace_id = traces
-            .get(state.trace_index)
-            .map(|t| t.trace.trace_id.clone());
-
-        traces = vec![trace_a.clone()];
-        state.entry_indices = vec![0; traces.len()];
-        state.trace_index = prev_trace_id
-            .as_deref()
-            .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
-            .unwrap_or(0);
-        state.diff_cache.clear();
-
-        // Falls back to index 0 since trace_b is gone.
-        assert_eq!(state.trace_index, 0);
-        assert_eq!(
-            traces[state.trace_index].trace.trace_id,
-            "01JTESTTRACE00000000000000"
-        );
-        assert!(state.diff_cache.is_empty());
-    }
-
-    /// Helper that simulates `reload_traces` selection-restore and scroll
-    /// logic without disk IO.
-    fn simulate_reload(
-        traces: &mut Vec<LoadedTrace>,
-        state: &mut AppState,
-        new_traces: Vec<LoadedTrace>,
-    ) {
-        // Collect known trace IDs before reload.
-        let known_ids: HashSet<_> = traces.iter().map(|t| t.trace.trace_id.as_str()).collect();
-
-        // Check if the newest trace is new.
-        let newest_is_new = new_traces
-            .first()
-            .is_some_and(|t| !known_ids.contains(t.trace.trace_id.as_str()));
-
-        let prev_trace_id = traces
-            .get(state.trace_index)
-            .map(|t| t.trace.trace_id.clone());
-        let prev_entry_index = state.entry_index();
-
-        *traces = new_traces;
-        state.entry_indices = vec![0; traces.len()];
-
-        if newest_is_new {
-            // New trace arrived: switch to it.
-            state.trace_index = 0;
-            state.set_entry_index(0);
-            state.cursor.scroll = 0;
-            state.diff_cache.clear();
-            return;
-        }
-
-        state.trace_index = prev_trace_id
-            .as_deref()
-            .and_then(|id| traces.iter().position(|t| t.trace.trace_id == id))
-            .unwrap_or(0);
-
-        let entry_count = traces
-            .get(state.trace_index)
-            .map(|t| t.entries.len())
-            .unwrap_or(0);
-        let clamped = if entry_count == 0 {
-            0
-        } else {
-            prev_entry_index.min(entry_count - 1)
-        };
-        state.set_entry_index(clamped);
-        state.diff_cache.clear();
-
-        let selection_changed = prev_trace_id.as_deref()
-            != traces
-                .get(state.trace_index)
-                .map(|t| t.trace.trace_id.as_str())
-            || clamped != prev_entry_index;
-        if selection_changed {
-            state.cursor.scroll = 0;
+    fn trace(id: &str, count: usize) -> LoadedTrace {
+        LoadedTrace {
+            trace: trace_summary(id, count, id),
+            entries: vec![edit_entry(); count],
         }
     }
 
+    fn refresh(traces: Vec<LoadedTrace>) -> Refresh {
+        let retained = traces
+            .iter()
+            .map(|trace| (trace.trace.trace_id.clone(), trace.entries.len()))
+            .collect();
+        Refresh { traces, retained }
+    }
+
     #[test]
-    fn reload_preserves_scroll_when_selection_unchanged() {
-        let trace = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
-            entries: vec![edit_entry()],
-        };
-        let mut traces = vec![trace.clone()];
-        let mut state = AppState::new(traces.len());
+    fn reordering_preserves_selection_scroll_and_cached_identity() {
+        let mut traces = vec![trace("a", 2), trace("b", 1)];
+        let mut state = AppState::new(2);
+        state.set_entry_index(1);
         state.cursor.scroll = 42;
-
-        // Reload with same trace, same entries.
-        let updated = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a updated"),
-            entries: vec![edit_entry(), write_entry()],
-        };
-        simulate_reload(&mut traces, &mut state, vec![updated]);
-
-        assert_eq!(state.cursor.scroll, 42, "scroll should be preserved");
-    }
-
-    #[test]
-    fn reload_resets_scroll_when_trace_disappears() {
-        let trace_a = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
-            entries: vec![edit_entry()],
-        };
-        let trace_b = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
-            entries: vec![edit_entry()],
-        };
-        let mut traces = vec![trace_a.clone(), trace_b];
-        let mut state = AppState::new(traces.len());
-        state.trace_index = 1;
-        state.set_entry_index(0);
-        state.cursor.scroll = 15;
-
-        // trace_b disappears.
-        simulate_reload(&mut traces, &mut state, vec![trace_a]);
-
-        assert_eq!(state.trace_index, 0);
-        assert_eq!(
-            state.cursor.scroll, 0,
-            "scroll should reset when trace gone"
+        let epoch = CacheEpoch::default();
+        state.diff_cache.insert(
+            epoch,
+            ("a", 1),
+            vec![DiffRow::plain(Line::from("source a"))],
         );
-    }
-
-    #[test]
-    fn reload_switches_to_new_trace() {
-        let trace_a = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
-            entries: vec![edit_entry()],
-        };
-        let mut traces = vec![trace_a.clone()];
-        let mut state = AppState::new(traces.len());
-        state.trace_index = 0;
-        state.set_entry_index(0);
-        state.cursor.scroll = 10;
-
-        // New trace appears at head (newest).
-        let trace_b = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
-            entries: vec![edit_entry()],
-        };
-        simulate_reload(&mut traces, &mut state, vec![trace_b, trace_a]);
-
-        // Should switch to the new trace at index 0.
-        assert_eq!(state.trace_index, 0);
-        assert_eq!(
-            traces[state.trace_index].trace.trace_id,
-            "01JTESTTRACE00000000000001"
+        apply_refresh(
+            &mut traces,
+            &mut state,
+            refresh(vec![trace("b", 2), trace("a", 2)]),
         );
-        assert_eq!(state.entry_index(), 0);
-        assert_eq!(state.cursor.scroll, 0, "scroll should reset for new trace");
-    }
-
-    #[test]
-    fn reload_preserves_selection_when_no_new_trace() {
-        let trace_a = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
-            entries: vec![edit_entry()],
-        };
-        let trace_b = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 1, "b"),
-            entries: vec![edit_entry()],
-        };
-        let mut traces = vec![trace_a.clone(), trace_b.clone()];
-        let mut state = AppState::new(traces.len());
-        state.trace_index = 1; // select trace_b
-        state.set_entry_index(0);
-        state.cursor.scroll = 15;
-
-        // trace_b gains an entry but no new trace appears.
-        let trace_b_updated = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000001", 2, "b updated"),
-            entries: vec![edit_entry(), write_entry()],
-        };
-        simulate_reload(&mut traces, &mut state, vec![trace_a, trace_b_updated]);
-
-        // Selection should stay on trace_b.
-        assert_eq!(state.trace_index, 1);
+        assert_eq!(traces[state.trace_index].trace.trace_id, "a");
+        assert_eq!(state.entry_index(), 1);
+        assert_eq!(state.cursor.scroll, 42);
         assert_eq!(
-            traces[state.trace_index].trace.trace_id,
-            "01JTESTTRACE00000000000001"
+            state.diff_cache.get(epoch, ("a", 1)).unwrap()[0].line,
+            Line::from("source a")
         );
-        assert_eq!(state.cursor.scroll, 15, "scroll should be preserved");
+        assert!(!state.diff_cache.contains(epoch, ("b", 1)));
     }
 
     #[test]
-    fn reload_resets_scroll_when_entry_index_clamped() {
-        let trace = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 3, "a"),
-            entries: vec![edit_entry(), write_entry(), edit_entry()],
-        };
-        let mut traces = vec![trace];
-        let mut state = AppState::new(traces.len());
+    fn new_trace_becomes_selected_without_evicting_older_renders() {
+        let mut traces = vec![trace("a", 1)];
+        let mut state = AppState::new(1);
+        state.cursor.scroll = 12;
+        state
+            .diff_cache
+            .insert(CacheEpoch::default(), ("a", 0), vec![]);
+        apply_refresh(
+            &mut traces,
+            &mut state,
+            refresh(vec![trace("new", 1), trace("a", 1)]),
+        );
+        assert_eq!(traces[state.trace_index].trace.trace_id, "new");
+        assert_eq!(state.cursor.scroll, 0);
+        assert!(state.diff_cache.contains(CacheEpoch::default(), ("a", 0)));
+    }
+
+    #[test]
+    fn deletion_and_truncation_clamp_selection_and_remove_stale_rows() {
+        let mut traces = vec![trace("a", 3), trace("b", 1)];
+        let mut state = AppState::new(2);
         state.set_entry_index(2);
         state.cursor.scroll = 20;
-
-        // Entries shrink to 1, so entry_index 2 gets clamped to 0.
-        let shrunk = LoadedTrace {
-            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a shrunk"),
-            entries: vec![edit_entry()],
-        };
-        simulate_reload(&mut traces, &mut state, vec![shrunk]);
-
+        let epoch = CacheEpoch::default();
+        state.diff_cache.insert(epoch, ("a", 2), vec![]);
+        state.diff_cache.insert(epoch, ("b", 0), vec![]);
+        apply_refresh(&mut traces, &mut state, refresh(vec![trace("a", 1)]));
         assert_eq!(state.entry_index(), 0);
-        assert_eq!(
-            state.cursor.scroll, 0,
-            "scroll should reset when entry clamped"
-        );
+        assert_eq!(state.cursor.scroll, 0);
+        assert!(state.diff_cache.is_empty());
+        apply_refresh(&mut traces, &mut state, refresh(vec![]));
+        assert!(traces.is_empty());
+        assert_eq!(state.trace_index, 0);
+    }
+
+    #[test]
+    fn rewrite_invalidates_only_the_changed_suffix() {
+        let mut traces = vec![trace("a", 2), trace("b", 1)];
+        let mut state = AppState::new(2);
+        state.set_entry_index(1);
+        state.cursor.scroll = 20;
+        let epoch = CacheEpoch::default();
+        for key in [("a", 0), ("a", 1), ("b", 0)] {
+            state.diff_cache.insert(epoch, key, vec![]);
+        }
+        let mut update = refresh(traces.clone());
+        update.retained[0].1 = 1;
+        apply_refresh(&mut traces, &mut state, update);
+        assert!(state.diff_cache.contains(epoch, ("a", 0)));
+        assert!(state.diff_cache.contains(epoch, ("b", 0)));
+        assert!(!state.diff_cache.contains(epoch, ("a", 1)));
+        assert_eq!(state.cursor.scroll, 0);
     }
 }

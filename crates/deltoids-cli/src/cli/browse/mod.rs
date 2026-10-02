@@ -422,7 +422,9 @@ impl Shell {
                 continue;
             }
             let paths: Vec<_> = batch.paths.into_iter().collect();
-            if batch.rescan || (!paths.is_empty() && modes[index].should_reload(&paths)) {
+            if (batch.rescan || !paths.is_empty())
+                && modes[index].notify_changes(&paths, batch.rescan)
+            {
                 self.dirty_since[index].get_or_insert_with(Instant::now);
             }
         }

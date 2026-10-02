@@ -52,6 +52,10 @@ impl TraceStore {
         Ok(Self::with_root(trace_root_directory()?))
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Path to a single trace's directory under this store.
     pub(crate) fn trace_directory(&self, trace_id: &str) -> PathBuf {
         self.root.join(trace_id)
@@ -437,7 +441,7 @@ fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntr
             continue;
         }
 
-        let entry = serde_json::from_str(line).map_err(|err| {
+        let entry = parse_history_entry(line).map_err(|err| {
             format!(
                 "Failed to parse history entry {} in {}: {}",
                 index + 1,
@@ -449,6 +453,10 @@ fn read_history_entries_from_path(entries_path: &Path) -> Result<Vec<HistoryEntr
     }
 
     Ok(entries)
+}
+
+pub(crate) fn parse_history_entry(line: &str) -> Result<HistoryEntry, serde_json::Error> {
+    serde_json::from_str(line)
 }
 
 /// Aggregate view of one trace, used by the TUI list pane.
@@ -473,7 +481,10 @@ struct RawTrace {
 
 /// Build a [`TraceSummary`] from a trace id and the entries that belong to
 /// it (already filtered by the caller). `None` when there are no entries.
-fn trace_summary_from(trace_id: &str, entries: &[&HistoryEntry]) -> Option<TraceSummary> {
+pub(crate) fn trace_summary_from(
+    trace_id: &str,
+    entries: &[&HistoryEntry],
+) -> Option<TraceSummary> {
     let last = entries.last()?;
     Some(TraceSummary {
         trace_id: trace_id.to_string(),

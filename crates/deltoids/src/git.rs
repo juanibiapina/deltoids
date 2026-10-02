@@ -60,6 +60,16 @@ impl Repo {
         self.0.workdir()
     }
 
+    /// Directory containing this worktree's HEAD and index.
+    pub fn git_dir(&self) -> &Path {
+        self.0.path()
+    }
+
+    /// Directory containing shared refs and repository configuration.
+    pub fn common_dir(&self) -> &Path {
+        self.0.commondir()
+    }
+
     /// Whether `path` is gitignored. Accepts an absolute path inside the
     /// working tree or a workdir-relative path.
     ///

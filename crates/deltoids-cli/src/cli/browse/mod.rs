@@ -32,16 +32,15 @@
 //! poll timeout shrinks to `SETTLE_TIMEOUT` so the settled `Full` frame
 //! lands promptly after release.
 //!
-//! Live reload keeps both modes resident: both watchers are armed once at
-//! startup, so toggling is instant. The shell drains both receivers each
-//! loop, marks the owning mode dirty, reloads the **active** mode eagerly
-//! after a debounce, and reloads the **inactive** mode lazily the moment
-//! it becomes active.
+//! Modes load and install their watchers on first activation. The shell
+//! takes bounded notification batches each loop, reloads the active mode
+//! after a debounce, and leaves inactive modes dirty until activation.
+//! Healthy watchers cause no periodic reloads; failures trigger explicit
+//! watcher recovery or read retries.
 
 use std::io;
-use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
+use watch::ChangeReceiver;
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
@@ -90,9 +89,8 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 /// Debounce window for change events: a burst of notifications collapses
 /// into one reload once this much wall-clock has passed since the first.
 const DEBOUNCE_DELAY: Duration = Duration::from_millis(200);
-/// Minimum wall-clock gap between git polls (Files mode catches commits
-/// and other `.git/` writes the filesystem watcher filters out).
-const GIT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const READ_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_WATCH_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// Poll timeout while input is streaming (a navigation key is held). Kept
 /// short so the first idle frame after release lands quickly and rebuilds
 /// any diff deferred during the hold.
@@ -151,6 +149,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         let commands = &shell.commands;
         let theme_picker = shell.theme_picker.as_ref();
         let active_theme = shell.syntax_theme.as_str();
+        let refresh_error = shell.refresh_error();
         let area = terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -177,6 +176,12 @@ pub fn run(active_mode: usize) -> Result<(), String> {
                 }
                 if let Some(picker) = theme_picker {
                     theme_picker::draw(frame, area, &theme, picker, active_theme);
+                }
+                if let Some(error) = &refresh_error {
+                    frame.render_widget(
+                        Paragraph::new(error.as_str()),
+                        Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+                    );
                 }
             })
             .map_err(|err| format!("failed to render screen: {err}"))?
@@ -219,13 +224,6 @@ pub fn run(active_mode: usize) -> Result<(), String> {
 
         // Drain armed watchers; mark the owning mode dirty.
         shell.drain_watchers(&mut modes);
-
-        // Periodic git poll for any mode that wants it (Files working
-        // tree). Routed through the same debounce; reload dedups.
-        if shell.last_poll.elapsed() >= GIT_POLL_INTERVAL {
-            shell.mark_poll_dirty();
-            shell.last_poll = Instant::now();
-        }
 
         // Reload the active mode eagerly once its debounce elapses (or
         // immediately after a toggle). The inactive mode stays dirty and
@@ -307,11 +305,14 @@ struct Shell {
     /// Last-drawn left-column rect, for divider hit-testing.
     left_rect: Rect,
     /// Per-mode change receivers, armed lazily on first activation.
-    receivers: [Option<Receiver<Vec<PathBuf>>>; MODE_COUNT],
+    receivers: [Option<ChangeReceiver>; MODE_COUNT],
+    watch_errors: [Option<String>; MODE_COUNT],
+    watch_retry_at: [Option<Instant>; MODE_COUNT],
+    watch_retry_delay: [Duration; MODE_COUNT],
+    reload_retry_at: [Option<Instant>; MODE_COUNT],
+    reload_errors: [Option<String>; MODE_COUNT],
     /// Whether each mode's watcher has been armed yet.
     armed: [bool; MODE_COUNT],
-    /// Whether each mode wants the periodic git poll.
-    needs_poll: [bool; MODE_COUNT],
     /// Whether each mode has been built for real yet (vs the startup
     /// empty placeholder).
     built: [bool; MODE_COUNT],
@@ -322,8 +323,6 @@ struct Shell {
     /// Set on a mode toggle to force an immediate reload of the now-active
     /// mode if it is dirty.
     toggle_pending: bool,
-    /// Last git poll.
-    last_poll: Instant,
     /// Whether the most recent input burst was empty (a poll timeout). When
     /// false, the user is actively navigating and the next frame draws
     /// `Fast`; when true, it draws `Full`.
@@ -351,58 +350,79 @@ impl Shell {
             left_rect: Rect::default(),
             receivers: [None, None],
             armed: [false, false],
-            needs_poll: [false, false],
+            watch_errors: [None, None],
+            watch_retry_at: [None, None],
+            watch_retry_delay: [DEBOUNCE_DELAY; MODE_COUNT],
+            reload_retry_at: [None, None],
+            reload_errors: [None, None],
             built: [false, false],
             total_width,
             dirty_since: [None, None],
             toggle_pending: false,
-            last_poll: Instant::now(),
             input_idle: true,
             commands: Vec::new(),
         }
     }
 
-    /// Arm mode `index`'s watcher if it has not been armed yet. Idempotent
-    /// across toggles, so a watcher is never re-armed.
+    fn refresh_error(&self) -> Option<String> {
+        self.watch_errors[self.active]
+            .as_ref()
+            .map(|err| format!("Auto-refresh unavailable: {err}"))
+            .or_else(|| {
+                self.reload_errors[self.active]
+                    .as_ref()
+                    .map(|err| format!("Refresh failed; retrying: {err}"))
+            })
+    }
+
+    /// Install once, or replace a failed backend with bounded backoff.
     fn arm(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT], index: usize) {
         if self.armed[index] {
             return;
         }
-        self.receivers[index] = modes[index].watch();
-        self.armed[index] = true;
+        match modes[index].watch() {
+            Ok(receiver) => {
+                if self.watch_errors[index].take().is_some() && receiver.is_some() {
+                    self.dirty_since[index].get_or_insert_with(Instant::now);
+                }
+                self.receivers[index] = receiver;
+                self.armed[index] = true;
+                self.watch_retry_at[index] = None;
+                self.watch_retry_delay[index] = DEBOUNCE_DELAY;
+            }
+            Err(err) => self.watch_failed(index, err),
+        }
     }
 
-    /// Drain both watchers, marking the owning mode dirty for any batch
-    /// that warrants a reload.
+    fn watch_failed(&mut self, index: usize, error: String) {
+        self.receivers[index] = None;
+        self.armed[index] = false;
+        self.watch_errors[index] = Some(error);
+        self.watch_retry_at[index] = Some(Instant::now() + self.watch_retry_delay[index]);
+        self.watch_retry_delay[index] =
+            (self.watch_retry_delay[index] * 2).min(MAX_WATCH_RETRY_DELAY);
+    }
+
+    /// Take one bounded batch per watcher. Events arriving during a reload
+    /// remain in the accumulator until the next loop.
     fn drain_watchers(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT]) {
-        for index in 0..self.receivers.len() {
-            let Some(rx) = self.receivers[index].take() else {
+        for index in 0..MODE_COUNT {
+            if self.built[index]
+                && !self.armed[index]
+                && self.watch_retry_at[index].is_none_or(|at| Instant::now() >= at)
+            {
+                self.arm(modes, index);
+            }
+            let Some(receiver) = self.receivers[index].as_ref() else {
                 continue;
             };
-            self.drain_one(modes, index, &rx);
-            self.receivers[index] = Some(rx);
-        }
-    }
-
-    /// Drain one receiver, marking mode `index` dirty for any batch that
-    /// warrants a reload.
-    fn drain_one(
-        &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
-        index: usize,
-        rx: &Receiver<Vec<PathBuf>>,
-    ) {
-        while let Ok(paths) = rx.try_recv() {
-            if modes[index].should_reload(&paths) {
-                self.dirty_since[index].get_or_insert_with(Instant::now);
+            let batch = receiver.take();
+            if let Some(error) = batch.error {
+                self.watch_failed(index, error);
+                continue;
             }
-        }
-    }
-
-    /// Mark dirty every mode that wants a git poll this tick.
-    fn mark_poll_dirty(&mut self) {
-        for index in 0..self.needs_poll.len() {
-            if self.needs_poll[index] {
+            let paths: Vec<_> = batch.paths.into_iter().collect();
+            if batch.rescan || (!paths.is_empty() && modes[index].should_reload(&paths)) {
                 self.dirty_since[index].get_or_insert_with(Instant::now);
             }
         }
@@ -436,13 +456,21 @@ impl Shell {
     /// Pick the loop's poll timeout: short while a reload is pending,
     /// otherwise the idle timeout.
     fn poll_timeout(&self) -> Duration {
+        let mut timeout = if self.input_idle {
+            POLL_TIMEOUT
+        } else {
+            SETTLE_TIMEOUT
+        };
         if let Some(since) = self.dirty_since[self.active] {
-            return DEBOUNCE_DELAY.saturating_sub(since.elapsed());
+            timeout = timeout.min(DEBOUNCE_DELAY.saturating_sub(since.elapsed()));
         }
-        if !self.input_idle {
-            return SETTLE_TIMEOUT;
+        if let Some(at) = self.reload_retry_at[self.active] {
+            timeout = timeout.min(at.saturating_duration_since(Instant::now()));
         }
-        POLL_TIMEOUT
+        for at in self.watch_retry_at.iter().flatten() {
+            timeout = timeout.min(at.saturating_duration_since(Instant::now()));
+        }
+        timeout
     }
 
     /// The two adjacent border columns forming the divider between the
@@ -485,8 +513,8 @@ impl Shell {
     }
 
     /// Build the active mode for real once its loading frame is on screen.
-    /// No-op if already built. Arms its watcher and clears any stale
-    /// dirty/toggle state, since a fresh build already reflects disk.
+    /// No-op if already built. The mode watches before loading its snapshot;
+    /// retain those pending events and schedule recovery if the read failed.
     fn build_active(
         &mut self,
         modes: &mut [Box<dyn Mode>; MODE_COUNT],
@@ -507,9 +535,11 @@ impl Shell {
         };
         modes[i] = build_mode(i, theme, dw);
         self.built[i] = true;
-        self.needs_poll[i] = modes[i].needs_git_poll();
-        self.arm(modes, i);
         self.dirty_since[i] = None;
+        self.arm(modes, i);
+        if modes[i].retry_reload() {
+            self.reload_retry_at[i] = Some(Instant::now() + DEBOUNCE_DELAY);
+        }
         self.toggle_pending = false;
     }
 
@@ -523,10 +553,14 @@ impl Shell {
     ) -> Result<(), String> {
         let active = self.active;
         let due = self.dirty_since[active].is_some_and(|s| s.elapsed() >= DEBOUNCE_DELAY);
-        if due || self.toggle_pending {
-            if self.dirty_since[active].is_some() {
-                modes[active].reload(vp, theme)?;
+        let retry_due = self.reload_retry_at[active].is_some_and(|at| Instant::now() >= at);
+        if due || retry_due || self.toggle_pending {
+            if self.dirty_since[active].is_some() || self.reload_retry_at[active].is_some() {
+                let result = modes[active].reload(vp, theme);
                 self.dirty_since[active] = None;
+                let failed = result.is_err() || modes[active].retry_reload();
+                self.reload_errors[active] = result.err();
+                self.reload_retry_at[active] = failed.then(|| Instant::now() + READ_RETRY_DELAY);
             }
             self.toggle_pending = false;
         }

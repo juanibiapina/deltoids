@@ -10,7 +10,7 @@
 //! Neither is fatal:
 //!
 //! - **Reload** keeps the current view on a failed tick (see
-//!   [`reload::ReloadOutcome`]); the poll and watcher retry, so it
+//!   [`reload::ReloadOutcome`]); explicit retries recover it, so it
 //!   self-heals.
 //! - **Startup** inside a repo shows a neutral "Loading…" state and
 //!   builds a normal, reloadable mode: the first successful tick promotes
@@ -40,8 +40,8 @@
 //! `c` comments on the selected line, `d` deletes that comment, and `y`
 //! copies every working-tree comment as one agent-ready prompt.
 
+use crate::cli::browse::watch::{ChangeReceiver, ChangeWatcher};
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -136,12 +136,12 @@ pub(super) struct FilesMode {
     /// rather than spinning forever. `None` once resolved or never
     /// pending.
     loading_since: Option<Instant>,
-    /// The diff text the current model was built from; the poll compares
-    /// fresh `working_tree_diff` output against this to skip rebuilds.
+    /// The diff text the current model was built from; event-driven reloads
+    /// compare fresh output against this and check sidebar staging status.
     last_input: String,
-    /// Keeps the filesystem watcher alive for the session; dropping it
-    /// closes the change channel.
-    _watcher: Option<notify::RecommendedWatcher>,
+    /// Keeps the bounded filesystem watcher alive for the session.
+    _watcher: Option<ChangeWatcher>,
+    reload_failed: bool,
 }
 
 impl FilesMode {
@@ -157,16 +157,22 @@ impl FilesMode {
         let Some(repo) = git::Repo::discover() else {
             return Self::empty(theme, initial_diff_width);
         };
-        match Self::try_model(&repo) {
+        // Watch before the snapshot so edits during the build stay pending.
+        let watcher = crate::cli::browse::watch::spawn_workdir_watcher(&repo)
+            .ok()
+            .flatten();
+        let mut mode = match Self::try_model(&repo) {
             Ok((input, model)) => {
                 Self::new(model, input, Some(repo), false, theme, initial_diff_width)
             }
             // A repo-backed build lost a race (a size-check or content
             // race). Rather than a static error screen, open a reloadable
-            // "Loading…" mode; the watcher/poll retries and the first
+            // "Loading…" mode; explicit retries and the first
             // stable tick promotes it to a live diff.
             Err(_) => Self::loading(repo, theme, initial_diff_width),
-        }
+        };
+        mode._watcher = watcher;
+        mode
     }
 
     /// Compute the working-tree diff and its model, or an error when the
@@ -253,6 +259,7 @@ impl FilesMode {
             loading_since: None,
             last_input: input,
             _watcher: None,
+            reload_failed: false,
         }
     }
 
@@ -783,21 +790,26 @@ impl Mode for FilesMode {
         handle_mouse(self, mouse, right_viewport, left_viewport)
     }
 
-    fn watch(&mut self) -> Option<Receiver<Vec<PathBuf>>> {
-        // Arm the watcher; a static source yields a receiver that never
-        // fires. Keep the watcher handle in `self` so the channel stays
-        // open for the session.
-        let (watcher, rx) = spawn_watcher(&self.source()).ok()?;
-        self._watcher = watcher;
-        Some(rx)
+    fn watch(&mut self) -> Result<Option<ChangeReceiver>, String> {
+        if !self
+            ._watcher
+            .as_ref()
+            .is_some_and(ChangeWatcher::is_healthy)
+        {
+            self._watcher = spawn_watcher(&self.source())?;
+            if let Some(watcher) = &self._watcher {
+                watcher.receiver().request_rescan();
+            }
+        }
+        Ok(self._watcher.as_ref().map(ChangeWatcher::receiver))
     }
 
     fn should_reload(&self, paths: &[PathBuf]) -> bool {
         should_reload(&self.source(), paths)
     }
 
-    fn needs_git_poll(&self) -> bool {
-        matches!(self.source(), DiffSource::WorkingTree(_))
+    fn retry_reload(&self) -> bool {
+        self.startup_pending || self.reload_failed
     }
 
     fn reload(&mut self, viewport: ReloadViewport, theme: &Theme) -> Result<bool, String> {
@@ -823,6 +835,7 @@ impl Mode for FilesMode {
             width,
             viewport.right_viewport,
         );
+        self.reload_failed = matches!(outcome, ReloadOutcome::Failed(_));
         // A rebuilt diff may have shifted the lines comments point at:
         // follow them onto their new numbers before anything renders.
         if outcome == ReloadOutcome::Rebuilt {

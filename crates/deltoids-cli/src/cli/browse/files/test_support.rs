@@ -88,6 +88,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         loading_since: None,
         last_input: String::new(),
         _watcher: None,
+        reload_failed: false,
     }
 }
 

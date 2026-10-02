@@ -12,8 +12,8 @@
 //! Each mode owns its full vertical slice: state, key handling, mouse
 //! hit-testing, render, and live-reload. The shell never reaches inside.
 
+use crate::cli::browse::watch::ChangeReceiver;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 
 use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::Frame;
@@ -343,16 +343,17 @@ pub(crate) trait Mode {
 
     /// Arm the change-notification watcher for this mode's data source
     /// and return its receiver, or `None` for a static source. Called
-    /// once at startup; the mode keeps the watcher handle alive and the
-    /// shell drains the receiver each loop.
-    fn watch(&mut self) -> Option<Receiver<Vec<PathBuf>>>;
+    /// at activation and after a backend failure. The mode keeps the
+    /// watcher alive; the shell takes coalesced batches each loop.
+    fn watch(&mut self) -> Result<Option<ChangeReceiver>, String>;
 
     /// Whether a batch of changed paths warrants a reload of this mode.
     fn should_reload(&self, paths: &[PathBuf]) -> bool;
 
-    /// Whether the shell should run its periodic git poll for this mode
-    /// (Files mode watching a working tree returns `true`).
-    fn needs_git_poll(&self) -> bool;
+    /// Whether a failed read needs another attempt without a new event.
+    fn retry_reload(&self) -> bool {
+        false
+    }
 
     /// Reload from disk in place, preserving navigation state. Returns
     /// `true` when the visible content actually changed.

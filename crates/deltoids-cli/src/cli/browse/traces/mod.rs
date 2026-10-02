@@ -29,11 +29,10 @@
 //! `c` comments on the selected line, `d` deletes that comment, and `y`
 //! copies every comment on the trace as one agent-ready prompt.
 
+use crate::cli::browse::watch::{ChangeReceiver, ChangeWatcher};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use notify::{RecursiveMode, Watcher};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::Style,
@@ -189,20 +188,21 @@ pub(super) struct TracesMode {
     traces: Vec<LoadedTrace>,
     cwd: String,
     /// Keeps the trace-root watcher alive for the session.
-    _watcher: Option<notify::RecommendedWatcher>,
+    _watcher: Option<ChangeWatcher>,
 }
 
 impl TracesMode {
     /// Load the traces for the current directory and build the mode.
     pub(super) fn build() -> Result<Self, String> {
         let cwd = current_cwd_or_empty();
+        let watcher = Self::spawn_watcher().ok();
         let traces = load_traces_for_cwd(&cwd)?;
         let state = AppState::new(traces.len());
         Ok(Self {
             state,
             traces,
             cwd,
-            _watcher: None,
+            _watcher: watcher,
         })
     }
 
@@ -215,6 +215,13 @@ impl TracesMode {
             cwd: current_cwd_or_empty(),
             _watcher: None,
         }
+    }
+
+    fn spawn_watcher() -> Result<ChangeWatcher, String> {
+        let root = crate::trace_root_directory()?;
+        std::fs::create_dir_all(&root)
+            .map_err(|err| format!("failed to create {}: {err}", root.display()))?;
+        ChangeWatcher::new(&[&root])
     }
 
     /// Row count of the last-drawn diff window (0 before the first draw).
@@ -769,29 +776,24 @@ impl Mode for TracesMode {
         handle_mouse(&mut self.state, &self.traces, mouse, rows, right_viewport)
     }
 
-    fn watch(&mut self) -> Option<Receiver<Vec<PathBuf>>> {
-        let (tx, rx) = mpsc::channel::<Vec<PathBuf>>();
-        let trace_root = crate::trace_root_directory().ok()?;
-        std::fs::create_dir_all(&trace_root).ok()?;
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(event) = res {
-                let _ = tx.send(event.paths);
+    fn watch(&mut self) -> Result<Option<ChangeReceiver>, String> {
+        if !self
+            ._watcher
+            .as_ref()
+            .is_some_and(ChangeWatcher::is_healthy)
+        {
+            self._watcher = Some(Self::spawn_watcher()?);
+            if let Some(watcher) = &self._watcher {
+                watcher.receiver().request_rescan();
             }
-        })
-        .ok()?;
-        watcher.watch(&trace_root, RecursiveMode::Recursive).ok()?;
-        self._watcher = Some(watcher);
-        Some(rx)
+        }
+        Ok(self._watcher.as_ref().map(ChangeWatcher::receiver))
     }
 
     fn should_reload(&self, _paths: &[PathBuf]) -> bool {
         // Any change under the trace root warrants a reload; reload_traces
-        // restores the selection and is cheap.
+        // restores the selection.
         true
-    }
-
-    fn needs_git_poll(&self) -> bool {
-        false
     }
 
     fn reload(&mut self, _viewport: ReloadViewport, _theme: &Theme) -> Result<bool, String> {

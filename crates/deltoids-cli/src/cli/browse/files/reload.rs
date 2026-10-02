@@ -3,36 +3,26 @@
 //! preserving the user's navigation state.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 use deltoids::{Theme, git};
 
 use crate::sidebar::display_path;
 
 use super::diff_pane::DiffPane;
-use super::model::{DiffSource, Model, build_model};
+use super::model::{DiffSource, Model, build_model, stage_map};
 use super::sidebar_pane::build_sidebar;
-use crate::cli::browse::watch::{path_warrants_reload, spawn_workdir_watcher};
+use crate::cli::browse::watch::{ChangeWatcher, path_warrants_reload, spawn_workdir_watcher};
 use crate::sidebar::Sidebar;
 
 /// Install a recursive filesystem watcher for a refreshable source.
 ///
 /// Delegates to [`spawn_workdir_watcher`] for a
 /// [`DiffSource::WorkingTree`]; a [`DiffSource::Static`] source yields no
-/// watcher and a receiver that never fires (the sender is dropped here).
-#[allow(clippy::type_complexity)]
-pub(super) fn spawn_watcher(
-    source: &DiffSource<'_>,
-) -> Result<
-    (
-        Option<notify::RecommendedWatcher>,
-        mpsc::Receiver<Vec<PathBuf>>,
-    ),
-    String,
-> {
+/// watcher.
+pub(super) fn spawn_watcher(source: &DiffSource<'_>) -> Result<Option<ChangeWatcher>, String> {
     match source {
         DiffSource::WorkingTree(repo) => spawn_workdir_watcher(repo),
-        DiffSource::Static => Ok((None, mpsc::channel().1)),
+        DiffSource::Static => Ok(None),
     }
 }
 
@@ -49,15 +39,14 @@ pub(super) fn should_reload(source: &DiffSource<'_>, paths: &[PathBuf]) -> bool 
 
 /// Whether a freshly-computed `working_tree_diff` differs from the text
 /// the current model was built from. The diff text is the source of
-/// truth, so this is the one check that decides whether a poll tick or
-/// filesystem event warrants a rebuild.
+/// truth for diff bodies. Sidebar staging status is checked separately.
 fn reload_needed(new_input: &str, last_input: &str) -> bool {
     new_input != last_input
 }
 
 /// The result of one working-tree reload tick. A working-tree diff is a
 /// snapshot of a moving target, so a failed tick is transient and
-/// self-correcting: the poll and watcher schedule another attempt soon.
+/// self-correcting: the shell schedules a retry after a failed read.
 /// This enum keeps that distinction visible to the caller (the mode) so a
 /// failure never kills the loop and a still-loading startup can decide
 /// when a run of failures is genuinely stuck.
@@ -79,10 +68,8 @@ pub(super) enum ReloadOutcome {
 /// `repo.working_tree_diff()` via [`compute_reload`], then applies it via
 /// [`apply_reload`].
 ///
-/// Deduplicates on the diff text: `last_input` holds what the current
-/// model was built from, so an unchanged tree (a poll tick or a
-/// filesystem event that doesn't alter the diff) costs one
-/// `working_tree_diff` and skips the model/view rebuild.
+/// Deduplicates on patch text and sidebar staging status. A notification
+/// that changes neither skips the model/view rebuild.
 ///
 /// A working-tree diff races on-disk churn: a file can change size mid-diff
 /// (the libgit2 Filesystem error) or between the diff and content
@@ -101,7 +88,7 @@ pub(super) fn reload_working_tree(
     width: usize,
     diff_viewport: usize,
 ) -> ReloadOutcome {
-    let computed = compute_reload(repo, last_input);
+    let computed = compute_reload(repo, last_input, model);
     apply_reload(
         diff,
         sidebar,
@@ -120,9 +107,13 @@ pub(super) fn reload_working_tree(
 /// or `Err` when either the diff read or the model build lost a race with
 /// on-disk churn. Reads nothing the caller mutates, so a failure here is
 /// safe to discard.
-fn compute_reload(repo: &git::Repo, last_input: &str) -> Result<Option<(String, Model)>, String> {
+fn compute_reload(
+    repo: &git::Repo,
+    last_input: &str,
+    model: &Model,
+) -> Result<Option<(String, Model)>, String> {
     let input = repo.working_tree_diff()?;
-    if !reload_needed(&input, last_input) {
+    if !reload_needed(&input, last_input) && stage_map(Some(repo)) == model.stages {
         return Ok(None);
     }
     let model = build_model(&input, Some(repo))?;
@@ -420,5 +411,33 @@ mod tests {
             &DiffSource::Static,
             &[dir.path().join("src/main.rs")]
         ));
+    }
+    #[test]
+    fn staging_refreshes_sidebar_status_when_patch_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = git2::Repository::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "before\n").unwrap();
+        let mut index = raw.index().unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = raw.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        raw.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        std::fs::write(dir.path().join("file.txt"), "after\n").unwrap();
+        raw.blob(b"after\n").unwrap();
+        let repo = git::Repo::discover_at(dir.path()).unwrap();
+        let patch = repo.working_tree_diff().unwrap();
+        let model = build_model(&patch, Some(&repo)).unwrap();
+        assert!(compute_reload(&repo, &patch, &model).unwrap().is_none());
+
+        index.read(true).unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let (new_patch, updated) = compute_reload(&repo, &patch, &model).unwrap().unwrap();
+        assert_eq!(new_patch, patch);
+        assert_ne!(updated.stages, model.stages);
     }
 }

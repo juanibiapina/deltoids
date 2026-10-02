@@ -3,10 +3,10 @@
 //! against the [`Mode`] interface via a recording mock, so they describe
 //! shell behaviour independent of either concrete mode.
 
+use crate::cli::browse::watch::ChangeReceiver;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::Receiver;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -20,6 +20,8 @@ struct Recorder {
     keys: Vec<KeyCode>,
     mouse: usize,
     reloads: usize,
+    read_failures: usize,
+    watch_failures: usize,
 }
 
 struct RecordingMode {
@@ -70,20 +72,30 @@ impl Mode for RecordingMode {
         AppCommand::Continue
     }
 
-    fn watch(&mut self) -> Option<Receiver<Vec<PathBuf>>> {
-        None
+    fn watch(&mut self) -> Result<Option<ChangeReceiver>, String> {
+        let mut rec = self.rec.borrow_mut();
+        if rec.watch_failures > 0 {
+            rec.watch_failures -= 1;
+            return Err("watch installation failed".into());
+        }
+        Ok(None)
     }
 
     fn should_reload(&self, _paths: &[PathBuf]) -> bool {
         true
     }
 
-    fn needs_git_poll(&self) -> bool {
+    fn retry_reload(&self) -> bool {
         false
     }
 
     fn reload(&mut self, _viewport: ReloadViewport, _theme: &Theme) -> Result<bool, String> {
-        self.rec.borrow_mut().reloads += 1;
+        let mut rec = self.rec.borrow_mut();
+        rec.reloads += 1;
+        if rec.read_failures > 0 {
+            rec.read_failures -= 1;
+            return Err("read lost a race".into());
+        }
         Ok(true)
     }
 
@@ -672,4 +684,76 @@ fn capturing_mode_receives_every_key_including_globals() {
     assert_eq!(files_rec.borrow().keys.len(), 8);
     assert_eq!(s.active, FILES_MODE, "mode cycling stayed put");
     assert!(!s.help_visible, "the help popup never opened");
+}
+
+#[test]
+fn idle_modes_do_not_reload_and_rescan_work_is_consumed_once() {
+    let (mut modes, files, traces) = two_modes();
+    let mut shell = shell();
+    shell.armed = [true, true];
+    let theme = Theme::default();
+    let viewport = ReloadViewport::default();
+    for _ in 0..1000 {
+        shell.drain_watchers(&mut modes);
+        shell
+            .reload_active_if_due(&mut modes, viewport, &theme)
+            .unwrap();
+    }
+    assert_eq!(files.borrow().reloads, 0);
+    assert_eq!(traces.borrow().reloads, 0);
+
+    let dir = tempfile::tempdir().unwrap();
+    let watcher = watch::ChangeWatcher::new(&[dir.path()]).unwrap();
+    let receiver = watcher.receiver();
+    receiver.request_rescan();
+    shell.receivers[FILES_MODE] = Some(receiver);
+    shell.drain_watchers(&mut modes);
+    shell.dirty_since[FILES_MODE] = Some(Instant::now() - DEBOUNCE_DELAY);
+    shell
+        .reload_active_if_due(&mut modes, viewport, &theme)
+        .unwrap();
+    shell.drain_watchers(&mut modes);
+    shell
+        .reload_active_if_due(&mut modes, viewport, &theme)
+        .unwrap();
+    assert_eq!(files.borrow().reloads, 1);
+}
+
+#[test]
+fn transient_read_retries_without_another_event_and_stops_after_success() {
+    let (mut modes, files, _) = two_modes();
+    files.borrow_mut().read_failures = 1;
+    let mut shell = shell();
+    shell.dirty_since[FILES_MODE] = Some(Instant::now() - DEBOUNCE_DELAY);
+    let theme = Theme::default();
+    let viewport = ReloadViewport::default();
+    shell
+        .reload_active_if_due(&mut modes, viewport, &theme)
+        .unwrap();
+    assert!(shell.reload_errors[FILES_MODE].is_some());
+    shell.reload_retry_at[FILES_MODE] = Some(Instant::now());
+    shell
+        .reload_active_if_due(&mut modes, viewport, &theme)
+        .unwrap();
+    assert!(shell.reload_errors[FILES_MODE].is_none());
+    assert!(shell.reload_retry_at[FILES_MODE].is_none());
+    shell
+        .reload_active_if_due(&mut modes, viewport, &theme)
+        .unwrap();
+    assert_eq!(files.borrow().reloads, 2);
+}
+
+#[test]
+fn watcher_failure_is_visible_and_installation_retries_without_scanning() {
+    let (mut modes, files, _) = two_modes();
+    files.borrow_mut().watch_failures = 1;
+    let mut shell = shell();
+    shell.arm(&mut modes, FILES_MODE);
+    assert!(shell.watch_errors[FILES_MODE].is_some());
+    assert!(!shell.poll_timeout().is_zero());
+    shell.watch_retry_at[FILES_MODE] = Some(Instant::now());
+    shell.drain_watchers(&mut modes);
+    assert!(shell.watch_errors[FILES_MODE].is_none());
+    assert!(shell.armed[FILES_MODE]);
+    assert_eq!(files.borrow().reloads, 0);
 }

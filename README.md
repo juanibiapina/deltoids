@@ -18,27 +18,33 @@ Tools for reviewing code in the agentic era.
 
 Hunks expand to show the enclosing function, so you always know where you are.
 
-## Overview
+## Features
 
-Deltoids diffs have language-aware syntax highlighting and word-level highlighting within changed lines. They also expand to include relevant context, usually the enclosing function or struct up to 200 lines. This allows you to quickly view the entire context without having to switch to an editor.
+- **Syntax highlighting:** spot code changes at a glance.
+- **Expanded context:** understand changes within their enclosing scope.
+- **Agent traces:** follow agent changes in real time.
+- **Git integration:** review file status and manage changes in one place.
+- **Review comments:** turn review feedback into prompts for coding agents.
+- **Responsive TUI:** keep up with changes without unnecessary redraws.
+- **Syntax themes:** choose colors that suit your workflow.
+- **Custom commands:** use your own tools while reviewing.
 
-Tools:
+## Get Started
 
-- `deltoids pager`: ANSI diff filter for `less` / `core.pager`
-- `deltoids review`: review tool
-- `deltoids edit`: file edit tool (used by coding agents)
-- `deltoids write`: file write tool (used by coding agents)
-- `deltoids traces`: trace browser to follow agents in real-time
-
-`edit` and `write` are CLI versions of AI coding agent tools. By providing these custom CLIs, we can tell coding agents to generate summaries for each change and visualize them with `deltoids traces` separately from the coding agent UI.
-
-## Installation
-
-**Homebrew:**
+Install deltoids and the Pi plugin:
 
 ```bash
 brew install juanibiapina/taps/deltoids
+pi install https://github.com/juanibiapina/deltoids
 ```
+
+The plugin records Pi's edits and writes as traces. In the same project directory, open the reviewer:
+
+```bash
+deltoids tui
+```
+
+## Alternative Installation
 
 **Prebuilt binaries (shell installer):**
 
@@ -54,14 +60,14 @@ cargo install --git https://github.com/juanibiapina/deltoids deltoids-cli
 
 ## Usage
 
-### Standalone
+### Lazygit Integration
 
-Pipe any unified diff through `deltoids`:
+Add to `~/.config/lazygit/config.yml`:
 
-```bash
-git diff | deltoids | less -R
-git show HEAD~1 | deltoids | less -R
-git log -p | deltoids | less -R
+```yaml
+git:
+  paging:
+    pager: deltoids
 ```
 
 ### Git Integration
@@ -80,70 +86,14 @@ git config --global pager.show 'deltoids | less -R'
 git config --global pager.log 'deltoids | less -R'
 ```
 
-### Lazygit Integration
+### Standalone
 
-Add to `~/.config/lazygit/config.yml`:
+Pipe any unified diff through `deltoids`:
 
-```yaml
-git:
-  paging:
-    pager: deltoids
-```
-
-### Automatic refresh
-
-The TUI refreshes after file edits and trace updates. When the terminal
-reports focus loss, deltoids retains notifications and pauses refreshes
-and drawing. Returning to the window refreshes the active view; keyboard
-or mouse input also resumes it. Terminals that do not send focus events
-continue refreshing normally. Idle windows redraw only when their view
-changes.
-
-### Files actions
-
-In the Files sidebar, Space stages or unstages the selected file or
-changed files under the selected directory. If the selection has unstaged
-changes, Space stages them; otherwise it unstages the selection without
-changing the working-tree files.
-
-In the Files sidebar, `d` always opens a menu for the same selection.
-Choose to discard all changes or only unstaged changes, then press Enter
-to confirm. Unavailable options remain visible with strikethrough.
-Discarding all changes restores tracked files to HEAD and deletes added
-files. Discarding unstaged changes keeps the index and restores files to
-its staged content. Escape cancels the menu.
-
-These actions require a live repository-backed Files view. Piped diffs
-are read-only. See `?` for the bindings; comment actions apply in the diff
-pane.
-
-### Review comments
-
-Works the same on both diffs: the working tree in Files mode and a trace
-entry in Traces mode. Focus the diff pane (`2` in Files, `3` in Traces)
-and move the cursor between diff lines with `j` / `k`:
-
-- `c` opens a one-line comment editor for the selected line (existing
-  text is loaded for editing; `Enter` saves, `Esc` cancels, saving empty
-  text deletes the comment)
-- `d` deletes the selected line's comment
-- `y` copies every comment in the current view to the clipboard as one
-  prompt
-
-Comments live in the running session only; nothing is written to disk. In
-Files mode they follow their line as the working tree changes, and are
-marked stale when the line moves on in a way that cannot be followed.
-
-The copied prompt lists each comment in file order, ready to paste into a
-coding agent:
-
-```text
-Address the following code review comments. For each, the file and line
-are given, with the relevant line and the reviewer's note.
-
-src/app.rs:42
-+ let value = parse(input);
-note: handle the parse error
+```bash
+git diff | deltoids | less -R
+git show HEAD~1 | deltoids | less -R
+git log -p | deltoids | less -R
 ```
 
 ## Configuration
@@ -206,21 +156,7 @@ against the current selection; they cannot override the built-in keys
 (`q`, `[`, `]`, `<`, `>`, `\`, `t`, `?`) but can shadow a mode's own keys. Press
 `?` to see the configured bindings in the help popup.
 
-## Coding Agent Integrations
-
-### pi
-
-Install the deltoids plugin for pi to override built-in `edit` and `write` tools with the traced versions:
-
-```bash
-pi install https://github.com/juanibiapina/deltoids
-```
-
-Requires the `deltoids` binary on PATH. See [plugins/pi/README.md](plugins/pi/README.md) for details.
-
-Then run `deltoids traces` in the same directory as pi to see real-time diffs with summaries.
-
-### Claude Code
+## Claude Code Integration
 
 Install the deltoids plugin to record every `Write` and `Edit` call as a trace, grouped by Claude session:
 

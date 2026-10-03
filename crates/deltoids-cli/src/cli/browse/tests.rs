@@ -71,7 +71,7 @@ impl Mode for RecordingMode {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        self.rec.borrow().reserve_actions && matches!(key, KeyCode::Char(' ' | 'd'))
+        self.rec.borrow().reserve_actions && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))
     }
 
     fn take_refresh_request(&mut self) -> bool {
@@ -179,13 +179,21 @@ fn completed_action_refreshes_the_active_mode_immediately() {
 fn reserved_mode_actions_beat_custom_commands() {
     let (mut modes, files, _) = two_modes();
     let mut s = shell();
-    s.commands = vec![custom_command('d', "touch unwanted", false)];
+    s.commands = vec![
+        custom_command('a', "touch unwanted", false),
+        custom_command('d', "touch unwanted", false),
+    ];
     files.borrow_mut().reserve_actions = true;
+    for key in ['a', 'd'] {
+        assert_eq!(
+            s.handle_key(&mut modes, KeyCode::Char(key), 20, 20),
+            AppCommand::Continue
+        );
+    }
     assert_eq!(
-        s.handle_key(&mut modes, KeyCode::Char('d'), 20, 20),
-        AppCommand::Continue
+        files.borrow().keys,
+        vec![KeyCode::Char('a'), KeyCode::Char('d')]
     );
-    assert_eq!(files.borrow().keys, vec![KeyCode::Char('d')]);
 }
 
 #[test]

@@ -90,24 +90,42 @@ pub(super) fn toggle_stage(workdir: &Path, targets: Vec<PathBuf>) -> Result<Stri
         return Ok(String::new());
     }
     if state.changes.iter().any(|c| c.unstaged) {
-        let index = repo.index().map_err(message)?;
-        let paths: BTreeSet<_> = state
-            .changes
-            .iter()
-            .filter(|c| c.unstaged)
-            .flat_map(|c| c.paths.iter())
-            .filter(|p| {
-                index.get_path(p, 0).is_some() || workdir.join(p).symlink_metadata().is_ok()
-            })
-            .cloned()
-            .collect();
-        git(workdir, &["add", "-A"], &paths)?;
+        stage_changes(&repo, &state)?;
         Ok("Staged selection".into())
     } else {
         let paths = paths(&state);
         reset_index(&repo, &paths)?;
         Ok("Unstaged selection".into())
     }
+}
+
+pub(super) fn toggle_stage_all(workdir: &Path) -> Result<String, String> {
+    let repo = open(workdir)?;
+    let state = read_scope(&repo, None, false)?;
+    if state.changes.is_empty() {
+        return Ok("No changes".into());
+    }
+    if state.changes.iter().any(|c| c.unstaged) {
+        stage_changes(&repo, &state)?;
+        Ok("Staged all files".into())
+    } else {
+        reset_index(&repo, &paths(&state))?;
+        Ok("Unstaged all files".into())
+    }
+}
+
+fn stage_changes(repo: &Repository, state: &State) -> Result<(), String> {
+    let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
+    let index = repo.index().map_err(message)?;
+    let paths: BTreeSet<_> = state
+        .changes
+        .iter()
+        .filter(|c| c.unstaged)
+        .flat_map(|c| c.paths.iter())
+        .filter(|p| index.get_path(p, 0).is_some() || workdir.join(p).symlink_metadata().is_ok())
+        .cloned()
+        .collect();
+    git(workdir, &["add", "-A"], &paths)
 }
 
 pub(super) fn discard(workdir: &Path, targets: Vec<PathBuf>) -> Result<DiscardOutcome, String> {
@@ -167,7 +185,16 @@ fn head(repo: &Repository) -> Result<Option<git2::Tree<'_>>, String> {
 }
 
 fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result<State, String> {
-    let targets: HashSet<&Path> = targets.iter().map(PathBuf::as_path).collect();
+    read_scope(repo, Some(targets), capture_content)
+}
+
+fn read_scope(
+    repo: &Repository,
+    targets: Option<&[PathBuf]>,
+    capture_content: bool,
+) -> Result<State, String> {
+    let targets: Option<HashSet<&Path>> =
+        targets.map(|paths| paths.iter().map(PathBuf::as_path).collect());
     let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
     let mut options = StatusOptions::new();
     options
@@ -179,13 +206,14 @@ fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result
     let mut changes = Vec::new();
     for entry in statuses.iter() {
         let deltas = [entry.head_to_index(), entry.index_to_workdir()];
-        if !deltas
-            .iter()
-            .flatten()
-            .flat_map(|delta| [delta.old_file(), delta.new_file()])
-            .filter_map(|file| file.path())
-            .any(|path| targets.contains(path))
-        {
+        if targets.as_ref().is_some_and(|targets| {
+            !deltas
+                .iter()
+                .flatten()
+                .flat_map(|delta| [delta.old_file(), delta.new_file()])
+                .filter_map(|file| file.path())
+                .any(|path| targets.contains(path))
+        }) {
             continue;
         }
         let names: BTreeSet<_> = deltas
@@ -201,9 +229,7 @@ fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result
             .any(|file| file.mode() == git2::FileMode::Commit);
         let flags = entry.status();
         if flags.contains(Status::CONFLICTED) {
-            return Err(
-                "Resolve merge conflicts before staging or discarding this selection".into(),
-            );
+            return Err("Resolve merge conflicts before staging or discarding files".into());
         }
         if submodule {
             return Err("Submodule actions are not supported".into());

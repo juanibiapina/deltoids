@@ -79,6 +79,81 @@ fn pending(outcome: DiscardOutcome) -> PendingDiscard {
 }
 
 #[test]
+fn stage_all_then_unstage_all_preserves_the_worktree() {
+    let dir = fixture();
+    fs::write(dir.path().join("delete.txt"), "delete\n").unwrap();
+    fs::write(dir.path().join("rename.txt"), "rename\n").unwrap();
+    fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
+    command(dir.path(), &["add", "."]);
+    command(dir.path(), &["commit", "-qm", "more files"]);
+    fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
+    command(dir.path(), &["add", "a.txt"]);
+    fs::write(dir.path().join("a.txt"), "latest\n").unwrap();
+    fs::remove_file(dir.path().join("delete.txt")).unwrap();
+    fs::rename(
+        dir.path().join("rename.txt"),
+        dir.path().join("renamed.txt"),
+    )
+    .unwrap();
+    fs::create_dir(dir.path().join("nested")).unwrap();
+    fs::write(dir.path().join("nested/new.txt"), "new\n").unwrap();
+    fs::write(dir.path().join(":(glob)*.txt"), "literal\n").unwrap();
+    fs::write(dir.path().join("ignored.txt"), "ignored\n").unwrap();
+
+    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "Staged all files");
+    assert_eq!(command(dir.path(), &["show", ":a.txt"]), "latest\n");
+    assert_eq!(command(dir.path(), &["show", ":nested/new.txt"]), "new\n");
+    assert_eq!(command(dir.path(), &["show", ":renamed.txt"]), "rename\n");
+    assert_eq!(command(dir.path(), &["show", "::(glob)*.txt"]), "literal\n");
+    let indexed = command(dir.path(), &["ls-files"]);
+    assert!(
+        !indexed
+            .lines()
+            .any(|p| matches!(p, "delete.txt" | "rename.txt" | "ignored.txt"))
+    );
+    assert!(command(dir.path(), &["diff"]).is_empty());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "latest\n"
+    );
+    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "Unstaged all files");
+    assert!(command(dir.path(), &["diff", "--cached"]).is_empty());
+    assert_eq!(command(dir.path(), &["show", ":a.txt"]), "original\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "latest\n"
+    );
+    assert!(!dir.path().join("delete.txt").exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("renamed.txt")).unwrap(),
+        "rename\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("nested/new.txt")).unwrap(),
+        "new\n"
+    );
+}
+
+#[test]
+fn stage_all_supports_clean_and_unborn_repositories_and_empty_selections_stay_empty() {
+    let dir = fixture();
+    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "No changes");
+    let dir = tempfile::tempdir().unwrap();
+    command(dir.path(), &["init", "-q"]);
+    fs::write(dir.path().join("new.txt"), "new\n").unwrap();
+    toggle_stage(dir.path(), vec![]).unwrap();
+    assert!(command(dir.path(), &["ls-files"]).is_empty());
+    toggle_stage_all(dir.path()).unwrap();
+    assert_eq!(command(dir.path(), &["show", ":new.txt"]), "new\n");
+    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "Unstaged all files");
+    assert!(command(dir.path(), &["ls-files"]).is_empty());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+        "new\n"
+    );
+}
+
+#[test]
 fn space_twice_stages_then_unstages_without_changing_worktree() {
     let dir = fixture();
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
@@ -407,6 +482,12 @@ fn submodules_reject_the_complete_selection_before_deleting_other_files() {
     fs::write(dir.path().join("other.txt"), "keep\n").unwrap();
     assert!(discard(dir.path(), targets(&["module", "other.txt"])).is_err());
     assert!(toggle_stage(dir.path(), targets(&["module", "other.txt"])).is_err());
+    assert!(toggle_stage_all(dir.path()).is_err());
+    assert!(
+        !command(dir.path(), &["ls-files"])
+            .lines()
+            .any(|p| p == "other.txt")
+    );
     assert!(dir.path().join("other.txt").exists());
 }
 
@@ -478,6 +559,12 @@ fn conflicts_reject_the_complete_selection_before_any_writes() {
     fs::write(dir.path().join("other.txt"), "keep\n").unwrap();
     assert!(discard(dir.path(), targets(&["other.txt", "a.txt"])).is_err());
     assert!(toggle_stage(dir.path(), targets(&["other.txt", "a.txt"])).is_err());
+    assert!(toggle_stage_all(dir.path()).is_err());
+    assert!(
+        !command(dir.path(), &["ls-files"])
+            .lines()
+            .any(|p| p == "other.txt")
+    );
     assert!(dir.path().join("other.txt").exists());
     assert!(repo.index().unwrap().has_conflicts());
 }

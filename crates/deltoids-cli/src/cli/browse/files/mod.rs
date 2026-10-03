@@ -398,6 +398,29 @@ impl FilesMode {
     }
 }
 
+fn start_stage_all(state: &mut FilesMode) {
+    if state.action_job.is_some() {
+        return;
+    }
+    if state.is_static {
+        state.status = Some("Git actions require repository-backed Files mode".into());
+        return;
+    }
+    let Some(workdir) = state
+        .repo
+        .as_ref()
+        .and_then(|r| r.workdir())
+        .map(PathBuf::from)
+    else {
+        state.status = Some("Git actions require a working tree".into());
+        return;
+    };
+    state.status = Some("Updating staging for all files…".into());
+    spawn_action(state, move || {
+        actions::toggle_stage_all(&workdir).map(actions::DiscardOutcome::Applied)
+    });
+}
+
 fn start_action(state: &mut FilesMode, stage: bool) {
     if !stage {
         state.input = InputState::Discarding {
@@ -575,6 +598,10 @@ fn handle_key(
 
     if state.action_job.is_none() {
         state.status = None;
+    }
+    if state.focus == Focus::Sidebar && key == KeyCode::Char('a') {
+        start_stage_all(state);
+        return AppCommand::Continue;
     }
     if state.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd')) {
         start_action(state, key == KeyCode::Char(' '));
@@ -930,7 +957,7 @@ impl Mode for FilesMode {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd'))
+        self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))
     }
 
     fn draw(

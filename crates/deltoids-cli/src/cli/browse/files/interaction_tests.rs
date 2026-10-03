@@ -59,6 +59,78 @@ fn refresh(mode: &mut FilesMode) {
 }
 
 #[test]
+fn sidebar_a_stages_outside_the_selected_directory_and_refreshes_without_notifications() {
+    let (dir, _) = fixture(&["src/a.txt", "src/nested/b.txt", "other.txt"]);
+    for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    assert!(mode.sidebar.select_directory_path("src/", 20));
+    let before: Vec<_> = mode
+        .visible_diff_window(DrawBudget::Full)
+        .iter()
+        .map(line_text)
+        .collect();
+    assert!(Mode::reserves_key(&mode, KeyCode::Char('a')));
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
+    assert_eq!(mode.focus, Focus::Diff);
+    finish(&mut mode);
+    refresh(&mut mode);
+    for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
+        assert!(mode.model.stages[path].is_staged());
+        assert!(!mode.model.stages[path].is_unstaged());
+    }
+    assert_eq!(
+        mode.sidebar.selected_directory_path().as_deref(),
+        Some("src/")
+    );
+    let after: Vec<_> = mode
+        .visible_diff_window(DrawBudget::Fast)
+        .iter()
+        .map(line_text)
+        .collect();
+    assert_eq!(after, before);
+    assert!(!Mode::reserves_key(&mode, KeyCode::Char('a')));
+    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    finish(&mut mode);
+    refresh(&mut mode);
+    for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
+        assert!(!mode.model.stages[path].is_staged());
+        assert!(mode.model.stages[path].is_unstaged());
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path)).unwrap(),
+            "edited\n"
+        );
+    }
+    let repo = git2::Repository::open(dir.path()).unwrap();
+    assert_eq!(
+        repo.index().unwrap().write_tree().unwrap(),
+        repo.head().unwrap().peel_to_tree().unwrap().id()
+    );
+}
+
+#[test]
+fn sidebar_a_uses_fresh_status_even_when_the_sidebar_is_empty() {
+    let (dir, _) = fixture(&["a.txt"]);
+    let mut mode = live(dir.path());
+    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    finish(&mut mode);
+    refresh(&mut mode);
+    let repo = git2::Repository::open(dir.path()).unwrap();
+    let entry = repo
+        .index()
+        .unwrap()
+        .get_path(Path::new("a.txt"), 0)
+        .unwrap();
+    assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"edited\n");
+}
+
+#[test]
 fn sidebar_space_then_space_toggles_staging_without_watcher_events() {
     let (dir, repo) = fixture(&["a.txt"]);
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
@@ -364,12 +436,22 @@ fn piped_diff_and_diff_focus_cannot_mutate_the_repository() {
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
     mode.is_static = true;
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    assert!(mode.action_job.is_none());
+    assert!(
+        mode.status
+            .as_deref()
+            .unwrap()
+            .contains("repository-backed")
+    );
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
     Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
     mode.is_static = false;
     Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
     assert!(mode.action_job.is_none());

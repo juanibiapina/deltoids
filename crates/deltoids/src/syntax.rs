@@ -1250,6 +1250,30 @@ CREATE TABLE users (
     }
 
     #[test]
+    fn parses_kotlin_diff_cases_without_errors() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/diff_cases/cases");
+        let paths: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_name().to_str().unwrap().contains("-kotlin-"))
+            .flat_map(|entry| std::fs::read_dir(entry.path()).unwrap().map(Result::unwrap))
+            .map(|entry| entry.path())
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("kt" | "kts")
+                )
+            })
+            .collect();
+        assert!(!paths.is_empty());
+        for path in paths {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let parsed = ParsedFile::parse(path.to_str().unwrap(), &source).unwrap();
+            assert!(!parsed.tree.root_node().has_error(), "{}", path.display());
+        }
+    }
+
+    #[test]
     fn detects_all_supported_languages() {
         let cases = vec![
             ("test.rs", "fn main() {}"),
@@ -1261,6 +1285,8 @@ CREATE TABLE users (
             ("test.go", "package main"),
             ("test.rb", "def f; end"),
             ("test.java", "class A {}"),
+            ("test.kt", "fun greet() {}"),
+            ("test.kts", "println(\"Hello\")"),
             ("test.c", "int main() {}"),
             ("test.cpp", "int main() {}"),
             ("test.sh", "echo hi"),

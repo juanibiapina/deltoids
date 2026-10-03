@@ -23,6 +23,7 @@ pub enum Language {
     Java,
     JavaScript,
     Json,
+    Kotlin,
     Lua,
     Markdown,
     Python,
@@ -104,6 +105,7 @@ impl Language {
             Language::Java => "java",
             Language::JavaScript => "javascript",
             Language::Json => "json",
+            Language::Kotlin => "kotlin",
             Language::Lua => "lua",
             Language::Markdown => "markdown",
             Language::Python => "python",
@@ -129,6 +131,7 @@ impl Language {
             "java" => Some(Language::Java),
             "javascript" => Some(Language::JavaScript),
             "json" => Some(Language::Json),
+            "kotlin" => Some(Language::Kotlin),
             "lua" => Some(Language::Lua),
             "markdown" => Some(Language::Markdown),
             "python" => Some(Language::Python),
@@ -343,6 +346,22 @@ impl Language {
                 positional_name_kinds: &[],
                 object_reference_name_kinds: &[],
                 leading_comment_kinds: &["comment"],
+                transparent_expansion: true,
+            },
+            Language::Kotlin => TreeSitterConfig {
+                language: tree_sitter_kotlin_ng::LANGUAGE,
+                structure_kinds: &[
+                    "class_declaration",
+                    "function_declaration",
+                    "object_declaration",
+                ],
+                promoted_kinds: &[],
+                function_body_kinds: &["function_declaration", "lambda_literal"],
+                anchor_only_kinds: &["lambda_literal"],
+                call_promoted_kinds: &[],
+                positional_name_kinds: &[],
+                object_reference_name_kinds: &[],
+                leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
             },
             Language::Java => TreeSitterConfig {
@@ -567,6 +586,7 @@ impl Language {
             "HCL" | "Terraform" => Some(Language::Hcl),
             "Java" => Some(Language::Java),
             "JSON" => Some(Language::Json),
+            "Kotlin" => Some(Language::Kotlin),
             "Lua" => Some(Language::Lua),
             "Markdown" => Some(Language::Markdown),
             "Python" => Some(Language::Python),
@@ -638,6 +658,22 @@ mod tests {
     }
 
     #[test]
+    fn detects_kotlin_sources_and_scripts() {
+        for path in ["Greeter.kt", "build.gradle.kts"] {
+            assert_eq!(
+                Language::detect(path, "fun greet() {}\n"),
+                Some(Language::Kotlin),
+                "{path}"
+            );
+            assert_eq!(
+                Language::detect_highlight_name(path, "fun greet() {}\n").as_deref(),
+                Some("Kotlin"),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn ids_round_trip() {
         for language in [
             Language::Bash,
@@ -649,6 +685,7 @@ mod tests {
             Language::Java,
             Language::JavaScript,
             Language::Json,
+            Language::Kotlin,
             Language::Lua,
             Language::Markdown,
             Language::Python,

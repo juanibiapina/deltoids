@@ -128,6 +128,7 @@ Cases are organised loosely by theme via their numeric prefix:
 * `200-209` — Markdown scope behaviour
 * `220-229` — TOML scope behaviour
 * `240-249` — SQL scope behaviour
+* `250-259` — Kotlin scope behaviour
 
 Current cases:
 
@@ -196,3 +197,13 @@ Current cases:
 | `240-sql-create-table-column-change`                | SQL `CREATE TABLE` column edit → `[create_table users]` breadcrumb (name from `object_reference`) |
 | `241-sql-create-function-body-change`               | SQL `CREATE FUNCTION` body edit → `[create_function add]` breadcrumb |
 | `242-sql-select-statement-no-breadcrumb`            | Bare SQL `SELECT` change → no breadcrumb |
+| `250-kotlin-function-body` | Function body edit includes the whole function and its name |
+| `251-kotlin-class-method` | Class method edit names the class and method, excluding sibling methods |
+| `252-kotlin-object-method` | Object method edit names the singleton object and method |
+| `253-kotlin-kdoc-method` | KDoc-only edit anchors on the documented method |
+| `254-kotlin-script-lambda` | Gradle script edit includes its trailing lambda without a breadcrumb |
+| `255-kotlin-callback-context` | Callback inside a function retains the enclosing function context |
+| `256-kotlin-nested-script-lambda` | Nested script lambda edit excludes sibling blocks |
+| `257-kotlin-annotated-expression-function` | Expression-bodied extension function preserves annotations, documentation, and backtick names |
+| `258-kotlin-annotation-only-edit` | Annotation-only edit anchors on the annotated method |
+| `259-kotlin-script-statement` | Top-level script statement uses default context without a breadcrumb |

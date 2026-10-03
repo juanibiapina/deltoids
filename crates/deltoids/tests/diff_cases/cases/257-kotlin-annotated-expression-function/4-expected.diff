@@ -1,0 +1,6 @@
+@@ -1,4 +1,4 @@ [function_declaration `friendly greeting`]
+ /** Format a greeting. */
+ @Deprecated("Use greet instead")
+ fun String.`friendly greeting`() =
+-    "Hello, $this"
++    "Welcome, $this"

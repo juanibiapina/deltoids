@@ -1,0 +1,7 @@
+@@ -2,5 +2,5 @@ [class_declaration Greeter] [function_declaration greet]
+     /** Say hello. */
+-    @Deprecated("Old greeting")
++    @Deprecated("Use welcome instead")
+     fun greet() {
+         println("Hello")
+     }

@@ -1,0 +1,5 @@
+@@ -2,3 +2,3 @@ [class_declaration Greeter] [function_declaration greet]
+     fun greet() {
+-        println("Hello")
++        println("Welcome")
+     }

@@ -330,6 +330,16 @@ pub(crate) trait Mode {
         right_viewport: usize,
     ) -> AppCommand;
 
+    /// Built-in mode keys that take priority over configured custom commands.
+    fn reserves_key(&self, _key: KeyCode) -> bool {
+        false
+    }
+
+    /// Consume a refresh requested by a completed mutation, including index-only writes.
+    fn take_refresh_request(&mut self) -> bool {
+        false
+    }
+
     /// Whether the mode currently owns raw text input (a modal editor is
     /// open). While this is `true` the shell routes every key straight to
     /// the mode, so global bindings (`q`, `?`, `[`, `]`, `<`, `>`, `Esc`)

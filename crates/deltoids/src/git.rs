@@ -49,6 +49,9 @@ pub enum StageChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStageStatus {
     pub path: String,
+    /// Paths through HEAD, index and worktree, ending at the displayed worktree path.
+    /// Includes rename companions needed for whole-file actions.
+    pub paths: Vec<String>,
     pub staged: Option<StageChange>,
     pub unstaged: Option<StageChange>,
 }
@@ -213,8 +216,15 @@ impl Repo {
             let Some(path) = entry_new_path(&entry) else {
                 continue;
             };
+            let paths = [entry.head_to_index(), entry.index_to_workdir()]
+                .into_iter()
+                .flatten()
+                .flat_map(|delta| [delta.old_file(), delta.new_file()])
+                .filter_map(|file| file.path().map(|p| p.to_string_lossy().into_owned()))
+                .collect();
             out.push(FileStageStatus {
                 path,
+                paths,
                 staged,
                 unstaged,
             });

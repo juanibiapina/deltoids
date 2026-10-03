@@ -159,8 +159,8 @@ pub fn run(active_mode: usize) -> Result<(), String> {
             }
         }
         shell.drain_watchers(&mut modes);
-        shell.reload_active_if_due(&mut modes, vp, &theme)?;
         shell.poll_background(&mut modes);
+        shell.reload_active_if_due(&mut modes, vp, &theme)?;
 
         if shell.needs_redraw() {
             vp = draw_frame(&mut terminal, &mut modes, &mut shell, &theme)?;
@@ -234,7 +234,12 @@ fn draw_frame(
                 );
             }
             if help_visible {
-                help::draw_help_popup(frame, area, theme, commands);
+                let commands: Vec<_> = commands
+                    .iter()
+                    .filter(|c| !modes[active].reserves_key(KeyCode::Char(c.key)))
+                    .cloned()
+                    .collect();
+                help::draw_help_popup(frame, area, theme, &commands);
             }
             if let Some(picker) = theme_picker {
                 theme_picker::draw(frame, area, theme, picker, active_theme);
@@ -345,6 +350,7 @@ struct Shell {
     watch_retry_at: [Option<Instant>; MODE_COUNT],
     watch_retry_delay: [Duration; MODE_COUNT],
     reload_retry_at: [Option<Instant>; MODE_COUNT],
+    refresh_now: [bool; MODE_COUNT],
     reload_errors: [Option<String>; MODE_COUNT],
     /// Whether each mode's watcher has been armed yet.
     armed: [bool; MODE_COUNT],
@@ -393,6 +399,7 @@ impl Shell {
             watch_retry_at: [None, None],
             watch_retry_delay: [DEBOUNCE_DELAY; MODE_COUNT],
             reload_retry_at: [None, None],
+            refresh_now: [false; MODE_COUNT],
             reload_errors: [None, None],
             built: [false, false],
             total_width,
@@ -419,6 +426,10 @@ impl Shell {
         for (index, mode) in modes.iter_mut().enumerate() {
             let active = self.interactive() && index == self.active && self.built[index];
             let work = mode.background(active);
+            if mode.take_refresh_request() {
+                self.dirty_since[index].get_or_insert_with(Instant::now);
+                self.refresh_now[index] = true;
+            }
             if active {
                 self.repaint |= work.changed;
                 pending |= work.pending;
@@ -548,6 +559,9 @@ impl Shell {
         if !self.interactive() {
             return POLL_TIMEOUT;
         }
+        if self.refresh_now[self.active] {
+            return Duration::ZERO;
+        }
         let mut timeout = if self.input_idle {
             POLL_TIMEOUT
         } else {
@@ -648,7 +662,8 @@ impl Shell {
             return Ok(());
         }
         let active = self.active;
-        let due = self.dirty_since[active].is_some_and(|s| s.elapsed() >= DEBOUNCE_DELAY);
+        let due = self.refresh_now[active]
+            || self.dirty_since[active].is_some_and(|s| s.elapsed() >= DEBOUNCE_DELAY);
         let retry_due = self.reload_retry_at[active].is_some_and(|at| Instant::now() >= at);
         if due || retry_due || self.toggle_pending {
             if self.dirty_since[active].is_some() || self.reload_retry_at[active].is_some() {
@@ -656,6 +671,7 @@ impl Shell {
                 let result = modes[active].reload(vp, theme);
                 let changed = result.as_ref().is_ok_and(|changed| *changed);
                 self.dirty_since[active] = None;
+                self.refresh_now[active] = false;
                 let failed = result.is_err() || modes[active].retry_reload();
                 self.reload_errors[active] = result.err();
                 self.reload_retry_at[active] = failed.then(|| Instant::now() + READ_RETRY_DELAY);
@@ -731,7 +747,10 @@ impl Shell {
                 self.force_full = true;
                 AppCommand::Continue
             }
-            // Custom commands take priority over a mode's own keys (but not
+            key if modes[self.active].reserves_key(key) => {
+                modes[self.active].handle_key(key, left_viewport, right_viewport)
+            }
+            // Custom commands take priority over unreserved mode keys (but not
             // over the shell globals above). A bound key with a selectable
             // file expands and bubbles up a Run request; with nothing
             // selected it is a silent no-op.
@@ -787,6 +806,9 @@ impl Shell {
     ) -> AppCommand {
         if self.help_visible || self.theme_picker.is_some() {
             return AppCommand::Continue;
+        }
+        if modes[self.active].captures_text_input() {
+            return modes[self.active].handle_mouse(mouse, left_viewport, right_viewport);
         }
         // A left-click on a tab label in the top-left panel title switches
         // to that mode, matching keyboard `[`/`]`. The strip sits on the

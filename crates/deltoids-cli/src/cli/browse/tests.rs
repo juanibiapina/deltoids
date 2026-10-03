@@ -23,6 +23,8 @@ struct Recorder {
     read_failures: usize,
     stable_reads: usize,
     watch_failures: usize,
+    reserve_actions: bool,
+    refresh_requested: bool,
 }
 
 struct RecordingMode {
@@ -66,6 +68,14 @@ impl Mode for RecordingMode {
 
     fn captures_text_input(&self) -> bool {
         self.capturing
+    }
+
+    fn reserves_key(&self, key: KeyCode) -> bool {
+        self.rec.borrow().reserve_actions && matches!(key, KeyCode::Char(' ' | 'd'))
+    }
+
+    fn take_refresh_request(&mut self) -> bool {
+        std::mem::take(&mut self.rec.borrow_mut().refresh_requested)
     }
 
     fn handle_mouse(&mut self, _mouse: MouseEvent, _lv: usize, _rv: usize) -> AppCommand {
@@ -145,6 +155,78 @@ fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
         row,
         modifiers: KeyModifiers::NONE,
     }
+}
+
+#[test]
+fn completed_action_refreshes_the_active_mode_immediately() {
+    let (mut modes, files, _) = two_modes();
+    let mut s = shell();
+    files.borrow_mut().refresh_requested = true;
+    let start = Instant::now();
+    s.poll_background(&mut modes);
+    s.reload_active_if_due(&mut modes, ReloadViewport::default(), &Theme::default())
+        .unwrap();
+    assert_eq!(
+        files.borrow().reloads,
+        1,
+        "completed action was not refreshed after {:?}; scheduled timeout={:?}",
+        start.elapsed(),
+        s.poll_timeout()
+    );
+}
+
+#[test]
+fn reserved_mode_actions_beat_custom_commands() {
+    let (mut modes, files, _) = two_modes();
+    let mut s = shell();
+    s.commands = vec![custom_command('d', "touch unwanted", false)];
+    files.borrow_mut().reserve_actions = true;
+    assert_eq!(
+        s.handle_key(&mut modes, KeyCode::Char('d'), 20, 20),
+        AppCommand::Continue
+    );
+    assert_eq!(files.borrow().keys, vec![KeyCode::Char('d')]);
+}
+
+#[test]
+fn completed_mutation_refreshes_without_notifications_and_survives_mode_switch() {
+    let (mut modes, files, traces) = two_modes();
+    let mut s = shell();
+    s.active = TRACES_MODE;
+    files.borrow_mut().refresh_requested = true;
+    s.poll_background(&mut modes);
+    assert!(s.dirty_since[FILES_MODE].is_some());
+    s.select_mode(FILES_MODE);
+    s.reload_active_if_due(&mut modes, ReloadViewport::default(), &Theme::default())
+        .unwrap();
+    assert_eq!(files.borrow().reloads, 1);
+    assert_eq!(traces.borrow().reloads, 0);
+    s.poll_background(&mut modes);
+    assert!(s.dirty_since[FILES_MODE].is_none());
+}
+
+#[test]
+fn modal_input_blocks_tab_clicks_and_divider_drags() {
+    let (mut modes, _, _) = two_modes();
+    let mut s = shell();
+    let (mut mode, _) = RecordingMode::new();
+    mode.capturing = true;
+    modes[FILES_MODE] = Box::new(mode);
+    s.left_rect = Rect::new(0, 0, 50, 20);
+    s.handle_mouse(
+        &mut modes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 17, 0),
+        20,
+        20,
+    );
+    assert_eq!(s.active, FILES_MODE);
+    s.handle_mouse(
+        &mut modes,
+        mouse(MouseEventKind::Down(MouseButton::Left), 49, 3),
+        20,
+        20,
+    );
+    assert!(!s.dragging_divider);
 }
 
 #[test]

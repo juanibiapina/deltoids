@@ -32,6 +32,7 @@ crossterm = { version = "0.29", features = ["use-dev-tty"] }
 deltoids = { path = "../deltoids", features = ["blob-resolve", "html", "ratatui"] }
 dirs = "6"
 fs2 = "0.4"
+git2 = "0.21"
 notify = "8"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
@@ -44,7 +45,6 @@ unicode-width = "0.2"
 xxhash-rust = { version = "0.8", features = ["xxh32"] }
 
 [dev-dependencies]
-git2 = "0.21"
 tempfile = "3"
 
 [lints]

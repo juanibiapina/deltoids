@@ -58,8 +58,14 @@ use super::comments::{
 };
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport, TabStrip};
 
+mod action_menu;
+mod actions;
 mod diff_pane;
+#[cfg(test)]
+mod interaction_tests;
 mod model;
+#[cfg(test)]
+mod performance_tests;
 mod reload;
 mod render;
 mod sidebar_pane;
@@ -67,7 +73,9 @@ mod sidebar_pane;
 mod test_support;
 
 use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
-use model::{DiffSource, FileBody, Model, build_model};
+#[cfg(test)]
+use model::build_model;
+use model::{DiffSource, FileBody, Model};
 use reload::{ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
 use sidebar_pane::build_sidebar;
 
@@ -78,9 +86,13 @@ pub(super) enum Focus {
 }
 
 /// Whether the diff pane is being browsed or a comment is being typed.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum InputState {
     Normal,
+    Discarding {
+        pending: actions::PendingDiscard,
+        selected: usize,
+    },
     /// The comment editor is open on `anchor`, holding the text so far
     /// plus the line it annotates. The snapshot is taken when the editor
     /// opens, so saving still works when the working tree changes
@@ -143,6 +155,8 @@ pub(super) struct FilesMode {
     /// Keeps the bounded filesystem watcher alive for the session.
     _watcher: Option<ChangeWatcher>,
     reload_failed: bool,
+    action_job: Option<std::sync::mpsc::Receiver<Result<actions::DiscardOutcome, String>>>,
+    refresh_requested: bool,
 }
 
 impl FilesMode {
@@ -180,8 +194,7 @@ impl FilesMode {
     /// diff read or model build loses a race with on-disk churn.
     fn try_model(repo: &git::Repo) -> Result<(String, Model), String> {
         let snapshot = repo.working_tree_snapshot()?;
-        let stages = model::stage_map(snapshot.stages);
-        let model = build_model(&snapshot.patch, Some(repo), stages)?;
+        let model = model::build_working_model(&snapshot, repo)?;
         Ok((snapshot.patch, model))
     }
 
@@ -262,6 +275,8 @@ impl FilesMode {
             last_input: input,
             _watcher: None,
             reload_failed: false,
+            action_job: None,
+            refresh_requested: false,
         }
     }
 
@@ -333,7 +348,7 @@ impl FilesMode {
     /// a persistent error never hides behind an endless "Loading…".
     fn resolve_reload(&mut self, outcome: ReloadOutcome, theme: &Theme, width: usize) -> bool {
         match outcome {
-            ReloadOutcome::Rebuilt => {
+            ReloadOutcome::Rebuilt | ReloadOutcome::StagingUpdated => {
                 self.promote_from_loading();
                 true
             }
@@ -383,6 +398,124 @@ impl FilesMode {
     }
 }
 
+fn start_action(state: &mut FilesMode, stage: bool) {
+    if state.action_job.is_some() {
+        return;
+    }
+    let Some(range) = state.sidebar.selection_display_range() else {
+        return;
+    };
+    if state.is_static {
+        state.status = Some("Git actions require repository-backed Files mode".into());
+        return;
+    }
+    let Some(workdir) = state
+        .repo
+        .as_ref()
+        .and_then(|r| r.workdir())
+        .map(PathBuf::from)
+    else {
+        return;
+    };
+    let targets: std::collections::BTreeSet<_> = range
+        .filter_map(|position| {
+            state
+                .diff
+                .display_order
+                .get(position)
+                .and_then(|idx| state.model.files.get(*idx))
+        })
+        .flat_map(|file| [&file.file.old_path, &file.file.new_path])
+        .filter(|path| path.as_str() != "/dev/null")
+        .map(PathBuf::from)
+        .collect();
+    state.status = Some(
+        if stage {
+            "Updating staging…"
+        } else {
+            "Checking discard…"
+        }
+        .into(),
+    );
+    spawn_action(state, move || {
+        let targets = targets.into_iter().collect();
+        if stage {
+            actions::toggle_stage(&workdir, targets).map(actions::DiscardOutcome::Applied)
+        } else {
+            actions::discard(&workdir, targets)
+        }
+    });
+}
+
+fn spawn_action(
+    state: &mut FilesMode,
+    action: impl FnOnce() -> Result<actions::DiscardOutcome, String> + Send + 'static,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    state.action_job = Some(receiver);
+    std::thread::spawn(move || {
+        let _ = sender.send(action());
+    });
+}
+
+fn collect_action(state: &mut FilesMode) -> bool {
+    use std::sync::mpsc::TryRecvError;
+    let Some(receiver) = &state.action_job else {
+        return false;
+    };
+    let result = match receiver.try_recv() {
+        Ok(result) => result,
+        Err(TryRecvError::Empty) => return false,
+        Err(TryRecvError::Disconnected) => Err("Git action worker stopped".into()),
+    };
+    state.action_job = None;
+    state.status = None;
+    match result {
+        Ok(actions::DiscardOutcome::Choose(pending)) => {
+            state.input = InputState::Discarding {
+                pending,
+                selected: 0,
+            };
+        }
+        Ok(actions::DiscardOutcome::Applied(message)) => {
+            state.status = (!message.is_empty()).then_some(message);
+            state.refresh_requested = true;
+        }
+        Ok(actions::DiscardOutcome::NoChanges) => state.refresh_requested = true,
+        Err(message) => {
+            state.status = Some(format!("Git action failed: {message}"));
+            state.refresh_requested = true;
+        }
+    }
+    true
+}
+
+fn handle_discard_key(state: &mut FilesMode, key: KeyCode) -> AppCommand {
+    let InputState::Discarding { pending, selected } = &mut state.input else {
+        return AppCommand::Continue;
+    };
+    let cancel = pending.choices().len();
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => *selected = (*selected + 1).min(cancel),
+        KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
+        KeyCode::Esc => state.input = InputState::Normal,
+        KeyCode::Enter => {
+            let kind = pending.choices().get(*selected).copied();
+            if let InputState::Discarding { pending, .. } =
+                std::mem::replace(&mut state.input, InputState::Normal)
+                && let Some(kind) = kind
+            {
+                state.status = Some("Discarding changes…".into());
+                spawn_action(state, move || {
+                    actions::complete_discard(pending, kind).map(actions::DiscardOutcome::Applied)
+                });
+            }
+        }
+        _ => {}
+    }
+    AppCommand::Continue
+}
+
 /// Handle a mode-internal key (the shell strips global bindings first).
 fn handle_key(
     state: &mut FilesMode,
@@ -394,12 +527,23 @@ fn handle_key(
         return handle_comment_key(state, key);
     }
 
-    // Any other key clears the transient copy status.
-    state.status = None;
+    if matches!(state.input, InputState::Discarding { .. }) {
+        return handle_discard_key(state, key);
+    }
+
+    if state.action_job.is_none() {
+        state.status = None;
+    }
+    if state.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd')) {
+        start_action(state, key == KeyCode::Char(' '));
+        return AppCommand::Continue;
+    }
 
     match key {
         KeyCode::Char('c') => {
-            open_comment(state);
+            if state.action_job.is_none() {
+                open_comment(state);
+            }
             AppCommand::Continue
         }
         KeyCode::Char('d') => {
@@ -626,7 +770,7 @@ fn handle_mouse(
     sidebar_viewport: usize,
 ) -> AppCommand {
     // The comment editor owns input while it is open.
-    if matches!(state.input, InputState::Commenting { .. }) {
+    if !matches!(state.input, InputState::Normal) {
         return AppCommand::Continue;
     }
     // Ghostty/macOS sends Shift+vertical wheel as horizontal wheel events.
@@ -728,14 +872,23 @@ fn handle_mouse(
 
 impl Mode for FilesMode {
     fn background(&mut self, active: bool) -> BackgroundWork {
+        let action_changed = collect_action(self);
         if !active {
             self.diff.cache.pause();
             return BackgroundWork::default();
         }
         BackgroundWork {
-            changed: self.diff.cache.collect(),
-            pending: self.diff.cache.pending(),
+            changed: self.diff.cache.collect() || action_changed,
+            pending: self.diff.cache.pending() || self.action_job.is_some(),
         }
+    }
+
+    fn take_refresh_request(&mut self) -> bool {
+        std::mem::take(&mut self.refresh_requested)
+    }
+
+    fn reserves_key(&self, key: KeyCode) -> bool {
+        self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd'))
     }
 
     fn draw(
@@ -787,6 +940,9 @@ impl Mode for FilesMode {
             let label = format!("{}:{}", anchor.path, anchor.line);
             render_comment_editor(frame, right, &label, buffer, theme);
         }
+        if let InputState::Discarding { pending, selected } = &self.input {
+            action_menu::draw(frame, pending, *selected, theme);
+        }
     }
 
     fn handle_key(
@@ -799,7 +955,7 @@ impl Mode for FilesMode {
     }
 
     fn captures_text_input(&self) -> bool {
-        matches!(self.input, InputState::Commenting { .. })
+        !matches!(self.input, InputState::Normal)
     }
 
     fn report_copy(&mut self, result: Result<(), String>) {

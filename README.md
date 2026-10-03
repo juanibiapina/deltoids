@@ -99,6 +99,24 @@ or mouse input also resumes it. Terminals that do not send focus events
 continue refreshing normally. Idle windows redraw only when their view
 changes.
 
+### Files actions
+
+In the Files sidebar, Space stages or unstages the selected file or
+changed files under the selected directory. If the selection has unstaged
+changes, Space stages them; otherwise it unstages the selection without
+changing the working-tree files.
+
+Discard acts on the same selection. Unstaged-only changes are discarded
+immediately. When staged changes are present, a menu lets you discard all
+changes, or discard only unstaged changes when both kinds are present.
+Discarding all changes restores tracked files to HEAD and deletes added
+files. Discarding unstaged changes keeps the index and restores files to
+its staged content. Escape cancels the menu.
+
+These actions require a live repository-backed Files view. Piped diffs
+are read-only. See `?` for the bindings; comment actions apply in the diff
+pane.
+
 ### Review comments
 
 Works the same on both diffs: the working tree in Files mode and a trace

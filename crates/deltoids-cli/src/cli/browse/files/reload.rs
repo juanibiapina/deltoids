@@ -9,7 +9,9 @@ use deltoids::{Theme, git};
 use crate::sidebar::display_path;
 
 use super::diff_pane::DiffPane;
-use super::model::{DiffSource, Model, build_model, stage_map};
+#[cfg(test)]
+use super::model::build_model;
+use super::model::{DiffSource, Model, stage_map};
 use super::sidebar_pane::build_sidebar;
 use crate::cli::browse::watch::{ChangeWatcher, path_warrants_reload, spawn_workdir_watcher};
 use crate::sidebar::Sidebar;
@@ -54,6 +56,8 @@ fn reload_needed(new_input: &str, last_input: &str) -> bool {
 pub(super) enum ReloadOutcome {
     /// The diff changed and the view was rebuilt in place.
     Rebuilt,
+    /// Only staging columns changed; diff bodies and render blocks are retained.
+    StagingUpdated,
     /// The tree was stable (diff unchanged); nothing rebuilt.
     Unchanged,
     /// The tick failed (a transient diff/content race); the current view
@@ -101,45 +105,55 @@ pub(super) fn reload_working_tree(
     )
 }
 
-/// The fallible half of a reload: read patch and stages together, then
-/// rebuild the model when either changed. Returns `Ok(None)` for a stable
-/// snapshot, `Ok(Some(..))` for a fresh model,
-/// or `Err` when either the diff read or the model build lost a race with
-/// on-disk churn. Reads nothing the caller mutates, so a failure here is
-/// safe to discard.
+enum Update {
+    Staging(std::collections::HashMap<String, crate::sidebar::StageStatus>),
+    Model(String, Model),
+}
+
+/// Read patch and staging columns together. Column-only changes retain the
+/// model; content or membership changes build a replacement. A stable snapshot
+/// returns `None`. Failed reads leave the caller's current view untouched.
 fn compute_reload(
     repo: &git::Repo,
     last_input: &str,
     model: &Model,
-) -> Result<Option<(String, Model)>, String> {
+) -> Result<Option<Update>, String> {
     let snapshot = repo.working_tree_snapshot()?;
-    let stages = stage_map(snapshot.stages);
-    if !reload_needed(&snapshot.patch, last_input) && stages == model.stages {
-        return Ok(None);
+    let stages = stage_map(&snapshot.stages);
+    if !reload_needed(&snapshot.patch, last_input) {
+        if stages == model.stages {
+            return Ok(None);
+        }
+        if stages.len() == model.stages.len()
+            && stages.keys().all(|path| model.stages.contains_key(path))
+        {
+            return Ok(Some(Update::Staging(stages)));
+        }
     }
-    let model = build_model(&snapshot.patch, Some(repo), stages)?;
-    Ok(Some((snapshot.patch, model)))
+    let model = super::model::build_working_model(&snapshot, repo)?;
+    Ok(Some(Update::Model(snapshot.patch, model)))
 }
 
-/// The infallible half of a reload: apply a `computed` result to the view.
-/// A fresh model swaps `model`/`last_input` and rebuilds the view
-/// (`Rebuilt`); a stable tree is a no-op (`Unchanged`); a failed compute
-/// keeps the current view untouched (`Failed`). Isolating this from the
-/// fallible half lets tests drive every outcome deterministically without
-/// racing a real working tree.
+/// Apply staging columns or replace the content model. Column updates preserve
+/// rendered diff blocks and navigation. Failed computations retain the view.
 #[allow(clippy::too_many_arguments)]
 fn apply_reload(
     diff: &mut DiffPane,
     sidebar: &mut Sidebar,
     model: &mut Model,
     last_input: &mut String,
-    computed: Result<Option<(String, Model)>, String>,
+    computed: Result<Option<Update>, String>,
     theme: &Theme,
     width: usize,
     diff_viewport: usize,
 ) -> ReloadOutcome {
     let (input, new_model) = match computed {
-        Ok(Some(pair)) => pair,
+        Ok(Some(Update::Model(input, model))) => (input, model),
+        Ok(Some(Update::Staging(stages))) => {
+            model.stages = stages;
+            super::sidebar_pane::update_staging(sidebar, model);
+            return ReloadOutcome::StagingUpdated;
+        }
         Ok(None) => return ReloadOutcome::Unchanged,
         // Transient race: keep the current view (do not touch
         // model/last_input) and let the next tick retry.
@@ -149,6 +163,38 @@ fn apply_reload(
         .nearest_file_index()
         .and_then(|idx| model.files.get(idx))
         .map(|f| display_path(&f.file).to_string());
+    let prev_directory = sidebar.selected_directory_path();
+    let previous_order = sidebar.display_order();
+    let position = sidebar
+        .selection_display_range()
+        .map(|r| r.start)
+        .unwrap_or(0);
+    let removed = prev_path.as_ref().is_some_and(|path| {
+        !new_model
+            .files
+            .iter()
+            .any(|f| display_path(&f.file) == path)
+    });
+    let fallback = removed
+        .then(|| {
+            let survivors: std::collections::HashMap<_, _> = new_model
+                .files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| (display_path(&file.file), index))
+                .collect();
+            previous_order
+                .iter()
+                .skip(position + 1)
+                .chain(
+                    previous_order[..position.min(previous_order.len())]
+                        .iter()
+                        .rev(),
+                )
+                .filter_map(|idx| model.files.get(*idx))
+                .find_map(|file| survivors.get(display_path(&file.file)).copied())
+        })
+        .flatten();
     reload_view(
         diff,
         sidebar,
@@ -158,6 +204,12 @@ fn apply_reload(
         width,
         diff_viewport,
     );
+    let restored_directory = prev_directory
+        .as_deref()
+        .is_some_and(|directory| sidebar.select_directory_path(directory, diff_viewport));
+    if !restored_directory && let Some(index) = fallback {
+        sidebar.select_file_index(index, diff_viewport);
+    }
     *model = new_model;
     *last_input = input;
     ReloadOutcome::Rebuilt
@@ -327,8 +379,11 @@ mod tests {
     }
 
     /// A model with the given file paths, for feeding `apply_reload`.
-    fn apply_reload_computed(paths: &[&str]) -> Result<Option<(String, Model)>, String> {
-        Ok(Some((format!("diff for {paths:?}"), model_of(paths))))
+    fn apply_reload_computed(paths: &[&str]) -> Result<Option<Update>, String> {
+        Ok(Some(Update::Model(
+            format!("diff for {paths:?}"),
+            model_of(paths),
+        )))
     }
 
     #[test]
@@ -442,8 +497,10 @@ mod tests {
         index.read(true).unwrap();
         index.add_path(std::path::Path::new("file.txt")).unwrap();
         index.write().unwrap();
-        let (new_patch, updated) = compute_reload(&repo, &patch, &model).unwrap().unwrap();
-        assert_eq!(new_patch, patch);
-        assert_ne!(updated.stages, model.stages);
+        let Update::Staging(stages) = compute_reload(&repo, &patch, &model).unwrap().unwrap()
+        else {
+            panic!("staging must not rebuild the diff model");
+        };
+        assert_ne!(stages, model.stages);
     }
 }

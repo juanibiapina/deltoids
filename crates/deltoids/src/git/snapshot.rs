@@ -66,8 +66,15 @@ fn pair(staged: &Diff<'_>, workdir: &Diff<'_>) -> Vec<FileStageStatus> {
         // The existing status interface prefers the staged delta's new path.
         let path = x.as_ref().or(y.as_ref()).and_then(|d| d.new_file().path());
         if let Some(path) = path {
+            let paths = x
+                .iter()
+                .chain(y.iter())
+                .flat_map(|delta| [delta.old_file(), delta.new_file()])
+                .filter_map(|file| file.path().map(|p| p.to_string_lossy().into_owned()))
+                .collect();
             out.push(FileStageStatus {
                 path: path.to_string_lossy().into_owned(),
+                paths,
                 staged,
                 unstaged,
             });

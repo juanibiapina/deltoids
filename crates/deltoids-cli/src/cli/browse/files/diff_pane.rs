@@ -136,6 +136,13 @@ pub(super) fn render_file_block(
                 Style::default().fg(rgb_to_color(theme.muted)),
             ))));
         }
+        FileBody::StatusOnly => {
+            rows.push(DiffRow::plain(Line::from("")));
+            rows.push(DiffRow::plain(Line::from(Span::styled(
+                "Staged and unstaged changes cancel out relative to HEAD.",
+                Style::default().fg(rgb_to_color(theme.muted)),
+            ))));
+        }
         FileBody::Submodule {
             old_commit,
             new_commit,
@@ -748,7 +755,11 @@ impl DiffPane {
         // either the clean "No local changes." line (a reverted/committed
         // tree or a non-repo) or a build-error message.
         if self.display_order.is_empty() {
-            let block = pane_block_with_footer("─[2]─Diff─", color, None);
+            let block = pane_block_with_footer(
+                "─[2]─Diff─",
+                color,
+                status.map(|message| format!(" {message} ")),
+            );
             let inner = block.inner(area);
             frame.render_widget(block, area);
             match &self.empty_state {

@@ -118,6 +118,7 @@ impl Sidebar {
     /// Same as `build` but with an explicit icon mode (for tests).
     pub fn build_with_icons(files: &[SidebarFile<'_>], theme: &Theme, icons: IconMode) -> Self {
         let rows = build_rows(files);
+        let stages: Vec<_> = files.iter().map(|file| file.stage).collect();
         let file_meta = rows
             .iter()
             .enumerate()
@@ -125,7 +126,7 @@ impl Sidebar {
                 Row::Dir { .. } => FileRowMeta {
                     status: None,
                     stage: None,
-                    dir_stage: dir_aggregate(&rows, files, idx),
+                    dir_stage: dir_aggregate(&rows, &stages, idx),
                     deltas: None,
                     rename: None,
                     extra: FileMetadata::default(),
@@ -178,6 +179,19 @@ impl Sidebar {
         };
         sidebar.render_all();
         sidebar
+    }
+
+    /// Update staging columns without rebuilding rows or moving selection and scroll.
+    pub fn update_staging(&mut self, stages: &[Option<StageStatus>]) {
+        for (index, row) in self.rows.iter().enumerate() {
+            match row {
+                Row::File { file_index, .. } => self.file_meta[index].stage = stages[*file_index],
+                Row::Dir { .. } => {
+                    self.file_meta[index].dir_stage = dir_aggregate(&self.rows, stages, index)
+                }
+            }
+        }
+        self.render_all();
     }
 
     /// File count + aggregate `+`/`-` totals, computed at build time.
@@ -240,6 +254,43 @@ impl Sidebar {
     /// Whether the currently-selected row is a directory header.
     pub fn selected_is_dir(&self) -> bool {
         matches!(self.rows.get(self.selected), Some(Row::Dir { .. }))
+    }
+
+    /// Workdir-relative identity of the selected directory, including collapsed chains.
+    pub fn selected_directory_path(&self) -> Option<String> {
+        self.directory_path_at(self.selected)
+    }
+
+    /// Restore a directory selection after rebuilding the tree.
+    pub fn select_directory_path(&mut self, path: &str, viewport: usize) -> bool {
+        let mut parents = Vec::new();
+        let row = self.rows.iter().enumerate().find_map(|(index, row)| {
+            let Row::Dir { label, depth } = row else {
+                return None;
+            };
+            parents.truncate(*depth);
+            parents.push(label.as_str());
+            (parents.concat() == path).then_some(index)
+        });
+        let Some(row) = row else {
+            return false;
+        };
+        self.set_selected(row, viewport);
+        true
+    }
+
+    fn directory_path_at(&self, index: usize) -> Option<String> {
+        if !matches!(self.rows.get(index), Some(Row::Dir { .. })) {
+            return None;
+        }
+        let mut parents = Vec::new();
+        for row in &self.rows[..=index] {
+            if let Row::Dir { label, depth } = row {
+                parents.truncate(*depth);
+                parents.push(label.as_str());
+            }
+        }
+        Some(parents.concat())
     }
 
     /// Input index of the file the diff pane should snap to for the
@@ -382,9 +433,20 @@ impl Sidebar {
         if target == self.selected {
             return;
         }
+        let previous = self.selected;
         self.selected = target;
         self.adjust_scroll(viewport);
-        self.render_all();
+        for index in [previous, target] {
+            if let Some(row) = self.rows.get(index) {
+                self.rendered[index] = render_row(
+                    row,
+                    &self.file_meta[index],
+                    index == target,
+                    self.icons,
+                    &self.theme,
+                );
+            }
+        }
     }
 
     /// Keep the selected row inside `[scroll, scroll + viewport)`.
@@ -422,7 +484,7 @@ impl Sidebar {
 /// covers the whole subtree (nested dirs included). Returns `None` when
 /// no subtree file carries stage data (piped diff / no repo), which
 /// keeps the directory's muted styling.
-fn dir_aggregate(rows: &[Row], files: &[SidebarFile<'_>], dir_idx: usize) -> Option<DirStage> {
+fn dir_aggregate(rows: &[Row], stages: &[Option<StageStatus>], dir_idx: usize) -> Option<DirStage> {
     let Row::Dir {
         depth: dir_depth, ..
     } = &rows[dir_idx]
@@ -443,7 +505,7 @@ fn dir_aggregate(rows: &[Row], files: &[SidebarFile<'_>], dir_idx: usize) -> Opt
             break;
         }
         if let Some(file_index) = file_index
-            && let Some(stage) = files[file_index].stage
+            && let Some(stage) = stages[file_index]
         {
             any = true;
             has_staged |= stage.is_staged();
@@ -461,6 +523,62 @@ mod tests {
     use super::*;
     use crate::sidebar::test_support::*;
     use deltoids::parse::FileDiff;
+
+    #[test]
+    fn navigation_highlights_only_the_selected_row() {
+        let diffs = [fd("a/one.rs"), fd("a/two.rs"), fd("b/three.rs")];
+        let files: Vec<_> = diffs
+            .iter()
+            .map(|file| SidebarFile {
+                file,
+                added: 2,
+                deleted: 1,
+                stage: None,
+            })
+            .collect();
+        let theme = theme();
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme, IconMode::Off);
+        for target in [sidebar.row_count() - 1, 0, 2, 1] {
+            sidebar.set_selected(target, 2);
+            for (index, line) in sidebar.rows().iter().enumerate() {
+                let expected = (index == target)
+                    .then(|| deltoids::render_tui::rgb_to_color(theme.selection_bg));
+                assert!(line.spans.iter().all(|span| span.style.bg == expected));
+            }
+        }
+    }
+
+    #[test]
+    fn staging_refresh_matches_a_fresh_sidebar_and_preserves_navigation_and_totals() {
+        let diffs = [fd("a/src/one.rs"), fd("a/tests/two.rs"), fd("b/three.rs")];
+        let unstaged = Some(StageStatus {
+            staged: None,
+            unstaged: Some(ChangeKind::Modified),
+        });
+        let mut files: Vec<_> = diffs
+            .iter()
+            .map(|file| SidebarFile {
+                file,
+                added: 7,
+                deleted: 3,
+                stage: unstaged,
+            })
+            .collect();
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        assert!(sidebar.select_directory_path("a/", 2));
+        let position = (sidebar.selected(), sidebar.scroll());
+        let totals = sidebar.totals();
+        files[0].stage = Some(StageStatus {
+            staged: Some(ChangeKind::Modified),
+            unstaged: None,
+        });
+        sidebar.update_staging(&files.iter().map(|file| file.stage).collect::<Vec<_>>());
+        let mut expected = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        assert!(expected.select_directory_path("a/", 2));
+        assert_eq!(sidebar.rows(), expected.rows());
+        assert_eq!((sidebar.selected(), sidebar.scroll()), position);
+        assert_eq!(sidebar.totals(), totals);
+    }
 
     #[test]
     fn build_selects_first_file_skipping_dir_header() {

@@ -21,7 +21,20 @@ use super::model::{Model, body_deltas};
 
 /// Build the sidebar from a model plus per-file delta counts.
 pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
-    let sidebar_files: Vec<SidebarFile<'_>> = model
+    Sidebar::build(&sidebar_files(model), theme)
+}
+
+pub(super) fn update_staging(sidebar: &mut Sidebar, model: &Model) {
+    let stages: Vec<_> = model
+        .files
+        .iter()
+        .map(|file| model.stages.get(display_path(&file.file)).copied())
+        .collect();
+    sidebar.update_staging(&stages);
+}
+
+fn sidebar_files(model: &Model) -> Vec<SidebarFile<'_>> {
+    model
         .files
         .iter()
         .zip(model.bodies.iter())
@@ -35,8 +48,7 @@ pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
                 stage,
             }
         })
-        .collect();
-    Sidebar::build(&sidebar_files, theme)
+        .collect()
 }
 
 /// Handle a movement key while the sidebar is focused. Returns `true`

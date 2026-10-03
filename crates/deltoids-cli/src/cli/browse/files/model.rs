@@ -2,7 +2,7 @@
 //! content against the repo, and compute per-file [`Diff`]s. The owned
 //! [`Model`] is rebuilt wholesale on each working-tree reload.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use deltoids::content::SideContent;
@@ -41,6 +41,8 @@ pub(super) enum FileBody {
     /// A binary change: no textual diff. Decided from the parsed diff, so
     /// content resolution never touches the ODB or the working tree.
     Binary,
+    /// Index and worktree changes whose net HEAD diff is empty.
+    StatusOnly,
     /// A submodule (gitlink, git mode `160000`) change: its "content" is
     /// a commit OID, not a blob, so content resolution would fail and
     /// blank the panel. Decided from the parsed diff; the diff pane
@@ -53,14 +55,104 @@ pub(super) enum FileBody {
 
 /// Parse `input`, resolve every file's before/after content against
 /// `repo`, and compute per-file [`Diff`]s.
+#[cfg(test)]
 pub(super) fn build_model(
     input: &str,
     repo: Option<&git::Repo>,
     stages: HashMap<String, StageStatus>,
 ) -> Result<Model, String> {
-    let parsed = GitDiff::parse(input);
-    let files = resolve(parsed, repo)?;
-    let bodies = precompute_bodies(&files);
+    finish_model(GitDiff::parse(input), repo, stages)
+}
+
+pub(super) fn build_working_model(
+    snapshot: &git::WorkingTreeSnapshot,
+    repo: &git::Repo,
+) -> Result<Model, String> {
+    let mut parsed = GitDiff::parse(&snapshot.patch);
+    let mut deleted_paths: HashMap<_, _> = parsed
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| file.new_path == "/dev/null")
+        .map(|(index, file)| (file.old_path.clone(), index))
+        .collect();
+    let mut added_paths: HashMap<_, _> = parsed
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| file.old_path == "/dev/null")
+        .map(|(index, file)| (file.new_path.clone(), index))
+        .collect();
+    let mut removed = HashSet::new();
+    // A chained rename can arrive as a net deletion/addition pair. Its status
+    // record retains the HEAD/index/worktree relationship needed to join it.
+    for status in &snapshot.stages {
+        if status.staged != Some(git::StageChange::Renamed)
+            && status.unstaged != Some(git::StageChange::Renamed)
+        {
+            continue;
+        }
+        let (Some(old), Some(new)) = (status.paths.first(), status.paths.last()) else {
+            continue;
+        };
+        if old == new {
+            continue;
+        }
+        if let (Some(deleted), Some(added)) = (deleted_paths.remove(old), added_paths.remove(new)) {
+            let old_hash = parsed.files[deleted].old_hash.clone();
+            let old_mode = parsed.files[deleted].old_mode.clone();
+            let after = &mut parsed.files[added];
+            after.old_path = old.clone();
+            after.rename_from = Some(old.clone());
+            after.old_hash = old_hash;
+            after.old_mode = old_mode;
+            after
+                .preamble
+                .retain(|line| !line.starts_with("new file mode "));
+            removed.insert(deleted);
+        }
+    }
+    let mut index = 0;
+    parsed.files.retain(|_| {
+        let keep = !removed.contains(&index);
+        index += 1;
+        keep
+    });
+    finish_model(parsed, Some(repo), stage_map(&snapshot.stages))
+}
+
+fn finish_model(
+    parsed: GitDiff,
+    repo: Option<&git::Repo>,
+    stages: HashMap<String, StageStatus>,
+) -> Result<Model, String> {
+    let mut files = resolve(parsed, repo)?;
+    let mut bodies = precompute_bodies(&files);
+    let present: HashSet<_> = files.iter().map(|file| display_path(&file.file)).collect();
+    let mut missing: Vec<_> = stages
+        .keys()
+        .filter(|path| !present.contains(path.as_str()))
+        .cloned()
+        .collect();
+    missing.sort();
+    for path in missing {
+        files.push(ResolvedFile {
+            file: FileDiff {
+                preamble: Vec::new(),
+                old_path: path.clone(),
+                new_path: path,
+                rename_from: None,
+                old_hash: None,
+                new_hash: None,
+                old_mode: None,
+                new_mode: None,
+                hunks: Vec::new(),
+            },
+            before: String::new(),
+            after: String::new(),
+        });
+        bodies.push(FileBody::StatusOnly);
+    }
     Ok(Model {
         files,
         bodies,
@@ -69,12 +161,15 @@ pub(super) fn build_model(
 }
 
 /// Index supplied staging records by path for the sidebar join.
-pub(super) fn stage_map(statuses: Vec<git::FileStageStatus>) -> HashMap<String, StageStatus> {
+pub(super) fn stage_map(
+    statuses: impl AsRef<[git::FileStageStatus]>,
+) -> HashMap<String, StageStatus> {
     statuses
-        .into_iter()
+        .as_ref()
+        .iter()
         .map(|s| {
             (
-                s.path,
+                s.paths.last().unwrap_or(&s.path).clone(),
                 StageStatus {
                     staged: s.staged.map(map_change),
                     unstaged: s.unstaged.map(map_change),
@@ -228,7 +323,7 @@ pub(super) fn body_deltas(body: &FileBody) -> (usize, usize) {
             view.old_target.is_some() as usize,
         ),
         // Binary changes have no line counts (lazygit shows none either).
-        FileBody::Binary => (0, 0),
+        FileBody::Binary | FileBody::StatusOnly => (0, 0),
         // Submodule bumps have no textual line counts either.
         FileBody::Submodule { .. } => (0, 0),
     }
@@ -414,7 +509,10 @@ mod tests {
         assert_eq!(model.files[0].after, "world\n");
         match &model.bodies[0] {
             FileBody::Diff(diff) => assert!(!diff.hunks().is_empty()),
-            FileBody::Symlink(_) | FileBody::Binary | FileBody::Submodule { .. } => {
+            FileBody::Symlink(_)
+            | FileBody::Binary
+            | FileBody::StatusOnly
+            | FileBody::Submodule { .. } => {
                 panic!("expected a text diff body")
             }
         }

@@ -106,9 +106,9 @@ changed files under the selected directory. If the selection has unstaged
 changes, Space stages them; otherwise it unstages the selection without
 changing the working-tree files.
 
-Discard acts on the same selection. Unstaged-only changes are discarded
-immediately. When staged changes are present, a menu lets you discard all
-changes, or discard only unstaged changes when both kinds are present.
+In the Files sidebar, `d` always opens a menu for the same selection.
+Choose to discard all changes or only unstaged changes, then press Enter
+to confirm. Unavailable options remain visible with strikethrough.
 Discarding all changes restores tracked files to HEAD and deletes added
 files. Discarding unstaged changes keeps the index and restores files to
 its staged content. Escape cancels the menu.

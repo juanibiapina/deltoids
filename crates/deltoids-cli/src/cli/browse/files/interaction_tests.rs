@@ -131,6 +131,8 @@ fn repeated_action_keys_do_not_queue_extra_mutations_and_navigation_stays_availa
     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    assert!(mode.captures_text_input());
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
     Mode::handle_key(&mut mode, KeyCode::Char('j'), 20, 20);
     assert_eq!(mode.selected_path().unwrap().file_name().unwrap(), "b.txt");
     finish(&mut mode);
@@ -144,7 +146,7 @@ fn repeated_action_keys_do_not_queue_extra_mutations_and_navigation_stays_availa
 }
 
 #[test]
-fn unstaged_d_discards_directly_and_selects_the_next_surviving_file() {
+fn unstaged_d_requires_confirmation_and_selects_the_next_surviving_file() {
     let (dir, _) = fixture(&["a.txt", "b.txt", "c.txt"]);
     for path in ["a.txt", "b.txt", "c.txt"] {
         fs::write(dir.path().join(path), "edited\n").unwrap();
@@ -152,6 +154,13 @@ fn unstaged_d_discards_directly_and_selects_the_next_surviving_file() {
     let mut mode = live(dir.path());
     mode.sidebar.select_file_index(1, 20);
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    finish(&mut mode);
+    assert!(mode.captures_text_input());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "edited\n"
+    );
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
     finish(&mut mode);
     assert!(matches!(mode.input, InputState::Normal));
     refresh(&mut mode);
@@ -198,7 +207,30 @@ fn staged_d_opens_a_cancellable_menu_and_enter_discards_the_last_file() {
         .collect();
     assert!(text.contains("Discard all changes"));
     assert!(text.contains("Cancel"));
-    assert!(!text.contains("Discard unstaged changes"));
+    assert!(text.contains("Discard unstaged changes"));
+    let cells = terminal.backend().buffer().content();
+    for (label, crossed_out) in [
+        ("Discard all changes", false),
+        ("Discard unstaged changes", true),
+        ("Cancel", false),
+    ] {
+        let start = cells
+            .windows(label.len())
+            .position(|window| window.iter().map(|cell| cell.symbol()).collect::<String>() == label)
+            .unwrap();
+        for cell in &cells[start..start + label.len()] {
+            assert_eq!(
+                cell.modifier
+                    .contains(ratatui::style::Modifier::CROSSED_OUT),
+                crossed_out,
+                "{label}"
+            );
+        }
+    }
+    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    assert!(mode.captures_text_input());
+    assert!(mode.action_job.is_none());
     Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
     assert!(!mode.captures_text_input());
     assert_eq!(
@@ -333,13 +365,9 @@ fn piped_diff_and_diff_focus_cannot_mutate_the_repository() {
     let mut mode = live(dir.path());
     mode.is_static = true;
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
-    assert!(
-        mode.status
-            .as_deref()
-            .unwrap()
-            .contains("repository-backed")
-    );
+    assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
     mode.is_static = false;
     Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
@@ -352,20 +380,114 @@ fn piped_diff_and_diff_focus_cannot_mutate_the_repository() {
 }
 
 #[test]
-fn empty_and_externally_cleaned_selections_ignore_discard() {
+fn empty_and_externally_cleaned_selections_show_disabled_menus() {
     let (dir, _) = fixture(&["a.txt"]);
     let mut mode = live(dir.path());
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
     assert!(mode.action_job.is_none());
-    assert!(mode.status.is_none());
+    assert!(mode.captures_text_input());
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
     fs::write(dir.path().join("a.txt"), "original\n").unwrap();
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
     finish(&mut mode);
-    assert!(mode.status.is_none());
-    refresh(&mut mode);
-    assert!(mode.model.files.is_empty());
+    assert!(mode.captures_text_input());
+    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    assert!(mode.captures_text_input());
+    assert!(mode.action_job.is_none());
+}
+
+#[test]
+fn cancelling_preparation_does_not_reopen_the_menu_or_write() {
+    let (dir, repo) = fixture(&["a.txt"]);
+    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    assert!(mode.captures_text_input());
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+    finish(&mut mode);
+    assert!(!mode.captures_text_input());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "edited\n"
+    );
+    let index = repo.index().unwrap();
+    let blob = repo
+        .find_blob(index.get_path(Path::new("a.txt"), 0).unwrap().id)
+        .unwrap();
+    assert_eq!(blob.content(), b"original\n");
+}
+
+#[test]
+fn reopening_during_preparation_cannot_receive_the_cancelled_decision() {
+    let (dir, _) = fixture(&["a.txt"]);
+    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    finish(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    assert!(mode.captures_text_input());
+    assert!(mode.action_job.is_none());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "edited\n"
+    );
+}
+
+#[test]
+fn unstaged_menu_cancel_preserves_content_and_unstaged_choice_restores_it() {
+    let (dir, _) = fixture(&["a.txt"]);
+    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    finish(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    assert!(!mode.captures_text_input());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "edited\n"
+    );
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    finish(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    finish(&mut mode);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "original\n"
+    );
+}
+
+#[test]
+fn missing_repository_and_failed_preparation_leave_discard_disabled() {
+    let (dir, _) = fixture(&["a.txt"]);
+    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+    let mut mode = live(dir.path());
+    mode.repo = None;
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    assert!(mode.captures_text_input());
+    assert!(mode.action_job.is_none());
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+
+    let mut mode = live(dir.path());
+    fs::remove_dir_all(dir.path().join(".git")).unwrap();
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    finish(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    assert!(mode.captures_text_input());
+    assert!(mode.action_job.is_none());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "edited\n"
+    );
 }
 
 #[test]

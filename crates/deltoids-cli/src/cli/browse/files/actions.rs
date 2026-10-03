@@ -12,6 +12,8 @@ pub(super) enum DiscardKind {
 }
 
 impl DiscardKind {
+    pub(super) const ALL: [Self; 2] = [Self::All, Self::Unstaged];
+
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::All => "Discard all changes",
@@ -28,7 +30,6 @@ impl DiscardKind {
 }
 
 pub(super) enum DiscardOutcome {
-    NoChanges,
     Applied(String),
     Choose(PendingDiscard),
 }
@@ -42,8 +43,13 @@ pub(super) struct PendingDiscard {
 }
 
 impl PendingDiscard {
+    #[cfg(test)]
     pub(super) fn choices(&self) -> &[DiscardKind] {
         &self.choices
+    }
+
+    pub(super) fn is_available(&self, kind: DiscardKind) -> bool {
+        self.choices.contains(&kind)
     }
 
     pub(super) fn label(&self) -> String {
@@ -107,14 +113,10 @@ pub(super) fn toggle_stage(workdir: &Path, targets: Vec<PathBuf>) -> Result<Stri
 pub(super) fn discard(workdir: &Path, targets: Vec<PathBuf>) -> Result<DiscardOutcome, String> {
     let repo = open(workdir)?;
     let state = read(&repo, &targets, true)?;
-    if state.changes.is_empty() {
-        return Ok(DiscardOutcome::NoChanges);
+    let mut choices = Vec::new();
+    if !state.changes.is_empty() {
+        choices.push(DiscardKind::All);
     }
-    if !state.changes.iter().any(|c| c.staged) {
-        apply(&repo, &state, DiscardKind::All)?;
-        return Ok(DiscardOutcome::Applied("Discarded unstaged changes".into()));
-    }
-    let mut choices = vec![DiscardKind::All];
     if state.changes.iter().any(|c| c.unstaged) {
         choices.push(DiscardKind::Unstaged);
     }
@@ -130,7 +132,7 @@ pub(super) fn complete_discard(
     pending: PendingDiscard,
     kind: DiscardKind,
 ) -> Result<String, String> {
-    if !pending.choices.contains(&kind) {
+    if !pending.is_available(kind) {
         return Err("This discard action is unavailable".into());
     }
     let repo = open(&pending.workdir)?;
@@ -235,7 +237,6 @@ fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result
     changes.sort_by(|a, b| a.paths.cmp(&b.paths));
     let index = repo.index().map_err(message)?;
     let tree = head(repo)?;
-    let capture_content = capture_content && changes.iter().any(|change| change.staged);
     let mut files = Vec::new();
     for path in changes
         .iter()

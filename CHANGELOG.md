@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - TUI: directory rows show an open-directory arrow.
-- TUI: Space stages/unstages selected files or directories in the Files sidebar; `d` discards changes, with a menu when staged changes exist.
+- TUI: add shortcuts to stage and discard changes in git.
 
 ### Changed
 

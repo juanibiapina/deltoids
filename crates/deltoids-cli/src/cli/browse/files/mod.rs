@@ -90,7 +90,7 @@ pub(super) enum Focus {
 enum InputState {
     Normal,
     Discarding {
-        pending: actions::PendingDiscard,
+        menu: action_menu::DiscardMenu,
         selected: usize,
     },
     /// The comment editor is open on `anchor`, holding the text so far
@@ -399,14 +399,37 @@ impl FilesMode {
 }
 
 fn start_action(state: &mut FilesMode, stage: bool) {
+    if !stage {
+        state.input = InputState::Discarding {
+            menu: action_menu::DiscardMenu::Checking,
+            selected: 2,
+        };
+    }
+    let unavailable = |state: &mut FilesMode, reason: &str| {
+        if !stage {
+            state.input = InputState::Discarding {
+                menu: action_menu::DiscardMenu::Unavailable(reason.into()),
+                selected: 2,
+            };
+        }
+    };
     if state.action_job.is_some() {
+        unavailable(
+            state,
+            "A Git action is already running; reopen the menu when it finishes",
+        );
         return;
     }
     let Some(range) = state.sidebar.selection_display_range() else {
+        unavailable(state, "No files selected");
         return;
     };
     if state.is_static {
-        state.status = Some("Git actions require repository-backed Files mode".into());
+        let reason = "Git actions require repository-backed Files mode";
+        unavailable(state, reason);
+        if stage {
+            state.status = Some(reason.into());
+        }
         return;
     }
     let Some(workdir) = state
@@ -415,6 +438,7 @@ fn start_action(state: &mut FilesMode, stage: bool) {
         .and_then(|r| r.workdir())
         .map(PathBuf::from)
     else {
+        unavailable(state, "Git actions require a working tree");
         return;
     };
     let targets: std::collections::BTreeSet<_> = range
@@ -472,17 +496,30 @@ fn collect_action(state: &mut FilesMode) -> bool {
     state.status = None;
     match result {
         Ok(actions::DiscardOutcome::Choose(pending)) => {
-            state.input = InputState::Discarding {
-                pending,
-                selected: 0,
-            };
+            if let InputState::Discarding {
+                menu: menu @ action_menu::DiscardMenu::Checking,
+                selected,
+            } = &mut state.input
+            {
+                *selected = actions::DiscardKind::ALL
+                    .iter()
+                    .position(|kind| pending.is_available(*kind))
+                    .unwrap_or(2);
+                *menu = action_menu::DiscardMenu::Ready(pending);
+            }
         }
         Ok(actions::DiscardOutcome::Applied(message)) => {
             state.status = (!message.is_empty()).then_some(message);
             state.refresh_requested = true;
         }
-        Ok(actions::DiscardOutcome::NoChanges) => state.refresh_requested = true,
         Err(message) => {
+            if let InputState::Discarding {
+                menu: menu @ action_menu::DiscardMenu::Checking,
+                ..
+            } = &mut state.input
+            {
+                *menu = action_menu::DiscardMenu::Unavailable(message.clone());
+            }
             state.status = Some(format!("Git action failed: {message}"));
             state.refresh_requested = true;
         }
@@ -491,18 +528,23 @@ fn collect_action(state: &mut FilesMode) -> bool {
 }
 
 fn handle_discard_key(state: &mut FilesMode, key: KeyCode) -> AppCommand {
-    let InputState::Discarding { pending, selected } = &mut state.input else {
+    let InputState::Discarding { menu, selected } = &mut state.input else {
         return AppCommand::Continue;
     };
-    let cancel = pending.choices().len();
+    let cancel = actions::DiscardKind::ALL.len();
     match key {
         KeyCode::Char('j') | KeyCode::Down => *selected = (*selected + 1).min(cancel),
         KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
         KeyCode::Esc => state.input = InputState::Normal,
         KeyCode::Enter => {
-            let kind = pending.choices().get(*selected).copied();
-            if let InputState::Discarding { pending, .. } =
-                std::mem::replace(&mut state.input, InputState::Normal)
+            let kind = actions::DiscardKind::ALL.get(*selected).copied();
+            if kind.is_some_and(|kind| !menu.is_available(kind)) {
+                return AppCommand::Continue;
+            }
+            if let InputState::Discarding {
+                menu: action_menu::DiscardMenu::Ready(pending),
+                ..
+            } = std::mem::replace(&mut state.input, InputState::Normal)
                 && let Some(kind) = kind
             {
                 state.status = Some("Discarding changes…".into());
@@ -940,8 +982,8 @@ impl Mode for FilesMode {
             let label = format!("{}:{}", anchor.path, anchor.line);
             render_comment_editor(frame, right, &label, buffer, theme);
         }
-        if let InputState::Discarding { pending, selected } = &self.input {
-            action_menu::draw(frame, pending, *selected, theme);
+        if let InputState::Discarding { menu, selected } = &self.input {
+            action_menu::draw(frame, menu, *selected, theme);
         }
     }
 

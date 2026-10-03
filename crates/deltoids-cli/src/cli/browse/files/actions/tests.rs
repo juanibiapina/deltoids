@@ -93,13 +93,16 @@ fn space_twice_stages_then_unstages_without_changing_worktree() {
 }
 
 #[test]
-fn unstaged_discard_executes_but_staged_discard_requires_a_choice() {
+fn unstaged_and_staged_discard_require_a_choice() {
     let dir = fixture();
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
-    assert!(matches!(
-        discard(dir.path(), targets(&["a.txt"])).unwrap(),
-        DiscardOutcome::Applied(_)
-    ));
+    let choice = pending(discard(dir.path(), targets(&["a.txt"])).unwrap());
+    assert_eq!(choice.choices(), &[DiscardKind::All, DiscardKind::Unstaged]);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "edited\n"
+    );
+    complete_discard(choice, DiscardKind::All).unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "original\n"
@@ -183,6 +186,29 @@ fn discard_menu_rejects_equal_length_edits_with_preserved_timestamps() {
 }
 
 #[test]
+fn unstaged_menu_rejects_equal_length_edits_with_preserved_timestamps() {
+    let dir = fixture();
+    let path = dir.path().join("a.txt");
+    fs::write(&path, "before!\n").unwrap();
+    let choice = pending(discard(dir.path(), targets(&["a.txt"])).unwrap());
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, "after!!\n").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(
+        complete_discard(choice, DiscardKind::Unstaged)
+            .unwrap_err()
+            .contains("Selection changed")
+    );
+    assert_eq!(fs::read_to_string(path).unwrap(), "after!!\n");
+    assert_eq!(command(dir.path(), &["show", ":a.txt"]), "original\n");
+}
+
+#[test]
 fn deletion_and_addition_toggle_without_affecting_other_files() {
     let dir = fixture();
     fs::remove_file(dir.path().join("a.txt")).unwrap();
@@ -195,7 +221,11 @@ fn deletion_and_addition_toggle_without_affecting_other_files() {
         fs::read_to_string(dir.path().join("new.txt")).unwrap(),
         "new\n"
     );
-    discard(dir.path(), targets(&["a.txt", "new.txt"])).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&["a.txt", "new.txt"])).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "original\n"
@@ -239,7 +269,11 @@ fn rename_chain_can_be_staged_unstaged_and_discarded_by_its_final_name() {
     assert_eq!(command(dir.path(), &["ls-files"]), "final.txt\n");
     toggle_stage(dir.path(), targets(&["final.txt"])).unwrap();
     assert_eq!(command(dir.path(), &["ls-files"]), "a.txt\n");
-    discard(dir.path(), targets(&["a.txt", "final.txt"])).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&["a.txt", "final.txt"])).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     assert!(dir.path().join("a.txt").exists());
     assert!(!dir.path().join("final.txt").exists());
 }
@@ -276,19 +310,26 @@ fn literal_paths_and_binary_content_survive_staging() {
     );
     toggle_stage(dir.path(), targets(&names)).unwrap();
     assert_eq!(command(dir.path(), &["ls-files"]), "a.txt\n");
-    discard(dir.path(), targets(&names)).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&names)).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     for name in names {
         assert!(!dir.path().join(name).exists());
     }
 }
 
 #[test]
-fn stale_clean_selection_is_a_silent_noop() {
+fn clean_selection_has_no_available_discard_actions() {
     let dir = fixture();
-    assert!(matches!(
-        discard(dir.path(), targets(&["a.txt"])).unwrap(),
-        DiscardOutcome::NoChanges
-    ));
+    let choice = pending(discard(dir.path(), targets(&["a.txt"])).unwrap());
+    assert!(choice.choices().is_empty());
+    assert!(
+        complete_discard(choice, DiscardKind::All)
+            .unwrap_err()
+            .contains("unavailable")
+    );
 }
 
 #[cfg(unix)]
@@ -300,7 +341,11 @@ fn symlink_discard_never_follows_the_target_and_restores_type_changes() {
     fs::write(external.path().join("target"), "keep\n").unwrap();
     fs::remove_file(dir.path().join("a.txt")).unwrap();
     symlink(external.path().join("target"), dir.path().join("a.txt")).unwrap();
-    discard(dir.path(), targets(&["a.txt"])).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&["a.txt"])).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     assert!(
         !dir.path()
             .join("a.txt")
@@ -314,7 +359,11 @@ fn symlink_discard_never_follows_the_target_and_restores_type_changes() {
         "original\n"
     );
     symlink(external.path().join("target"), dir.path().join("new-link")).unwrap();
-    discard(dir.path(), targets(&["new-link"])).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&["new-link"])).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     assert_eq!(
         fs::read_to_string(external.path().join("target")).unwrap(),
         "keep\n"
@@ -369,7 +418,11 @@ fn discard_restores_executable_mode() {
     command(dir.path(), &["config", "core.filemode", "true"]);
     let path = dir.path().join("a.txt");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    discard(dir.path(), targets(&["a.txt"])).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&["a.txt"])).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o111, 0);
 }
 
@@ -393,7 +446,11 @@ fn discard_uses_git_checkout_filters() {
     command(dir.path(), &["add", "."]);
     command(dir.path(), &["commit", "-qm", "filtered fixture"]);
     fs::write(dir.path().join("filtered.txt"), "visible edit\n").unwrap();
-    discard(dir.path(), targets(&["filtered.txt"])).unwrap();
+    complete_discard(
+        pending(discard(dir.path(), targets(&["filtered.txt"])).unwrap()),
+        DiscardKind::All,
+    )
+    .unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("filtered.txt")).unwrap(),
         "visible original\n"

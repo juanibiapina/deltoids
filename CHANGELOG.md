@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TUI: directory rows show an open-directory arrow.
+
 ### Changed
 
 - TUI: More performance improvements when navigating between files

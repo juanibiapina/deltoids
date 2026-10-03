@@ -57,9 +57,8 @@ pub(super) const DEFAULT_FILE: IconSpec = IconSpec {
     color: (0x87, 0x87, 0x87),
 };
 
-/// Folder glyph used for directory rows. deltoids' tree is always fully
-/// expanded, so this is lazygit's default directory icon without the
-/// collapse arrow.
+/// Fallback folder glyph for directory rows. The renderer supplies the
+/// expanded-directory arrow separately.
 pub(super) const ICON_DIR: IconSpec = IconSpec {
     glyph: "\u{f07b}",
     color: (0x87, 0x87, 0x87),

@@ -100,6 +100,7 @@ fn dir_row_spans(
     base: Style,
 ) {
     spans.push(Span::styled(indent(depth), base));
+    spans.push(Span::styled("▼ ", base));
     if icons == IconMode::On {
         // Look the icon up by the deepest segment of the label (strip the
         // trailing `/`, take the last path component), since that segment
@@ -484,10 +485,42 @@ mod tests {
             deleted: 0,
             stage: None,
         }];
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        assert_eq!(line_text(&sidebar.rows()[0]), "▼ src/");
+        assert!(!line_text(&sidebar.rows()[1]).contains('▼'));
+
+        sidebar.top(10);
+        let arrow = sidebar.rows()[0]
+            .spans
+            .iter()
+            .find(|span| span.content == "▼ ")
+            .expect("directory arrow");
+        assert_eq!(arrow.style.fg, None);
+        assert_eq!(arrow.style.bg, Some(rgb_to_color(theme().selection_bg)));
+        assert!(arrow.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn nested_directory_arrow_follows_indentation() {
+        let a = fd("src/a.rs");
+        let b = fd("src/nested/b.rs");
+        let files = vec![
+            SidebarFile {
+                file: &a,
+                added: 0,
+                deleted: 0,
+                stage: None,
+            },
+            SidebarFile {
+                file: &b,
+                added: 0,
+                deleted: 0,
+                stage: None,
+            },
+        ];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
-        let rows = sidebar.rows();
-        let dir = rows.first().expect("at least one row");
-        assert!(line_text(dir).contains("src/"));
+        assert_eq!(line_text(&sidebar.rows()[0]), "▼ src/");
+        assert_eq!(line_text(&sidebar.rows()[2]), "  ▼ nested/");
     }
 
     #[test]
@@ -931,10 +964,7 @@ mod tests {
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::On);
         let row = &sidebar.rows()[0];
-        assert!(
-            line_text(row).contains("src/bin/"),
-            "expected collapsed chain label"
-        );
+        assert_eq!(line_text(row), "▼ \u{f12a7} src/bin/");
         let icon_span = row
             .spans
             .iter()

@@ -317,91 +317,21 @@ pub(crate) fn validate_trace_id(trace_id: &str) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Write-side entry shapes
+// Entry shape
 // ---------------------------------------------------------------------------
-//
-// Four shape variants written by `execute_*_with_trace` and the failure
-// loggers, kept separate so type-level invariants stay tight at the
-// write site (an ok-edit always has `edits` and `hunks`, a failed-edit
-// always has `error`, etc.). All four serialise to the same flat JSON
-// shape that `HistoryEntry` deserialises.
 
-#[derive(Debug, serde::Serialize)]
-pub(crate) struct EditHistoryEntry {
-    pub v: u8,
-    pub tool: &'static str,
-    #[serde(rename = "traceId")]
-    pub trace_id: String,
-    pub timestamp: String,
-    pub cwd: String,
-    pub path: String,
-    pub reason: String,
-    pub ok: bool,
-    pub edits: Vec<TextEdit>,
-    pub diff: String,
-    pub hunks: Vec<deltoids::Hunk>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<deltoids::Language>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub highlight: Option<String>,
-}
+/// Version written on new entries. Informational: the reader tells the
+/// grouped shape from older flat records by the presence of `files`.
+pub(crate) const ENTRY_VERSION: u8 = 4;
 
-#[derive(Debug, serde::Serialize)]
-pub(crate) struct EditFailureHistoryEntry {
-    pub v: u8,
-    pub tool: &'static str,
-    #[serde(rename = "traceId")]
-    pub trace_id: String,
-    pub timestamp: String,
-    pub cwd: String,
-    pub path: String,
-    pub reason: String,
-    pub ok: bool,
-    pub edits: Vec<TextEdit>,
-    pub error: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub(crate) struct WriteHistoryEntry {
-    pub v: u8,
-    pub tool: &'static str,
-    #[serde(rename = "traceId")]
-    pub trace_id: String,
-    pub timestamp: String,
-    pub cwd: String,
-    pub path: String,
-    pub reason: String,
-    pub ok: bool,
-    pub content: String,
-    pub diff: String,
-    pub hunks: Vec<deltoids::Hunk>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<deltoids::Language>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub highlight: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub(crate) struct WriteFailureHistoryEntry {
-    pub v: u8,
-    pub tool: &'static str,
-    #[serde(rename = "traceId")]
-    pub trace_id: String,
-    pub timestamp: String,
-    pub cwd: String,
-    pub path: String,
-    pub reason: String,
-    pub ok: bool,
-    pub content: String,
-    pub error: String,
-}
-
-/// One entry in a trace's `entries.jsonl`.
+/// One entry in a trace's `entries.jsonl`: one tool invocation and the
+/// files it changed (zero, one, or several).
 ///
-/// Carries the union of fields written by the four write-side entry
-/// structs above. Optional fields use `#[serde(default)]` so historical
-/// entries continue to deserialise.
-#[derive(Debug, Clone, Deserialize)]
+/// Entries written before multi-file support stored a single file's fields
+/// at the top level. Those records load as an entry with one file; the
+/// conversion lives in [`WireEntry`] and nothing else knows about it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "WireEntry")]
 pub struct HistoryEntry {
     pub v: u8,
     pub tool: String,
@@ -409,26 +339,125 @@ pub struct HistoryEntry {
     pub trace_id: String,
     pub timestamp: String,
     pub cwd: String,
-    pub path: String,
-    #[serde(alias = "summary")]
     pub reason: String,
     pub ok: bool,
-    #[serde(default)]
-    pub edits: Vec<TextEdit>,
-    #[serde(default)]
-    pub content: String,
-    #[serde(default)]
-    pub diff: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    #[serde(default)]
+    pub files: Vec<FileChange>,
+}
+
+/// One file changed (or attempted) by an entry's invocation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<TextEdit>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hunks: Vec<deltoids::Hunk>,
-    /// Language detected for the diff (`None` for v1/v2 entries written
-    /// before language detection landed, or for unsupported files).
-    #[serde(default)]
+    /// Language detected for the diff (`None` for entries written before
+    /// language detection landed, or for unsupported files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<deltoids::Language>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub highlight: Option<String>,
+}
+
+impl HistoryEntry {
+    /// An entry for an invocation that touched one file. `ok` follows
+    /// from whether an `error` is present.
+    pub(crate) fn single_file(
+        tool: &str,
+        trace_id: &str,
+        cwd: String,
+        reason: String,
+        error: Option<String>,
+        file: FileChange,
+    ) -> Self {
+        Self {
+            v: ENTRY_VERSION,
+            tool: tool.to_string(),
+            trace_id: trace_id.to_string(),
+            timestamp: crate::current_timestamp(),
+            cwd,
+            reason,
+            ok: error.is_none(),
+            error,
+            files: vec![file],
+        }
+    }
+
+    /// Paths of every file in this entry, in stored order.
+    pub fn paths(&self) -> Vec<String> {
+        self.files.iter().map(|file| file.path.clone()).collect()
+    }
+}
+
+/// The on-disk record: either the grouped shape (`files`) or an older
+/// flat record whose single file's fields sit at the top level.
+#[derive(Deserialize)]
+struct WireEntry {
+    v: u8,
+    tool: String,
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    timestamp: String,
+    cwd: String,
+    #[serde(alias = "summary")]
+    reason: String,
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    files: Option<Vec<FileChange>>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    edits: Vec<TextEdit>,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    diff: Option<String>,
+    #[serde(default)]
+    hunks: Vec<deltoids::Hunk>,
+    #[serde(default)]
+    language: Option<deltoids::Language>,
+    #[serde(default)]
+    highlight: Option<String>,
+}
+
+impl TryFrom<WireEntry> for HistoryEntry {
+    type Error = String;
+
+    fn try_from(wire: WireEntry) -> Result<Self, Self::Error> {
+        let files = match (wire.files, wire.path) {
+            (Some(files), _) => files,
+            (None, Some(path)) => vec![FileChange {
+                path,
+                edits: wire.edits,
+                content: wire.content,
+                diff: wire.diff,
+                hunks: wire.hunks,
+                language: wire.language,
+                highlight: wire.highlight,
+            }],
+            (None, None) => return Err("history entry has neither files nor path".to_string()),
+        };
+        Ok(Self {
+            v: wire.v,
+            tool: wire.tool,
+            trace_id: wire.trace_id,
+            timestamp: wire.timestamp,
+            cwd: wire.cwd,
+            reason: wire.reason,
+            ok: wire.ok,
+            error: wire.error,
+            files,
+        })
+    }
 }
 
 /// Parse a trace's `entries.jsonl` file.
@@ -469,7 +498,8 @@ pub struct TraceSummary {
     pub entry_count: usize,
     pub last_timestamp: String,
     pub last_tool: String,
-    pub last_path: String,
+    /// Every file of the trace's last (matching) entry.
+    pub last_paths: Vec<String>,
     pub last_reason: String,
 }
 
@@ -492,7 +522,7 @@ pub(crate) fn trace_summary_from(
         entry_count: entries.len(),
         last_timestamp: last.timestamp.clone(),
         last_tool: last.tool.clone(),
-        last_path: last.path.clone(),
+        last_paths: last.paths(),
         last_reason: last.reason.clone(),
     })
 }
@@ -565,6 +595,114 @@ fn project_name(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HUNK: &str = r#"{"old_start":1,"new_start":1,"lines":[{"kind":"Added","content":"let x = 1;"}],"ancestors":[]}"#;
+
+    fn write_log(store: &TraceStore, trace_id: &str, lines: &[String]) {
+        let dir = store.trace_directory(trace_id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("entries.jsonl"), lines.join("\n") + "\n").unwrap();
+    }
+
+    #[test]
+    fn old_flat_records_load_as_one_file_and_new_records_keep_every_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        let lines = [
+            r#"{"v":1,"tool":"edit","traceId":"t","timestamp":"1","cwd":"/p","path":"/p/a.rs","summary":"old","ok":false,"edits":[{"summary":"old","oldText":"a","newText":"b"}],"error":"no match"}"#.to_string(),
+            format!(r#"{{"v":2,"tool":"write","traceId":"t","timestamp":"2","cwd":"/p","path":"/p/b.rs","reason":"rewrite","ok":true,"content":"x","diff":"d","hunks":[{HUNK}]}}"#),
+            format!(r#"{{"v":4,"tool":"bash","traceId":"t","timestamp":"3","cwd":"/p","reason":"format","ok":true,"files":[{{"path":"/p/c.rs","hunks":[{HUNK}]}},{{"path":"/p/d.rs"}}]}}"#),
+        ];
+        write_log(&store, "t", &lines);
+
+        let entries = store.read("t").unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].paths(), ["/p/a.rs"]);
+        assert_eq!(entries[0].reason, "old");
+        assert_eq!(entries[0].error.as_deref(), Some("no match"));
+        assert_eq!(entries[0].files[0].edits[0].old_text, "a");
+        assert_eq!(entries[1].paths(), ["/p/b.rs"]);
+        assert_eq!(entries[1].files[0].content, "x");
+        assert_eq!(entries[1].files[0].hunks.len(), 1);
+        assert_eq!(entries[2].paths(), ["/p/c.rs", "/p/d.rs"]);
+        assert_eq!(entries[2].files[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn single_file_entries_round_trip_through_the_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        let file = FileChange {
+            path: "/p/a.rs".to_string(),
+            diff: Some("d".to_string()),
+            ..FileChange::default()
+        };
+        store
+            .append(
+                "t",
+                &HistoryEntry::single_file(
+                    "edit",
+                    "t",
+                    "/p".into(),
+                    "why".into(),
+                    None,
+                    file.clone(),
+                ),
+            )
+            .unwrap();
+        store
+            .append(
+                "t",
+                &HistoryEntry::single_file(
+                    "edit",
+                    "t",
+                    "/p".into(),
+                    "why".into(),
+                    Some("boom".into()),
+                    file,
+                ),
+            )
+            .unwrap();
+
+        let entries = store.read("t").unwrap();
+
+        assert!(entries[0].ok && entries[0].error.is_none());
+        assert!(!entries[1].ok);
+        assert_eq!(entries[1].error.as_deref(), Some("boom"));
+        assert_eq!(entries[1].paths(), ["/p/a.rs"]);
+        assert_eq!(entries[1].files[0].diff.as_deref(), Some("d"));
+    }
+
+    #[test]
+    fn a_record_without_files_or_path_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        write_log(
+            &store,
+            "t",
+            &[r#"{"v":4,"tool":"edit","traceId":"t","timestamp":"1","cwd":"/p","reason":"r","ok":true}"#.to_string()],
+        );
+
+        assert!(store.read("t").is_err());
+    }
+
+    #[test]
+    fn a_multi_file_entry_counts_once_and_lists_every_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        write_log(
+            &store,
+            "t",
+            &[r#"{"v":4,"tool":"bash","traceId":"t","timestamp":"1","cwd":"/p","reason":"r","ok":true,"files":[{"path":"/p/a.rs"},{"path":"/p/b.rs"}]}"#.to_string()],
+        );
+
+        let summary = &store.list_all().unwrap()[0];
+
+        assert_eq!(summary.entry_count, 1);
+        assert_eq!(summary.last_paths, ["/p/a.rs", "/p/b.rs"]);
+        assert_eq!(store.projects().unwrap()[0].entry_count, 1);
+    }
 
     #[test]
     fn with_root_mints_fresh_ulid_when_no_id_provided() {

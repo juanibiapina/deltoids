@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::Path;
 
-use crate::trace_store::{EditFailureHistoryEntry, EditHistoryEntry, TraceStore};
+use crate::trace_store::{FileChange, HistoryEntry, TraceStore};
 use crate::{
-    EditRequest, SuccessResponse, TextEdit, ToolError, current_timestamp,
-    current_working_directory, success_message, tool_error, validate_target_path,
+    EditRequest, SuccessResponse, TextEdit, ToolError, current_working_directory, success_message,
+    tool_error, validate_target_path,
 };
 
 pub fn execute_request(request: EditRequest) -> Result<SuccessResponse, ToolError> {
@@ -77,21 +77,22 @@ fn try_execute_edit(
 
     store.append(
         trace_id,
-        &EditHistoryEntry {
-            v: 2,
-            tool: "edit",
-            trace_id: trace_id.to_string(),
-            timestamp: current_timestamp(),
-            cwd: current_working_directory()?,
-            path: request.path.clone(),
-            reason: request.reason.clone(),
-            ok: true,
-            edits: vec![trace_edit(request)],
-            diff: diff.clone(),
-            hunks,
-            language,
-            highlight,
-        },
+        &HistoryEntry::single_file(
+            "edit",
+            trace_id,
+            current_working_directory()?,
+            request.reason.clone(),
+            None,
+            FileChange {
+                path: request.path.clone(),
+                edits: vec![trace_edit(request)],
+                diff: Some(diff.clone()),
+                hunks,
+                language,
+                highlight,
+                ..FileChange::default()
+            },
+        ),
     )?;
 
     Ok(SuccessResponse {
@@ -113,18 +114,18 @@ fn log_edit_failure(
     let logging_error = store
         .append(
             &trace_id,
-            &EditFailureHistoryEntry {
-                v: 1,
-                tool: "edit",
-                trace_id: trace_id.clone(),
-                timestamp: current_timestamp(),
-                cwd: current_working_directory().unwrap_or_else(|_| String::new()),
-                path: request.path.clone(),
-                reason: request.reason.clone(),
-                ok: false,
-                edits: vec![trace_edit(&request)],
-                error: error.clone(),
-            },
+            &HistoryEntry::single_file(
+                "edit",
+                &trace_id,
+                current_working_directory().unwrap_or_else(|_| String::new()),
+                request.reason.clone(),
+                Some(error.clone()),
+                FileChange {
+                    path: request.path.clone(),
+                    edits: vec![trace_edit(&request)],
+                    ..FileChange::default()
+                },
+            ),
         )
         .err();
 

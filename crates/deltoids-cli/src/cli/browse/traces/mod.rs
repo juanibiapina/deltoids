@@ -64,7 +64,7 @@ use super::comments::{
 };
 use super::diff_cursor::{Cursor, DiffRow, Step, select_row, step_cursor};
 use detail::{DiffCache, max_detail_scroll, render_diff_pane};
-use entries_pane::{move_entry_down, move_entry_up, render_entries_pane};
+use entries_pane::{entry_rows, move_entry_down, move_entry_up, render_entries_pane};
 use model::{LoadedTrace, current_cwd_or_empty, load_traces_for_cwd};
 use reader::TraceReader;
 use reload::apply_refresh;
@@ -90,6 +90,22 @@ enum Focus {
     Diff,
 }
 
+/// What the entries pane has selected: an entry, or one file of a
+/// multi-file entry. Like the Files sidebar, selecting an entry shows
+/// every file it changed and selecting a file row shows only that file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub(super) struct Selection {
+    pub(super) entry: usize,
+    pub(super) file: Option<usize>,
+}
+
+impl Selection {
+    /// The whole entry at `entry`.
+    pub(super) fn entry(entry: usize) -> Self {
+        Self { entry, file: None }
+    }
+}
+
 /// Whether the diff pane is being browsed or a comment is being typed.
 #[derive(Debug, Clone)]
 enum InputState {
@@ -109,7 +125,8 @@ enum InputState {
 struct AppState {
     focus: Focus,
     trace_index: usize,
-    entry_indices: Vec<usize>,
+    /// The entries-pane selection of each trace, by trace index.
+    selections: Vec<Selection>,
     /// The diff cursor's row and the pane's scroll offset.
     cursor: Cursor,
     /// Session-only review comments, keyed across all loaded traces.
@@ -137,7 +154,7 @@ impl AppState {
         Self {
             focus: Focus::Entries,
             trace_index: 0,
-            entry_indices: vec![0; trace_count],
+            selections: vec![Selection::default(); trace_count],
             cursor: Cursor::default(),
             comments: CommentStore::default(),
             input: InputState::Normal,
@@ -153,18 +170,27 @@ impl AppState {
         }
     }
 
-    fn entry_index(&self) -> usize {
-        self.entry_indices
+    fn selection(&self) -> Selection {
+        self.selections
             .get(self.trace_index)
             .copied()
-            .unwrap_or(0)
+            .unwrap_or_default()
+    }
+
+    fn entry_index(&self) -> usize {
+        self.selection().entry
+    }
+
+    /// Select an entry or one of its files in the active trace. The
+    /// entries list highlights the matching row on the next draw.
+    fn select(&mut self, selection: Selection) {
+        if let Some(slot) = self.selections.get_mut(self.trace_index) {
+            *slot = selection;
+        }
     }
 
     fn set_entry_index(&mut self, value: usize) {
-        if let Some(slot) = self.entry_indices.get_mut(self.trace_index) {
-            *slot = value;
-        }
-        self.entries_list_state.select(Some(value));
+        self.select(Selection::entry(value));
     }
 
     /// Send the diff pane back to the top: a different entry's rows have
@@ -173,9 +199,9 @@ impl AppState {
         self.cursor = Cursor::default();
     }
 
-    /// The `(trace, entry)` cache key for the current selection.
-    fn diff_key(&self) -> (usize, usize) {
-        (self.trace_index, self.entry_index())
+    /// The diff-cache key for the current selection.
+    fn diff_key(&self) -> Selection {
+        self.selection()
     }
 
     /// The comment anchor under the diff cursor, when the cursor sits on a
@@ -391,8 +417,13 @@ fn anchored_line(traces: &[LoadedTrace], anchor: &CommentAnchor) -> Option<(Stri
         return None;
     };
     let trace = traces.iter().find(|t| &t.trace.trace_id == trace_id)?;
-    let entry = trace.entries.get(*entry_index)?;
-    entry.hunks.iter().find_map(|hunk| {
+    let file = trace
+        .entries
+        .get(*entry_index)?
+        .files
+        .iter()
+        .find(|file| file.path == anchor.path)?;
+    file.hunks.iter().find_map(|hunk| {
         hunk_lines(hunk)
             .find(|line| line.side == anchor.side && line.number == anchor.line)
             .map(|line| (line.content.to_string(), line.kind.clone()))
@@ -464,17 +495,20 @@ fn clear_comments(state: &mut AppState) -> AppCommand {
     AppCommand::Continue
 }
 
-/// Every comment on `trace`, as one prompt ordered by entry then diff
-/// position. Paths are shown relative to the entries' working directory.
+/// Every comment on `trace`, as one prompt ordered by entry, then file,
+/// then diff position. Paths are shown relative to the entries' working
+/// directory.
 fn trace_prompt(trace: &LoadedTrace, comments: &CommentStore) -> Option<(String, usize)> {
     let sections: Vec<PromptSection<'_>> = trace
         .entries
         .iter()
         .enumerate()
-        .map(|(entry_index, entry)| PromptSection {
-            scope: detail::scope(trace, entry_index),
-            path: entry.path.clone(),
-            hunks: &entry.hunks,
+        .flat_map(|(entry_index, entry)| {
+            entry.files.iter().map(move |file| PromptSection {
+                scope: detail::scope(trace, entry_index),
+                path: file.path.clone(),
+                hunks: &file.hunks,
+            })
         })
         .collect();
     let cwd = trace
@@ -493,11 +527,12 @@ fn move_diff_cursor(state: &mut AppState, step: Step, detail_height: usize) {
 
 /// The `path:line` label shown in the comment editor.
 fn comment_editor_label(trace: &LoadedTrace, anchor: &CommentAnchor) -> String {
-    let path = trace
-        .entries
-        .iter()
-        .find(|entry| entry.path == anchor.path)
-        .map(|entry| detail::display_path(&entry.path, &entry.cwd))
+    let entry = match &anchor.scope {
+        CommentScope::TraceEntry { entry_index, .. } => trace.entries.get(*entry_index),
+        CommentScope::WorkingTree => None,
+    };
+    let path = entry
+        .map(|entry| detail::display_path(&anchor.path, &entry.cwd))
         .unwrap_or_else(|| anchor.path.clone());
     format!("{path}:{}", anchor.line)
 }
@@ -510,10 +545,10 @@ fn move_down(state: &mut AppState, traces: &[LoadedTrace]) {
     }
 }
 
-fn move_up(state: &mut AppState, _traces: &[LoadedTrace]) {
+fn move_up(state: &mut AppState, traces: &[LoadedTrace]) {
     match state.focus {
         Focus::Traces => move_trace_up(state),
-        Focus::Entries => move_entry_up(state),
+        Focus::Entries => move_entry_up(state, traces),
         Focus::Diff => {}
     }
 }
@@ -580,7 +615,7 @@ fn handle_mouse(
             detail_row_count,
             detail_height,
         ),
-        Some(ScrollDir::Up) => handle_mouse_scroll_up(state, target, list_kind),
+        Some(ScrollDir::Up) => handle_mouse_scroll_up(state, traces, target, list_kind),
         None => match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 handle_mouse_click(state, traces, target, mouse.row)
@@ -625,6 +660,7 @@ fn handle_mouse_scroll_down(
 
 fn handle_mouse_scroll_up(
     state: &mut AppState,
+    traces: &[LoadedTrace],
     target: Focus,
     list_kind: ScrollKind,
 ) -> AppCommand {
@@ -632,7 +668,7 @@ fn handle_mouse_scroll_up(
         Focus::Entries => {
             let steps = state.wheel.advance(target, ScrollDir::Up, list_kind);
             for _ in 0..steps {
-                move_entry_up(state);
+                move_entry_up(state, traces);
             }
         }
         Focus::Traces => {
@@ -666,14 +702,15 @@ fn handle_mouse_click(
         Focus::Entries => {
             let rect = state.entries_rect;
             let content_y = row.saturating_sub(rect.y).saturating_sub(1) as usize;
-            let scroll_offset = state.entries_list_state.offset();
-            let clicked = scroll_offset + content_y;
-            let entry_count = traces
+            let clicked = state.entries_list_state.offset() + content_y;
+            let rows = traces
                 .get(state.trace_index)
-                .map(|t| t.entries.len())
-                .unwrap_or(0);
-            if clicked < entry_count {
-                state.set_entry_index(clicked);
+                .map(|trace| entry_rows(&trace.entries))
+                .unwrap_or_default();
+            if let Some(selection) = rows.get(clicked).map(|row| row.selection())
+                && selection != state.selection()
+            {
+                state.select(selection);
                 state.reset_diff_view();
             }
         }
@@ -830,12 +867,24 @@ impl Mode for TracesMode {
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
-        // The selected entry's path, made absolute by joining its `cwd`
-        // when the recorded path is relative. `None` when there are no
-        // traces/entries.
+        // Like Files mode, the nearest file under the selection: the
+        // selected file row, else the file under the diff cursor, else the
+        // entry's first file. Made absolute by joining the entry's `cwd`
+        // when the recorded path is relative. `None` when nothing is
+        // selected or the entry changed no files.
         let trace = self.traces.get(self.state.trace_index)?;
-        let entry = trace.entries.get(self.state.entry_index())?;
-        let path = PathBuf::from(&entry.path);
+        let selection = self.state.selection();
+        let entry = trace.entries.get(selection.entry)?;
+        let file = match selection.file {
+            Some(index) => entry.files.get(index)?,
+            None => self
+                .state
+                .cursor
+                .file()
+                .and_then(|path| entry.files.iter().find(|file| file.path == path))
+                .or_else(|| entry.files.first())?,
+        };
+        let path = PathBuf::from(&file.path);
         if path.is_absolute() {
             Some(path)
         } else {
@@ -1184,7 +1233,7 @@ mod tests {
         assert!(
             state.diff_cache.contains(
                 grouped_epoch(80),
-                (traces[key.0].trace.trace_id.as_str(), key.1)
+                (traces[state.trace_index].trace.trace_id.as_str(), key)
             ),
             "warm after the draw"
         );
@@ -1195,7 +1244,7 @@ mod tests {
         assert!(
             state.diff_cache.contains(
                 grouped_epoch(80),
-                (traces[key.0].trace.trace_id.as_str(), key.1)
+                (traces[state.trace_index].trace.trace_id.as_str(), key)
             ),
             "the render survives a comment"
         );
@@ -1598,6 +1647,96 @@ mod tests {
         assert!(drawn_screen(&mut mode).contains("No comments to copy"));
     }
 
+    fn two_file_traces() -> Vec<LoadedTrace> {
+        vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![two_file_entry()],
+        }]
+    }
+
+    fn new_side(traces: &[LoadedTrace], path: &str, line: usize) -> CommentAnchor {
+        CommentAnchor {
+            scope: detail::scope(&traces[0], 0),
+            path: path.to_string(),
+            side: LineSide::New,
+            line,
+        }
+    }
+
+    #[test]
+    fn notes_on_the_same_line_of_two_files_stay_with_their_file() {
+        let traces = two_file_traces();
+        let mut state = AppState::new(1);
+        rebuild_rows(&mut state, &traces);
+
+        note(
+            &mut state,
+            &traces,
+            &new_side(&traces, "/tmp/project/src/a.rs", 11),
+            "first",
+        );
+        note(
+            &mut state,
+            &traces,
+            &new_side(&traces, "/tmp/project/src/b.rs", 11),
+            "second",
+        );
+        let (prompt, count) = trace_prompt(&traces[0], &state.comments).unwrap();
+
+        assert_eq!(count, 2);
+        let first = prompt.find("src/a.rs:11\n+ let x = 2;\nnote: first");
+        let second = prompt.find("src/b.rs:11\n+ let y = 2;\nnote: second");
+        assert!(first.is_some() && second.is_some(), "{prompt}");
+        assert!(first < second, "prompt follows file order: {prompt}");
+    }
+
+    #[test]
+    fn selected_path_follows_the_file_row_then_the_cursor() {
+        let traces = two_file_traces();
+        let mut state = AppState::new(1);
+        rebuild_rows(&mut state, &traces);
+        let mut mode = TracesMode {
+            state,
+            traces,
+            cwd: "/tmp/project".to_string(),
+            reader: None,
+            _watcher: None,
+        };
+        assert_eq!(
+            Mode::selected_path(&mode),
+            Some(PathBuf::from("/tmp/project/src/a.rs")),
+            "an entry row names its first file"
+        );
+
+        let row_in_b = mode
+            .state
+            .window
+            .iter()
+            .position(|row| {
+                row.place
+                    .as_ref()
+                    .is_some_and(|place| place.file == "/tmp/project/src/b.rs")
+            })
+            .unwrap();
+        let AppState { window, cursor, .. } = &mut mode.state;
+        select_row(window, row_in_b, cursor);
+        assert_eq!(
+            Mode::selected_path(&mode),
+            Some(PathBuf::from("/tmp/project/src/b.rs")),
+            "the cursor's file wins on an entry row"
+        );
+
+        mode.state.select(Selection {
+            entry: 0,
+            file: Some(0),
+        });
+        assert_eq!(
+            Mode::selected_path(&mode),
+            Some(PathBuf::from("/tmp/project/src/a.rs")),
+            "a file row names its file"
+        );
+    }
+
     #[test]
     fn selected_path_returns_absolute_entry_path() {
         let traces = vec![LoadedTrace {
@@ -1622,7 +1761,7 @@ mod tests {
     fn selected_path_joins_cwd_for_relative_entry() {
         let mut entry = edit_entry();
         entry.cwd = "/tmp/project".to_string();
-        entry.path = "src/app.txt".to_string();
+        entry.files[0].path = "src/app.txt".to_string();
         let traces = vec![LoadedTrace {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
             entries: vec![entry],

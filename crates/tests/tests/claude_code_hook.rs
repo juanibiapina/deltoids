@@ -161,10 +161,12 @@ fn records_a_write_create_under_the_session_trace() {
     assert_eq!(entry["tool"], "write");
     assert_eq!(entry["ok"], true);
     assert_eq!(entry["reason"], "Claude Code Write");
-    assert_eq!(entry["path"], file_path.to_string_lossy().into_owned());
     assert_eq!(entry["traceId"], session_id);
-    assert!(entry["diff"].as_str().unwrap().contains("+def greet"));
-    assert!(!entry["hunks"].as_array().unwrap().is_empty());
+    let files = entry["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], file_path.to_string_lossy().into_owned());
+    assert!(files[0]["diff"].as_str().unwrap().contains("+def greet"));
+    assert!(!files[0]["hunks"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -187,8 +189,9 @@ fn records_an_edit_under_the_same_session_trace() {
     let entry = &entries[0];
     assert_eq!(entry["tool"], "edit");
     assert_eq!(entry["reason"], "Claude Code Edit");
-    assert_eq!(entry["path"], file_path.to_string_lossy().into_owned());
-    let diff = entry["diff"].as_str().unwrap();
+    let file = &entry["files"][0];
+    assert_eq!(file["path"], file_path.to_string_lossy().into_owned());
+    let diff = file["diff"].as_str().unwrap();
     assert!(diff.contains("-    return f\"hi {name}\""));
     assert!(diff.contains("+    return f\"hello {name}\""));
 }

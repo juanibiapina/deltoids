@@ -36,9 +36,7 @@ use std::process::ExitCode;
 use clap::{Args as ClapArgs, Subcommand};
 use serde::Deserialize;
 
-use crate::trace_store::{
-    EditFailureHistoryEntry, TraceStore, WriteFailureHistoryEntry, WriteHistoryEntry,
-};
+use crate::trace_store::{FileChange, HistoryEntry, TraceStore};
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -198,7 +196,6 @@ fn record_payload(
 ) -> Result<(), String> {
     let reason = synthesize_reason(&envelope.tool_name);
     let cwd = crate::current_working_directory().unwrap_or_default();
-    let timestamp = crate::current_timestamp();
 
     let computed = deltoids::Diff::compute(&payload.before, &payload.after, &payload.file_path);
     let hunks = computed.hunks().to_vec();
@@ -206,64 +203,49 @@ fn record_payload(
     let language = computed.language();
     let highlight = computed.highlight().map(str::to_string);
 
-    // Reuse the existing `WriteHistoryEntry` shape for both Write and
-    // Edit variants: in the Claude Code hook path we always have the
-    // full post-edit content but no structured `edits[]` blocks, so a
-    // write-shaped entry (with `tool` set to the appropriate label) is
-    // the closest match.
+    // The hook always has the full post-edit content but no structured
+    // `edits[]` blocks, so both Write and Edit record the content.
     if let Err(error) = store.append(
         trace_id,
-        &WriteHistoryEntry {
-            v: 2,
-            tool: payload.tool,
-            trace_id: trace_id.to_string(),
-            timestamp: timestamp.clone(),
-            cwd: cwd.clone(),
-            path: payload.file_path.clone(),
-            reason: reason.clone(),
-            ok: true,
-            content: payload.after.clone(),
-            diff,
-            hunks,
-            language,
-            highlight,
-        },
+        &HistoryEntry::single_file(
+            payload.tool,
+            trace_id,
+            cwd.clone(),
+            reason.clone(),
+            None,
+            FileChange {
+                path: payload.file_path.clone(),
+                content: payload.after.clone(),
+                diff: Some(diff),
+                hunks,
+                language,
+                highlight,
+                ..FileChange::default()
+            },
+        ),
     ) {
-        // If the success append failed, log a failure entry of the
-        // matching variant and surface the original error.
-        let failure = match payload.tool {
-            "write" => store.append(
-                trace_id,
-                &WriteFailureHistoryEntry {
-                    v: 1,
-                    tool: "write",
-                    trace_id: trace_id.to_string(),
-                    timestamp,
-                    cwd,
-                    path: payload.file_path,
-                    reason,
-                    ok: false,
-                    content: payload.after,
-                    error: error.clone(),
-                },
-            ),
-            _ => store.append(
-                trace_id,
-                &EditFailureHistoryEntry {
-                    v: 1,
-                    tool: "edit",
-                    trace_id: trace_id.to_string(),
-                    timestamp,
-                    cwd,
-                    path: payload.file_path,
-                    reason,
-                    ok: false,
-                    edits: Vec::new(),
-                    error: error.clone(),
-                },
-            ),
+        // If the success append failed, log a failure entry and surface
+        // the original error. Best-effort: the failure append may fail too.
+        let content = if payload.tool == "write" {
+            payload.after
+        } else {
+            String::new()
         };
-        let _ = failure; // best-effort; we still surface the original error
+        let _ = store.append(
+            trace_id,
+            &HistoryEntry::single_file(
+                payload.tool,
+                trace_id,
+                cwd,
+                reason,
+                Some(error.clone()),
+                FileChange {
+                    path: payload.file_path,
+                    content,
+                    ..FileChange::default()
+                },
+            ),
+        );
         return Err(error);
     }
 

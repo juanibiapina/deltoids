@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add support for Kotlin.
 - TUI: directory rows show an open-directory arrow.
 - TUI: add shortcuts to stage and discard changes in git.
+- Traces: add support for multi file entries
 
 ### Changed
 
 - TUI: performance improvements
+- Traces: a failed entry shows its diff alongside the error.
 
 ## [0.13.0] - 2026-10-02
 

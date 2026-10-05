@@ -2,9 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::AppState;
 use super::model::LoadedTrace;
 use super::reader::Refresh;
+use super::{AppState, Selection};
 
 pub(super) fn apply_refresh(traces: &mut Vec<LoadedTrace>, state: &mut AppState, refresh: Refresh) {
     let known: HashSet<_> = traces
@@ -18,14 +18,15 @@ pub(super) fn apply_refresh(traces: &mut Vec<LoadedTrace>, state: &mut AppState,
     let previous_id = traces
         .get(state.trace_index)
         .map(|trace| trace.trace.trace_id.clone());
-    let previous_entry = state.entry_index();
-    let entries: HashMap<_, _> = traces
+    let previous_selection = state.selection();
+    let previous_entry = previous_selection.entry;
+    let selections: HashMap<_, _> = traces
         .iter()
         .enumerate()
         .map(|(index, trace)| {
             (
                 trace.trace.trace_id.clone(),
-                state.entry_indices.get(index).copied().unwrap_or(0),
+                state.selections.get(index).copied().unwrap_or_default(),
             )
         })
         .collect();
@@ -38,14 +39,23 @@ pub(super) fn apply_refresh(traces: &mut Vec<LoadedTrace>, state: &mut AppState,
     });
     state.diff_cache.retain(&refresh.retained);
     *traces = refresh.traces;
-    state.entry_indices = traces
+    state.selections = traces
         .iter()
         .map(|trace| {
-            entries
+            let selection = selections
                 .get(&trace.trace.trace_id)
                 .copied()
-                .unwrap_or(0)
-                .min(trace.entries.len().saturating_sub(1))
+                .unwrap_or_default();
+            let entry = selection.entry.min(trace.entries.len().saturating_sub(1));
+            // A file row survives only on the same, still-present entry.
+            let file = selection.file.filter(|file| {
+                entry == selection.entry
+                    && trace
+                        .entries
+                        .get(entry)
+                        .is_some_and(|loaded| *file < loaded.files.len())
+            });
+            Selection { entry, file }
         })
         .collect();
     state.trace_index = if newest_is_new {
@@ -67,7 +77,7 @@ pub(super) fn apply_refresh(traces: &mut Vec<LoadedTrace>, state: &mut AppState,
         .map(|trace| &trace.trace.trace_id);
     if newest_is_new
         || selected_id != previous_id.as_ref()
-        || state.entry_index() != previous_entry
+        || state.selection() != previous_selection
         || source_changed
     {
         state.reset_diff_view();
@@ -98,6 +108,26 @@ mod tests {
     }
 
     #[test]
+    fn appending_an_entry_keeps_the_selected_file_row() {
+        let mut traces = vec![LoadedTrace {
+            trace: trace_summary("a", 1, "a"),
+            entries: vec![two_file_entry()],
+        }];
+        let mut state = AppState::new(1);
+        let selected = Selection {
+            entry: 0,
+            file: Some(1),
+        };
+        state.select(selected);
+        let mut grown = traces.clone();
+        grown[0].entries.push(edit_entry());
+
+        apply_refresh(&mut traces, &mut state, refresh(grown));
+
+        assert_eq!(state.selection(), selected);
+    }
+
+    #[test]
     fn reordering_preserves_selection_scroll_and_cached_identity() {
         let mut traces = vec![trace("a", 2), trace("b", 1)];
         let mut state = AppState::new(2);
@@ -106,7 +136,7 @@ mod tests {
         let epoch = CacheEpoch::default();
         state.diff_cache.insert(
             epoch,
-            ("a", 1),
+            ("a", Selection::entry(1)),
             vec![DiffRow::plain(Line::from("source a"))],
         );
         apply_refresh(
@@ -118,10 +148,14 @@ mod tests {
         assert_eq!(state.entry_index(), 1);
         assert_eq!(state.cursor.scroll, 42);
         assert_eq!(
-            state.diff_cache.get(epoch, ("a", 1)).unwrap()[0].line,
+            state
+                .diff_cache
+                .get(epoch, ("a", Selection::entry(1)))
+                .unwrap()[0]
+                .line,
             Line::from("source a")
         );
-        assert!(!state.diff_cache.contains(epoch, ("b", 1)));
+        assert!(!state.diff_cache.contains(epoch, ("b", Selection::entry(1))));
     }
 
     #[test]
@@ -131,7 +165,7 @@ mod tests {
         state.cursor.scroll = 12;
         state
             .diff_cache
-            .insert(CacheEpoch::default(), ("a", 0), vec![]);
+            .insert(CacheEpoch::default(), ("a", Selection::entry(0)), vec![]);
         apply_refresh(
             &mut traces,
             &mut state,
@@ -139,7 +173,11 @@ mod tests {
         );
         assert_eq!(traces[state.trace_index].trace.trace_id, "new");
         assert_eq!(state.cursor.scroll, 0);
-        assert!(state.diff_cache.contains(CacheEpoch::default(), ("a", 0)));
+        assert!(
+            state
+                .diff_cache
+                .contains(CacheEpoch::default(), ("a", Selection::entry(0)))
+        );
     }
 
     #[test]
@@ -149,8 +187,12 @@ mod tests {
         state.set_entry_index(2);
         state.cursor.scroll = 20;
         let epoch = CacheEpoch::default();
-        state.diff_cache.insert(epoch, ("a", 2), vec![]);
-        state.diff_cache.insert(epoch, ("b", 0), vec![]);
+        state
+            .diff_cache
+            .insert(epoch, ("a", Selection::entry(2)), vec![]);
+        state
+            .diff_cache
+            .insert(epoch, ("b", Selection::entry(0)), vec![]);
         apply_refresh(&mut traces, &mut state, refresh(vec![trace("a", 1)]));
         assert_eq!(state.entry_index(), 0);
         assert_eq!(state.cursor.scroll, 0);
@@ -167,15 +209,19 @@ mod tests {
         state.set_entry_index(1);
         state.cursor.scroll = 20;
         let epoch = CacheEpoch::default();
-        for key in [("a", 0), ("a", 1), ("b", 0)] {
+        for key in [
+            ("a", Selection::entry(0)),
+            ("a", Selection::entry(1)),
+            ("b", Selection::entry(0)),
+        ] {
             state.diff_cache.insert(epoch, key, vec![]);
         }
         let mut update = refresh(traces.clone());
         update.retained[0].1 = 1;
         apply_refresh(&mut traces, &mut state, update);
-        assert!(state.diff_cache.contains(epoch, ("a", 0)));
-        assert!(state.diff_cache.contains(epoch, ("b", 0)));
-        assert!(!state.diff_cache.contains(epoch, ("a", 1)));
+        assert!(state.diff_cache.contains(epoch, ("a", Selection::entry(0))));
+        assert!(state.diff_cache.contains(epoch, ("b", Selection::entry(0))));
+        assert!(!state.diff_cache.contains(epoch, ("a", Selection::entry(1))));
         assert_eq!(state.cursor.scroll, 0);
     }
 }

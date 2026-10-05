@@ -95,12 +95,20 @@ fn starts_a_trace_and_logs_successful_edits() {
     assert_eq!(entry["tool"], "edit");
     assert_eq!(entry["traceId"], trace_id);
     assert_eq!(entry["ok"], true);
-    assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
+    assert_eq!(
+        entry["files"][0]["path"],
+        file_path.to_string_lossy().as_ref()
+    );
     assert_eq!(entry["reason"], "Update x constant");
     // The single edit records one trace edit whose reason mirrors the
     // top-level reason.
-    assert_eq!(entry["edits"][0]["reason"], "Update x constant");
-    assert!(entry["diff"].as_str().unwrap().contains("+const x = 2;"));
+    assert_eq!(entry["files"][0]["edits"][0]["reason"], "Update x constant");
+    assert!(
+        entry["files"][0]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("+const x = 2;")
+    );
 }
 
 #[test]
@@ -172,9 +180,15 @@ fn logs_failed_edits_and_returns_trace_id() {
     assert_eq!(entry["tool"], "edit");
     assert_eq!(entry["traceId"], trace_id);
     assert_eq!(entry["ok"], false);
-    assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
+    assert_eq!(
+        entry["files"][0]["path"],
+        file_path.to_string_lossy().as_ref()
+    );
     assert_eq!(entry["reason"], "Try a missing edit");
-    assert_eq!(entry["edits"][0]["reason"], "Try a missing edit");
+    assert_eq!(
+        entry["files"][0]["edits"][0]["reason"],
+        "Try a missing edit"
+    );
     assert!(entry["error"].as_str().unwrap().contains("Could not find"));
 }
 

@@ -192,7 +192,10 @@ fn logs_a_failed_reused_edit_to_an_existing_trace() {
     assert_eq!(second["tool"], "edit");
     assert_eq!(second["ok"], false);
     assert_eq!(second["reason"], "Try a missing edit");
-    assert_eq!(second["edits"][0]["reason"], "Try a missing edit");
+    assert_eq!(
+        second["files"][0]["edits"][0]["reason"],
+        "Try a missing edit"
+    );
     assert!(second["error"].as_str().unwrap().contains("Could not find"));
 }
 

@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use deltoids::render_html::render_entry_html;
 
-use crate::{HistoryEntry, TraceStore, project_id};
+use crate::{FileChange, HistoryEntry, TraceStore, project_id};
 
 use super::assets;
 
@@ -137,7 +137,7 @@ fn project_traces(store: &TraceStore, id: &str) -> HttpResponse {
 struct EntryMeta {
     index: usize,
     tool: String,
-    path: String,
+    paths: Vec<String>,
     reason: String,
     ok: bool,
     timestamp: String,
@@ -165,7 +165,7 @@ fn trace_entries(store: &TraceStore, trace_id: &str) -> HttpResponse {
         .map(|(index, entry)| EntryMeta {
             index,
             tool: entry.tool.clone(),
-            path: entry.path.clone(),
+            paths: entry.paths(),
             reason: entry.reason.clone(),
             ok: entry.ok,
             timestamp: entry.timestamp.clone(),
@@ -182,11 +182,17 @@ fn trace_entries(store: &TraceStore, trace_id: &str) -> HttpResponse {
 struct EntryDetail {
     index: usize,
     tool: String,
-    path: String,
     reason: String,
     ok: bool,
     timestamp: String,
     error: Option<String>,
+    files: Vec<FileDetail>,
+}
+
+/// One file of an entry: its path and its rendered diff.
+#[derive(Serialize)]
+struct FileDetail {
+    path: String,
     html: String,
 }
 
@@ -206,24 +212,30 @@ fn trace_entry(
     let Some(entry) = entries.get(index) else {
         return HttpResponse::not_found();
     };
-    let html = entry_html(entry, syntax_theme);
+    let files = entry
+        .files
+        .iter()
+        .map(|file| FileDetail {
+            path: file.path.clone(),
+            html: file_html(entry, file, syntax_theme),
+        })
+        .collect();
     HttpResponse::json(&EntryDetail {
         index,
         tool: entry.tool.clone(),
-        path: entry.path.clone(),
         reason: entry.reason.clone(),
         ok: entry.ok,
         timestamp: entry.timestamp.clone(),
         error: entry.error.clone(),
-        html,
+        files,
     })
 }
 
-/// Render an entry's diff body, or an explanatory placeholder for entries
-/// that carry no hunks (errors, or legacy v1 traces).
-fn entry_html(entry: &HistoryEntry, syntax_theme: Option<&str>) -> String {
-    if !entry.hunks.is_empty() {
-        return render_entry_html(&entry.hunks, entry.highlight.as_deref(), syntax_theme);
+/// Render one file's diff body, or an explanatory placeholder for files
+/// that carry no hunks (a failed entry, or legacy v1 traces).
+fn file_html(entry: &HistoryEntry, file: &FileChange, syntax_theme: Option<&str>) -> String {
+    if !file.hunks.is_empty() {
+        return render_entry_html(&file.hunks, file.highlight.as_deref(), syntax_theme);
     }
     if !entry.ok {
         return String::new(); // the error text is delivered as a field
@@ -239,7 +251,7 @@ struct FeedEntry {
     project_name: String,
     cwd: String,
     tool: String,
-    path: String,
+    paths: Vec<String>,
     reason: String,
     ok: bool,
     timestamp: String,
@@ -271,6 +283,7 @@ fn feed(store: &TraceStore, query: &str) -> HttpResponse {
             if !since.is_empty() && entry.timestamp < since {
                 continue;
             }
+            let paths = entry.paths();
             entries.push(FeedEntry {
                 trace_id: trace.trace_id.clone(),
                 index,
@@ -278,7 +291,7 @@ fn feed(store: &TraceStore, query: &str) -> HttpResponse {
                 project_name: project_name(&entry.cwd),
                 cwd: entry.cwd,
                 tool: entry.tool,
-                path: entry.path,
+                paths,
                 reason: entry.reason,
                 ok: entry.ok,
                 timestamp: entry.timestamp,
@@ -501,6 +514,70 @@ mod tests {
         assert_eq!(response.status, 200);
         let body = body_str(&response);
         assert!(body.contains("row added"));
+    }
+
+    #[test]
+    fn multi_file_entries_list_every_path_and_render_each_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TraceStore::with_root(tmp.path().to_path_buf());
+        let hunk = serde_json::json!({
+            "old_start": 1,
+            "new_start": 1,
+            "lines": [{"kind": "Added", "content": "let x = 1;"}],
+            "ancestors": []
+        });
+        store
+            .append(
+                "01JAAAAAAAAAAAAAAAAAAAAAAA",
+                &serde_json::json!({
+                    "v": 4,
+                    "tool": "bash",
+                    "traceId": "01JAAAAAAAAAAAAAAAAAAAAAAA",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": "/proj",
+                    "reason": "format",
+                    "ok": true,
+                    "files": [
+                        {"path": "/proj/a.rs", "hunks": [hunk.clone()]},
+                        {"path": "/proj/b.rs", "hunks": [hunk]}
+                    ]
+                }),
+            )
+            .unwrap();
+
+        let list: serde_json::Value = serde_json::from_slice(
+            &handle(
+                &store,
+                "GET",
+                "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries",
+                None,
+            )
+            .body,
+        )
+        .unwrap();
+        assert_eq!(
+            list["entries"][0]["paths"],
+            serde_json::json!(["/proj/a.rs", "/proj/b.rs"])
+        );
+
+        let detail: serde_json::Value = serde_json::from_slice(
+            &handle(
+                &store,
+                "GET",
+                "/api/traces/01JAAAAAAAAAAAAAAAAAAAAAAA/entries/0",
+                None,
+            )
+            .body,
+        )
+        .unwrap();
+        let files = detail["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1]["path"], "/proj/b.rs");
+        assert!(
+            files
+                .iter()
+                .all(|file| file["html"].as_str().unwrap().contains("row added"))
+        );
     }
 
     #[test]

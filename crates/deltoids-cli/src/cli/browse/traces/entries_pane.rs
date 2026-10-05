@@ -1,5 +1,6 @@
-//! Entries pane slice: selection movement within the active trace's
-//! entries, the entry-row labels, and the pane render.
+//! Entries pane slice: the rows of the active trace (one per entry, plus
+//! one per file under a multi-file entry), selection movement over those
+//! rows, their labels, and the pane render.
 
 use deltoids::Theme;
 use deltoids::render_tui::{
@@ -15,26 +16,81 @@ use ratatui::{
 use crate::HistoryEntry;
 
 use super::model::LoadedTrace;
-use super::{AppState, Focus};
+use super::{AppState, Focus, Selection};
 
-pub(super) fn move_entry_down(state: &mut AppState, traces: &[LoadedTrace]) {
-    let entry_count = traces
+/// One row of the entries pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EntryRow {
+    /// An entry. Labeled by its file when it changed exactly one file,
+    /// otherwise by its reason.
+    Entry(usize),
+    /// One file of a multi-file entry, listed under it.
+    File(usize, usize),
+}
+
+impl EntryRow {
+    pub(super) fn selection(self) -> Selection {
+        match self {
+            EntryRow::Entry(entry) => Selection::entry(entry),
+            EntryRow::File(entry, file) => Selection {
+                entry,
+                file: Some(file),
+            },
+        }
+    }
+}
+
+/// Every row for `entries`, in display order. Only entries with more than
+/// one file get file rows; a single-file entry is one row, as it always was.
+pub(super) fn entry_rows(entries: &[HistoryEntry]) -> Vec<EntryRow> {
+    let mut rows = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        rows.push(EntryRow::Entry(index));
+        if entry.files.len() > 1 {
+            rows.extend((0..entry.files.len()).map(|file| EntryRow::File(index, file)));
+        }
+    }
+    rows
+}
+
+/// The row showing `selection`, falling back to its entry's row.
+fn selected_row(rows: &[EntryRow], selection: Selection) -> Option<usize> {
+    rows.iter()
+        .position(|row| row.selection() == selection)
+        .or_else(|| {
+            rows.iter()
+                .position(|row| *row == EntryRow::Entry(selection.entry))
+        })
+}
+
+fn step_selection(state: &mut AppState, traces: &[LoadedTrace], down: bool) {
+    let rows = traces
         .get(state.trace_index)
-        .map(|trace| trace.entries.len())
-        .unwrap_or(0);
-    let current = state.entry_index();
-    if current + 1 < entry_count {
-        state.set_entry_index(current + 1);
+        .map(|trace| entry_rows(&trace.entries))
+        .unwrap_or_default();
+    let Some(current) = selected_row(&rows, state.selection()) else {
+        return;
+    };
+    let next = if down {
+        current + 1
+    } else {
+        match current.checked_sub(1) {
+            Some(previous) => previous,
+            None => return,
+        }
+    };
+    if let Some(row) = rows.get(next) {
+        state.select(row.selection());
         state.reset_diff_view();
     }
 }
 
-pub(super) fn move_entry_up(state: &mut AppState) {
-    let current = state.entry_index();
-    if current > 0 {
-        state.set_entry_index(current - 1);
-        state.reset_diff_view();
-    }
+pub(super) fn move_entry_down(state: &mut AppState, traces: &[LoadedTrace]) {
+    step_selection(state, traces, true);
+}
+
+pub(super) fn move_entry_up(state: &mut AppState, traces: &[LoadedTrace]) {
+    step_selection(state, traces, false);
 }
 
 pub(super) fn render_entries_pane(
@@ -45,10 +101,12 @@ pub(super) fn render_entries_pane(
     title: Line<'static>,
     theme: &Theme,
 ) {
-    let entry_items = active_trace
-        .entries
+    let rows = entry_rows(&active_trace.entries);
+    let selected = selected_row(&rows, state.selection());
+    state.entries_list_state.select(selected);
+    let entry_items = rows
         .iter()
-        .map(|entry| ListItem::new(entry_label_line(entry, theme)))
+        .map(|row| ListItem::new(row_label_line(&active_trace.entries, *row, theme)))
         .collect::<Vec<_>>();
     let entries_count = active_trace.entries.len();
     let entries_position = if entries_count == 0 {
@@ -72,8 +130,8 @@ pub(super) fn render_entries_pane(
     render_pane_scrollbar(
         frame,
         area,
-        entries_count,
-        state.entry_index(),
+        rows.len(),
+        selected.unwrap_or(0),
         pane_inner_height(area),
         state.focus == Focus::Entries,
         theme,
@@ -88,8 +146,9 @@ fn entry_icon(ok: bool) -> (&'static str, Color) {
     }
 }
 
-fn entry_path_parts(entry: &HistoryEntry) -> (String, String) {
-    let path = super::detail::display_path(&entry.path, &entry.cwd);
+/// Split a recorded path into its file name and its (display) directory.
+fn path_parts(path: &str, cwd: &str) -> (String, String) {
+    let path = super::detail::display_path(path, cwd);
     match path.rsplit_once('/') {
         Some((parent, filename)) if !filename.is_empty() => (
             filename.to_string(),
@@ -99,29 +158,81 @@ fn entry_path_parts(entry: &HistoryEntry) -> (String, String) {
     }
 }
 
-fn entry_label_line(entry: &HistoryEntry, theme: &Theme) -> Line<'static> {
-    let (icon, icon_color) = entry_icon(entry.ok);
-    let (filename, parent) = entry_path_parts(entry);
-    let mut spans = vec![
-        Span::styled(icon.to_string(), Style::default().fg(icon_color)),
-        Span::raw(format!(" {filename}")),
-    ];
-    if !parent.is_empty() {
-        spans.push(Span::styled(
-            format!("  {parent}"),
-            Style::default().fg(rgb_to_color(theme.muted)),
-        ));
-    }
-    Line::from(spans)
+/// What an entry row names: its only file, or its reason.
+enum EntryName {
+    File(String, String),
+    Reason(String),
 }
 
-pub(super) fn entry_label_plain(entry: &HistoryEntry) -> String {
-    let (icon, _) = entry_icon(entry.ok);
-    let (filename, parent) = entry_path_parts(entry);
-    if parent.is_empty() {
-        format!("{icon} {filename}")
-    } else {
-        format!("{icon} {filename}  {parent}")
+fn entry_name(entry: &HistoryEntry) -> EntryName {
+    match entry.files.as_slice() {
+        [file] => {
+            let (filename, parent) = path_parts(&file.path, &entry.cwd);
+            EntryName::File(filename, parent)
+        }
+        _ => EntryName::Reason(entry.reason.clone()),
+    }
+}
+
+/// Indent of a file row under its entry: past the entry's icon.
+const FILE_INDENT: &str = "  ";
+
+fn row_label_line(entries: &[HistoryEntry], row: EntryRow, theme: &Theme) -> Line<'static> {
+    let muted = Style::default().fg(rgb_to_color(theme.muted));
+    match row {
+        EntryRow::Entry(index) => {
+            let entry = &entries[index];
+            let (icon, icon_color) = entry_icon(entry.ok);
+            let mut spans = vec![Span::styled(
+                icon.to_string(),
+                Style::default().fg(icon_color),
+            )];
+            match entry_name(entry) {
+                EntryName::File(filename, parent) => {
+                    spans.push(Span::raw(format!(" {filename}")));
+                    if !parent.is_empty() {
+                        spans.push(Span::styled(format!("  {parent}"), muted));
+                    }
+                }
+                EntryName::Reason(reason) => spans.push(Span::raw(format!(" {reason}"))),
+            }
+            Line::from(spans)
+        }
+        EntryRow::File(index, file) => {
+            let entry = &entries[index];
+            let (filename, parent) = path_parts(&entry.files[file].path, &entry.cwd);
+            let mut spans = vec![Span::raw(format!("{FILE_INDENT}{filename}"))];
+            if !parent.is_empty() {
+                spans.push(Span::styled(format!("  {parent}"), muted));
+            }
+            Line::from(spans)
+        }
+    }
+}
+
+/// The plain-text label of `row`, used by the scripted render.
+pub(super) fn row_label_plain(entries: &[HistoryEntry], row: EntryRow) -> String {
+    match row {
+        EntryRow::Entry(index) => {
+            let entry = &entries[index];
+            let (icon, _) = entry_icon(entry.ok);
+            match entry_name(entry) {
+                EntryName::File(filename, parent) if parent.is_empty() => {
+                    format!("{icon} {filename}")
+                }
+                EntryName::File(filename, parent) => format!("{icon} {filename}  {parent}"),
+                EntryName::Reason(reason) => format!("{icon} {reason}"),
+            }
+        }
+        EntryRow::File(index, file) => {
+            let entry = &entries[index];
+            let (filename, parent) = path_parts(&entry.files[file].path, &entry.cwd);
+            if parent.is_empty() {
+                format!("{FILE_INDENT}{filename}")
+            } else {
+                format!("{FILE_INDENT}{filename}  {parent}")
+            }
+        }
     }
 }
 
@@ -138,16 +249,16 @@ mod tests {
 
         let theme = test_theme();
         let mut nested = edit_entry();
-        nested.path = "/tmp/project/src/main.rs".to_string();
+        nested.files[0].path = "/tmp/project/src/main.rs".to_string();
         let mut other = nested.clone();
-        other.path = "/tmp/project/tests/main.rs".to_string();
+        other.files[0].path = "/tmp/project/tests/main.rs".to_string();
         other.ok = false;
         let mut outside = nested.clone();
-        outside.path = "/outside/main.rs".to_string();
+        outside.files[0].path = "/outside/main.rs".to_string();
         let mut relative = nested.clone();
-        relative.path = "lib/main.rs".to_string();
+        relative.files[0].path = "lib/main.rs".to_string();
         let mut fallback = nested.clone();
-        fallback.path = "/".to_string();
+        fallback.files[0].path = "/".to_string();
         let trace = LoadedTrace {
             trace: trace_summary("trace", 6, "description"),
             entries: vec![nested, other, write_entry(), outside, relative, fallback],
@@ -160,8 +271,11 @@ mod tests {
             "✓ main.rs  lib",
             "✓ /",
         ];
-        for (entry, label) in trace.entries.iter().zip(labels) {
-            assert_eq!(entry_label_plain(entry), label);
+        for (index, label) in labels.iter().enumerate() {
+            assert_eq!(
+                row_label_plain(&trace.entries, EntryRow::Entry(index)),
+                *label
+            );
         }
 
         for width in [40, 11] {
@@ -279,5 +393,72 @@ mod tests {
         handle_mouse(&mut state, &traces, mouse, 20, 10);
         assert_eq!(state.entry_index(), 2);
         assert_eq!(state.focus, Focus::Entries);
+    }
+
+    fn mixed_trace() -> Vec<LoadedTrace> {
+        vec![LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 2, "a"),
+            entries: vec![edit_entry(), two_file_entry()],
+        }]
+    }
+
+    #[test]
+    fn multi_file_entries_list_their_files_under_a_reason_row() {
+        let traces = mixed_trace();
+        let rows = entry_rows(&traces[0].entries);
+        let labels: Vec<String> = rows
+            .iter()
+            .map(|row| row_label_plain(&traces[0].entries, *row))
+            .collect();
+
+        assert_eq!(
+            labels,
+            [
+                "✓ app.txt",
+                "✓ Format sources",
+                "  a.rs  src",
+                "  b.rs  src"
+            ]
+        );
+    }
+
+    #[test]
+    fn j_and_k_walk_entry_and_file_rows() {
+        let traces = mixed_trace();
+        let mut state = AppState::new(traces.len());
+
+        for _ in 0..3 {
+            handle_key(&mut state, &traces, KeyCode::Char('j'), 0, 0);
+        }
+        assert_eq!(
+            state.selection(),
+            Selection {
+                entry: 1,
+                file: Some(1)
+            }
+        );
+        handle_key(&mut state, &traces, KeyCode::Char('j'), 0, 0);
+        assert_eq!(state.selection().file, Some(1), "stops at the last row");
+        handle_key(&mut state, &traces, KeyCode::Char('k'), 0, 0);
+        handle_key(&mut state, &traces, KeyCode::Char('k'), 0, 0);
+        assert_eq!(state.selection(), Selection::entry(1));
+    }
+
+    #[test]
+    fn clicking_a_file_row_selects_that_file() {
+        let traces = mixed_trace();
+        let mut state = state_with_rects(&traces);
+
+        // Row 4 is the fourth list row: the second file of entry 1.
+        let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 4);
+        handle_mouse(&mut state, &traces, mouse, 20, 10);
+
+        assert_eq!(
+            state.selection(),
+            Selection {
+                entry: 1,
+                file: Some(1)
+            }
+        );
     }
 }

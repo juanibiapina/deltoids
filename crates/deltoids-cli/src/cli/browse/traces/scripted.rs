@@ -14,7 +14,7 @@ use crate::cli::browse::mode::AppCommand;
 use crate::sidebar_width;
 
 use super::detail::{CacheEpoch, build_diff_rows, ensure_diff_cache, fit_line};
-use super::entries_pane::entry_label_plain;
+use super::entries_pane::{entry_rows, row_label_plain};
 use super::model::LoadedTrace;
 use super::traces_pane::trace_label;
 use crate::cli::browse::comment_view::with_comments;
@@ -166,14 +166,14 @@ fn render_scripted(
         "{focus_entries_marker} [1] Entries {}",
         position_footer(entries_position, entries_count).trim()
     )];
-    for (index, entry) in active_trace.entries.iter().enumerate() {
-        let marker = if index == state.entry_index() {
+    for row in entry_rows(&active_trace.entries) {
+        let marker = if row.selection() == state.selection() {
             ">"
         } else {
             " "
         };
         entries_section.push(fit_line(
-            &format!("{marker} {}", entry_label_plain(entry)),
+            &format!("{marker} {}", row_label_plain(&active_trace.entries, row)),
             left_width,
         ));
     }
@@ -209,7 +209,7 @@ fn render_scripted(
     // Right: diff for selected entry, spans full body height
     let rows = build_diff_rows(
         active_trace,
-        state.entry_index(),
+        state.selection(),
         right_width,
         deltoids::ChangeLayout::Grouped,
         theme,

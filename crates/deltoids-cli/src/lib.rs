@@ -23,7 +23,8 @@ use chrono::{SecondsFormat, Utc};
 
 pub use edit::{apply_edit, execute_request, execute_request_with_trace, render_diff};
 pub use trace_store::{
-    HistoryEntry, ProjectSummary, TraceStore, TraceSummary, project_id, trace_root_directory,
+    FileChange, HistoryEntry, ProjectSummary, TraceStore, TraceSummary, project_id,
+    trace_root_directory,
 };
 pub use types::{EditRequest, ErrorResponse, SuccessResponse, TextEdit, ToolError, WriteRequest};
 pub use write::{

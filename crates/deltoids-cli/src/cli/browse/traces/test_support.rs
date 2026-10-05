@@ -6,7 +6,7 @@ use ratatui::layout::Rect;
 
 use deltoids::Theme;
 
-use crate::{HistoryEntry, TextEdit, TraceSummary};
+use crate::{FileChange, HistoryEntry, TextEdit, TraceSummary};
 
 use super::AppState;
 use super::model::LoadedTrace;
@@ -22,23 +22,22 @@ pub(super) fn edit_entry() -> HistoryEntry {
         trace_id: "01JTESTTRACE00000000000000".to_string(),
         timestamp: "2026-04-16T12:00:00Z".to_string(),
         cwd: "/tmp/project".to_string(),
-        path: "/tmp/project/app.txt".to_string(),
         reason: "Update x constant".to_string(),
         ok: true,
-        edits: vec![TextEdit {
-            reason: "Edit change".to_string(),
-            old_text: "const x = 1;".to_string(),
-            new_text: "const x = 2;".to_string(),
-        }],
-        content: String::new(),
-        diff: Some(
-            "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn update() {\n-const x = 1;\n+const x = 2;\n"
-                .to_string(),
-        ),
         error: None,
-        hunks: Vec::new(),
-        language: None,
-        highlight: None,
+        files: vec![FileChange {
+            path: "/tmp/project/app.txt".to_string(),
+            edits: vec![TextEdit {
+                reason: "Edit change".to_string(),
+                old_text: "const x = 1;".to_string(),
+                new_text: "const x = 2;".to_string(),
+            }],
+            diff: Some(
+                "--- a/app.txt\n+++ b/app.txt\n@@ -1 +1 @@ fn update() {\n-const x = 1;\n+const x = 2;\n"
+                    .to_string(),
+            ),
+            ..FileChange::default()
+        }],
     }
 }
 
@@ -49,19 +48,18 @@ pub(super) fn write_entry() -> HistoryEntry {
         trace_id: "01JTESTTRACE00000000000000".to_string(),
         timestamp: "2026-04-16T12:01:00Z".to_string(),
         cwd: "/tmp/project".to_string(),
-        path: "/tmp/project/config.json".to_string(),
         reason: "Rewrite config".to_string(),
         ok: true,
-        edits: Vec::new(),
-        content: "{\n  \"version\": 2\n}\n".to_string(),
-        diff: Some(
-            "--- a/config.json\n+++ b/config.json\n@@ -1,3 +1,3 @@\n   \"version\": 1\n+  \"version\": 2\n"
-                .to_string(),
-        ),
         error: None,
-        hunks: Vec::new(),
-        language: None,
-        highlight: None,
+        files: vec![FileChange {
+            path: "/tmp/project/config.json".to_string(),
+            content: "{\n  \"version\": 2\n}\n".to_string(),
+            diff: Some(
+                "--- a/config.json\n+++ b/config.json\n@@ -1,3 +1,3 @@\n   \"version\": 1\n+  \"version\": 2\n"
+                    .to_string(),
+            ),
+            ..FileChange::default()
+        }],
     }
 }
 
@@ -70,7 +68,13 @@ pub(super) fn write_entry() -> HistoryEntry {
 /// hunks and renders only the "old format" notice).
 pub(super) fn hunk_entry() -> HistoryEntry {
     let mut entry = edit_entry();
-    entry.hunks = vec![deltoids::Hunk {
+    entry.files[0].hunks = vec![sample_hunk()];
+    entry
+}
+
+/// A three-line hunk at line 10: context, one removal, one addition.
+pub(super) fn sample_hunk() -> deltoids::Hunk {
+    deltoids::Hunk {
         old_start: 10,
         new_start: 10,
         lines: vec![
@@ -79,7 +83,19 @@ pub(super) fn hunk_entry() -> HistoryEntry {
             diff_line(deltoids::LineKind::Added, "let x = 2;"),
         ],
         ancestors: Vec::new(),
-    }];
+    }
+}
+
+/// An entry that changed two files, each with the same hunk shape, so
+/// their line numbers collide unless the file is part of the identity.
+pub(super) fn two_file_entry() -> HistoryEntry {
+    let mut entry = hunk_entry();
+    entry.reason = "Format sources".to_string();
+    entry.files[0].path = "/tmp/project/src/a.rs".to_string();
+    let mut second = entry.files[0].clone();
+    second.path = "/tmp/project/src/b.rs".to_string();
+    second.hunks[0].lines[2].content = "let y = 2;".to_string();
+    entry.files.push(second);
     entry
 }
 
@@ -105,7 +121,7 @@ pub(super) fn trace_summary(trace_id: &str, entry_count: usize, last_reason: &st
         entry_count,
         last_timestamp: "2026-04-16T12:00:00Z".to_string(),
         last_tool: "edit".to_string(),
-        last_path: "/tmp/project/app.txt".to_string(),
+        last_paths: vec!["/tmp/project/app.txt".to_string()],
         last_reason: last_reason.to_string(),
     }
 }

@@ -154,9 +154,12 @@ fn logs_failed_writes_and_returns_trace_id() {
     assert_eq!(entry["tool"], "write");
     assert_eq!(entry["traceId"], trace_id);
     assert_eq!(entry["ok"], false);
-    assert_eq!(entry["path"], dir.path().to_string_lossy().as_ref());
+    assert_eq!(
+        entry["files"][0]["path"],
+        dir.path().to_string_lossy().as_ref()
+    );
     assert_eq!(entry["reason"], "Reject directory target");
-    assert_eq!(entry["content"], "hello\n");
+    assert_eq!(entry["files"][0]["content"], "hello\n");
     assert!(
         entry["error"]
             .as_str()
@@ -198,11 +201,14 @@ fn starts_a_trace_and_logs_successful_writes() {
     assert_eq!(entry["tool"], "write");
     assert_eq!(entry["traceId"], trace_id);
     assert_eq!(entry["ok"], true);
-    assert_eq!(entry["path"], file_path.to_string_lossy().as_ref());
+    assert_eq!(
+        entry["files"][0]["path"],
+        file_path.to_string_lossy().as_ref()
+    );
     assert_eq!(entry["reason"], "Rewrite config");
-    assert_eq!(entry["content"], "{\n  \"version\": 2\n}\n");
+    assert_eq!(entry["files"][0]["content"], "{\n  \"version\": 2\n}\n");
     assert!(
-        entry["diff"]
+        entry["files"][0]["diff"]
             .as_str()
             .unwrap()
             .contains("+  \"version\": 2")

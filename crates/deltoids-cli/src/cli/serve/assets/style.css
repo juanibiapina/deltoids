@@ -189,6 +189,14 @@ body {
   word-break: break-all;
 }
 
+.file-path {
+  margin: 14px 14px 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-weight: 600;
+  word-break: break-all;
+}
+
 .entry-error {
   margin: 8px 14px;
   padding: 10px 12px;

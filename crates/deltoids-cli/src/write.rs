@@ -5,10 +5,10 @@
 use std::fs;
 use std::path::Path;
 
-use crate::trace_store::{TraceStore, WriteFailureHistoryEntry, WriteHistoryEntry};
+use crate::trace_store::{FileChange, HistoryEntry, TraceStore};
 use crate::{
-    SuccessResponse, ToolError, WriteRequest, current_timestamp, current_working_directory,
-    success_message, tool_error,
+    SuccessResponse, ToolError, WriteRequest, current_working_directory, success_message,
+    tool_error,
 };
 
 pub fn execute_write_request(request: WriteRequest) -> Result<SuccessResponse, ToolError> {
@@ -87,21 +87,22 @@ fn try_execute_write(
 
     store.append(
         trace_id,
-        &WriteHistoryEntry {
-            v: 2,
-            tool: "write",
-            trace_id: trace_id.to_string(),
-            timestamp: current_timestamp(),
-            cwd: current_working_directory()?,
-            path: request.path.clone(),
-            reason: request.reason.clone(),
-            ok: true,
-            content: request.content.clone(),
-            diff: diff.clone(),
-            hunks,
-            language,
-            highlight,
-        },
+        &HistoryEntry::single_file(
+            "write",
+            trace_id,
+            current_working_directory()?,
+            request.reason.clone(),
+            None,
+            FileChange {
+                path: request.path.clone(),
+                content: request.content.clone(),
+                diff: Some(diff.clone()),
+                hunks,
+                language,
+                highlight,
+                ..FileChange::default()
+            },
+        ),
     )?;
 
     Ok(SuccessResponse {
@@ -123,18 +124,18 @@ fn log_write_failure(
     let logging_error = store
         .append(
             &trace_id,
-            &WriteFailureHistoryEntry {
-                v: 1,
-                tool: "write",
-                trace_id: trace_id.clone(),
-                timestamp: current_timestamp(),
-                cwd: current_working_directory().unwrap_or_else(|_| String::new()),
-                path: request.path,
-                reason: request.reason,
-                ok: false,
-                content: request.content,
-                error: error.clone(),
-            },
+            &HistoryEntry::single_file(
+                "write",
+                &trace_id,
+                current_working_directory().unwrap_or_else(|_| String::new()),
+                request.reason,
+                Some(error.clone()),
+                FileChange {
+                    path: request.path,
+                    content: request.content,
+                    ..FileChange::default()
+                },
+            ),
         )
         .err();
 

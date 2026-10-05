@@ -12,24 +12,24 @@ use ratatui::{
 };
 
 use deltoids::render_tui::{
-    pane_block_with_footer, pane_border_color, render_hunk_rows, rgb_to_color,
+    pane_block_with_footer, pane_border_color, render_file_header, render_hunk_rows, rgb_to_color,
 };
 use deltoids::{ChangeLayout, Theme};
 
-use crate::HistoryEntry;
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
 use crate::cli::browse::text::wrap_text;
+use crate::{FileChange, HistoryEntry};
 
 use crate::cli::browse::comment_view::{highlight_row, with_comments};
 use crate::cli::browse::comments::{CommentAnchor, CommentScope, hunk_lines};
 use crate::cli::browse::diff_cursor::{DiffRow, LinePlace, restore_cursor};
 
 use super::model::LoadedTrace;
-use super::{AppState, Focus};
+use super::{AppState, Focus, Selection};
 
-/// Retained store of rendered entry diffs, keyed by
-/// `(trace_id, entry_index)`. Every retained entry shares one `epoch`
+/// Retained store of rendered entry diffs, keyed by trace id and
+/// [`Selection`] (an entry, or one file of it). Every retained entry shares one `epoch`
 /// (render width plus change layout); a change to either clears the store
 /// (mirroring Files mode's `cached_width` rebuild). Retaining rendered
 /// entries makes revisiting an entry instant instead of re-highlighting it
@@ -37,7 +37,7 @@ use super::{AppState, Focus};
 #[derive(Debug, Default, Clone)]
 pub(super) struct DiffCache {
     epoch: CacheEpoch,
-    rows: HashMap<String, HashMap<usize, Vec<DiffRow>>>,
+    rows: HashMap<String, HashMap<Selection, Vec<DiffRow>>>,
 }
 
 /// The identity every retained entry shares: its render `width`, the
@@ -52,23 +52,24 @@ pub(super) struct CacheEpoch {
 }
 
 impl DiffCache {
-    /// Rendered rows for `(trace, entry)` at `epoch`, or `None` on an
+    /// Rendered rows for `(trace, selection)` at `epoch`, or `None` on an
     /// epoch mismatch or a miss.
-    pub(super) fn get(&self, epoch: CacheEpoch, key: (&str, usize)) -> Option<&Vec<DiffRow>> {
+    pub(super) fn get(&self, epoch: CacheEpoch, key: (&str, Selection)) -> Option<&Vec<DiffRow>> {
         if self.epoch != epoch {
             return None;
         }
         self.rows.get(key.0)?.get(&key.1)
     }
 
-    /// Whether `(trace, entry)` is already rendered at `epoch`.
-    pub(super) fn contains(&self, epoch: CacheEpoch, key: (&str, usize)) -> bool {
+    /// Whether `(trace, selection)` is already rendered at `epoch`.
+    pub(super) fn contains(&self, epoch: CacheEpoch, key: (&str, Selection)) -> bool {
         self.get(epoch, key).is_some()
     }
 
-    /// Store rendered `rows` for `(trace, entry)`. A width or layout change
-    /// clears the store first so every retained entry shares one epoch.
-    pub(super) fn insert(&mut self, epoch: CacheEpoch, key: (&str, usize), rows: Vec<DiffRow>) {
+    /// Store rendered `rows` for `(trace, selection)`. A width or layout
+    /// change clears the store first so every retained entry shares one
+    /// epoch.
+    pub(super) fn insert(&mut self, epoch: CacheEpoch, key: (&str, Selection), rows: Vec<DiffRow>) {
         if self.epoch != epoch {
             self.rows.clear();
             self.epoch = epoch;
@@ -85,7 +86,7 @@ impl DiffCache {
             let Some((_, prefix)) = prefixes.iter().find(|(trace, _)| trace == id) else {
                 return false;
             };
-            entries.retain(|index, _| index < prefix);
+            entries.retain(|selection, _| selection.entry < *prefix);
             !entries.is_empty()
         });
     }
@@ -109,12 +110,12 @@ pub(super) fn ensure_diff_cache(
     active_trace: &LoadedTrace,
     state: &mut AppState,
     epoch: CacheEpoch,
-    key: (usize, usize),
+    selection: Selection,
     theme: &Theme,
 ) {
-    let key = (active_trace.trace.trace_id.as_str(), key.1);
+    let key = (active_trace.trace.trace_id.as_str(), selection);
     if !state.diff_cache.contains(epoch, key) {
-        let rows = build_diff_rows(active_trace, key.1, epoch.width, epoch.layout, theme);
+        let rows = build_diff_rows(active_trace, selection, epoch.width, epoch.layout, theme);
         state.diff_cache.insert(epoch, key, rows);
     }
     let AppState {
@@ -149,13 +150,13 @@ pub(super) fn render_diff_pane(
         layout,
         syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
     };
-    let key = (state.trace_index, state.entry_index());
+    let key = state.diff_key();
 
     if should_build_body(
         budget,
         state
             .diff_cache
-            .contains(epoch, (active_trace.trace.trace_id.as_str(), key.1)),
+            .contains(epoch, (active_trace.trace.trace_id.as_str(), key)),
     ) {
         ensure_diff_cache(active_trace, state, epoch, key, theme);
     }
@@ -208,7 +209,7 @@ pub(super) fn render_diff_pane(
             // Fast frame, entry not yet rendered: show the cheap header
             // plus a muted placeholder. The body fills in on the settling
             // Full frame and is then retained.
-            let placeholder = render_detail_placeholder(active_trace, key.1, detail_width, theme);
+            let placeholder = render_detail_placeholder(active_trace, key, detail_width, theme);
             let visible: Vec<Line<'static>> =
                 placeholder.into_iter().take(diff_viewport.max(1)).collect();
             frame.render_widget(block, area);
@@ -222,14 +223,14 @@ pub(super) fn render_diff_pane(
 /// each entry's reason/path/metadata without the per-line syntax cost.
 fn render_detail_placeholder(
     trace: &LoadedTrace,
-    entry_index: usize,
+    selection: Selection,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let Some(entry) = trace.entries.get(entry_index) else {
+    let Some(entry) = trace.entries.get(selection.entry) else {
         return Vec::new();
     };
-    let mut lines = render_detail_header(entry, width, theme);
+    let mut lines = render_detail_header(entry, &shown_files(entry, selection), width, theme);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Rendering…".to_string(),
@@ -277,44 +278,81 @@ fn collapse_home(path: &str) -> String {
     path.to_string()
 }
 
-/// Build the diff pane's rows for one entry: the detail header, then each
-/// hunk, with every logical diff line anchored to a [`CommentAnchor`] and
-/// any saved comment drawn under the line's last wrapped row.
+/// The files a selection shows: one file of the entry, or all of them.
+fn shown_files(entry: &HistoryEntry, selection: Selection) -> Vec<&FileChange> {
+    match selection.file {
+        Some(index) => entry.files.get(index).into_iter().collect(),
+        None => entry.files.iter().collect(),
+    }
+}
+
+/// Build the diff pane's rows for a selection: the detail header, then
+/// each shown file's hunks, with every logical diff line anchored to a
+/// [`CommentAnchor`] and any saved comment drawn under the line's last
+/// wrapped row. When several files are shown, each gets the file header
+/// Files mode uses, so the reader can tell where one ends.
 pub(super) fn build_diff_rows(
     trace: &LoadedTrace,
-    entry_index: usize,
+    selection: Selection,
     width: usize,
     layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<DiffRow> {
-    let Some(entry) = trace.entries.get(entry_index) else {
+    let Some(entry) = trace.entries.get(selection.entry) else {
         return Vec::new();
     };
+    let files = shown_files(entry, selection);
 
-    let mut rendered: Vec<DiffRow> = render_detail_header(entry, width, theme)
+    let mut rendered: Vec<DiffRow> = render_detail_header(entry, &files, width, theme)
         .into_iter()
         .map(DiffRow::plain)
         .collect();
 
-    if !entry.ok {
-        if let Some(err) = entry.error.as_deref() {
-            rendered.push(DiffRow::plain(Line::from("")));
-            rendered.push(DiffRow::plain(labeled_line("error", err, Color::Red)));
-        }
-    } else if entry.hunks.is_empty() {
-        // v1 entries have no hunks; show deprecation notice.
+    // A failed invocation can still have changed files, so its error and
+    // its diff are shown together.
+    if !entry.ok
+        && let Some(err) = entry.error.as_deref()
+    {
         rendered.push(DiffRow::plain(Line::from("")));
-        rendered.push(DiffRow::plain(Line::from("(old format, cannot display)")));
-    } else {
-        for (hunk_index, hunk) in entry.hunks.iter().enumerate() {
+        rendered.push(DiffRow::plain(labeled_line("error", err, Color::Red)));
+    }
+    if entry.files.is_empty() {
+        rendered.push(DiffRow::plain(Line::from("")));
+        rendered.push(DiffRow::plain(Line::from(Span::styled(
+            "No file changes.".to_string(),
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ))));
+    }
+
+    let scope = scope(trace, selection.entry);
+    let file_headers = files.len() > 1;
+    for file in files {
+        if file_headers {
+            rendered.push(DiffRow::plain(Line::from("")));
+            rendered.extend(
+                render_file_header(&display_path(&file.path, &entry.cwd), width, theme)
+                    .into_iter()
+                    .map(DiffRow::plain),
+            );
+        }
+        if file.hunks.is_empty() {
+            // A successful entry whose file has no hunks predates recorded
+            // hunks; a failed one simply changed nothing there.
+            if entry.ok {
+                rendered.push(DiffRow::plain(Line::from("")));
+                rendered.push(DiffRow::plain(Line::from("(old format, cannot display)")));
+            }
+            continue;
+        }
+        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
             // Blank separator before each hunk, matching render_hunk_list.
             rendered.push(DiffRow::plain(Line::from("")));
             push_hunk_rows(
                 &mut rendered,
                 hunk,
-                entry,
+                file,
                 hunk_index,
-                &scope(trace, entry_index),
+                &scope,
                 width,
                 layout,
                 theme,
@@ -334,13 +372,13 @@ pub(super) fn scope(trace: &LoadedTrace, entry_index: usize) -> CommentScope {
 }
 
 /// Render one hunk into `rows`, tagging each row with the diff line it
-/// renders. The entry path, hunk position, and line index give every diff
-/// line a stable identity for the cursor.
+/// renders. The file path, hunk position, and line index give every diff
+/// line a stable identity for the cursor, distinct across files.
 #[allow(clippy::too_many_arguments)]
 fn push_hunk_rows(
     rows: &mut Vec<DiffRow>,
     hunk: &deltoids::Hunk,
-    entry: &HistoryEntry,
+    file: &FileChange,
     hunk_index: usize,
     scope: &CommentScope,
     width: usize,
@@ -350,13 +388,13 @@ fn push_hunk_rows(
     let anchors: Vec<CommentAnchor> = hunk_lines(hunk)
         .map(|line| CommentAnchor {
             scope: scope.clone(),
-            path: entry.path.clone(),
+            path: file.path.clone(),
             side: line.side,
             line: line.number,
         })
         .collect();
 
-    for row in render_hunk_rows(hunk, entry.highlight.as_deref(), width, layout, theme) {
+    for row in render_hunk_rows(hunk, file.highlight.as_deref(), width, layout, theme) {
         let Some(index) = row.source_line else {
             rows.push(DiffRow::plain(row.line));
             continue;
@@ -366,7 +404,7 @@ fn push_hunk_rows(
             hunk.lines[index].kind.clone(),
             anchors[index].clone(),
             row.first_row.then(|| LinePlace {
-                file: entry.path.clone(),
+                file: file.path.clone(),
                 hunk: hunk_index,
                 index,
             }),
@@ -375,8 +413,19 @@ fn push_hunk_rows(
     }
 }
 
-fn render_detail_header(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let path = display_path(&entry.path, &entry.cwd);
+/// The header block: the entry's reason, then the shown file's path, or a
+/// file count when several (or none) are shown.
+fn render_detail_header(
+    entry: &HistoryEntry,
+    files: &[&FileChange],
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let path = match files {
+        [file] => display_path(&file.path, &entry.cwd),
+        [] => "no files".to_string(),
+        files => format!("{} files", files.len()),
+    };
     render_header_block(&entry.reason, &path, width, theme)
 }
 
@@ -441,6 +490,91 @@ mod tests {
     use super::*;
     use crate::cli::browse::traces::test_support::*;
 
+    fn rendered_text(trace: &LoadedTrace, selection: Selection) -> String {
+        build_diff_rows(trace, selection, 80, ChangeLayout::Grouped, &test_theme())
+            .iter()
+            .map(|row| row.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn an_entry_shows_every_file_and_a_file_row_shows_only_its_file() {
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![two_file_entry()],
+        };
+
+        let whole = rendered_text(&trace, Selection::entry(0));
+        assert!(whole.contains("2 files"), "{whole}");
+        assert!(
+            whole.contains("src/a.rs") && whole.contains("src/b.rs"),
+            "{whole}"
+        );
+        assert!(
+            whole.contains("let x = 2;") && whole.contains("let y = 2;"),
+            "{whole}"
+        );
+
+        let second = rendered_text(
+            &trace,
+            Selection {
+                entry: 0,
+                file: Some(1),
+            },
+        );
+        assert!(
+            second.contains("src/b.rs") && second.contains("let y = 2;"),
+            "{second}"
+        );
+        assert!(
+            !second.contains("let x = 2;") && !second.contains("src/a.rs"),
+            "{second}"
+        );
+    }
+
+    #[test]
+    fn cursor_stops_are_distinct_across_files_with_identical_hunks() {
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![two_file_entry()],
+        };
+        let rows = build_diff_rows(
+            &trace,
+            Selection::entry(0),
+            80,
+            ChangeLayout::Grouped,
+            &test_theme(),
+        );
+        let places: Vec<_> = rows.iter().filter_map(|row| row.place.clone()).collect();
+
+        assert_eq!(places.len(), 6);
+        for (index, place) in places.iter().enumerate() {
+            assert!(!places[..index].contains(place), "duplicate stop {place:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_entry_shows_its_error_and_its_diff() {
+        let mut entry = hunk_entry();
+        entry.ok = false;
+        entry.error = Some("command exited 1".to_string());
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![entry],
+        };
+
+        let text = rendered_text(&trace, Selection::entry(0));
+
+        assert!(text.contains("command exited 1"), "{text}");
+        assert!(text.contains("let x = 2;"), "{text}");
+    }
+
+    /// The header for a whole entry (every file shown).
+    fn entry_header(entry: &HistoryEntry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        render_detail_header(entry, &entry.files.iter().collect::<Vec<_>>(), width, theme)
+    }
+
     fn grouped_epoch(width: usize) -> CacheEpoch {
         CacheEpoch {
             width,
@@ -453,8 +587,8 @@ mod tests {
     fn trace_overview_marks_wrapped_changes_and_clears_them_on_entry_switch() {
         use ratatui::{Terminal, backend::TestBackend, layout::Rect};
         let mut trace = trace_with_hunks();
-        trace.entries[0].hunks[0].lines[1].content = "old ".repeat(20);
-        trace.entries[0].hunks[0].lines[2].content = "new ".repeat(20);
+        trace.entries[0].files[0].hunks[0].lines[1].content = "old ".repeat(20);
+        trace.entries[0].files[0].hunks[0].lines[2].content = "new ".repeat(20);
         trace.entries.push(edit_entry());
         let theme = Theme::default();
         let mut state = AppState::new(1);
@@ -508,12 +642,12 @@ mod tests {
         let e = grouped_epoch(80);
         cache.insert(
             e,
-            ("01JTESTTRACE00000000000000", 0),
+            ("01JTESTTRACE00000000000000", Selection::entry(0)),
             vec![DiffRow::plain(Line::from("a"))],
         );
         cache.insert(
             e,
-            ("01JTESTTRACE00000000000000", 1),
+            ("01JTESTTRACE00000000000000", Selection::entry(1)),
             vec![
                 DiffRow::plain(Line::from("b")),
                 DiffRow::plain(Line::from("b2")),
@@ -521,17 +655,17 @@ mod tests {
         );
 
         // Both entries stay retained: revisiting the first is a cache hit.
-        assert!(cache.contains(e, ("01JTESTTRACE00000000000000", 0)));
-        assert!(cache.contains(e, ("01JTESTTRACE00000000000000", 1)));
+        assert!(cache.contains(e, ("01JTESTTRACE00000000000000", Selection::entry(0))));
+        assert!(cache.contains(e, ("01JTESTTRACE00000000000000", Selection::entry(1))));
         assert_eq!(
             cache
-                .get(e, ("01JTESTTRACE00000000000000", 0))
+                .get(e, ("01JTESTTRACE00000000000000", Selection::entry(0)))
                 .map(|rows| rows.len()),
             Some(1)
         );
         assert_eq!(
             cache
-                .get(e, ("01JTESTTRACE00000000000000", 1))
+                .get(e, ("01JTESTTRACE00000000000000", Selection::entry(1)))
                 .map(|rows| rows.len()),
             Some(2)
         );
@@ -542,25 +676,40 @@ mod tests {
         let mut cache = DiffCache::default();
         cache.insert(
             grouped_epoch(80),
-            ("01JTESTTRACE00000000000000", 0),
+            ("01JTESTTRACE00000000000000", Selection::entry(0)),
             vec![DiffRow::plain(Line::from("a"))],
         );
-        assert!(cache.contains(grouped_epoch(80), ("01JTESTTRACE00000000000000", 0)));
+        assert!(cache.contains(
+            grouped_epoch(80),
+            ("01JTESTTRACE00000000000000", Selection::entry(0))
+        ));
 
         // A different width drops the stale entry and rebuilds at the new width.
-        assert!(!cache.contains(grouped_epoch(79), ("01JTESTTRACE00000000000000", 0)));
+        assert!(!cache.contains(
+            grouped_epoch(79),
+            ("01JTESTTRACE00000000000000", Selection::entry(0))
+        ));
         assert!(
             cache
-                .get(grouped_epoch(79), ("01JTESTTRACE00000000000000", 0))
+                .get(
+                    grouped_epoch(79),
+                    ("01JTESTTRACE00000000000000", Selection::entry(0))
+                )
                 .is_none()
         );
         cache.insert(
             grouped_epoch(79),
-            ("01JTESTTRACE00000000000000", 1),
+            ("01JTESTTRACE00000000000000", Selection::entry(1)),
             vec![DiffRow::plain(Line::from("b"))],
         );
-        assert!(!cache.contains(grouped_epoch(79), ("01JTESTTRACE00000000000000", 0)));
-        assert!(cache.contains(grouped_epoch(79), ("01JTESTTRACE00000000000000", 1)));
+        assert!(!cache.contains(
+            grouped_epoch(79),
+            ("01JTESTTRACE00000000000000", Selection::entry(0))
+        ));
+        assert!(cache.contains(
+            grouped_epoch(79),
+            ("01JTESTTRACE00000000000000", Selection::entry(1))
+        ));
     }
 
     #[test]
@@ -568,10 +717,13 @@ mod tests {
         let mut cache = DiffCache::default();
         cache.insert(
             grouped_epoch(80),
-            ("01JTESTTRACE00000000000000", 0),
+            ("01JTESTTRACE00000000000000", Selection::entry(0)),
             vec![DiffRow::plain(Line::from("a"))],
         );
-        assert!(cache.contains(grouped_epoch(80), ("01JTESTTRACE00000000000000", 0)));
+        assert!(cache.contains(
+            grouped_epoch(80),
+            ("01JTESTTRACE00000000000000", Selection::entry(0))
+        ));
 
         // Same width, different layout: the stale entry is dropped.
         let interleaved = CacheEpoch {
@@ -581,14 +733,23 @@ mod tests {
             },
             syntax_theme: "",
         };
-        assert!(!cache.contains(interleaved, ("01JTESTTRACE00000000000000", 0)));
+        assert!(!cache.contains(
+            interleaved,
+            ("01JTESTTRACE00000000000000", Selection::entry(0))
+        ));
         cache.insert(
             interleaved,
-            ("01JTESTTRACE00000000000000", 1),
+            ("01JTESTTRACE00000000000000", Selection::entry(1)),
             vec![DiffRow::plain(Line::from("b"))],
         );
-        assert!(!cache.contains(interleaved, ("01JTESTTRACE00000000000000", 0)));
-        assert!(cache.contains(interleaved, ("01JTESTTRACE00000000000000", 1)));
+        assert!(!cache.contains(
+            interleaved,
+            ("01JTESTTRACE00000000000000", Selection::entry(0))
+        ));
+        assert!(cache.contains(
+            interleaved,
+            ("01JTESTTRACE00000000000000", Selection::entry(1))
+        ));
     }
 
     #[test]
@@ -605,20 +766,20 @@ mod tests {
         assert!(
             !state
                 .diff_cache
-                .contains(e, ("01JTESTTRACE00000000000000", 0))
+                .contains(e, ("01JTESTTRACE00000000000000", Selection::entry(0)))
         );
-        ensure_diff_cache(&trace, &mut state, e, (0, 0), &theme);
+        ensure_diff_cache(&trace, &mut state, e, Selection::entry(0), &theme);
         assert!(
             state
                 .diff_cache
-                .contains(e, ("01JTESTTRACE00000000000000", 0))
+                .contains(e, ("01JTESTTRACE00000000000000", Selection::entry(0)))
         );
         // Second call is a no-op hit; the store still holds the one entry.
-        ensure_diff_cache(&trace, &mut state, e, (0, 0), &theme);
+        ensure_diff_cache(&trace, &mut state, e, Selection::entry(0), &theme);
         assert!(
             state
                 .diff_cache
-                .contains(e, ("01JTESTTRACE00000000000000", 0))
+                .contains(e, ("01JTESTTRACE00000000000000", Selection::entry(0)))
         );
     }
 
@@ -632,10 +793,16 @@ mod tests {
             trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
             entries: vec![entry.clone()],
         };
-        build_diff_rows(&trace, 0, width, ChangeLayout::Grouped, theme)
-            .into_iter()
-            .map(|row| row.line)
-            .collect()
+        build_diff_rows(
+            &trace,
+            Selection::entry(0),
+            width,
+            ChangeLayout::Grouped,
+            theme,
+        )
+        .into_iter()
+        .map(|row| row.line)
+        .collect()
     }
 
     #[test]
@@ -647,8 +814,8 @@ mod tests {
         // no edit box.
         let theme = test_theme();
         let mut entry = edit_entry();
-        entry.edits[0].reason = entry.reason.clone();
-        entry.hunks = vec![Hunk {
+        entry.files[0].edits[0].reason = entry.reason.clone();
+        entry.files[0].hunks = vec![Hunk {
             old_start: 5,
             new_start: 5,
             lines: vec![
@@ -675,9 +842,9 @@ mod tests {
         }];
 
         let lines = render_entry(&entry, 80, &theme);
-        let header = render_detail_header(&entry, 80, &theme);
+        let header = entry_header(&entry, 80, &theme);
         let body = deltoids::render_tui::render_hunk_list(
-            &entry.hunks,
+            &entry.files[0].hunks,
             None,
             80,
             ChangeLayout::Grouped,
@@ -702,7 +869,7 @@ mod tests {
         // distinct per-edit reasons are not shown anywhere.
         let theme = test_theme();
         let mut entry = edit_entry();
-        entry.edits = vec![
+        entry.files[0].edits = vec![
             TextEdit {
                 reason: "First edit".to_string(),
                 old_text: "a".to_string(),
@@ -723,7 +890,7 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        entry.hunks = vec![hunk("A"), hunk("B")];
+        entry.files[0].hunks = vec![hunk("A"), hunk("B")];
 
         let lines = render_entry(&entry, 80, &theme);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
@@ -809,7 +976,7 @@ mod tests {
     #[test]
     fn render_detail_header_uses_reason_path_and_rule() {
         let theme = test_theme();
-        let lines = render_detail_header(&edit_entry(), 80, &theme);
+        let lines = entry_header(&edit_entry(), 80, &theme);
         // Header is reason, path, bottom rule; no tool/status metadata line.
         assert_eq!(lines.len(), 3);
         assert!(lines[0].to_string().starts_with("Update x constant"));
@@ -838,7 +1005,7 @@ mod tests {
         let theme = test_theme();
         let mut entry = edit_entry();
         entry.reason = "This is a long reason that should wrap onto multiple lines".to_string();
-        let lines = render_detail_header(&entry, 30, &theme);
+        let lines = entry_header(&entry, 30, &theme);
         // Reason wraps into multiple lines, then path, rule.
         assert!(
             lines.len() > 3,
@@ -870,7 +1037,7 @@ mod tests {
     #[test]
     fn render_detail_header_falls_back_cleanly_when_narrow() {
         let theme = test_theme();
-        let lines = render_detail_header(&edit_entry(), 3, &theme);
+        let lines = entry_header(&edit_entry(), 3, &theme);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].to_string(), "Upd");
     }

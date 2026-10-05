@@ -57,11 +57,10 @@ const prefs = {
 // Apply the current preferences to whatever diff is on screen and keep the
 // control buttons showing their state.
 function applyPrefs() {
-  const diff = view.querySelector(".diff");
-  if (diff) {
+  view.querySelectorAll(".diff").forEach((diff) => {
     diff.classList.toggle("nowrap", !prefs.wrap);
     diff.dataset.size = prefs.size;
-  }
+  });
   wrapEl.setAttribute("aria-pressed", prefs.wrap ? "true" : "false");
   wrapEl.textContent = prefs.wrap ? "⇌" : "→";
   sizeEl.textContent = prefs.size.toUpperCase();
@@ -106,6 +105,13 @@ function relTime(iso) {
 function relPath(path, cwd) {
   if (cwd && path.startsWith(cwd + "/")) return path.slice(cwd.length + 1);
   return path;
+}
+
+// One line naming an entry's files: its only file, or the first plus a count.
+function pathsLabel(paths, cwd) {
+  if (!paths.length) return "no files";
+  const first = relPath(paths[0], cwd);
+  return paths.length === 1 ? first : `${first} +${paths.length - 1}`;
 }
 
 // ---- projects ---------------------------------------------------------
@@ -177,7 +183,7 @@ async function showTraces(project) {
       (t) => `
       <button class="card" data-trace="${esc(t.trace_id)}">
         <div class="card-title">${esc(t.last_reason || "(no summary)")}</div>
-        <div class="card-sub">${esc(relPath(t.last_path, t.cwd))}</div>
+        <div class="card-sub">${esc(pathsLabel(t.last_paths, t.cwd))}</div>
         <div class="card-meta">${t.entry_count} edits · ${esc(relTime(t.last_timestamp))}</div>
       </button>`,
     )
@@ -215,7 +221,7 @@ async function renderEntry() {
   if (!meta) return;
   setHeader(
     meta.reason || "(no summary)",
-    relPath(meta.path, state.trace.cwd),
+    pathsLabel(meta.paths, state.trace.cwd),
     `${state.index + 1}/${state.entries.length}`,
   );
 
@@ -230,14 +236,23 @@ async function renderEntry() {
   const errorBlock = detail.error
     ? `<div class="entry-error">${esc(detail.error)}</div>`
     : "";
+  // Several files each get their path above their diff; one file keeps
+  // the single-diff layout.
+  const many = detail.files.length > 1;
+  const fileBlocks = detail.files
+    .map(
+      (f) => `${many ? `<div class="file-path">${esc(relPath(f.path, state.trace.cwd))}</div>` : ""}
+      <div class="diff">${f.html || ""}</div>`,
+    )
+    .join("");
   view.innerHTML = `
     <div class="reviewer">
       <div class="entry-head">
         <div class="entry-reason">${esc(detail.reason || "(no summary)")}</div>
-        <div class="entry-path">${esc(relPath(detail.path, state.trace.cwd))}</div>
+        <div class="entry-path">${esc(pathsLabel(detail.files.map((f) => f.path), state.trace.cwd))}</div>
       </div>
       ${errorBlock}
-      <div class="diff">${detail.html || ""}</div>
+      ${fileBlocks}
       <div class="navhint">swipe left → next · swipe right → back</div>
     </div>`;
 

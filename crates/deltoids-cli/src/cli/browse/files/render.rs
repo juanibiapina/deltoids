@@ -267,10 +267,7 @@ impl DiffCache {
     /// epoch changes, and focus loss all cancel that token before changing state.
     pub(super) fn collect(&mut self) -> bool {
         let mut visible_changed = false;
-        loop {
-            let Some(worker) = &self.worker else {
-                break;
-            };
+        while let Some(worker) = &self.worker {
             match worker.results.try_recv() {
                 Ok(result) if result.token == worker.token.load(Ordering::Relaxed) => {
                     visible_changed |= self.adopt(result);

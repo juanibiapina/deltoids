@@ -117,7 +117,7 @@ pub fn run_traces_scripted() -> Result<(), String> {
 /// [`TRACES_MODE`]).
 pub fn run(active_mode: usize) -> Result<(), String> {
     let mut theme = Theme::load();
-    let _session = TerminalSession::enter()?;
+    let session = TerminalSession::enter()?;
     let backend = buffered_backend();
     let mut terminal =
         Terminal::new(backend).map_err(|err| format!("failed to create screen: {err}"))?;
@@ -149,6 +149,9 @@ pub fn run(active_mode: usize) -> Result<(), String> {
 
     let mut vp = ReloadViewport::default();
     loop {
+        if session.quit_requested() {
+            break;
+        }
         // Drain queued input before refreshes, including focus loss that
         // arrived while the previous synchronous operation was finishing.
         let queued = read_event_burst(Duration::ZERO)?;
@@ -189,7 +192,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     }
 
     // Restore the user's terminal before watcher teardown finishes.
-    drop(_session);
+    drop(session);
     Ok(())
 }
 

@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: git-crypt encrypted files show a text diff instead of "Binary file".
 - TUI: the diff keeps its scroll position when a refresh only changes other files.
+- TUI: restore the terminal when deltoids is killed with `killall deltoids`, SIGHUP, or SIGQUIT.
 - diff: a field added just before a new `impl` (or other new scope) keeps its enclosing struct as context instead of showing the new scope's breadcrumb.
 - diff: hunks no longer drop, repeat, or overlap lines around deleted scopes, new scopes, and hunk edges.
 

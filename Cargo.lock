@@ -592,6 +592,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "signal-hook",
  "tempfile",
  "terminal_size",
  "tiny_http",

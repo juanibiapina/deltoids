@@ -15,6 +15,60 @@ fn compute_empty_returns_empty() {
 }
 
 // -----------------------------------------------------------------------
+// Diff::expand tests
+// -----------------------------------------------------------------------
+
+fn old_spans(diff: &Diff) -> Vec<std::ops::Range<usize>> {
+    diff.hunks()
+        .iter()
+        .map(|hunk| {
+            let len = hunk
+                .lines
+                .iter()
+                .filter(|line| line.kind != LineKind::Added)
+                .count();
+            hunk.old_start..hunk.old_start + len
+        })
+        .collect()
+}
+
+#[test]
+fn expand_out_of_range_hunk_is_none() {
+    let diff = Diff::compute("a\nb\n", "a\nc\n", "notes.txt");
+    assert!(diff.expand(1).is_none());
+}
+
+#[test]
+fn expand_never_hides_lines_a_hunk_showed() {
+    let original = "fn a() {\n    1\n}\n\nfn b() {\n    2\n}\n\nfn c() {\n    3\n}\n";
+    let updated = original
+        .replace("    1", "    10")
+        .replace("    3", "    30");
+    let diff = Diff::compute(original, &updated, "lib.rs");
+    let expanded = diff.expand(0).expect("a larger level exists");
+    for before in old_spans(&diff) {
+        assert!(
+            old_spans(&expanded)
+                .iter()
+                .any(|after| after.start <= before.start && before.end <= after.end),
+            "{before:?} is no longer shown"
+        );
+    }
+}
+
+#[test]
+fn shrink_undoes_the_last_expansion() {
+    let original = "fn a() {\n    1\n}\n\nfn b() {\n    2\n}\n\nfn c() {\n    3\n}\n";
+    let updated = original
+        .replace("    1", "    10")
+        .replace("    3", "    30");
+    let diff = Diff::compute(original, &updated, "lib.rs");
+    let back = diff.expand(0).unwrap().shrink(0).unwrap();
+    assert_eq!(format!("{:?}", back.hunks()), format!("{:?}", diff.hunks()));
+    assert!(back.shrink(0).is_none());
+}
+
+// -----------------------------------------------------------------------
 // Hunk::runs tests
 // -----------------------------------------------------------------------
 

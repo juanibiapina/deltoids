@@ -51,10 +51,10 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use deltoids::{ChangeLayout, LineKind, Theme, git};
+use deltoids::{ChangeLayout, Diff, LineKind, Theme, git};
 
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
-use crate::sidebar::Sidebar;
+use crate::sidebar::{Sidebar, display_path};
 
 use super::comment_view::render_comment_editor;
 use super::comments::{CommentAnchor, CommentStore, build_prompt, reanchor};
@@ -699,6 +699,14 @@ fn handle_key(
             state.toggle_column();
             AppCommand::Continue
         }
+        KeyCode::Char('z') => {
+            reshape_hunk(state, Diff::expand);
+            AppCommand::Continue
+        }
+        KeyCode::Char('x') => {
+            reshape_hunk(state, Diff::shrink);
+            AppCommand::Continue
+        }
         KeyCode::Tab | KeyCode::BackTab => {
             state.focus = match state.focus {
                 Focus::Sidebar => Focus::Diff,
@@ -745,6 +753,43 @@ fn handle_key(
             }
             AppCommand::Continue
         }
+    }
+}
+
+/// Expand or shrink the hunk under the diff cursor with `reshape`
+/// ([`Diff::expand`] or [`Diff::shrink`]). Both panes re-render the file
+/// (a single-column file's body is shared by both columns); the cursor
+/// stays on its file line.
+fn reshape_hunk(state: &mut FilesMode, reshape: fn(&Diff, usize) -> Option<Diff>) {
+    if state.focus != Focus::Diff {
+        return;
+    }
+    let column = state.shown();
+    let Some((place, anchor)) = state
+        .pane(column)
+        .cursor_line()
+        .map(|(place, anchor)| (place.clone(), anchor.clone()))
+    else {
+        return;
+    };
+    let Some(index) = state
+        .model
+        .files
+        .iter()
+        .position(|file| display_path(&file.file) == place.file)
+    else {
+        return;
+    };
+    if state
+        .model
+        .reshape(index, column, |diff| reshape(diff, place.hunk))
+    {
+        state.pane_mut(column).reshape_file(index, anchor);
+        let other = match column {
+            Column::Staged => Column::Unstaged,
+            Column::Unstaged => Column::Staged,
+        };
+        state.pane_mut(other).cache.refresh(index);
     }
 }
 

@@ -3,8 +3,8 @@
 //! Discovers every case directory under `tests/diff_cases/cases`, runs the
 //! diff engine over its `before`/`after` files, and compares the result to
 //! the case's `expected.diff`. Every case, and a sweep of seeded random
-//! edits over the case inputs, must also satisfy the exact-cover invariant
-//! in `diff_cases/exact_cover.rs`.
+//! edits (each also expanded up to twice) over the case inputs, must also
+//! satisfy the exact-cover invariant in `diff_cases/exact_cover.rs`.
 
 #[path = "diff_cases/exact_cover.rs"]
 mod exact_cover;
@@ -70,11 +70,9 @@ fn random_edits_show_each_changed_line_exactly_once() {
         let lines: Vec<&str> = original.lines().collect();
         for seed in 1..=EDITS_PER_CASE {
             let updated = mutate(&lines, seed);
-            let diff = Diff::compute(&original, &updated, &case.diff_path());
-            let errors = exact_cover::violations(&original, &updated, diff.hunks());
-            if let Some(error) = errors.first() {
+            if let Some(error) = expansion_violation(&original, &updated, &case.diff_path(), seed) {
                 failures.push(format!(
-                    "{} seed {seed}: {error}\n--- updated ---\n{updated}",
+                    "{} seed {seed} {error}\n--- updated ---\n{updated}",
                     case.name
                 ));
             }
@@ -86,6 +84,20 @@ fn random_edits_show_each_changed_line_exactly_once() {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+/// The first exact-cover break in the diff of `original` and `updated`,
+/// or in that diff after each of up to two seeded hunk expansions.
+fn expansion_violation(original: &str, updated: &str, path: &str, seed: u64) -> Option<String> {
+    let mut diff = Diff::compute(original, updated, path);
+    for step in 0..=2 {
+        if let Some(error) = exact_cover::violations(original, updated, diff.hunks()).first() {
+            return Some(format!("after {step} expansion(s): {error}"));
+        }
+        let count = diff.hunks().len().max(1);
+        diff = diff.expand((seed as usize + step) % count)?;
+    }
+    None
 }
 
 /// Apply one to four seeded line edits: insert, delete a run, change,

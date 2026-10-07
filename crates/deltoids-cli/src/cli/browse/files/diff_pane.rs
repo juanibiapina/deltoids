@@ -658,6 +658,20 @@ impl DiffPane {
         self.window.get(self.cursor.row)?.anchor.as_ref()
     }
 
+    /// Re-render file `index` after its body changed shape, keeping the
+    /// cursor on the file line `anchor` at its screen row.
+    pub(super) fn reshape_file(&mut self, index: usize, anchor: CommentAnchor) {
+        self.cache.refresh(index);
+        self.cursor.retarget(anchor);
+        self.window_key = None;
+    }
+
+    /// Where the cursor sits: its rendered line and the file line it
+    /// draws, when it is on a diff line.
+    pub(super) fn cursor_line(&self) -> Option<(&LinePlace, &CommentAnchor)> {
+        Some((self.cursor.place()?, self.cursor_anchor()?))
+    }
+
     /// One file's block for the current frame: the retained highlighted
     /// lines when ready; otherwise a cheap placeholder.
     fn file_block(

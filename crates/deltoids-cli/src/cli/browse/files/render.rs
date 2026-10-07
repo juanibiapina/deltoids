@@ -266,6 +266,20 @@ impl DiffCache {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Render file `key` again from its current body. The old rows stay on
+    /// screen until the new ones arrive; a pending render of the old body
+    /// is cancelled.
+    pub(super) fn refresh(&mut self, key: usize) {
+        if let Some(block) = self.rows.get_mut(&key) {
+            block.complete = false;
+        }
+        if let Some(wanted) = self.pending.remove(&key) {
+            wanted.store(false, Ordering::Relaxed);
+        }
+        self.scheduled.remove(&key);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// Cancel demand on focus loss or mode deactivation, retaining valid blocks.
     pub(super) fn pause(&mut self) {
         if self.pending.is_empty() && self.demand.is_empty() {

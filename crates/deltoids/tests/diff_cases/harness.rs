@@ -16,6 +16,11 @@
 //!   4-expected.diff    Expected output of `Diff::compute(original,
 //!                      updated, "original.<EXT>")` rendered in the case
 //!                      format below.
+//!   5-expand.txt       Optional. One hunk index per line, each passed in
+//!                      order to `Diff::expand` on the previous result
+//!                      (`Diff::shrink` when prefixed with `-`).
+//!   6-expanded.diff    Expected output after each expansion, required
+//!                      when `5-expand.txt` exists (see [`format_expansions`]).
 //! ```
 //!
 //! Files are numbered so a directory listing reads in the natural order
@@ -51,7 +56,7 @@
 //! plus the path to the case directory.
 //!
 //! Set `DELTOIDS_UPDATE_CASES=1` to overwrite each `4-expected.diff`
-//! with the current actual output. Use this when adding a new case
+//! (and `6-expanded.diff`) with the current actual output. Use this when adding a new case
 //! (write `1-case.md`, `2-original.<EXT>`, `3-updated.<EXT>`, run with
 //! the env var, manually inspect the generated `4-expected.diff`,
 //! commit).
@@ -66,6 +71,12 @@ use deltoids::{Diff, Hunk, LineKind};
 // Case discovery and loading
 // ---------------------------------------------------------------------------
 
+/// One line of `5-expand.txt`: expand (`N`) or shrink (`-N`) hunk `N`.
+pub struct Step {
+    pub shrink: bool,
+    pub index: usize,
+}
+
 /// One discovered diff case on disk.
 pub struct Case {
     pub name: String,
@@ -73,6 +84,8 @@ pub struct Case {
     pub original_path: PathBuf,
     pub updated_path: PathBuf,
     pub expected_path: PathBuf,
+    pub expand_path: PathBuf,
+    pub expanded_path: PathBuf,
 }
 
 impl Case {
@@ -88,6 +101,35 @@ impl Case {
 
     pub fn expected(&self) -> String {
         fs::read_to_string(&self.expected_path).unwrap_or_default()
+    }
+
+    /// Steps to apply in order, empty when the case has no
+    /// `5-expand.txt`.
+    pub fn expansions(&self) -> Vec<Step> {
+        let Ok(text) = fs::read_to_string(&self.expand_path) else {
+            return Vec::new();
+        };
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (shrink, index) = match line.strip_prefix('-') {
+                    Some(index) => (true, index),
+                    None => (false, line),
+                };
+                let index = index.parse().unwrap_or_else(|e| {
+                    panic!(
+                        "{}: bad hunk index {line:?}: {e}",
+                        self.expand_path.display()
+                    )
+                });
+                Step { shrink, index }
+            })
+            .collect()
+    }
+
+    pub fn expanded(&self) -> String {
+        fs::read_to_string(&self.expanded_path).unwrap_or_default()
     }
 
     /// File-name passed to `Diff::compute`. The diff engine uses this only
@@ -131,6 +173,8 @@ pub fn discover_cases(cases_root: &Path) -> Vec<Case> {
         let expected = path.join("4-expected.diff");
         cases.push(Case {
             name,
+            expand_path: path.join("5-expand.txt"),
+            expanded_path: path.join("6-expanded.diff"),
             dir: path,
             original_path: original,
             updated_path: updated,
@@ -243,6 +287,34 @@ fn format_range(start: usize, count: usize) -> String {
     }
 }
 
+/// Render each of `steps` applied to `diff` in turn. Every step starts
+/// with `## expand N` or `## shrink N`, followed by the hunks after it,
+/// or `(unchanged)` when the step returns `None`, which keeps the
+/// previous diff for the next step.
+pub fn format_expansions(diff: &Diff, steps: &[Step]) -> String {
+    let mut out = String::new();
+    let mut current = diff.clone();
+    for (position, step) in steps.iter().enumerate() {
+        if position > 0 {
+            out.push('\n');
+        }
+        let (name, next) = if step.shrink {
+            ("shrink", current.shrink(step.index))
+        } else {
+            ("expand", current.expand(step.index))
+        };
+        out.push_str(&format!("## {name} {}\n", step.index));
+        match next {
+            Some(next) => {
+                out.push_str(&format_hunks(next.hunks()));
+                current = next;
+            }
+            None => out.push_str("(unchanged)\n"),
+        }
+    }
+    out
+}
+
 fn format_ancestors(hunk: &Hunk) -> String {
     hunk.ancestors
         .iter()
@@ -270,25 +342,33 @@ pub fn run_case(case: &Case, update: bool) -> Result<(), CaseFailure> {
     let updated = case.updated();
     let diff_path = case.diff_path();
     let diff = Diff::compute(&original, &updated, &diff_path);
-    let actual = format_hunks(diff.hunks());
-
-    if update {
-        fs::write(&case.expected_path, &actual)
-            .unwrap_or_else(|e| panic!("write {}: {e}", case.expected_path.display()));
-        return Ok(());
+    let mut checks = vec![(
+        &case.expected_path,
+        case.expected(),
+        format_hunks(diff.hunks()),
+    )];
+    let expansions = case.expansions();
+    if !expansions.is_empty() {
+        checks.push((
+            &case.expanded_path,
+            case.expanded(),
+            format_expansions(&diff, &expansions),
+        ));
     }
 
-    let expected = case.expected();
-    if expected == actual {
-        Ok(())
-    } else {
-        Err(CaseFailure {
-            name: case.name.clone(),
-            dir: case.dir.clone(),
-            expected,
-            actual,
-        })
+    for (path, expected, actual) in checks {
+        if update {
+            fs::write(path, &actual).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        } else if expected != actual {
+            return Err(CaseFailure {
+                name: case.name.clone(),
+                dir: case.dir.clone(),
+                expected,
+                actual,
+            });
+        }
     }
+    Ok(())
 }
 
 /// Path to the directory holding all on-disk cases.

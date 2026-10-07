@@ -1,0 +1,36 @@
+## expand 0
+@@ -6,19 +6,19 @@ [impl_item Shape]
+ impl Shape {
+     fn area(&self) -> u32 {
+-        self.width * self.height
++        self.width * self.height + 1
+     }
+ 
+     fn describe(&self) -> String {
+         let area = self.area();
+         let label = "shape";
+         let size = if area > 100 { "large" } else { "small" };
+         let text = format!("{label} {size}");
+         let padded = format!("[{text}]");
+         let trimmed = padded.trim().to_string();
+         trimmed
+     }
+ 
+     fn perimeter(&self) -> u32 {
+-        2 * (self.width + self.height)
++        2 * (self.width + self.height) + 1
+     }
+ }
+
+## shrink 0
+@@ -7,3 +7,3 @@ [impl_item Shape] [function_item area]
+     fn area(&self) -> u32 {
+-        self.width * self.height
++        self.width * self.height + 1
+     }
+
+@@ -21,3 +21,3 @@ [impl_item Shape] [function_item perimeter]
+     fn perimeter(&self) -> u32 {
+-        2 * (self.width + self.height)
++        2 * (self.width + self.height) + 1
+     }

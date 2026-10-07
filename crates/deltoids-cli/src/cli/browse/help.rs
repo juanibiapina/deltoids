@@ -33,6 +33,10 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),
     ("c", "comment on the diff line under the cursor"),
+    (
+        "z / x",
+        "expand / shrink the hunk under the cursor one scope level (Files)",
+    ),
     ("Space", "stage / unstage selection (Files sidebar)"),
     ("a", "stage / unstage all files (Files sidebar)"),
     ("Enter", "fold / unfold directory (Files sidebar)"),

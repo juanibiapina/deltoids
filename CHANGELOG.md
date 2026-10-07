@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: add shortcuts to stage and discard changes in git.
 - TUI: show staged and unstaged changes separately, and press `s` to switch between them when a file or directory has both.
 - Traces: add support for multi file entries
+- TUI: press `z` on a diff line to expand its hunk one scope level (the enclosing function, class, section, or the whole file), and `x` to shrink it back.
 
 ### Changed
 

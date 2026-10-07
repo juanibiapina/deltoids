@@ -8,6 +8,10 @@
 //! hunk, then the group is emitted as one hunk. A change belongs to
 //! exactly one group, so every removed and added line is shown exactly
 //! once and hunks never overlap.
+//!
+//! A widened range (see [`crate::Diff::expand`]) grows the context of every
+//! change inside it to the whole range and ends its isolation, so the
+//! overlap rule above merges the hunks it covers.
 
 use std::ops::Range;
 
@@ -29,9 +33,10 @@ pub(super) fn build(
     old_lines: &[&str],
     new_lines: &[&str],
     expansion: &Expansion<'_>,
+    widened: &[Range<usize>],
 ) -> Vec<Hunk> {
     let changes: Vec<Change> = ops.iter().filter_map(change).collect();
-    let groups = group(&changes, expansion, old_lines.len());
+    let groups = group(&changes, expansion, widened, old_lines.len());
 
     let mut hunks = Vec::with_capacity(groups.len());
     let mut old_floor = 0;
@@ -84,10 +89,15 @@ fn change(op: &DiffOp) -> Option<Change> {
     }
 }
 
-fn group(changes: &[Change], expansion: &Expansion<'_>, total_old: usize) -> Vec<Group> {
+fn group(
+    changes: &[Change],
+    expansion: &Expansion<'_>,
+    widened: &[Range<usize>],
+    total_old: usize,
+) -> Vec<Group> {
     let mut groups: Vec<Group> = Vec::new();
     for (index, change) in changes.iter().enumerate() {
-        let window = expansion.window(change, total_old);
+        let window = widen(expansion.window(change, total_old), change, widened);
         match groups.last_mut() {
             Some(last) if joins(last, &window) => {
                 last.changes.end = index + 1;
@@ -105,6 +115,18 @@ fn group(changes: &[Change], expansion: &Expansion<'_>, total_old: usize) -> Vec
         }
     }
     groups
+}
+
+/// Grow `window` to every widened range holding `change`.
+fn widen(mut window: Window, change: &Change, widened: &[Range<usize>]) -> Window {
+    for range in widened {
+        if range.start <= change.old.start && change.old.end <= range.end {
+            window.context =
+                window.context.start.min(range.start)..window.context.end.max(range.end);
+            window.isolated = false;
+        }
+    }
+    window
 }
 
 fn joins(group: &Group, window: &Window) -> bool {

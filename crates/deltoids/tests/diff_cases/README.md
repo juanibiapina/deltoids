@@ -47,6 +47,11 @@ cases/<NNN-slug>/
                      `.json`, …).
   3-updated.<EXT>    File content after the edit. Must use the same EXT.
   4-expected.diff    Recorded `Diff::compute` output (case format below).
+  5-expand.txt       Optional: hunk indices passed in order to
+                     `Diff::expand` (`Diff::shrink` when prefixed
+                     with `-`), one per line.
+  6-expanded.diff    Recorded output after each expansion; required
+                     with `5-expand.txt`.
 ```
 
 A directory whose name starts with `_` or `.` is skipped. Names are
@@ -73,6 +78,10 @@ hunk has no ancestors the breadcrumb section is empty.
   `@@ -7 +7 @@` instead of `@@ -7,1 +7,1 @@`.
 * Multiple hunks are separated by a blank line.
 * A diff that produces no hunks (identical files) is the empty string.
+
+`6-expanded.diff` holds one section per line of `5-expand.txt`: a
+`## expand N` or `## shrink N` line, then the hunks after that step on
+the previous result, or `(unchanged)` when there is no larger level.
 
 ## Running the cases
 
@@ -134,5 +143,6 @@ Cases are organised loosely by theme via their numeric prefix:
 * `230-239` — replaces that add or split scopes
 * `240-249` — SQL scope behaviour
 * `250-259` — Kotlin scope behaviour
+* `300-309` — manual expansion (`Diff::expand`)
 
 Each case's `1-case.md` describes what it pins.

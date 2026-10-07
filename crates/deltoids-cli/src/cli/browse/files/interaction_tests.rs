@@ -923,3 +923,87 @@ fn switching_columns_keeps_each_ones_render_and_scroll() {
     );
     assert_eq!(mode.unstaged.cursor.scroll, unstaged_scroll);
 }
+
+const COUNTER: &str = "struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Counter { value: 0 }
+    }
+
+    fn increment(&mut self) {
+        self.value += 1;
+    }
+}
+";
+
+fn write_and_store(dir: &Path, path: &str, text: &str) {
+    fs::write(dir.join(path), text).unwrap();
+    git2::Repository::open(dir)
+        .unwrap()
+        .blob(text.as_bytes())
+        .unwrap();
+}
+
+fn reload_now(mode: &mut FilesMode) {
+    mode.reload(
+        ReloadViewport {
+            left_viewport: 20,
+            right_viewport: 20,
+            right_width: 80,
+        },
+        &theme(),
+    )
+    .unwrap();
+}
+
+fn window_text(mode: &mut FilesMode) -> String {
+    mode.visible_diff_window(DrawBudget::Full)
+        .iter()
+        .map(line_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn cursor_text(mode: &mut FilesMode) -> String {
+    mode.visible_diff_window(DrawBudget::Full);
+    line_text(&mode.unstaged.rows()[mode.unstaged.cursor.row].line)
+}
+
+#[test]
+fn z_expands_the_hunk_under_the_cursor_and_keeps_it_until_the_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    fs::write(dir.path().join("a.rs"), COUNTER).unwrap();
+    fs::write(dir.path().join("b.txt"), "original\n").unwrap();
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    write_and_store(dir.path(), "a.rs", &COUNTER.replace("+= 1", "+= 2"));
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
+    while !cursor_text(&mut mode).contains("+= 2") {
+        Mode::handle_key(&mut mode, KeyCode::Char('j'), 20, 20);
+    }
+    assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
+    assert!(cursor_text(&mut mode).contains("+= 2"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20, 20);
+    assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
+    assert!(cursor_text(&mut mode).contains("+= 2"));
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+
+    write_and_store(dir.path(), "b.txt", "edited\n");
+    reload_now(&mut mode);
+    assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    assert!(window_text(&mut mode).contains("struct Counter {"));
+
+    write_and_store(dir.path(), "a.rs", &COUNTER.replace("+= 1", "+= 3"));
+    reload_now(&mut mode);
+    assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
+}

@@ -18,6 +18,8 @@ const MAX_SCOPE_LINES: usize = 200;
 const STRUCTURE_CONTEXT: usize = 100;
 /// Context on each side of a change with no scope to anchor on.
 const DEFAULT_CONTEXT: usize = 3;
+/// Lines added on each side per manual expansion of a file with no syntax.
+const PLAIN_EXPAND_STEP: usize = 20;
 
 /// Which file a line number refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +72,42 @@ impl Expansion<'_> {
             Expansion::Plain => default_window(change, total_old),
             Expansion::Scoped { old, new } => scoped_window(change, old, new, total_old),
         }
+    }
+
+    /// The old lines a hunk shows one level out. `shown` is what it shows
+    /// now and `changed` its changed old lines (empty at an insertion
+    /// point). The level is `shown` joined with the innermost span around
+    /// the changes that `shown` does not already hold. `None` when
+    /// `shown` already covers the whole old file.
+    pub(super) fn next_level(
+        &self,
+        shown: Range<usize>,
+        changed: Range<usize>,
+        total_old: usize,
+    ) -> Option<Range<usize>> {
+        let level = match *self {
+            Expansion::Plain => {
+                shown.start.saturating_sub(PLAIN_EXPAND_STEP)
+                    ..(shown.end + PLAIN_EXPAND_STEP).min(total_old)
+            }
+            Expansion::Scoped { old, .. } => {
+                // An insertion point sits between two lines: the level
+                // must hold both of them.
+                let held = if changed.is_empty() {
+                    changed.start.saturating_sub(1)..(changed.start + 1).min(total_old)
+                } else {
+                    changed
+                };
+                let scope = old
+                    .enclosing_spans(held.start)
+                    .into_iter()
+                    .filter(|scope| scope.start <= held.start && held.end <= scope.end)
+                    .find(|scope| scope.start < shown.start || shown.end < scope.end)
+                    .unwrap_or(0..total_old);
+                shown.start.min(scope.start)..shown.end.max(scope.end)
+            }
+        };
+        (level.len() > shown.len()).then_some(level)
     }
 
     /// Breadcrumb chain at `line` in `side`'s file, outermost first.

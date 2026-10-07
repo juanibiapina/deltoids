@@ -108,6 +108,51 @@ impl Model {
         }
     }
 
+    /// The body file `index` shows in `column`, as [`Self::view`] picks it.
+    fn body_mut(&mut self, index: usize, column: Column) -> &mut FileBody {
+        match self.splits.get_mut(index).and_then(Option::as_mut) {
+            Some(split) => match column {
+                Column::Staged => &mut split.staged.body,
+                Column::Unstaged => &mut split.unstaged.body,
+            },
+            None => &mut self.bodies[index],
+        }
+    }
+
+    /// Replace file `index`'s `column` diff with `reshape`'s result, such
+    /// as [`Diff::expand`] or [`Diff::shrink`] of one hunk. False when the
+    /// view is not a text diff or `reshape` returns `None`.
+    pub(super) fn reshape(
+        &mut self,
+        index: usize,
+        column: Column,
+        reshape: impl FnOnce(&Diff) -> Option<Diff>,
+    ) -> bool {
+        if index >= self.files.len() {
+            return false;
+        }
+        let body = self.body_mut(index, column);
+        let FileBody::Diff(diff) = body else {
+            return false;
+        };
+        let Some(reshaped) = reshape(diff) else {
+            return false;
+        };
+        *body = FileBody::Diff(Arc::new(reshaped));
+        true
+    }
+
+    /// Take `old`'s body for every view that renders the same in both
+    /// models, so expanded hunks survive a reload that left their file
+    /// alone.
+    pub(super) fn keep_unchanged_bodies(&mut self, old: &Model) {
+        for column in [Column::Staged, Column::Unstaged] {
+            for (from, to) in old.unchanged_views(self, column) {
+                *self.body_mut(to, column) = old.view(from, column).body.clone();
+            }
+        }
+    }
+
     /// Old index -> index in `next` for every file whose `column` view
     /// renders identically in both models, matched by display path. A
     /// reload keeps those files' rendered blocks and scroll position.

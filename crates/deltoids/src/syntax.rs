@@ -79,6 +79,28 @@ impl ParsedFile {
         Some(self.scope_node_from(node))
     }
 
+    /// Line spans enclosing `line`, in the order a manual expansion tries
+    /// them: boundary scopes innermost first, then every raw tree-sitter
+    /// ancestor below the root, innermost first. Spans are 0-based,
+    /// end-exclusive, and start at leading comments and decorators.
+    pub(crate) fn enclosing_spans(&self, line: usize) -> Vec<Range<usize>> {
+        let mut spans: Vec<Range<usize>> = self
+            .enclosing_scopes(line)
+            .iter()
+            .rev()
+            .map(ScopeNode::lines)
+            .collect();
+        let mut current = self.resolve_start_node(line);
+        while let Some(node) = current.filter(|node| node.parent().is_some()) {
+            spans.push(
+                leading_adjusted_start(node, self.config.leading_comment_kinds)
+                    ..node_end_line(node),
+            );
+            current = node.parent();
+        }
+        spans
+    }
+
     /// Number of source lines.
     pub(crate) fn line_count(&self) -> usize {
         self.lines.len()

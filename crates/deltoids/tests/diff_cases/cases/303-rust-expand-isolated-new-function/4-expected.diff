@@ -1,0 +1,5 @@
+@@ -15,0 +15,4 @@ [impl_item Counter] [function_item reset]
++
++    fn reset(&mut self) {
++        self.value = 0;
++    }

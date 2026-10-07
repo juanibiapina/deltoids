@@ -1,0 +1,41 @@
+## expand 0
+@@ -5,12 +5,12 @@
+ ## Install
+ 
+ Run the installer.
+ 
+ ### Linux
+ 
+-Use the tarball package.
++Use the deb package.
+ 
+ ### macOS
+ 
+ Use Homebrew.
+ 
+
+## expand 0
+@@ -1,19 +1,19 @@
+ # Guide
+ 
+ Intro paragraph.
+ 
+ ## Install
+ 
+ Run the installer.
+ 
+ ### Linux
+ 
+-Use the tarball package.
++Use the deb package.
+ 
+ ### macOS
+ 
+ Use Homebrew.
+ 
+ ## Usage
+ 
+ Run the tool.
+
+## expand 0
+(unchanged)

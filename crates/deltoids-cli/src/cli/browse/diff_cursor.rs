@@ -106,6 +106,10 @@ pub(super) struct Cursor {
     /// The line the cursor is on, so a rebuilt window can put it back
     /// there. `None` before the first draw.
     place: Option<LinePlace>,
+    /// Set by [`Cursor::retarget`]: the file line to stay on while its
+    /// rows are reshaped, and the cursor's offset from the viewport top.
+    /// Cleared by the next cursor move.
+    target: Option<(CommentAnchor, usize)>,
 }
 
 impl Cursor {
@@ -115,6 +119,14 @@ impl Cursor {
 
     pub(super) fn file(&self) -> Option<&str> {
         self.place.as_ref().map(|place| place.file.as_str())
+    }
+
+    /// Keep the cursor on `anchor`'s file line at its current screen row
+    /// while the rows drawing it are rebuilt in a new shape (an expanded
+    /// hunk). Its [`LinePlace`] cannot follow: the hunk and the line's
+    /// index in it change.
+    pub(super) fn retarget(&mut self, anchor: CommentAnchor) {
+        self.target = Some((anchor, self.row.saturating_sub(self.scroll)));
     }
 
     /// Record the line the cursor now sits on. Every move ends here, so a
@@ -133,6 +145,18 @@ impl Cursor {
 /// rows around it move — during a reload, a width change, or a comment
 /// being added above it.
 pub(super) fn restore_cursor(rows: &[DiffRow], cursor: &mut Cursor) {
+    if let Some((anchor, offset)) = &cursor.target
+        && let Some(row) = rows
+            .iter()
+            .position(|row| row.place.is_some() && row.anchor.as_ref() == Some(anchor))
+    {
+        if row != cursor.row {
+            cursor.scroll = row.saturating_sub(*offset);
+            cursor.row = row;
+        }
+        cursor.sync_place(rows);
+        return;
+    }
     cursor.row = match cursor
         .place
         .as_ref()
@@ -153,6 +177,7 @@ fn row_for_place(rows: &[DiffRow], place: &LinePlace) -> Option<usize> {
 /// Put the cursor on `row` when that row starts a diff line (a click).
 pub(super) fn select_row(rows: &[DiffRow], row: usize, cursor: &mut Cursor) {
     if rows.get(row).is_some_and(DiffRow::is_selectable) {
+        cursor.target = None;
         cursor.row = row;
         cursor.sync_place(rows);
     }
@@ -166,6 +191,7 @@ pub(super) fn select_row(rows: &[DiffRow], row: usize, cursor: &mut Cursor) {
 /// to the nearest diff line *inside* the viewport, so navigating never
 /// yanks the view back to where the cursor was left.
 pub(super) fn step_cursor(rows: &[DiffRow], step: Step, height: usize, cursor: &mut Cursor) {
+    cursor.target = None;
     let height = height.max(1);
     if let Some(row) = row_inside_viewport(rows, cursor, height, step) {
         cursor.row = row;
@@ -285,6 +311,7 @@ mod tests {
             row,
             scroll,
             place: None,
+            target: None,
         };
         cursor.sync_place(rows);
         cursor

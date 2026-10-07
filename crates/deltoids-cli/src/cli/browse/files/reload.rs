@@ -180,7 +180,7 @@ fn apply_reload(
     theme: &Theme,
     diff_viewport: usize,
 ) -> ReloadOutcome {
-    let (input, new_model) = match computed {
+    let (input, mut new_model) = match computed {
         Ok(Some(Update::Model(input, model))) => (input, model),
         Ok(Some(Update::Staging(stages))) => {
             model.stages = stages;
@@ -228,6 +228,7 @@ fn apply_reload(
                 .find_map(|file| survivors.get(display_path(&file.file)).copied())
         })
         .flatten();
+    new_model.keep_unchanged_bodies(model);
     reload_view(
         panes,
         sidebar,

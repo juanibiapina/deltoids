@@ -5,9 +5,11 @@
 //! the scope it changes (function, class, statement, literal) and carries
 //! the scope's ancestor chain as its breadcrumb; otherwise hunks get the
 //! standard 3 lines of context. Every changed line appears in exactly one
-//! hunk, and hunks never overlap.
+//! hunk, and hunks never overlap. [`Diff::expand`] grows one hunk's context
+//! by one scope level on request, and [`Diff::shrink`] undoes that.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::Language;
 use crate::engine::Snapshot;
@@ -122,6 +124,10 @@ pub struct Diff {
     hunks: Vec<Hunk>,
     language: Option<Language>,
     highlight: Option<String>,
+    original: Arc<str>,
+    updated: Arc<str>,
+    /// Old-line ranges the reader asked to see through [`Diff::expand`].
+    widened: Vec<Range<usize>>,
 }
 
 impl Diff {
@@ -136,12 +142,77 @@ impl Diff {
         let language = Language::detect(path, updated).or_else(|| Language::detect(path, original));
         let highlight = Language::detect_highlight_name(path, updated)
             .or_else(|| Language::detect_highlight_name(path, original));
-        let hunks = build_hunks(&snapshot, original, updated, language);
+        let hunks = with_expansion(original, updated, language, |expansion| {
+            build_hunks(&snapshot, original, updated, expansion, &[])
+        });
         Diff {
             snapshot,
             hunks,
             language,
             highlight,
+            original: Arc::from(original),
+            updated: Arc::from(updated),
+            widened: Vec::new(),
+        }
+    }
+
+    /// This diff with hunk `index`'s context grown one scope level
+    /// outward, merged with any hunks it now overlaps.
+    ///
+    /// The next level is the innermost enclosing scope (function, class,
+    /// module, …) larger than the hunk's old lines; failing that, the
+    /// innermost larger syntax node (a Markdown section, a data literal);
+    /// failing that, the whole file. Files that do not parse grow by 20
+    /// lines on each side. Returns `None` when the hunk already shows the
+    /// whole old file or `index` is out of range.
+    pub fn expand(&self, index: usize) -> Option<Diff> {
+        let hunk = self.hunks.get(index)?;
+        let (original, updated) = (&*self.original, &*self.updated);
+        with_expansion(original, updated, self.language, |expansion| {
+            let level = expansion.next_level(
+                old_span(hunk),
+                changed_span(hunk),
+                original.lines().count(),
+            )?;
+            let mut widened = self.widened.clone();
+            widened.push(level);
+            Some(self.rebuilt(expansion, widened))
+        })
+    }
+
+    /// This diff with the latest [`Diff::expand`] that reached hunk
+    /// `index` undone. A hunk that expansion merged splits back apart.
+    /// Returns `None` when no expansion reached the hunk or `index` is out
+    /// of range.
+    pub fn shrink(&self, index: usize) -> Option<Diff> {
+        let changed = changed_span(self.hunks.get(index)?);
+        let latest = self
+            .widened
+            .iter()
+            .rposition(|range| range.start <= changed.end && changed.start <= range.end)?;
+        let mut widened = self.widened.clone();
+        widened.remove(latest);
+        with_expansion(&self.original, &self.updated, self.language, |expansion| {
+            Some(self.rebuilt(expansion, widened))
+        })
+    }
+
+    /// This diff with its hunks rebuilt to show `widened`.
+    fn rebuilt(&self, expansion: &Expansion<'_>, widened: Vec<Range<usize>>) -> Diff {
+        Diff {
+            hunks: build_hunks(
+                &self.snapshot,
+                &self.original,
+                &self.updated,
+                expansion,
+                &widened,
+            ),
+            snapshot: self.snapshot.clone(),
+            language: self.language,
+            highlight: self.highlight.clone(),
+            original: Arc::clone(&self.original),
+            updated: Arc::clone(&self.updated),
+            widened,
         }
     }
 
@@ -170,17 +241,62 @@ impl Diff {
 // Hunk construction
 // ---------------------------------------------------------------------------
 
-/// Build the hunk list for a diff. A new file (empty original) is all
-/// additions, so scope context would only add misleading breadcrumbs; it
-/// and files that do not parse get plain context.
+/// Old lines a hunk shows: its context and removed lines. Empty at the
+/// insertion point for a hunk that only adds lines.
+fn old_span(hunk: &Hunk) -> Range<usize> {
+    let start = hunk.old_start - 1;
+    let len = hunk
+        .lines
+        .iter()
+        .filter(|line| line.kind != LineKind::Added)
+        .count();
+    start..start + len
+}
+
+/// Old lines from the hunk's first change to its last removed line. Empty
+/// at the insertion point for a hunk that only adds lines.
+fn changed_span(hunk: &Hunk) -> Range<usize> {
+    let mut old_at = hunk.old_start - 1;
+    let mut changed: Option<Range<usize>> = None;
+    for line in &hunk.lines {
+        match line.kind {
+            LineKind::Context => old_at += 1,
+            LineKind::Removed => {
+                let start = changed.map_or(old_at, |range| range.start);
+                changed = Some(start..old_at + 1);
+                old_at += 1;
+            }
+            LineKind::Added => {
+                changed.get_or_insert(old_at..old_at);
+            }
+        }
+    }
+    changed.unwrap_or(old_at..old_at)
+}
+
+/// Build the hunk list for a diff, showing at least the `widened` old
+/// lines around the changes inside them.
 fn build_hunks(
     snapshot: &Snapshot,
     original: &str,
     updated: &str,
-    language: Option<Language>,
+    expansion: &Expansion<'_>,
+    widened: &[Range<usize>],
 ) -> Vec<Hunk> {
     let old_lines: Vec<&str> = original.lines().collect();
     let new_lines: Vec<&str> = updated.lines().collect();
+    hunks::build(snapshot.ops(), &old_lines, &new_lines, expansion, widened)
+}
+
+/// Run `f` with the diff's context policy. A new file (empty original) is
+/// all additions, so scope context would only add misleading breadcrumbs;
+/// it and files that do not parse get plain context.
+fn with_expansion<R>(
+    original: &str,
+    updated: &str,
+    language: Option<Language>,
+    f: impl FnOnce(&Expansion<'_>) -> R,
+) -> R {
     let parsed = language
         .filter(|_| !original.is_empty())
         .and_then(|language| {
@@ -193,5 +309,5 @@ fn build_hunks(
         Some((old, new)) => Expansion::Scoped { old, new },
         None => Expansion::Plain,
     };
-    hunks::build(snapshot.ops(), &old_lines, &new_lines, &expansion)
+    f(&expansion)
 }

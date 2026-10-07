@@ -1,0 +1,15 @@
+## expand 0
+@@ -7,9 +7,13 @@ [impl_item Counter] [function_item reset]
+ impl Counter {
+     fn new() -> Self {
+         Counter { value: 0 }
+     }
+ 
+     fn increment(&mut self) {
+         self.value += 1;
+     }
++
++    fn reset(&mut self) {
++        self.value = 0;
++    }
+ }

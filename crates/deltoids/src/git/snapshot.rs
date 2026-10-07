@@ -31,13 +31,33 @@ pub(super) fn read(repo: &Repository) -> Result<WorkingTreeSnapshot, Error> {
     find.for_untracked(true);
     staged.find_similar(Some(&mut find))?;
     workdir.find_similar(Some(&mut find))?;
+    let (stages, dual) = pair(&staged, &workdir);
+    let (staged_patch, unstaged_patch) = if dual.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let mut options = super::working_tree_diff_options();
+        options.disable_pathspec_match(true);
+        for path in dual {
+            options.pathspec(path);
+        }
+        let staged = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut options))?;
+        let unstaged = repo.diff_index_to_workdir(Some(&index), Some(&mut options))?;
+        (
+            super::print_working_tree_patch(staged)?,
+            super::print_working_tree_patch(unstaged)?,
+        )
+    };
     Ok(WorkingTreeSnapshot {
         patch,
-        stages: pair(&staged, &workdir),
+        staged_patch,
+        unstaged_patch,
+        stages,
     })
 }
 
-fn pair(staged: &Diff<'_>, workdir: &Diff<'_>) -> Vec<FileStageStatus> {
+/// Pair both columns per file. Also returns the raw paths of files with
+/// both columns, including rename companions, for the split patches.
+fn pair(staged: &Diff<'_>, workdir: &Diff<'_>) -> (Vec<FileStageStatus>, Vec<Vec<u8>>) {
     let ignore_case = staged.is_sorted_icase() && workdir.is_sorted_icase();
     let mut left: Vec<_> = staged.deltas().collect();
     let mut right: Vec<_> = workdir.deltas().collect();
@@ -46,6 +66,7 @@ fn pair(staged: &Diff<'_>, workdir: &Diff<'_>) -> Vec<FileStageStatus> {
     let mut left = left.into_iter().peekable();
     let mut right = right.into_iter().peekable();
     let mut out = Vec::new();
+    let mut dual = Vec::new();
     while left.peek().is_some() || right.peek().is_some() {
         let order = match (left.peek(), right.peek()) {
             (Some(x), Some(y)) => compare(index_path(x, true), index_path(y, false), ignore_case),
@@ -62,6 +83,14 @@ fn pair(staged: &Diff<'_>, workdir: &Diff<'_>) -> Vec<FileStageStatus> {
         let unstaged = y.as_ref().and_then(|d| workdir_change(d.status()));
         if staged.is_none() && unstaged.is_none() {
             continue;
+        }
+        if staged.is_some() && unstaged.is_some() {
+            dual.extend(
+                x.iter()
+                    .chain(y.iter())
+                    .flat_map(|delta| [delta.old_file(), delta.new_file()])
+                    .filter_map(|file| file.path_bytes().map(<[u8]>::to_vec)),
+            );
         }
         // The existing status interface prefers the staged delta's new path.
         let path = x.as_ref().or(y.as_ref()).and_then(|d| d.new_file().path());
@@ -80,7 +109,9 @@ fn pair(staged: &Diff<'_>, workdir: &Diff<'_>) -> Vec<FileStageStatus> {
             });
         }
     }
-    out
+    dual.sort();
+    dual.dedup();
+    (out, dual)
 }
 
 fn index_path<'a>(delta: &DiffDelta<'a>, staged: bool) -> &'a [u8] {

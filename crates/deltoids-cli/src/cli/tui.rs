@@ -29,6 +29,9 @@ Keys:
 - ?:               toggle the help popup
 - q:               quit
 
+Files mode shows staged and unstaged changes separately. When the selection
+has both, the diff title reads "Staged - Unstaged" and s switches between them.
+
 Review comments, with the diff pane focused (2 in Files, 3 in Traces):
 - c:               comment on the diff line under the cursor
 - d:               delete that line's comment

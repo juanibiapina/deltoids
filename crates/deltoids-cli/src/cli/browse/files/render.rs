@@ -1,5 +1,10 @@
 //! Background file rendering and retained blocks. The UI only submits demand
 //! and adopts completed rows; Git, comments, and terminal state stay on the UI.
+//!
+//! Each staging column's pane owns one cache and always renders the same
+//! body for a file index ([`Model::view`] for its column) until a reload
+//! clears it: a file only gains or loses its split bodies through a rebuilt
+//! model.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
@@ -10,7 +15,8 @@ use deltoids::Theme;
 use deltoids::parse::FileDiff;
 
 use super::diff_pane::{CacheEpoch, render_file_block};
-use super::model::{FileBody, Model};
+use super::model::{Column, FileBody, Model};
+use crate::cli::browse::comments::Numbering;
 use crate::cli::browse::diff_cursor::DiffRow;
 
 const RETAINED_BYTES: usize = 64 * 1024 * 1024;
@@ -30,6 +36,7 @@ struct Job {
     epoch: CacheEpoch,
     file: FileDiff,
     body: FileBody,
+    numbering: Numbering,
     theme: Theme,
 }
 
@@ -149,6 +156,7 @@ fn run_worker(
         if let Some(rows) = render_file_block(
             &job.file,
             &job.body,
+            job.numbering,
             job.epoch.width,
             job.epoch.layout,
             &job.theme,
@@ -308,10 +316,14 @@ impl DiffCache {
         visible
     }
 
+    /// Demand `order[range]` at `epoch`, rendering each file's body for
+    /// `column`, plus near neighbours of a single selected file.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn request(
         &mut self,
         epoch: CacheEpoch,
         model: &Model,
+        column: Column,
         order: &[usize],
         range: Option<Range<usize>>,
         priority: Option<usize>,
@@ -334,7 +346,7 @@ impl DiffCache {
             });
             demand.extend(
                 neighbors(order, range.start, forward)
-                    .filter(|key| body_lines(&model.bodies[*key]) <= 2000),
+                    .filter(|key| body_lines(model.view(*key, column).body) <= 2000),
             );
         }
         self.visible = visible.into_iter().collect();
@@ -364,11 +376,11 @@ impl DiffCache {
             }
             self.demand = demand;
         }
-        self.schedule(model, theme);
+        self.schedule(model, column, theme);
         self.evict();
     }
 
-    fn schedule(&mut self, model: &Model, theme: &Theme) {
+    fn schedule(&mut self, model: &Model, column: Column, theme: &Theme) {
         let missing: Vec<usize> = self
             .demand
             .iter()
@@ -386,13 +398,15 @@ impl DiffCache {
             let wanted = Arc::new(AtomicBool::new(true));
             self.pending.insert(key, Arc::clone(&wanted));
             self.scheduled.insert(key);
+            let view = model.view(key, column);
             jobs.push_back(Job {
                 key,
                 token,
                 wanted,
                 epoch: self.epoch,
-                file: render_metadata(&model.files[key].file),
-                body: model.bodies[key].clone(),
+                file: render_metadata(view.file),
+                body: view.body.clone(),
+                numbering: view.numbering,
                 theme: theme.clone(),
             });
         }

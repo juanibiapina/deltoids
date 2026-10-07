@@ -39,10 +39,46 @@ pub(super) fn should_reload(source: &DiffSource<'_>, paths: &[PathBuf]) -> bool 
     path_warrants_reload(repo, paths)
 }
 
-/// Whether a freshly-computed `working_tree_diff` differs from the text
-/// the current model was built from. The diff text is the source of
-/// truth for diff bodies. Sidebar staging status is checked separately.
-fn reload_needed(new_input: &str, last_input: &str) -> bool {
+/// The patch text a model's bodies come from: the HEAD → worktree patch
+/// plus the staged and unstaged patches of files with both columns.
+/// Staging part of such a file leaves the net patch unchanged, so all
+/// three take part in change detection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::cli::browse::files) struct Patches {
+    all: String,
+    staged: String,
+    unstaged: String,
+}
+
+impl Patches {
+    pub(super) fn of(snapshot: &git::WorkingTreeSnapshot) -> Self {
+        Self {
+            all: snapshot.patch.clone(),
+            staged: snapshot.staged_patch.clone(),
+            unstaged: snapshot.unstaged_patch.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Patches {
+    /// Patches with only a HEAD -> worktree part.
+    pub(super) fn net(all: &str) -> Self {
+        Self {
+            all: all.to_string(),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn all(&self) -> &str {
+        &self.all
+    }
+}
+
+/// Whether freshly-read patches differ from the ones the current model was
+/// built from. The patches are the source of truth for diff bodies.
+/// Sidebar staging status is checked separately.
+fn reload_needed(new_input: &Patches, last_input: &Patches) -> bool {
     new_input != last_input
 }
 
@@ -56,7 +92,8 @@ fn reload_needed(new_input: &str, last_input: &str) -> bool {
 pub(super) enum ReloadOutcome {
     /// The diff changed and the view was rebuilt in place.
     Rebuilt,
-    /// Only staging columns changed; diff bodies and render blocks are retained.
+    /// Only staging columns of single-column files changed; diff bodies
+    /// and render blocks are retained, and files may change panes.
     StagingUpdated,
     /// The tree was stable (diff unchanged); nothing rebuilt.
     Unchanged,
@@ -81,33 +118,30 @@ pub(super) enum ReloadOutcome {
 /// self-correct, so this returns [`ReloadOutcome::Failed`] rather than an
 /// error, leaving `model`/`last_input` untouched for the next tick to
 /// retry.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn reload_working_tree(
-    diff: &mut DiffPane,
+    panes: [&mut DiffPane; 2],
     sidebar: &mut Sidebar,
     model: &mut Model,
-    last_input: &mut String,
+    last_input: &mut Patches,
     repo: &git::Repo,
     theme: &Theme,
-    width: usize,
     diff_viewport: usize,
 ) -> ReloadOutcome {
     let computed = compute_reload(repo, last_input, model);
     apply_reload(
-        diff,
+        panes,
         sidebar,
         model,
         last_input,
         computed,
         theme,
-        width,
         diff_viewport,
     )
 }
 
 enum Update {
     Staging(std::collections::HashMap<String, crate::sidebar::StageStatus>),
-    Model(String, Model),
+    Model(Patches, Model),
 }
 
 /// Read patch and staging columns together. Column-only changes retain the
@@ -115,12 +149,13 @@ enum Update {
 /// returns `None`. Failed reads leave the caller's current view untouched.
 fn compute_reload(
     repo: &git::Repo,
-    last_input: &str,
+    last_input: &Patches,
     model: &Model,
 ) -> Result<Option<Update>, String> {
     let snapshot = repo.working_tree_snapshot()?;
     let stages = stage_map(&snapshot.stages);
-    if !reload_needed(&snapshot.patch, last_input) {
+    let patches = Patches::of(&snapshot);
+    if !reload_needed(&patches, last_input) {
         if stages == model.stages {
             return Ok(None);
         }
@@ -131,20 +166,18 @@ fn compute_reload(
         }
     }
     let model = super::model::build_working_model(&snapshot, repo)?;
-    Ok(Some(Update::Model(snapshot.patch, model)))
+    Ok(Some(Update::Model(patches, model)))
 }
 
 /// Apply staging columns or replace the content model. Column updates preserve
 /// rendered diff blocks and navigation. Failed computations retain the view.
-#[allow(clippy::too_many_arguments)]
 fn apply_reload(
-    diff: &mut DiffPane,
+    panes: [&mut DiffPane; 2],
     sidebar: &mut Sidebar,
     model: &mut Model,
-    last_input: &mut String,
+    last_input: &mut Patches,
     computed: Result<Option<Update>, String>,
     theme: &Theme,
-    width: usize,
     diff_viewport: usize,
 ) -> ReloadOutcome {
     let (input, new_model) = match computed {
@@ -196,12 +229,11 @@ fn apply_reload(
         })
         .flatten();
     reload_view(
-        diff,
+        panes,
         sidebar,
         &new_model,
         prev_path.as_deref(),
         theme,
-        width,
         diff_viewport,
     );
     let restored_directory = prev_directory
@@ -223,24 +255,20 @@ fn apply_reload(
 /// untouched. Scroll is clamped to the new range then snapped to the
 /// restored selection.
 fn reload_view(
-    diff: &mut DiffPane,
+    mut panes: [&mut DiffPane; 2],
     sidebar: &mut Sidebar,
     model: &Model,
     prev_path: Option<&str>,
     theme: &Theme,
-    width: usize,
     diff_viewport: usize,
 ) {
-    let new_sidebar = build_sidebar(model, theme);
-    let display_order = new_sidebar.display_order();
-
     // Disk changed: drop the retained per-file blocks and rebuild lazily on
-    // the next draw at the current width.
-    diff.cache.clear();
-    diff.display_order = display_order;
-    diff.cached_width = width;
-    diff.reset_window();
-    *sidebar = new_sidebar;
+    // the next draw.
+    for pane in &mut panes {
+        pane.cache.clear();
+        pane.reset_window();
+    }
+    *sidebar = build_sidebar(model, theme);
 
     if let Some(path) = prev_path
         && let Some(idx) = model
@@ -253,29 +281,42 @@ fn reload_view(
 
     // Start from the top of the restored selection's window, keeping the
     // reviewer's cursor on the diff line it was on.
-    diff.after_reload();
+    for pane in panes {
+        pane.after_reload();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::browse::comments::CommentStore;
     use crate::cli::browse::files::sidebar_pane::sidebar_footer;
     use crate::cli::browse::files::test_support::*;
-    use crate::cli::browse::mode::DrawBudget;
 
     #[test]
     fn reload_needed_only_when_input_changed() {
+        let net = Patches::net;
         assert!(
-            !reload_needed("same", "same"),
+            !reload_needed(&net("same"), &net("same")),
             "identical input must not trigger a rebuild"
         );
         assert!(
-            reload_needed("new", "old"),
+            reload_needed(&net("new"), &net("old")),
             "changed input must trigger a rebuild"
         );
         // Clearing the diff (commit that drops to the empty state).
-        assert!(reload_needed("", "old diff"), "cleared diff must rebuild");
+        assert!(
+            reload_needed(&net(""), &net("old diff")),
+            "cleared diff must rebuild"
+        );
+        // Staging part of a file with both columns leaves the net patch alone.
+        let staged = Patches {
+            staged: "more staged".to_string(),
+            ..net("same")
+        };
+        assert!(
+            reload_needed(&staged, &net("same")),
+            "a changed split patch must rebuild"
+        );
     }
 
     #[test]
@@ -289,68 +330,58 @@ mod tests {
         // New model inserts a file before b.txt, shifting its index.
         let m2 = model_of(&["a.txt", "aa.txt", "b.txt", "c.txt"]);
         reload_view(
-            &mut state.diff,
+            [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
             &m2,
             prev.as_deref(),
             &theme(),
-            80,
             4,
         );
 
         assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
         // The diff pane is filtered to the restored file and snapped to its top.
-        let dr = state.sidebar.selection_display_range();
-        state.diff.assemble_window(
-            dr,
+        assemble_unstaged(
+            &mut state.unstaged,
             &m2,
+            &state.sidebar,
             80,
             deltoids::ChangeLayout::Grouped,
             &theme(),
-            DrawBudget::Full,
-            &CommentStore::default(),
         );
-        assert_eq!(line_text(&state.diff.rows()[0].line), "b.txt");
-        assert_eq!(state.diff.cursor.scroll, 0);
+        assert_eq!(line_text(&state.unstaged.rows()[0].line), "b.txt");
+        assert_eq!(state.unstaged.cursor.scroll, 0);
     }
 
     #[test]
     fn reload_to_empty_model_renders_empty_state() {
         let m1 = model_of(&["a.txt", "b.txt"]);
         let mut state = make_state(&m1.files);
-        let empty = Model {
-            files: Vec::new(),
-            bodies: Vec::new(),
-            stages: Default::default(),
-        };
+        let empty = Model::empty();
         reload_view(
-            &mut state.diff,
+            [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
             &empty,
             Some("a.txt"),
             &theme(),
-            80,
             4,
         );
 
-        assert!(state.diff.display_order.is_empty());
-        let dr = state.sidebar.selection_display_range();
-        state.diff.assemble_window(
-            dr,
+        assert!(state.sidebar.display_order().is_empty());
+        assemble_unstaged(
+            &mut state.unstaged,
             &empty,
+            &state.sidebar,
             80,
             deltoids::ChangeLayout::Grouped,
             &theme(),
-            DrawBudget::Full,
-            &CommentStore::default(),
         );
-        assert!(state.diff.rows().is_empty());
-        assert_eq!(state.diff.window_rows(), 0);
+        assert!(state.unstaged.rows().is_empty());
+        assert_eq!(state.unstaged.window_rows(), 0);
         assert_eq!(
-            sidebar_footer(&state.sidebar, &state.diff.display_order),
+            sidebar_footer(&state.sidebar, &state.sidebar.display_order()),
             None
         );
-        assert_eq!(state.diff.footer(), None);
+        assert_eq!(state.unstaged.footer(), None);
     }
 
     #[test]
@@ -362,12 +393,11 @@ mod tests {
         // b.txt is gone (reverted/committed); selection must clamp.
         let m2 = model_of(&["a.txt", "c.txt"]);
         reload_view(
-            &mut state.diff,
+            [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
             &m2,
             Some("b.txt"),
             &theme(),
-            80,
             4,
         );
 
@@ -381,7 +411,7 @@ mod tests {
     /// A model with the given file paths, for feeding `apply_reload`.
     fn apply_reload_computed(paths: &[&str]) -> Result<Option<Update>, String> {
         Ok(Some(Update::Model(
-            format!("diff for {paths:?}"),
+            Patches::net(&format!("diff for {paths:?}")),
             model_of(paths),
         )))
     }
@@ -394,21 +424,24 @@ mod tests {
         let m1 = model_of(&["a.txt", "b.txt"]);
         let mut state = make_state(&m1.files);
         let mut model = model_of(&["a.txt", "b.txt"]);
-        let mut last_input = "original diff".to_string();
+        let mut last_input = Patches::net("original diff");
 
         let outcome = apply_reload(
-            &mut state.diff,
+            [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
             &mut model,
             &mut last_input,
             Err("file changed before we could read it".to_string()),
             &theme(),
-            80,
             4,
         );
 
         assert!(matches!(outcome, ReloadOutcome::Failed(_)));
-        assert_eq!(last_input, "original diff", "last_input must be untouched");
+        assert_eq!(
+            last_input.all(),
+            "original diff",
+            "last_input must be untouched"
+        );
         assert_eq!(model.files.len(), 2, "model must be untouched");
     }
 
@@ -418,21 +451,20 @@ mod tests {
         let m1 = model_of(&["a.txt"]);
         let mut state = make_state(&m1.files);
         let mut model = model_of(&["a.txt"]);
-        let mut last_input = "original diff".to_string();
+        let mut last_input = Patches::net("original diff");
 
         let outcome = apply_reload(
-            &mut state.diff,
+            [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
             &mut model,
             &mut last_input,
             Ok(None),
             &theme(),
-            80,
             4,
         );
 
         assert_eq!(outcome, ReloadOutcome::Unchanged);
-        assert_eq!(last_input, "original diff");
+        assert_eq!(last_input.all(), "original diff");
         assert_eq!(model.files.len(), 1);
     }
 
@@ -442,21 +474,20 @@ mod tests {
         let m1 = model_of(&["a.txt"]);
         let mut state = make_state(&m1.files);
         let mut model = model_of(&["a.txt"]);
-        let mut last_input = "original diff".to_string();
+        let mut last_input = Patches::net("original diff");
 
         let outcome = apply_reload(
-            &mut state.diff,
+            [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
             &mut model,
             &mut last_input,
             apply_reload_computed(&["a.txt", "b.txt"]),
             &theme(),
-            80,
             4,
         );
 
         assert_eq!(outcome, ReloadOutcome::Rebuilt);
-        assert_ne!(last_input, "original diff", "last_input must advance");
+        assert_ne!(last_input.all(), "original diff", "last_input must advance");
         assert_eq!(model.files.len(), 2, "model must swap to the new one");
     }
 
@@ -492,12 +523,13 @@ mod tests {
             stage_map(repo.working_tree_snapshot().unwrap().stages),
         )
         .unwrap();
-        assert!(compute_reload(&repo, &patch, &model).unwrap().is_none());
+        let patches = Patches::net(&patch);
+        assert!(compute_reload(&repo, &patches, &model).unwrap().is_none());
 
         index.read(true).unwrap();
         index.add_path(std::path::Path::new("file.txt")).unwrap();
         index.write().unwrap();
-        let Update::Staging(stages) = compute_reload(&repo, &patch, &model).unwrap().unwrap()
+        let Update::Staging(stages) = compute_reload(&repo, &patches, &model).unwrap().unwrap()
         else {
             panic!("staging must not rebuild the diff model");
         };

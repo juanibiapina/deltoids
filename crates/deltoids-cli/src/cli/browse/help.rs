@@ -35,6 +35,7 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("c", "comment on the diff line under the cursor"),
     ("Space", "stage / unstage selection (Files sidebar)"),
     ("a", "stage / unstage all files (Files sidebar)"),
+    ("s", "switch staged / unstaged diff (Files)"),
     ("d", "discard (Files sidebar) / delete comment (diff)"),
     ("y", "copy comments as an agent prompt"),
     ("D", "clear all comments"),

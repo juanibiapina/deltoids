@@ -60,7 +60,7 @@ mod traces_pane;
 
 use super::comment_view::render_comment_editor;
 use super::comments::{
-    CommentAnchor, CommentScope, CommentStore, PromptSection, build_prompt, hunk_lines,
+    CommentAnchor, CommentScope, CommentStore, Numbering, PromptSection, build_prompt, hunk_lines,
 };
 use super::diff_cursor::{Cursor, DiffRow, Step, select_row, step_cursor};
 use detail::{DiffCache, max_detail_scroll, render_diff_pane};
@@ -508,6 +508,7 @@ fn trace_prompt(trace: &LoadedTrace, comments: &CommentStore) -> Option<(String,
                 scope: detail::scope(trace, entry_index),
                 path: file.path.clone(),
                 hunks: &file.hunks,
+                numbering: Numbering::PLAIN,
             })
         })
         .collect();

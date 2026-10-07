@@ -22,7 +22,12 @@ mod snapshot;
 /// can still race content reads. No index changes are written by this read.
 #[derive(Debug, PartialEq, Eq)]
 pub struct WorkingTreeSnapshot {
+    /// HEAD → worktree for every changed file.
     pub patch: String,
+    /// HEAD → index, limited to files with both staged and unstaged changes.
+    pub staged_patch: String,
+    /// Index → worktree, limited to files with both staged and unstaged changes.
+    pub unstaged_patch: String,
     pub stages: Vec<FileStageStatus>,
 }
 

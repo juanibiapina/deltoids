@@ -34,12 +34,41 @@ pub(super) enum CommentScope {
     },
 }
 
-/// Which side of the diff a line belongs to: removed lines are numbered
-/// against the old file, added and context lines against the new one.
+/// The file version a line number counts against. Removed lines are
+/// numbered against a diff's old side, added and context lines against its
+/// new side. Plain diffs only use `Old` and `New`; the working tree's
+/// staged and unstaged diffs also number lines against the git `Index`,
+/// which sits between HEAD (`Old`) and the worktree (`New`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum LineSide {
     Old,
+    Index,
     New,
+}
+
+/// The file version each side of a diff numbers its lines against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Numbering {
+    pub(super) old: LineSide,
+    pub(super) new: LineSide,
+}
+
+impl Numbering {
+    /// A diff between two plain versions: HEAD → worktree, or a trace entry.
+    pub(super) const PLAIN: Self = Self {
+        old: LineSide::Old,
+        new: LineSide::New,
+    };
+    /// HEAD → index.
+    pub(super) const STAGED: Self = Self {
+        old: LineSide::Old,
+        new: LineSide::Index,
+    };
+    /// Index → worktree.
+    pub(super) const UNSTAGED: Self = Self {
+        old: LineSide::Index,
+        new: LineSide::New,
+    };
 }
 
 /// What a comment is attached to. Unique per logical diff line: hunks
@@ -130,6 +159,15 @@ pub(super) struct PromptSection<'a> {
     pub(super) scope: CommentScope,
     pub(super) path: String,
     pub(super) hunks: &'a [Hunk],
+    pub(super) numbering: Numbering,
+}
+
+impl PromptSection<'_> {
+    fn lines(&self) -> impl Iterator<Item = HunkLine<'_>> {
+        self.hunks
+            .iter()
+            .flat_map(|hunk| numbered_lines(hunk, self.numbering))
+    }
 }
 
 const PROMPT_INSTRUCTION: &str = "Address the following code review comments. For each, the file and line\nare given, with the relevant line and the reviewer's note.\nA line marked outdated is quoted as it read when the note was written; it has changed since, so locate the reviewer's intent rather than trusting the number.";
@@ -155,13 +193,11 @@ pub(super) fn build_prompt(
 
     let mut ordered: Vec<(&CommentAnchor, &Comment)> = Vec::new();
     for section in sections {
-        let anchors = section.hunks.iter().flat_map(|hunk| {
-            hunk_lines(hunk).map(|line| CommentAnchor {
-                scope: section.scope.clone(),
-                path: section.path.clone(),
-                side: line.side,
-                line: line.number,
-            })
+        let anchors = section.lines().map(|line| CommentAnchor {
+            scope: section.scope.clone(),
+            path: section.path.clone(),
+            side: line.side,
+            line: line.number,
         });
         for (anchor, comment) in anchors.filter_map(|anchor| store.comments.get_key_value(&anchor))
         {
@@ -211,7 +247,7 @@ fn comment_is_current(
     sections.iter().any(|section| {
         section.scope == anchor.scope
             && section.path == anchor.path
-            && section.hunks.iter().flat_map(hunk_lines).any(|line| {
+            && section.lines().any(|line| {
                 line.side == anchor.side
                     && line.number == anchor.line
                     && line.content == comment.code
@@ -224,48 +260,62 @@ fn comment_is_current(
 ///
 /// A working tree moves under the reviewer: editing anything above a
 /// commented line shifts its number, which would otherwise leave the note
-/// pointing at whatever now occupies that number. For every comment whose
-/// anchored line no longer carries the text it was written against, this
-/// looks for exactly one line on the same side of the same file with that
-/// text and moves the anchor there. Ambiguous or vanished lines are left
+/// pointing at whatever now occupies that number. Every section of the
+/// same scope and path counts together, because a working-tree file can
+/// show as a staged and an unstaged diff at once. A comment whose line is
+/// still in one of them stays put. Otherwise this looks for exactly one
+/// line on the same side with the text the comment was written against
+/// and moves the anchor there. An `Index` line with no such match may
+/// land on any side: staging or unstaging a whole file turns index lines
+/// into HEAD or worktree lines. Ambiguous or vanished lines are left
 /// alone; the diff pane marks them outdated.
 pub(super) fn reanchor(store: &mut CommentStore, sections: &[PromptSection<'_>]) {
     let mut moves: Vec<(CommentAnchor, CommentAnchor)> = Vec::new();
 
-    for section in sections {
-        let lines: Vec<HunkLine<'_>> = section.hunks.iter().flat_map(hunk_lines).collect();
-
-        let mine = store
-            .comments
+    for (anchor, comment) in &store.comments {
+        let lines: Vec<HunkLine<'_>> = sections
             .iter()
-            .filter(|(anchor, _)| anchor.scope == section.scope && anchor.path == section.path);
-        for (anchor, comment) in mine {
-            let anchored = lines
-                .iter()
-                .find(|line| line.side == anchor.side && line.number == anchor.line);
-            if anchored.is_some_and(|line| line.content == comment.code) {
-                continue;
-            }
-            // Overlapping hunks can render one line twice, so count
-            // distinct line numbers rather than occurrences.
-            let mut candidates: Vec<usize> = lines
-                .iter()
-                .filter(|line| line.side == anchor.side && line.content == comment.code)
-                .map(|line| line.number)
-                .collect();
-            candidates.sort_unstable();
-            candidates.dedup();
-            let [found] = candidates[..] else {
-                continue;
-            };
-            moves.push((
-                anchor.clone(),
-                CommentAnchor {
-                    line: found,
-                    ..anchor.clone()
-                },
-            ));
+            .filter(|section| section.scope == anchor.scope && section.path == anchor.path)
+            .flat_map(PromptSection::lines)
+            .collect();
+        if lines.is_empty()
+            || lines.iter().any(|line| {
+                line.side == anchor.side
+                    && line.number == anchor.line
+                    && line.content == comment.code
+            })
+        {
+            continue;
         }
+        let matches = |any_side: bool| {
+            // Overlapping hunks can render one line twice, so count
+            // distinct positions rather than occurrences.
+            let mut found: Vec<(LineSide, usize)> = lines
+                .iter()
+                .filter(|line| {
+                    (any_side || line.side == anchor.side) && line.content == comment.code
+                })
+                .map(|line| (line.side, line.number))
+                .collect();
+            found.sort_unstable_by_key(|(side, number)| (*side as u8, *number));
+            found.dedup();
+            found
+        };
+        let mut candidates = matches(false);
+        if candidates.is_empty() && anchor.side == LineSide::Index {
+            candidates = matches(true);
+        }
+        let [(side, line)] = candidates[..] else {
+            continue;
+        };
+        moves.push((
+            anchor.clone(),
+            CommentAnchor {
+                side,
+                line,
+                ..anchor.clone()
+            },
+        ));
     }
 
     for (from, to) in moves {
@@ -313,16 +363,24 @@ pub(super) struct HunkLine<'a> {
     pub(super) content: &'a str,
 }
 
-/// Walk a hunk's logical lines, numbering each against the side it
-/// belongs to. The one place diff-line numbering lives; both the row
-/// builders and the prompt use it.
+/// Walk a hunk's logical lines with plain numbering.
 pub(super) fn hunk_lines(hunk: &Hunk) -> impl Iterator<Item = HunkLine<'_>> {
+    numbered_lines(hunk, Numbering::PLAIN)
+}
+
+/// Walk a hunk's logical lines, numbering each against the version its
+/// side counts against. The one place diff-line numbering lives; both the
+/// row builders and the prompt use it.
+pub(super) fn numbered_lines(
+    hunk: &Hunk,
+    numbering: Numbering,
+) -> impl Iterator<Item = HunkLine<'_>> {
     let mut old_line = hunk.old_start;
     let mut new_line = hunk.new_start;
     hunk.lines.iter().enumerate().map(move |(index, line)| {
         let (side, number) = match line.kind {
-            LineKind::Removed => (LineSide::Old, old_line),
-            _ => (LineSide::New, new_line),
+            LineKind::Removed => (numbering.old, old_line),
+            _ => (numbering.new, new_line),
         };
         match line.kind {
             LineKind::Context => {
@@ -387,6 +445,7 @@ mod tests {
             scope: CommentScope::WorkingTree,
             path: path.to_string(),
             hunks,
+            numbering: Numbering::PLAIN,
         }
     }
 
@@ -722,6 +781,90 @@ mod tests {
         };
         reanchor(&mut store, &[section("a.rs", &[moved])]);
         assert_eq!(store.note(&anchor("b.rs", LineSide::New, 11)), Some("note"));
+    }
+
+    fn numbered_section<'a>(
+        path: &str,
+        hunks: &'a [Hunk],
+        numbering: Numbering,
+    ) -> PromptSection<'a> {
+        PromptSection {
+            numbering,
+            ..section(path, hunks)
+        }
+    }
+
+    #[test]
+    fn numbering_maps_each_side_to_its_file_version() {
+        let hunk = sample_hunk();
+        let sides = |numbering| {
+            numbered_lines(&hunk, numbering)
+                .map(|line| (line.side, line.number))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sides(Numbering::STAGED),
+            [
+                (LineSide::Index, 10),
+                (LineSide::Old, 11),
+                (LineSide::Index, 11)
+            ]
+        );
+        assert_eq!(
+            sides(Numbering::UNSTAGED),
+            [
+                (LineSide::New, 10),
+                (LineSide::Index, 11),
+                (LineSide::New, 11)
+            ]
+        );
+    }
+
+    #[test]
+    fn reanchor_keeps_a_comment_that_another_diff_of_the_file_still_shows() {
+        let mut store = CommentStore::default();
+        let index_line = anchor("a.rs", LineSide::Index, 11);
+        note_at(&mut store, index_line.clone(), "note", "let x = 2;");
+        // The staged diff shows index line 11; the unstaged diff removes it
+        // and adds an identical line elsewhere, which must not attract it.
+        let staged = [sample_hunk()];
+        let unstaged = [Hunk {
+            old_start: 11,
+            new_start: 11,
+            lines: vec![
+                diff_line(LineKind::Removed, "let x = 2;"),
+                diff_line(LineKind::Added, "let x = 3;"),
+            ],
+            ancestors: Vec::new(),
+        }];
+        reanchor(
+            &mut store,
+            &[
+                numbered_section("a.rs", &staged, Numbering::STAGED),
+                numbered_section("a.rs", &unstaged, Numbering::UNSTAGED),
+            ],
+        );
+        assert_eq!(store.note(&index_line), Some("note"));
+    }
+
+    #[test]
+    fn reanchor_moves_an_index_line_to_the_worktree_when_the_file_is_fully_staged() {
+        let mut store = CommentStore::default();
+        note_at(
+            &mut store,
+            anchor("a.rs", LineSide::Index, 11),
+            "note",
+            "let x = 2;",
+        );
+        // Unstaging everything leaves one HEAD → worktree diff.
+        let net = [Hunk {
+            old_start: 11,
+            new_start: 12,
+            lines: vec![diff_line(LineKind::Added, "let x = 2;")],
+            ancestors: Vec::new(),
+        }];
+        reanchor(&mut store, &[section("a.rs", &net)]);
+        assert_eq!(store.note(&anchor("a.rs", LineSide::New, 12)), Some("note"));
     }
 
     #[test]

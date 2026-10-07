@@ -1,5 +1,8 @@
+use super::model::FileBody;
 use super::test_support::*;
 use super::*;
+use crate::cli::browse::comments::LineSide;
+use crate::sidebar::display_path;
 use ratatui::{Terminal, backend::TestBackend};
 use std::fs;
 use std::path::Path;
@@ -86,8 +89,10 @@ fn sidebar_a_stages_outside_the_selected_directory_and_refreshes_without_notific
         mode.sidebar.selected_directory_path().as_deref(),
         Some("src/")
     );
+    assert_eq!(mode.shown(), Column::Staged);
+    assert_eq!(mode.focus, Focus::Diff);
     let after: Vec<_> = mode
-        .visible_diff_window(DrawBudget::Fast)
+        .visible_window(Column::Staged, DrawBudget::Full)
         .iter()
         .map(line_text)
         .collect();
@@ -144,11 +149,12 @@ fn sidebar_space_then_space_toggles_staging_without_watcher_events() {
     finish(&mut mode);
     refresh(&mut mode);
     let after: Vec<_> = mode
-        .visible_diff_window(DrawBudget::Fast)
+        .visible_window(Column::Staged, DrawBudget::Full)
         .iter()
         .map(line_text)
         .collect();
-    assert_eq!(after, before, "staging must retain the rendered diff");
+    assert_eq!(after, before, "the staged pane shows the same diff");
+    assert_eq!(mode.shown(), Column::Staged);
     let status = mode.model.stages["a.txt"];
     assert!(status.is_staged() && !status.is_unstaged());
     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
@@ -328,16 +334,17 @@ fn cancelled_net_diff_stays_selectable_and_can_discard_only_unstaged_content() {
     stage_all(&repo);
     fs::write(dir.path().join("a.txt"), "original\n").unwrap();
     let mut mode = live(dir.path());
-    assert!(mode.last_input.is_empty());
+    assert!(mode.last_input.all().is_empty());
     assert_eq!(mode.model.files.len(), 1);
     assert!(matches!(mode.model.bodies[0], FileBody::StatusOnly));
-    let lines = mode.visible_diff_window(DrawBudget::Full);
-    assert!(
-        lines
-            .iter()
-            .any(|line| line_text(line).contains("cancel out"))
-    );
-    assert!(mode.diff.rows().iter().all(|row| row.anchor.is_none()));
+    let text = |lines: Vec<ratatui::text::Line<'static>>| {
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    };
+    let staged = text(mode.visible_window(Column::Staged, DrawBudget::Full));
+    let unstaged = text(mode.visible_window(Column::Unstaged, DrawBudget::Full));
+    assert!(staged.contains("staged") && staged.contains("original"));
+    assert!(unstaged.contains("staged") && unstaged.contains("original"));
+    assert!(!staged.contains("cancel out"));
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
     finish(&mut mode);
     Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
@@ -368,7 +375,7 @@ fn chained_rename_has_one_actionable_row_at_its_final_name() {
             .iter()
             .map(|f| display_path(&f.file))
             .collect::<Vec<_>>(),
-        mode.last_input
+        mode.last_input.all()
     );
     assert!(mode.model.stages["final.txt"].is_staged());
     assert!(mode.model.stages["final.txt"].is_unstaged());
@@ -647,4 +654,272 @@ fn hidden_completion_retains_its_refresh_request() {
     }
     refresh(&mut mode);
     assert!(mode.model.stages["a.txt"].is_staged());
+}
+
+fn screen(mode: &mut FilesMode, budget: DrawBudget) -> Vec<String> {
+    let mut term = Terminal::new(TestBackend::new(121, 24)).unwrap();
+    term.draw(|frame| {
+        Mode::draw(
+            mode,
+            frame,
+            Rect::new(0, 0, 30, 24),
+            Rect::new(30, 0, 91, 24),
+            TabStrip { active: 0 },
+            deltoids::ChangeLayout::Grouped,
+            &theme(),
+            budget,
+        );
+    })
+    .unwrap();
+    let buffer = term.backend().buffer();
+    (0..24)
+        .map(|y| (0..121).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect()
+}
+
+fn settle(mode: &mut FilesMode) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        screen(mode, DrawBudget::Full);
+        mode.background(true);
+        if !mode.staged.cache.pending() && !mode.unstaged.cache.pending() {
+            return screen(mode, DrawBudget::Full);
+        }
+        assert!(Instant::now() < deadline, "render did not finish");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn numbered(lines: usize) -> String {
+    (1..=lines).map(|n| format!("line {n}\n")).collect()
+}
+
+/// `a.txt` with a staged edit on line 2 and an unstaged edit on line 11,
+/// plus `b.txt` with an unstaged edit only.
+fn dual_fixture() -> (TempDir, git2::Repository) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    fs::write(dir.path().join("a.txt"), numbered(12)).unwrap();
+    fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    fs::write(
+        dir.path().join("a.txt"),
+        numbered(12).replace("line 2\n", "line 2 staged\n"),
+    )
+    .unwrap();
+    stage_all(&repo);
+    fs::write(
+        dir.path().join("a.txt"),
+        numbered(12)
+            .replace("line 2\n", "line 2 staged\n")
+            .replace("line 11\n", "line 11 unstaged\n"),
+    )
+    .unwrap();
+    fs::write(dir.path().join("b.txt"), "b unstaged\n").unwrap();
+    (dir, repo)
+}
+
+fn select_file(mode: &mut FilesMode, path: &str) {
+    let index = mode
+        .model
+        .files
+        .iter()
+        .position(|file| display_path(&file.file) == path)
+        .unwrap();
+    mode.sidebar.select_file_index(index, 20);
+    mode.snap_diff_to_selected_file();
+}
+
+#[test]
+fn a_file_with_both_columns_shows_one_and_s_switches_to_the_other() {
+    let (dir, _repo) = dual_fixture();
+    let mut mode = live(dir.path());
+    select_file(&mut mode, "a.txt");
+    let rows = settle(&mut mode);
+    assert!(rows[0].contains("[2]─Staged - Unstaged"), "{}", rows[0]);
+    let body = rows.join("\n");
+    assert!(body.contains("line 11 unstaged"), "unstaged is the default");
+    assert!(!body.contains("line 2 staged"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    assert_eq!(mode.shown(), Column::Staged);
+    let body = settle(&mut mode).join("\n");
+    assert!(body.contains("line 2 staged"));
+    assert!(!body.contains("line 11 unstaged"));
+
+    // A file with one kind of change shows it, and the choice sticks for
+    // the next file that has both.
+    select_file(&mut mode, "b.txt");
+    let rows = settle(&mut mode);
+    assert!(rows[0].contains("[2]─Unstaged changes"), "{}", rows[0]);
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    assert_eq!(mode.shown(), Column::Unstaged, "s needs both columns");
+    select_file(&mut mode, "a.txt");
+    assert_eq!(mode.shown(), Column::Staged);
+}
+
+#[test]
+fn staging_more_of_a_file_that_keeps_both_columns_rebuilds_both_panes() {
+    let (dir, repo) = dual_fixture();
+    let worktree = fs::read_to_string(dir.path().join("a.txt")).unwrap();
+    let with_middle = worktree.replace("line 6\n", "line 6 middle\n");
+    fs::write(dir.path().join("a.txt"), &with_middle).unwrap();
+    let mut mode = live(dir.path());
+    select_file(&mut mode, "a.txt");
+    assert!(
+        !mode
+            .visible_window(Column::Staged, DrawBudget::Full)
+            .iter()
+            .any(|line| line_text(line).contains("line 6 middle"))
+    );
+
+    // Stage line 6 too, as `git add -p` would; the net diff is unchanged.
+    let index_text = numbered(12)
+        .replace("line 2\n", "line 2 staged\n")
+        .replace("line 6\n", "line 6 middle\n");
+    let blob = repo.blob(index_text.as_bytes()).unwrap();
+    let mut index = repo.index().unwrap();
+    let mut entry = index.get_path(Path::new("a.txt"), 0).unwrap();
+    entry.id = blob;
+    entry.file_size = index_text.len() as u32;
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+
+    mode.reload(
+        ReloadViewport {
+            left_viewport: 20,
+            right_viewport: 20,
+            right_width: 80,
+        },
+        &theme(),
+    )
+    .unwrap();
+    assert!(mode.model.stages["a.txt"].is_staged());
+    assert!(mode.model.stages["a.txt"].is_unstaged());
+    let staged: Vec<_> = mode
+        .visible_window(Column::Staged, DrawBudget::Full)
+        .iter()
+        .map(line_text)
+        .collect();
+    assert!(staged.iter().any(|line| line.contains("line 6 middle")));
+    let unstaged: Vec<_> = mode
+        .visible_window(Column::Unstaged, DrawBudget::Full)
+        .iter()
+        .map(line_text)
+        .collect();
+    assert!(!unstaged.iter().any(|line| line.contains("+line 6")));
+}
+
+/// Put `column`'s cursor on the first diff line whose anchor matches.
+fn comment_on(mode: &mut FilesMode, column: Column, side: LineSide, line: usize, note: &str) {
+    mode.visible_window(column, DrawBudget::Full);
+    let row = mode
+        .pane(column)
+        .rows()
+        .iter()
+        .position(|row| {
+            row.place.is_some()
+                && row
+                    .anchor
+                    .as_ref()
+                    .is_some_and(|anchor| anchor.side == side && anchor.line == line)
+        })
+        .expect("the anchored line is on screen");
+    mode.focus = Focus::Diff;
+    mode.pane_mut(column).select_row(row);
+    Mode::handle_key(mode, KeyCode::Char('c'), 20, 20);
+    for ch in note.chars() {
+        Mode::handle_key(mode, KeyCode::Char(ch), 20, 20);
+    }
+    Mode::handle_key(mode, KeyCode::Enter, 20, 20);
+}
+
+#[test]
+fn comments_number_lines_by_the_version_each_pane_shows() {
+    let (dir, _repo) = dual_fixture();
+    let worktree = numbered(12)
+        .replace("line 2\n", "line 2 again\n")
+        .replace("line 11\n", "line 11 unstaged\n");
+    fs::write(dir.path().join("a.txt"), worktree).unwrap();
+    let mut mode = live(dir.path());
+    select_file(&mut mode, "a.txt");
+
+    // Line 2 is changed in both panes: staged adds index line 2, and the
+    // unstaged pane removes that same index line and adds worktree line 2.
+    comment_on(&mut mode, Column::Staged, LineSide::Index, 2, "index note");
+    comment_on(
+        &mut mode,
+        Column::Unstaged,
+        LineSide::New,
+        2,
+        "worktree note",
+    );
+
+    let index_line = CommentAnchor {
+        scope: crate::cli::browse::comments::CommentScope::WorkingTree,
+        path: "a.txt".to_string(),
+        side: LineSide::Index,
+        line: 2,
+    };
+    let worktree_line = CommentAnchor {
+        side: LineSide::New,
+        ..index_line.clone()
+    };
+    assert_eq!(mode.comments.note(&index_line), Some("index note"));
+    assert_eq!(mode.comments.note(&worktree_line), Some("worktree note"));
+
+    let text = |mode: &mut FilesMode, column| {
+        mode.visible_window(column, DrawBudget::Full)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let staged = text(&mut mode, Column::Staged);
+    let unstaged = text(&mut mode, Column::Unstaged);
+    assert!(staged.contains("index note") && !staged.contains("worktree note"));
+    assert!(unstaged.contains("index note") && unstaged.contains("worktree note"));
+}
+
+#[test]
+fn a_comment_follows_its_file_into_the_staged_pane() {
+    let (dir, _repo) = dual_fixture();
+    let mut mode = live(dir.path());
+    select_file(&mut mode, "b.txt");
+    comment_on(&mut mode, Column::Unstaged, LineSide::New, 1, "keep me");
+    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    finish(&mut mode);
+    refresh(&mut mode);
+    assert_eq!(mode.shown(), Column::Staged);
+    assert!(
+        mode.visible_window(Column::Staged, DrawBudget::Full)
+            .iter()
+            .any(|line| line_text(line).contains("keep me"))
+    );
+}
+
+#[test]
+fn switching_columns_keeps_each_ones_render_and_scroll() {
+    let (dir, _repo) = dual_fixture();
+    let mut mode = live(dir.path());
+    select_file(&mut mode, "a.txt");
+    settle(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Char('J'), 20, 20);
+    let unstaged_scroll = mode.unstaged.cursor.scroll;
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    settle(&mut mode);
+    assert_eq!(
+        mode.staged.cursor.scroll, 0,
+        "J scrolled only the shown column"
+    );
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    let rows = screen(&mut mode, DrawBudget::Fast);
+    assert!(
+        !rows.iter().any(|row| row.contains("Rendering")),
+        "{}",
+        rows.join("\n")
+    );
+    assert_eq!(mode.unstaged.cursor.scroll, unstaged_scroll);
 }

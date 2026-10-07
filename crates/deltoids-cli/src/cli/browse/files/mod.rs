@@ -19,7 +19,10 @@
 //!   behind an endless spinner.
 //!
 //! Layout: a file-tree sidebar (left column) and the deltoids diff
-//! renderer (right pane). Selecting a file scrolls the diff to it.
+//! renderer (right). Selecting a file scrolls the diff to it. The diff
+//! shows one staging column at a time: staged (HEAD → index) or unstaged
+//! (index → worktree). When the selection has both, `s` switches between
+//! them; [`stage_panes`] decides which column shows which files.
 //!
 //! ## Module layout
 //!
@@ -30,6 +33,7 @@
 //!
 //! - [`model`]: the data axis: parse/resolve/diff.
 //! - [`diff_pane`]: the diff pane's state, scroll math, keys, render.
+//! - [`stage_panes`]: which staging column the diff shows, with which files.
 //! - [`sidebar_pane`]: the sidebar's build, keys, render, footer.
 //! - [`reload`]: the working-tree watcher and in-place rebuild.
 //!
@@ -50,12 +54,10 @@ use ratatui::layout::{Position, Rect};
 use deltoids::{ChangeLayout, LineKind, Theme, git};
 
 use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
-use crate::sidebar::{Sidebar, display_path};
+use crate::sidebar::Sidebar;
 
 use super::comment_view::render_comment_editor;
-use super::comments::{
-    CommentAnchor, CommentScope, CommentStore, PromptSection, build_prompt, hunk_lines, reanchor,
-};
+use super::comments::{CommentAnchor, CommentStore, build_prompt, reanchor};
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport, TabStrip};
 
 mod action_menu;
@@ -69,17 +71,19 @@ mod performance_tests;
 mod reload;
 mod render;
 mod sidebar_pane;
+mod stage_panes;
 #[cfg(test)]
 mod test_support;
 
 use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 #[cfg(test)]
 use model::build_model;
-use model::{DiffSource, FileBody, Model};
-use reload::{ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
+use model::{Column, DiffSource, Model};
+use reload::{Patches, ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
 use sidebar_pane::build_sidebar;
+use stage_panes::{PaneSpec, PaneTitle, StagePanes};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Focus {
     Sidebar,
     Diff,
@@ -115,8 +119,18 @@ const STARTUP_LOADING_TIMEOUT: Duration = Duration::from_secs(1);
 /// (for blob resolution and reload), and the reload bookkeeping; the
 /// shell owns sidebar width, focus across modes, help, and the divider.
 pub(super) struct FilesMode {
-    /// Diff pane vertical slice.
-    diff: DiffPane,
+    /// Diff pane of the staged column (HEAD → index).
+    staged: DiffPane,
+    /// Diff pane of the unstaged column (index → worktree); also the only
+    /// pane when there is no staging information.
+    unstaged: DiffPane,
+    /// File indices in sidebar (display) order.
+    display_order: Vec<usize>,
+    /// Which files each column's pane lists. Rebuilt with the model and
+    /// whenever staging columns change.
+    panes: StagePanes,
+    /// The column to show when the selection has both; `s` switches it.
+    column: Column,
     /// Sidebar pane state: rows, selection, scroll.
     sidebar: Sidebar,
     /// Currently-focused pane within this mode.
@@ -149,9 +163,9 @@ pub(super) struct FilesMode {
     /// rather than spinning forever. `None` once resolved or never
     /// pending.
     loading_since: Option<Instant>,
-    /// The diff text the current model was built from; event-driven reloads
-    /// compare fresh output against this and check sidebar staging status.
-    last_input: String,
+    /// The patches the current model was built from; event-driven reloads
+    /// compare fresh output against these and check sidebar staging status.
+    last_input: Patches,
     /// Keeps the bounded filesystem watcher alive for the session.
     _watcher: Option<ChangeWatcher>,
     reload_failed: bool,
@@ -192,22 +206,17 @@ impl FilesMode {
 
     /// Compute the working-tree diff and its model, or an error when the
     /// diff read or model build loses a race with on-disk churn.
-    fn try_model(repo: &git::Repo) -> Result<(String, Model), String> {
+    fn try_model(repo: &git::Repo) -> Result<(Patches, Model), String> {
         let snapshot = repo.working_tree_snapshot()?;
         let model = model::build_working_model(&snapshot, repo)?;
-        Ok((snapshot.patch, model))
+        Ok((Patches::of(&snapshot), model))
     }
 
     /// A cheap empty Files mode: no repo, no diff, static. Used as the
     /// startup placeholder for the inactive mode and as the not-a-repo
     /// fallback.
     pub(super) fn empty(theme: &Theme, width: usize) -> Self {
-        let model = Model {
-            files: Vec::new(),
-            bodies: Vec::new(),
-            stages: Default::default(),
-        };
-        Self::new(model, String::new(), None, true, theme, width)
+        Self::new(Model::empty(), Patches::default(), None, true, theme, width)
     }
 
     /// A reloadable Files mode that shows a neutral "Loading…" state while
@@ -218,15 +227,17 @@ impl FilesMode {
     /// the static error state once failures persist past
     /// [`STARTUP_LOADING_TIMEOUT`].
     fn loading(repo: git::Repo, theme: &Theme, width: usize) -> Self {
-        let model = Model {
-            files: Vec::new(),
-            bodies: Vec::new(),
-            stages: Default::default(),
-        };
-        let mut mode = Self::new(model, String::new(), Some(repo), false, theme, width);
+        let mut mode = Self::new(
+            Model::empty(),
+            Patches::default(),
+            Some(repo),
+            false,
+            theme,
+            width,
+        );
         mode.startup_pending = true;
         mode.loading_since = Some(Instant::now());
-        mode.diff.set_empty_loading();
+        mode.unstaged.set_empty_loading();
         mode
     }
 
@@ -236,19 +247,14 @@ impl FilesMode {
     /// degrades to it once a build error persists past the loading
     /// window), so this mode is never watched or reloaded.
     pub(super) fn error(theme: &Theme, width: usize, message: String) -> Self {
-        let model = Model {
-            files: Vec::new(),
-            bodies: Vec::new(),
-            stages: Default::default(),
-        };
-        let mut mode = Self::new(model, String::new(), None, true, theme, width);
-        mode.diff.set_empty_error(message);
+        let mut mode = Self::new(Model::empty(), Patches::default(), None, true, theme, width);
+        mode.unstaged.set_empty_error(message);
         mode
     }
 
     fn new(
         model: Model,
-        input: String,
+        input: Patches,
         repo: Option<git::Repo>,
         is_static: bool,
         theme: &Theme,
@@ -256,9 +262,13 @@ impl FilesMode {
     ) -> Self {
         let sidebar = build_sidebar(&model, theme);
         let display_order = sidebar.display_order();
-        let diff = DiffPane::new(display_order, width);
+        let panes = StagePanes::new(&model, &display_order);
         Self {
-            diff,
+            staged: DiffPane::new(Column::Staged, width),
+            unstaged: DiffPane::new(Column::Unstaged, width),
+            display_order,
+            panes,
+            column: Column::Unstaged,
             sidebar,
             focus: Focus::Sidebar,
             sidebar_rect: Rect::default(),
@@ -289,53 +299,118 @@ impl FilesMode {
         }
     }
 
-    /// Clear the per-file cache when the pane width changed; the next draw
-    /// re-renders only the visible window on demand at the new width.
-    fn ensure_width(&mut self, diff_width: usize) {
-        if diff_width == 0 || diff_width == self.diff.cached_width {
-            return;
+    fn pane(&self, column: Column) -> &DiffPane {
+        match column {
+            Column::Staged => &self.staged,
+            Column::Unstaged => &self.unstaged,
         }
-        self.diff.cache.clear();
-        self.diff.cached_width = diff_width;
     }
 
-    /// Assemble the diff window that should be visible right now.
+    fn pane_mut(&mut self, column: Column) -> &mut DiffPane {
+        match column {
+            Column::Staged => &mut self.staged,
+            Column::Unstaged => &mut self.unstaged,
+        }
+    }
+
+    /// The pane the current selection shows.
+    fn spec(&self) -> PaneSpec<'_> {
+        self.panes
+            .view(self.sidebar.selection_display_range(), self.column)
+    }
+
+    /// The column the diff pane shows right now.
+    fn shown(&self) -> Column {
+        self.spec().column
+    }
+
+    /// Switch to the other column when the selection has both.
+    fn toggle_column(&mut self) {
+        if let PaneTitle::Both(shown) = self.spec().title {
+            self.column = match shown {
+                Column::Staged => Column::Unstaged,
+                Column::Unstaged => Column::Staged,
+            };
+        }
+    }
+
+    /// Re-sort files into columns after the model or its staging changed.
+    fn refresh_panes(&mut self) {
+        self.display_order = self.sidebar.display_order();
+        self.panes = StagePanes::new(&self.model, &self.display_order);
+    }
+
+    /// Show `column` and assemble its diff window, as a draw does. Empty
+    /// when the selection has no `column` changes.
     #[cfg(test)]
-    fn visible_diff_window(&mut self, budget: DrawBudget) -> Vec<ratatui::text::Line<'static>> {
-        let dr = self.sidebar.selection_display_range();
-        let width = self.diff.cached_width;
-        self.diff.assemble_window(
-            dr,
-            &self.model,
-            width,
-            ChangeLayout::Grouped,
-            &Theme::default(),
-            budget,
-            &self.comments,
-        );
-        while budget == DrawBudget::Full && self.diff.cache.pending() {
-            test_support::wait_for_render(&mut self.diff);
-            self.diff.assemble_window(
-                self.sidebar.selection_display_range(),
-                &self.model,
+    fn visible_window(
+        &mut self,
+        column: Column,
+        budget: DrawBudget,
+    ) -> Vec<ratatui::text::Line<'static>> {
+        self.column = column;
+        if self.shown() != column {
+            return Vec::new();
+        }
+        loop {
+            let width = self.pane(column).cached_width;
+            self.assemble(
+                column,
                 width,
                 ChangeLayout::Grouped,
                 &Theme::default(),
                 budget,
-                &self.comments,
             );
+            let pane = self.pane_mut(column);
+            if budget != DrawBudget::Full || !pane.cache.pending() {
+                return pane.rows().iter().map(|row| row.line.clone()).collect();
+            }
+            test_support::wait_for_render(pane);
         }
-        self.diff
-            .rows()
-            .iter()
-            .map(|row| row.line.clone())
-            .collect()
     }
 
-    /// Sync the diff pane's scroll to the top of the selected file's
+    /// Assemble `column`'s pane, as a draw does, when the selection shows it.
+    #[cfg(test)]
+    fn assemble(
+        &mut self,
+        column: Column,
+        width: usize,
+        layout: ChangeLayout,
+        theme: &Theme,
+        budget: DrawBudget,
+    ) {
+        let spec = self
+            .panes
+            .view(self.sidebar.selection_display_range(), self.column);
+        if spec.column != column {
+            return;
+        }
+        let pane = match column {
+            Column::Staged => &mut self.staged,
+            Column::Unstaged => &mut self.unstaged,
+        };
+        pane.assemble_window(
+            &spec,
+            &self.model,
+            width,
+            layout,
+            theme,
+            budget,
+            &self.comments,
+        );
+    }
+
+    /// Assemble the unstaged (or only) diff window.
+    #[cfg(test)]
+    fn visible_diff_window(&mut self, budget: DrawBudget) -> Vec<ratatui::text::Line<'static>> {
+        self.visible_window(Column::Unstaged, budget)
+    }
+
+    /// Sync the diff panes' scroll to the top of the selected file's
     /// window (a sidebar move re-derives the window).
     fn snap_diff_to_selected_file(&mut self) {
-        self.diff.snap_to_top();
+        self.staged.snap_to_top();
+        self.unstaged.snap_to_top();
     }
 
     /// Fold a [`ReloadOutcome`] into the startup Loading state machine and
@@ -393,7 +468,7 @@ impl FilesMode {
         if self.startup_pending {
             self.startup_pending = false;
             self.loading_since = None;
-            self.diff.clear_empty_state();
+            self.unstaged.clear_empty_state();
         }
     }
 }
@@ -467,7 +542,6 @@ fn start_action(state: &mut FilesMode, stage: bool) {
     let targets: std::collections::BTreeSet<_> = range
         .filter_map(|position| {
             state
-                .diff
                 .display_order
                 .get(position)
                 .and_then(|idx| state.model.files.get(*idx))
@@ -621,6 +695,10 @@ fn handle_key(
         }
         KeyCode::Char('y') => copy_comments(state),
         KeyCode::Char('D') => clear_comments(state),
+        KeyCode::Char('s') => {
+            state.toggle_column();
+            AppCommand::Continue
+        }
         KeyCode::Tab | KeyCode::BackTab => {
             state.focus = match state.focus {
                 Focus::Sidebar => Focus::Diff,
@@ -638,14 +716,16 @@ fn handle_key(
         }
         // Shift+J/K always scroll the diff regardless of focus.
         KeyCode::Char('J') => {
+            let column = state.shown();
             state
-                .diff
+                .pane_mut(column)
                 .scroll_by(SCROLL_STEP_LARGE as isize, diff_viewport);
             AppCommand::Continue
         }
         KeyCode::Char('K') => {
+            let column = state.shown();
             state
-                .diff
+                .pane_mut(column)
                 .scroll_by(-(SCROLL_STEP_LARGE as isize), diff_viewport);
             AppCommand::Continue
         }
@@ -659,7 +739,8 @@ fn handle_key(
                     }
                 }
                 Focus::Diff => {
-                    state.diff.handle_key(other, diff_viewport);
+                    let column = state.shown();
+                    state.pane_mut(column).handle_key(other, diff_viewport);
                 }
             }
             AppCommand::Continue
@@ -707,7 +788,7 @@ fn open_comment(state: &mut FilesMode) {
     if state.focus != Focus::Diff {
         return;
     }
-    let Some(anchor) = state.diff.cursor_anchor().cloned() else {
+    let Some(anchor) = state.pane(state.shown()).cursor_anchor().cloned() else {
         return;
     };
     let Some(line) = anchored_line(&state.model, &anchor) else {
@@ -726,7 +807,7 @@ fn delete_comment(state: &mut FilesMode) {
     if state.focus != Focus::Diff {
         return;
     }
-    let Some(anchor) = state.diff.cursor_anchor().cloned() else {
+    let Some(anchor) = state.pane(state.shown()).cursor_anchor().cloned() else {
         return;
     };
     state.comments.remove(&anchor);
@@ -743,26 +824,12 @@ fn save_comment(state: &mut FilesMode, anchor: CommentAnchor, note: String) {
     state.comments.set(anchor, note, code, kind);
 }
 
-/// The index of `path` in the model's files.
-fn file_index(model: &Model, path: &str) -> Option<usize> {
-    model
-        .files
-        .iter()
-        .position(|resolved| display_path(&resolved.file) == path)
-}
-
 /// The text and kind of the diff line `anchor` points at, or `None` when
 /// the file or the line is no longer in the diff.
 fn anchored_line(model: &Model, anchor: &CommentAnchor) -> Option<(String, LineKind)> {
-    let index = file_index(model, &anchor.path)?;
-    let FileBody::Diff(diff) = model.bodies.get(index)? else {
-        return None;
-    };
-    diff.hunks().iter().find_map(|hunk| {
-        hunk_lines(hunk)
-            .find(|line| line.side == anchor.side && line.number == anchor.line)
-            .map(|line| (line.content.to_string(), line.kind.clone()))
-    })
+    model
+        .line(anchor)
+        .map(|(content, kind)| (content.to_string(), kind.clone()))
 }
 
 /// Build the review prompt for every working-tree comment and ask the
@@ -798,27 +865,8 @@ fn clear_comments(state: &mut FilesMode) -> AppCommand {
 /// Every comment on the working tree, as one prompt ordered by the
 /// sidebar's file order and then by position in each file's diff.
 fn working_tree_prompt(state: &FilesMode) -> Option<(String, usize)> {
-    let sections = prompt_sections(&state.model, &state.diff.display_order);
+    let sections = state.model.sections(&state.display_order);
     build_prompt("", &state.comments, &sections)
-}
-
-/// The working tree's text diffs in sidebar order: what the comment core
-/// needs to order, re-anchor, and copy notes.
-fn prompt_sections<'a>(model: &'a Model, display_order: &[usize]) -> Vec<PromptSection<'a>> {
-    display_order
-        .iter()
-        .filter_map(|&index| {
-            let resolved = model.files.get(index)?;
-            let FileBody::Diff(diff) = model.bodies.get(index)? else {
-                return None;
-            };
-            Some(PromptSection {
-                scope: CommentScope::WorkingTree,
-                path: display_path(&resolved.file).to_string(),
-                hunks: diff.hunks(),
-            })
-        })
-        .collect()
 }
 
 fn pane_at(state: &FilesMode, col: u16, row: u16) -> Option<Focus> {
@@ -882,11 +930,12 @@ fn handle_mouse(
                 AppCommand::Continue
             }
             Focus::Diff => {
+                let column = state.shown();
                 let steps = state
                     .wheel
                     .advance(target, ScrollDir::Down, ScrollKind::Content);
                 state
-                    .diff
+                    .pane_mut(column)
                     .scroll_by((steps * SCROLL_STEP_SMALL) as isize, diff_viewport);
                 AppCommand::Continue
             }
@@ -901,11 +950,12 @@ fn handle_mouse(
                 AppCommand::Continue
             }
             Focus::Diff => {
+                let column = state.shown();
                 let steps = state
                     .wheel
                     .advance(target, ScrollDir::Up, ScrollKind::Content);
                 state
-                    .diff
+                    .pane_mut(column)
                     .scroll_by(-((steps * SCROLL_STEP_SMALL) as isize), diff_viewport);
                 AppCommand::Continue
             }
@@ -930,7 +980,9 @@ fn handle_mouse(
                         .row
                         .saturating_sub(state.diff_rect.y)
                         .saturating_sub(1) as usize;
-                    state.diff.select_row(state.diff.cursor.scroll + content_y);
+                    let column = state.shown();
+                    let pane = state.pane_mut(column);
+                    pane.select_row(pane.cursor.scroll + content_y);
                 }
             }
             AppCommand::Continue
@@ -943,12 +995,17 @@ impl Mode for FilesMode {
     fn background(&mut self, active: bool) -> BackgroundWork {
         let action_changed = collect_action(self);
         if !active {
-            self.diff.cache.pause();
+            self.staged.cache.pause();
+            self.unstaged.cache.pause();
             return BackgroundWork::default();
         }
+        let staged_changed = self.staged.cache.collect();
+        let unstaged_changed = self.unstaged.cache.collect();
         BackgroundWork {
-            changed: self.diff.cache.collect() || action_changed,
-            pending: self.diff.cache.pending() || self.action_job.is_some(),
+            changed: staged_changed || unstaged_changed || action_changed,
+            pending: self.staged.cache.pending()
+                || self.unstaged.cache.pending()
+                || self.action_job.is_some(),
         }
     }
 
@@ -970,34 +1027,39 @@ impl Mode for FilesMode {
         theme: &Theme,
         budget: DrawBudget,
     ) {
-        let diff_width = super::diff_scrollbar::body_area(right).width as usize;
-        self.ensure_width(diff_width);
-
         self.sidebar_rect = left;
         self.diff_rect = right;
 
-        let dr = self.sidebar.selection_display_range();
         let sidebar_focused = self.focus == Focus::Sidebar;
         let border = deltoids::render_tui::pane_border_color(sidebar_focused, theme);
         sidebar_pane::draw_sidebar(
             frame,
             left,
             &self.sidebar,
-            &self.diff.display_order,
+            &self.display_order,
             sidebar_focused,
             tabs.title_line(border, theme),
             theme,
         );
-        self.diff.assemble_window(
-            dr,
+
+        let spec = self
+            .panes
+            .view(self.sidebar.selection_display_range(), self.column);
+        let pane = match spec.column {
+            Column::Staged => &mut self.staged,
+            Column::Unstaged => &mut self.unstaged,
+        };
+        let width = super::diff_scrollbar::body_area(right).width as usize;
+        pane.assemble_window(
+            &spec,
             &self.model,
-            diff_width,
+            width,
             layout,
             theme,
             budget,
             &self.comments,
         );
-        self.diff.render(
+        pane.render(
             frame,
             right,
             self.focus == Focus::Diff,
@@ -1071,29 +1133,34 @@ impl Mode for FilesMode {
         let Some(repo) = self.repo.as_ref() else {
             return Ok(false);
         };
-        let width = if viewport.right_width > 0 {
-            viewport.right_width
-        } else {
-            self.diff.cached_width
-        };
         // `repo` borrows `self.repo`; the rest are disjoint fields.
         let outcome = reload_working_tree(
-            &mut self.diff,
+            [&mut self.staged, &mut self.unstaged],
             &mut self.sidebar,
             &mut self.model,
             &mut self.last_input,
             repo,
             theme,
-            width,
             viewport.right_viewport,
         );
         self.reload_failed = matches!(outcome, ReloadOutcome::Failed(_));
+        if matches!(
+            outcome,
+            ReloadOutcome::Rebuilt | ReloadOutcome::StagingUpdated
+        ) {
+            self.refresh_panes();
+        }
         // A rebuilt diff may have shifted the lines comments point at:
         // follow them onto their new numbers before anything renders.
         if outcome == ReloadOutcome::Rebuilt {
-            let sections = prompt_sections(&self.model, &self.diff.display_order);
+            let sections = self.model.sections(&self.display_order);
             reanchor(&mut self.comments, &sections);
         }
+        let width = if viewport.right_width > 0 {
+            viewport.right_width
+        } else {
+            self.unstaged.cached_width
+        };
         // The reload tick is non-fatal: never return `Err`. Fold the
         // outcome into the startup Loading state machine and report only
         // whether the visible content changed.
@@ -1115,7 +1182,7 @@ impl Mode for FilesMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::browse::comments::LineSide;
+    use crate::cli::browse::comments::{CommentScope, LineSide};
     use crate::cli::browse::files::diff_pane::CacheEpoch;
     use crate::cli::browse::files::test_support::*;
     use model::ResolvedFile;
@@ -1140,7 +1207,7 @@ mod tests {
         handle_key(&mut state, KeyCode::Char('j'), 18, 18);
         let immediate = state.visible_diff_window(DrawBudget::Fast);
         assert_eq!(line_text(&immediate[0]), "b.txt");
-        wait_for_render(&mut state.diff);
+        wait_for_render(&mut state.unstaged);
         let ready = state.visible_diff_window(DrawBudget::Fast);
         assert!(
             ready
@@ -1158,8 +1225,8 @@ mod tests {
     fn reload_discards_pending_content_even_when_file_indices_are_reused() {
         let mut state = make_state(&[large_file("a.txt")]);
         state.visible_diff_window(DrawBudget::Fast);
-        state.diff.cache.clear();
-        state.diff.reset_window();
+        state.unstaged.cache.clear();
+        state.unstaged.reset_window();
         state.model = model_from(&[edited("a.txt")]);
         let ready = state.visible_diff_window(DrawBudget::Full);
         assert!(
@@ -1182,7 +1249,7 @@ mod tests {
         let paused = state.background(false);
         assert!(!paused.pending && !paused.changed);
         state.visible_diff_window(DrawBudget::Fast);
-        wait_for_render(&mut state.diff);
+        wait_for_render(&mut state.unstaged);
         let ready = state.visible_diff_window(DrawBudget::Fast);
         assert!(
             ready
@@ -1197,34 +1264,29 @@ mod tests {
         let mut state = diff_state(&[edited("app.rs")]);
         handle_key(&mut state, KeyCode::Char('j'), 18, 18);
         handle_key(&mut state, KeyCode::Char('j'), 18, 18);
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         let mut next_theme = theme();
         next_theme.syntax_theme_name = "TokyoNight".into();
         let next_layout = ChangeLayout::Interleaved {
             group: std::num::NonZeroUsize::new(1).unwrap(),
         };
-        state.ensure_width(8);
-        state.diff.assemble_window(
-            state.sidebar.selection_display_range(),
-            &state.model,
+        state.assemble(
+            Column::Unstaged,
             8,
             next_layout,
             &next_theme,
             DrawBudget::Fast,
-            &state.comments,
         );
-        assert_eq!(state.diff.cursor_anchor(), Some(&anchor));
-        wait_for_render(&mut state.diff);
-        state.diff.assemble_window(
-            state.sidebar.selection_display_range(),
-            &state.model,
+        assert_eq!(state.unstaged.cursor_anchor(), Some(&anchor));
+        wait_for_render(&mut state.unstaged);
+        state.assemble(
+            Column::Unstaged,
             8,
             next_layout,
             &next_theme,
             DrawBudget::Fast,
-            &state.comments,
         );
-        assert_eq!(state.diff.cursor_anchor(), Some(&anchor));
+        assert_eq!(state.unstaged.cursor_anchor(), Some(&anchor));
     }
 
     #[test]
@@ -1233,27 +1295,27 @@ mod tests {
         state.sidebar.set_selected(0, 18);
         state.visible_diff_window(DrawBudget::Full);
         let last = state
-            .diff
+            .unstaged
             .rows()
             .iter()
             .rposition(|row| row.is_selectable())
             .unwrap();
-        state.diff.select_row(last);
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
-        state.diff.cache.clear();
-        state.diff.reset_window();
-        state.diff.after_reload();
+        state.unstaged.select_row(last);
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
+        state.unstaged.cache.clear();
+        state.unstaged.reset_window();
+        state.unstaged.after_reload();
         state.visible_diff_window(DrawBudget::Fast);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !state.diff.cache.contains(grouped_epoch(80), 0) {
+        while !state.unstaged.cache.contains(grouped_epoch(80), 0) {
             state.background(true);
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
         }
         state.visible_diff_window(DrawBudget::Fast);
-        assert_eq!(state.diff.cursor.file(), Some("src/b.rs"));
+        assert_eq!(state.unstaged.cursor.file(), Some("src/b.rs"));
         state.visible_diff_window(DrawBudget::Full);
-        assert_eq!(state.diff.cursor_anchor(), Some(&anchor));
+        assert_eq!(state.unstaged.cursor_anchor(), Some(&anchor));
     }
 
     #[test]
@@ -1277,17 +1339,15 @@ mod tests {
         state.visible_diff_window(DrawBudget::Full);
         let ready = render_start.elapsed();
         let assemble = |state: &mut FilesMode| {
-            state.diff.assemble_window(
-                state.sidebar.selection_display_range(),
-                &state.model,
+            state.assemble(
+                Column::Unstaged,
                 80,
                 ChangeLayout::Grouped,
                 &Theme::default(),
                 DrawBudget::Fast,
-                &state.comments,
             );
         };
-        state.diff.snap_to_top();
+        state.unstaged.snap_to_top();
         let assemble_start = Instant::now();
         assemble(&mut state);
         let assembly = assemble_start.elapsed();
@@ -1296,7 +1356,7 @@ mod tests {
         println!(
             "directory: pending={pending:?}, complete={ready:?}, assembly={assembly:?}, retained={:?}, rows={}",
             retained_start.elapsed(),
-            state.diff.window_rows()
+            state.unstaged.window_rows()
         );
         assert!(
             assembly < Duration::from_millis(33),
@@ -1334,26 +1394,21 @@ mod tests {
 
     /// Re-assemble the diff window, as a draw does.
     fn rebuild_window(state: &mut FilesMode) {
-        let range = state.sidebar.selection_display_range();
-        let width = state.diff.cached_width;
-        state.diff.assemble_window(
-            range,
-            &state.model,
+        let width = state.unstaged.cached_width;
+        state.assemble(
+            Column::Unstaged,
             width,
             ChangeLayout::Grouped,
             &Theme::default(),
             DrawBudget::Full,
-            &state.comments,
         );
-        wait_for_render(&mut state.diff);
-        state.diff.assemble_window(
-            state.sidebar.selection_display_range(),
-            &state.model,
+        wait_for_render(&mut state.unstaged);
+        state.assemble(
+            Column::Unstaged,
             width,
             ChangeLayout::Grouped,
             &Theme::default(),
             DrawBudget::Full,
-            &state.comments,
         );
     }
 
@@ -1366,14 +1421,14 @@ mod tests {
 
     fn cursor_line(state: &FilesMode) -> Option<(String, LineSide, usize)> {
         state
-            .diff
+            .unstaged
             .cursor_anchor()
             .map(|anchor| (anchor.path.clone(), anchor.side, anchor.line))
     }
 
     fn window_text(state: &FilesMode) -> Vec<String> {
         state
-            .diff
+            .unstaged
             .rows()
             .iter()
             .map(|row| line_text(&row.line))
@@ -1391,7 +1446,7 @@ mod tests {
     fn diff_rows_anchor_each_line_to_its_file_and_number() {
         let state = diff_state(&[edited("src/app.rs")]);
         let anchors: Vec<(String, LineSide, usize)> = state
-            .diff
+            .unstaged
             .rows()
             .iter()
             .filter_map(|row| row.anchor.as_ref())
@@ -1439,7 +1494,7 @@ mod tests {
     #[test]
     fn c_opens_the_editor_and_enter_saves_the_comment() {
         let mut state = diff_state(&[edited("app.rs")]);
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
 
         handle_key(&mut state, KeyCode::Char('c'), 18, 18);
         assert!(matches!(state.input, InputState::Commenting { .. }));
@@ -1464,7 +1519,7 @@ mod tests {
 
         // Focused on the diff but parked on the file header.
         state.focus = Focus::Diff;
-        state.diff.cursor.row = 0;
+        state.unstaged.cursor.row = 0;
         handle_key(&mut state, KeyCode::Char('c'), 18, 18);
         assert!(matches!(state.input, InputState::Normal));
     }
@@ -1472,7 +1527,7 @@ mod tests {
     #[test]
     fn esc_cancels_without_changing_the_saved_comment() {
         let mut state = diff_state(&[edited("app.rs")]);
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         note(&mut state, &anchor, "keep me");
 
         handle_key(&mut state, KeyCode::Char('c'), 18, 18);
@@ -1486,7 +1541,7 @@ mod tests {
     #[test]
     fn saving_empty_text_and_d_both_delete_the_comment() {
         let mut state = diff_state(&[edited("app.rs")]);
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
 
         note(&mut state, &anchor, "first pass");
         handle_key(&mut state, KeyCode::Char('c'), 18, 18);
@@ -1508,11 +1563,11 @@ mod tests {
         for _ in 0..3 {
             handle_key(&mut state, KeyCode::Char('j'), 18, 18);
         }
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         assert_eq!((anchor.side, anchor.line), (LineSide::New, 3));
         note(&mut state, &anchor, "explain this");
 
-        let rows = state.diff.rows();
+        let rows = state.unstaged.rows();
         let line_row = rows
             .iter()
             .position(|row| row.anchor.as_ref() == Some(&anchor))
@@ -1537,8 +1592,8 @@ mod tests {
         // Selecting `src/` warms both files' blocks.
         state.sidebar.set_selected(0, 18);
         rebuild_window(&mut state);
-        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
-        assert!(state.diff.cache.contains(grouped_epoch(80), 1));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 1));
 
         let anchor = CommentAnchor {
             scope: CommentScope::WorkingTree,
@@ -1548,9 +1603,9 @@ mod tests {
         };
         note(&mut state, &anchor, "look here");
 
-        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
         assert!(
-            state.diff.cache.contains(grouped_epoch(80), 1),
+            state.unstaged.cache.contains(grouped_epoch(80), 1),
             "the commented file's render survives"
         );
         assert!(
@@ -1634,8 +1689,8 @@ mod tests {
         assert_eq!(state.status.as_deref(), Some("Cleared 1 comment"));
         assert!(state.comments.is_empty());
         // Comments are an overlay: clearing must not evict the diff cache.
-        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
-        assert!(state.diff.cache.contains(grouped_epoch(80), 1));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 1));
         // The note is gone from screen after the overlay re-renders.
         rebuild_window(&mut state);
         assert!(
@@ -1670,7 +1725,7 @@ mod tests {
     #[test]
     fn the_open_editor_captures_keys_that_are_normally_bindings() {
         let mut state = diff_state(&[edited("app.rs")]);
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
 
         assert!(!Mode::captures_text_input(&state));
         Mode::handle_key(&mut state, KeyCode::Char('c'), 18, 18);
@@ -1692,7 +1747,7 @@ mod tests {
     fn clicking_a_diff_line_moves_the_cursor_there() {
         let mut state = diff_state(&[edited("app.rs")]);
         let last_line_row = state
-            .diff
+            .unstaged
             .rows()
             .iter()
             .rposition(|row| row.is_selectable())
@@ -1705,23 +1760,23 @@ mod tests {
             (last_line_row + 1) as u16,
         );
         handle_mouse(&mut state, mouse, 18, 18);
-        assert_eq!(state.diff.cursor.row, last_line_row);
+        assert_eq!(state.unstaged.cursor.row, last_line_row);
 
         // A click on the file header only focuses the pane.
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 1);
         handle_mouse(&mut state, mouse, 18, 18);
-        assert_eq!(state.diff.cursor.row, last_line_row);
+        assert_eq!(state.unstaged.cursor.row, last_line_row);
     }
 
     #[test]
     fn a_wrapped_diff_line_still_takes_one_cursor_stop() {
         let mut state = diff_state(&[edited("app.rs")]);
         // A pane far narrower than the content wraps every diff line.
-        state.diff.cached_width = 8;
-        state.diff.cache.clear();
+        state.unstaged.cached_width = 8;
+        state.unstaged.cache.clear();
         rebuild_window(&mut state);
 
-        let rows = state.diff.rows();
+        let rows = state.unstaged.rows();
         let selectable = rows.iter().filter(|row| row.is_selectable()).count();
         assert_eq!(selectable, 4, "one stop per diff line, not per row");
         assert!(
@@ -1737,7 +1792,7 @@ mod tests {
         for _ in 0..3 {
             handle_key(&mut state, KeyCode::Char('j'), 18, 18);
         }
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         note(&mut state, &anchor, "look here");
 
         // Two lines are inserted above it, so the same text is now line 5.
@@ -1748,10 +1803,10 @@ mod tests {
                 .to_string(),
         };
         let model = model_from(&[shifted]);
-        let sections = prompt_sections(&model, &state.diff.display_order);
+        let sections = model.sections(&state.display_order);
         reanchor(&mut state.comments, &sections);
         state.model = model;
-        state.diff.cache.clear();
+        state.unstaged.cache.clear();
         rebuild_window(&mut state);
 
         let moved = CommentAnchor {
@@ -1772,7 +1827,7 @@ mod tests {
         for _ in 0..3 {
             handle_key(&mut state, KeyCode::Char('j'), 18, 18);
         }
-        let anchor = state.diff.cursor_anchor().cloned().unwrap();
+        let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         note(&mut state, &anchor, "look here");
 
         // The commented line is rewritten in place: same number, new text,
@@ -1782,9 +1837,9 @@ mod tests {
             before: "line one\nline two\nconst x = 1;\nline four\n".to_string(),
             after: "line one\nline two\nconst x = 99;\nline four\n".to_string(),
         }]);
-        let sections = prompt_sections(&state.model, &state.diff.display_order);
+        let sections = state.model.sections(&state.display_order);
         reanchor(&mut state.comments, &sections);
-        state.diff.cache.clear();
+        state.unstaged.cache.clear();
         rebuild_window(&mut state);
 
         let text = window_text(&state).join("\n");
@@ -1798,14 +1853,14 @@ mod tests {
         for _ in 0..2 {
             handle_key(&mut state, KeyCode::Char('j'), 18, 18);
         }
-        let before = state.diff.cursor_anchor().cloned().unwrap();
+        let before = state.unstaged.cursor_anchor().cloned().unwrap();
 
         // A reload rebuilds every row from scratch.
-        state.diff.cache.clear();
-        state.diff.after_reload();
+        state.unstaged.cache.clear();
+        state.unstaged.after_reload();
         rebuild_window(&mut state);
 
-        assert_eq!(state.diff.cursor_anchor(), Some(&before));
+        assert_eq!(state.unstaged.cursor_anchor(), Some(&before));
     }
 
     #[test]
@@ -1835,6 +1890,7 @@ mod tests {
         let owned: Vec<ResolvedFile> = files.to_vec();
         let bodies = model::precompute_bodies(&owned);
         Model {
+            splits: owned.iter().map(|_| None).collect(),
             files: owned,
             bodies,
             stages: Default::default(),
@@ -1849,17 +1905,14 @@ mod tests {
 
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        mode.ensure_width(67);
-        mode.diff.assemble_window(
-            mode.sidebar.selection_display_range(),
-            &mode.model,
+        mode.assemble(
+            Column::Unstaged,
             67,
             ChangeLayout::Grouped,
             &theme,
             DrawBudget::Fast,
-            &mode.comments,
         );
-        wait_for_render(&mut mode.diff);
+        wait_for_render(&mut mode.unstaged);
         term.draw(|frame| {
             let area = frame.area();
             let cols = Layout::default()
@@ -2023,7 +2076,14 @@ mod tests {
         let input = wrapper.working_tree_diff().unwrap();
         let model = build_model(&input, Some(&wrapper), std::collections::HashMap::new()).unwrap();
         let expected = wrapper.workdir().unwrap().join("a.txt");
-        let state = FilesMode::new(model, input, Some(wrapper), false, &Theme::default(), 80);
+        let state = FilesMode::new(
+            model,
+            Patches::net(&input),
+            Some(wrapper),
+            false,
+            &Theme::default(),
+            80,
+        );
 
         assert_eq!(Mode::selected_path(&state), Some(expected));
     }

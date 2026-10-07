@@ -30,14 +30,38 @@ fn retention_pressure_keeps_the_selected_file_and_stops_when_preparation_finishe
     };
     let theme = theme();
     let epoch = epoch(80, &theme);
-    cache.request(epoch, &model, &[0, 1, 2], Some(0..1), None, &theme);
+    cache.request(
+        epoch,
+        &model,
+        Column::Unstaged,
+        &[0, 1, 2],
+        Some(0..1),
+        None,
+        &theme,
+    );
     finish(&mut cache);
     assert_eq!(line_text(&cache.get(epoch, 0).unwrap()[0].line), "a.txt");
     assert!(cache.get(epoch, 2).is_none());
-    cache.request(epoch, &model, &[0, 1, 2], Some(0..1), None, &theme);
+    cache.request(
+        epoch,
+        &model,
+        Column::Unstaged,
+        &[0, 1, 2],
+        Some(0..1),
+        None,
+        &theme,
+    );
     assert!(!cache.pending(), "evicted preparation must not run forever");
 
-    cache.request(epoch, &model, &[0, 1, 2], Some(2..3), None, &theme);
+    cache.request(
+        epoch,
+        &model,
+        Column::Unstaged,
+        &[0, 1, 2],
+        Some(2..3),
+        None,
+        &theme,
+    );
     finish(&mut cache);
     assert_eq!(line_text(&cache.get(epoch, 2).unwrap()[0].line), "c.txt");
     assert!(cache.get(epoch, 0).is_none());
@@ -61,6 +85,7 @@ fn changing_render_settings_rejects_old_width_layout_and_theme_results() {
     cache.request(
         initial,
         &model,
+        Column::Unstaged,
         &[0, 1, 2],
         Some(0..1),
         None,
@@ -69,6 +94,7 @@ fn changing_render_settings_rejects_old_width_layout_and_theme_results() {
     cache.request(
         changed,
         &model,
+        Column::Unstaged,
         &[0, 1, 2],
         Some(2..3),
         None,
@@ -92,8 +118,24 @@ fn a_directory_viewport_can_render_its_last_file_before_the_directory_finishes()
     let theme = theme();
     let epoch = epoch(80, &theme);
     let mut cache = DiffCache::default();
-    cache.request(epoch, &model, &order, Some(0..100), None, &theme);
-    cache.request(epoch, &model, &order, Some(0..100), Some(99), &theme);
+    cache.request(
+        epoch,
+        &model,
+        Column::Unstaged,
+        &order,
+        Some(0..100),
+        None,
+        &theme,
+    );
+    cache.request(
+        epoch,
+        &model,
+        Column::Unstaged,
+        &order,
+        Some(0..100),
+        Some(99),
+        &theme,
+    );
     finish(&mut cache);
     assert_eq!(
         line_text(&cache.get(epoch, 99).unwrap()[0].line),

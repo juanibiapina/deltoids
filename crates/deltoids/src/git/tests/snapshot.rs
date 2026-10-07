@@ -269,3 +269,62 @@ fn non_utf8_paths_are_paired_before_lossy_conversion() {
     assert_eq!(snapshot.stages[0].staged, Some(StageChange::Modified));
     assert_eq!(snapshot.stages[0].unstaged, Some(StageChange::Modified));
 }
+
+fn patch_paths(patch: &str) -> Vec<&str> {
+    patch
+        .lines()
+        .filter_map(|line| line.strip_prefix("diff --git a/"))
+        .collect()
+}
+
+#[test]
+fn split_patches_cover_only_files_with_both_columns() {
+    let (dir, repo, wrapper) = fixture();
+    let staged_text = original().replace("line 1\n", "line 1 staged\n");
+    fs::write(dir.path().join("a.txt"), &staged_text).unwrap();
+    fs::write(dir.path().join("b.txt"), "staged only\n").unwrap();
+    stage_all(&repo);
+    fs::write(
+        dir.path().join("a.txt"),
+        staged_text.replace("line 20\n", "line 20 unstaged\n"),
+    )
+    .unwrap();
+    fs::write(dir.path().join("new.txt"), "untracked\n").unwrap();
+
+    let snapshot = assert_matches(&wrapper);
+
+    assert_eq!(patch_paths(&snapshot.staged_patch), ["a.txt b/a.txt"]);
+    assert_eq!(patch_paths(&snapshot.unstaged_patch), ["a.txt b/a.txt"]);
+    assert!(snapshot.staged_patch.contains("+line 1 staged\n"));
+    assert!(!snapshot.staged_patch.contains("unstaged"));
+    assert!(snapshot.unstaged_patch.contains("-line 20\n"));
+    assert!(snapshot.unstaged_patch.contains("+line 20 unstaged\n"));
+    assert!(!snapshot.unstaged_patch.contains("+line 1 staged"));
+}
+
+#[test]
+fn split_patches_are_empty_without_files_with_both_columns() {
+    let (dir, repo, wrapper) = fixture();
+    fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
+    stage_all(&repo);
+    fs::write(dir.path().join("b.txt"), "unstaged\n").unwrap();
+    let snapshot = assert_matches(&wrapper);
+    assert!(snapshot.staged_patch.is_empty());
+    assert!(snapshot.unstaged_patch.is_empty());
+}
+
+#[test]
+fn split_patches_keep_a_staged_rename_with_an_unstaged_edit() {
+    let (dir, repo, wrapper) = fixture();
+    fs::rename(dir.path().join("a.txt"), dir.path().join("new.txt")).unwrap();
+    stage_all(&repo);
+    fs::write(dir.path().join("new.txt"), original() + "edit\n").unwrap();
+    let snapshot = assert_matches(&wrapper);
+    assert!(
+        snapshot
+            .staged_patch
+            .contains("rename from a.txt\nrename to new.txt")
+    );
+    assert_eq!(patch_paths(&snapshot.unstaged_patch), ["new.txt b/new.txt"]);
+    assert!(snapshot.unstaged_patch.contains("+edit\n"));
+}

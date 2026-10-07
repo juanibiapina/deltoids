@@ -9,6 +9,9 @@ use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::{Diff, LineKind, SymlinkView, content, git};
 
+use crate::cli::browse::comments::{
+    CommentAnchor, CommentScope, Numbering, PromptSection, numbered_lines,
+};
 use crate::sidebar::{ChangeKind, StageStatus, display_path};
 
 /// Describes whether and how the diff can be refreshed mid-session.
@@ -23,11 +26,140 @@ pub(super) enum DiffSource<'a> {
 /// bodies. Rebuilt wholesale on each working-tree reload.
 pub(super) struct Model {
     pub(super) files: Vec<ResolvedFile>,
+    /// HEAD → worktree bodies; drive sidebar counts and single-column files.
     pub(super) bodies: Vec<FileBody>,
+    /// Aligned with `files`; `Some` only for files with both staged and
+    /// unstaged changes.
+    pub(super) splits: Vec<Option<SplitBodies>>,
     /// Per-file two-column staging status, keyed by workdir-relative
     /// path (matching `display_path`). Empty for piped diffs / no repo,
     /// in which case the sidebar falls back to single-letter status.
     pub(super) stages: HashMap<String, StageStatus>,
+}
+
+/// Which staging column a diff pane shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::cli::browse) enum Column {
+    Staged,
+    Unstaged,
+}
+
+/// One side of a file with both columns: its own diff metadata (renames,
+/// modes) and body.
+pub(super) struct SideBody {
+    pub(super) file: FileDiff,
+    pub(super) body: FileBody,
+}
+
+/// The HEAD → index and index → worktree bodies of one file.
+pub(super) struct SplitBodies {
+    pub(super) staged: SideBody,
+    pub(super) unstaged: SideBody,
+}
+
+/// What a pane renders for one file.
+pub(super) struct BodyView<'a> {
+    pub(super) file: &'a FileDiff,
+    pub(super) body: &'a FileBody,
+    pub(super) numbering: Numbering,
+}
+
+impl Model {
+    /// A model with no files.
+    pub(super) fn empty() -> Self {
+        Self {
+            files: Vec::new(),
+            bodies: Vec::new(),
+            splits: Vec::new(),
+            stages: HashMap::new(),
+        }
+    }
+
+    /// Staging status of file `index`, when known.
+    pub(super) fn stage(&self, index: usize) -> Option<StageStatus> {
+        let file = self.files.get(index)?;
+        self.stages.get(display_path(&file.file)).copied()
+    }
+
+    /// The body file `index` shows in `column`'s pane: its side of the
+    /// split for a file with both columns, the HEAD → worktree body
+    /// otherwise. A single-column file's net diff equals its one column's
+    /// diff, so no other body is needed.
+    pub(super) fn view(&self, index: usize, column: Column) -> BodyView<'_> {
+        match self.splits.get(index).and_then(Option::as_ref) {
+            Some(split) => {
+                let (side, numbering) = match column {
+                    Column::Staged => (&split.staged, Numbering::STAGED),
+                    Column::Unstaged => (&split.unstaged, Numbering::UNSTAGED),
+                };
+                BodyView {
+                    file: &side.file,
+                    body: &side.body,
+                    numbering,
+                }
+            }
+            None => BodyView {
+                file: &self.files[index].file,
+                body: &self.bodies[index],
+                numbering: Numbering::PLAIN,
+            },
+        }
+    }
+
+    /// Every body file `index` shows on screen, left to right.
+    fn views(&self, index: usize) -> Vec<BodyView<'_>> {
+        if self.splits.get(index).is_some_and(Option::is_some) {
+            vec![
+                self.view(index, Column::Staged),
+                self.view(index, Column::Unstaged),
+            ]
+        } else {
+            vec![self.view(index, Column::Unstaged)]
+        }
+    }
+
+    /// The text and kind of the diff line `anchor` names, or `None` when
+    /// the file or the line is no longer on screen.
+    pub(super) fn line(&self, anchor: &CommentAnchor) -> Option<(&str, &LineKind)> {
+        let index = self
+            .files
+            .iter()
+            .position(|resolved| display_path(&resolved.file) == anchor.path)?;
+        self.views(index).into_iter().find_map(|view| {
+            let FileBody::Diff(diff) = view.body else {
+                return None;
+            };
+            diff.hunks().iter().find_map(|hunk| {
+                numbered_lines(hunk, view.numbering)
+                    .find(|line| line.side == anchor.side && line.number == anchor.line)
+                    .map(|line| (line.content, line.kind))
+            })
+        })
+    }
+
+    /// The text diffs on screen in sidebar order, left pane first for a
+    /// file with both columns: what the comment core needs to order,
+    /// re-anchor, and copy notes.
+    pub(super) fn sections(&self, display_order: &[usize]) -> Vec<PromptSection<'_>> {
+        display_order
+            .iter()
+            .filter(|index| **index < self.files.len())
+            .flat_map(|&index| {
+                let path = display_path(&self.files[index].file).to_string();
+                self.views(index)
+                    .into_iter()
+                    .filter_map(move |view| match view.body {
+                        FileBody::Diff(diff) => Some(PromptSection {
+                            scope: CommentScope::WorkingTree,
+                            path: path.clone(),
+                            hunks: diff.hunks(),
+                            numbering: view.numbering,
+                        }),
+                        _ => None,
+                    })
+            })
+            .collect()
+    }
 }
 
 /// Per-file rendered representation, decided once at build time so the
@@ -118,7 +250,74 @@ pub(super) fn build_working_model(
         index += 1;
         keep
     });
-    finish_model(parsed, Some(repo), stage_map(&snapshot.stages))
+    let mut model = finish_model(parsed, Some(repo), stage_map(&snapshot.stages))?;
+    model.splits = split_bodies(snapshot, repo, &model.files)?;
+    Ok(model)
+}
+
+/// Staged and unstaged bodies for every file with both columns, aligned
+/// with `files`. Each status names every path its file had in HEAD, the
+/// index, and the worktree, so the latest path found in each patch joins
+/// it, including a chained rename whose staged side ends at the middle
+/// name. A file missing from either patch keeps its net body.
+fn split_bodies(
+    snapshot: &git::WorkingTreeSnapshot,
+    repo: &git::Repo,
+    files: &[ResolvedFile],
+) -> Result<Vec<Option<SplitBodies>>, String> {
+    let mut staged = side_bodies(&snapshot.staged_patch, repo)?;
+    let mut unstaged = side_bodies(&snapshot.unstaged_patch, repo)?;
+    let mut by_path: HashMap<&str, SplitBodies> = HashMap::new();
+    for status in &snapshot.stages {
+        if status.staged.is_none() || status.unstaged.is_none() {
+            continue;
+        }
+        let latest = |sides: &HashMap<String, SideBody>| {
+            status
+                .paths
+                .iter()
+                .rev()
+                .find(|path| sides.contains_key(path.as_str()))
+                .cloned()
+        };
+        let (Some(staged_path), Some(unstaged_path)) = (latest(&staged), latest(&unstaged)) else {
+            continue;
+        };
+        let key = status.paths.last().unwrap_or(&status.path);
+        by_path.insert(
+            key,
+            SplitBodies {
+                staged: staged.remove(&staged_path).expect("found above"),
+                unstaged: unstaged.remove(&unstaged_path).expect("found above"),
+            },
+        );
+    }
+    Ok(files
+        .iter()
+        .map(|file| by_path.remove(display_path(&file.file)))
+        .collect())
+}
+
+/// Parse, resolve, and diff one split patch, keyed by display path.
+fn side_bodies(patch: &str, repo: &git::Repo) -> Result<HashMap<String, SideBody>, String> {
+    if patch.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let files = resolve(GitDiff::parse(patch), Some(repo))?;
+    let bodies = precompute_bodies(&files);
+    Ok(files
+        .into_iter()
+        .zip(bodies)
+        .map(|(resolved, body)| {
+            (
+                display_path(&resolved.file).to_string(),
+                SideBody {
+                    file: resolved.file,
+                    body,
+                },
+            )
+        })
+        .collect())
 }
 
 fn finish_model(
@@ -154,6 +353,7 @@ fn finish_model(
         bodies.push(FileBody::StatusOnly);
     }
     Ok(Model {
+        splits: files.iter().map(|_| None).collect(),
         files,
         bodies,
         stages,
@@ -594,6 +794,91 @@ mod tests {
         assert!(
             crate::sidebar::file_metadata(&model.files[sub_idx].file).is_submodule,
             "the submodule row must carry the submodule marker for its badge"
+        );
+    }
+
+    fn changed_lines(view: &BodyView<'_>, kind: LineKind) -> Vec<String> {
+        let FileBody::Diff(diff) = view.body else {
+            panic!("expected a text diff");
+        };
+        diff.hunks()
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.kind == kind)
+            .map(|line| line.content.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_file_with_both_columns_gets_staged_and_unstaged_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let base: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(dir.path().join("a.txt"), &base).unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+        stage_all(&repo);
+        commit_index(&repo, "init");
+        let staged = base.replace("line 2\n", "line 2 staged\n");
+        std::fs::write(dir.path().join("a.txt"), &staged).unwrap();
+        stage_all(&repo);
+        let worktree = staged.replace("line 11\n", "line 11 unstaged\n");
+        std::fs::write(dir.path().join("a.txt"), &worktree).unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b edited\n").unwrap();
+        repo.blob(worktree.as_bytes()).unwrap();
+        repo.blob(b"b edited\n").unwrap();
+
+        let wrapper = git::Repo::discover_at(dir.path()).unwrap();
+        let model =
+            build_working_model(&wrapper.working_tree_snapshot().unwrap(), &wrapper).unwrap();
+        let a = model
+            .files
+            .iter()
+            .position(|f| display_path(&f.file) == "a.txt")
+            .unwrap();
+        let b = model
+            .files
+            .iter()
+            .position(|f| display_path(&f.file) == "b.txt")
+            .unwrap();
+
+        let staged_view = model.view(a, Column::Staged);
+        assert_eq!(staged_view.numbering, Numbering::STAGED);
+        assert_eq!(
+            changed_lines(&staged_view, LineKind::Added),
+            ["line 2 staged"]
+        );
+        let unstaged_view = model.view(a, Column::Unstaged);
+        assert_eq!(unstaged_view.numbering, Numbering::UNSTAGED);
+        assert_eq!(
+            changed_lines(&unstaged_view, LineKind::Added),
+            ["line 11 unstaged"]
+        );
+        assert_eq!(
+            changed_lines(&unstaged_view, LineKind::Removed),
+            ["line 11"]
+        );
+
+        // A single-column file shows its net body in either column.
+        let net = model.view(b, Column::Staged);
+        assert_eq!(net.numbering, Numbering::PLAIN);
+        assert!(std::ptr::eq(net.body, &model.bodies[b]));
+
+        // The staged added line is index line 2, found through its anchor.
+        let anchor = CommentAnchor {
+            scope: CommentScope::WorkingTree,
+            path: "a.txt".to_string(),
+            side: crate::cli::browse::comments::LineSide::Index,
+            line: 2,
+        };
+        assert_eq!(
+            model.line(&anchor),
+            Some(("line 2 staged", &LineKind::Added))
+        );
+        let sections = model.sections(&[a, b]);
+        let numberings: Vec<_> = sections.iter().map(|s| s.numbering).collect();
+        assert_eq!(
+            numberings,
+            [Numbering::STAGED, Numbering::UNSTAGED, Numbering::PLAIN]
         );
     }
 

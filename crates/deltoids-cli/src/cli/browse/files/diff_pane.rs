@@ -1,28 +1,29 @@
 //! Diff pane vertical slice: its state (a retained per-file line cache,
-//! display order, scroll), its scroll math, its key handling, and its
-//! render. The pane is always filtered to whatever the sidebar points at;
-//! the shell passes that selection range in as a plain value so this slice
-//! never reaches into the sidebar's fields.
+//! cursor, scroll), its scroll math, its key handling, and its render.
+//! Files mode owns one pane per staging column and draws the one the
+//! selection shows. Each draw passes the pane its [`PaneSpec`]: the
+//! column's files in sidebar order and the selection's slice of them, so
+//! this slice never reaches into the sidebar's fields.
 //!
 //! Rendering runs in a worker owned by [`DiffCache`]. A draw submits the
 //! selection and uses ready blocks or cheap placeholders. The assembled
 //! window survives cursor and focus changes; comments remain an overlay.
 
-use std::ops::Range;
-
 use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use deltoids::render_tui::{self, pane_block_with_footer, pane_border_color, rgb_to_color};
+use deltoids::render_tui::{self, pane_block_with_tabs, pane_border_color, rgb_to_color};
 use deltoids::{ChangeLayout, Hunk, Theme};
 
 use deltoids::parse::FileDiff;
 
 use crate::cli::browse::comment_view::{highlight_row, with_comments};
-use crate::cli::browse::comments::{CommentAnchor, CommentScope, CommentStore, hunk_lines};
+use crate::cli::browse::comments::{
+    CommentAnchor, CommentScope, CommentStore, Numbering, numbered_lines,
+};
 use crate::cli::browse::diff_cursor::{
     Cursor, DiffRow, LinePlace, Step, keep_visible, restore_cursor, select_row, step_cursor,
 };
@@ -30,8 +31,9 @@ use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label};
 use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
-use super::model::{FileBody, Model, ResolvedFile};
+use super::model::{Column, FileBody, Model};
 use super::render::DiffCache;
+use super::stage_panes::{PaneSpec, PaneTitle};
 
 pub(super) const SCROLL_STEP_SMALL: usize = 1;
 pub(super) const SCROLL_STEP_LARGE: usize = 3;
@@ -55,9 +57,11 @@ pub(super) struct CacheEpoch {
 /// Every row of a diff line is tagged with the [`CommentAnchor`] it
 /// belongs to; saved comments are spliced in later by
 /// [`crate::cli::browse::comment_view::with_comments`].
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_file_block(
     file: &FileDiff,
     body: &FileBody,
+    numbering: Numbering,
     width: usize,
     layout: ChangeLayout,
     theme: &Theme,
@@ -66,6 +70,7 @@ pub(super) fn render_file_block(
 ) -> Option<Vec<DiffRow>> {
     let mut render = FileRender {
         width,
+        numbering,
         layout,
         theme,
         keep_going,
@@ -161,6 +166,7 @@ pub(super) fn render_file_block(
 
 struct FileRender<'a> {
     width: usize,
+    numbering: Numbering,
     layout: ChangeLayout,
     theme: &'a Theme,
     keep_going: &'a dyn Fn() -> bool,
@@ -180,8 +186,10 @@ impl FileRender<'_> {
         for (index, hunk) in diff.hunks().iter().enumerate() {
             rows.push(DiffRow::plain(Line::from("")));
             let enabled = !self.preview.published;
+            let numbering = self.numbering;
             let mut publish_hunk = |partial: &[render_tui::HunkRow]| {
-                self.preview.hunk(rows, hunk, index, path, partial)
+                self.preview
+                    .hunk(rows, hunk, (index, numbering), path, partial)
             };
             let callback = if enabled {
                 Some(&mut publish_hunk as render_tui::HunkPreview<'_>)
@@ -209,7 +217,7 @@ impl FileRender<'_> {
                     callback,
                 )
             }?;
-            push_hunk_rows(rows, rendered, hunk, (path, index), path);
+            push_hunk_rows(rows, rendered, hunk, (path, index), self.numbering);
             self.preview.rows(rows);
         }
         Some(())
@@ -234,7 +242,7 @@ impl FilePreview<'_> {
         &mut self,
         prefix: &[DiffRow],
         hunk: &Hunk,
-        index: usize,
+        (index, numbering): (usize, Numbering),
         path: &str,
         partial: &[render_tui::HunkRow],
     ) {
@@ -246,31 +254,14 @@ impl FilePreview<'_> {
             .take(render_tui::PREVIEW_ROWS)
             .cloned()
             .collect();
-        push_hunk_rows(&mut rows, partial.to_vec(), hunk, (path, index), path);
+        push_hunk_rows(&mut rows, partial.to_vec(), hunk, (path, index), numbering);
         self.rows(&rows);
     }
 }
 
-/// The text of the diff line `anchor` points at, as the working tree has
-/// it now.
-fn line_content<'a>(model: &'a Model, anchor: &CommentAnchor) -> Option<&'a str> {
-    let index = model
-        .files
-        .iter()
-        .position(|resolved| display_path(&resolved.file) == anchor.path)?;
-    let FileBody::Diff(diff) = model.bodies.get(index)? else {
-        return None;
-    };
-    diff.hunks().iter().find_map(|hunk| {
-        hunk_lines(hunk)
-            .find(|line| line.side == anchor.side && line.number == anchor.line)
-            .map(|line| line.content)
-    })
-}
-
 /// The comment anchor for every logical line of `hunk`, in line order.
-fn hunk_anchors(hunk: &Hunk, path: &str, limit: usize) -> Vec<CommentAnchor> {
-    hunk_lines(hunk)
+fn hunk_anchors(hunk: &Hunk, path: &str, limit: usize, numbering: Numbering) -> Vec<CommentAnchor> {
+    numbered_lines(hunk, numbering)
         .take(limit)
         .map(|line| CommentAnchor {
             scope: CommentScope::WorkingTree,
@@ -291,7 +282,7 @@ fn push_hunk_rows(
     rendered: Vec<render_tui::HunkRow>,
     hunk: &Hunk,
     place: (&str, usize),
-    path: &str,
+    numbering: Numbering,
 ) {
     let (file, hunk_index) = place;
     let limit = rendered
@@ -299,7 +290,7 @@ fn push_hunk_rows(
         .filter_map(|row| row.source_line)
         .max()
         .map_or(0, |index| index + 1);
-    let anchors = hunk_anchors(hunk, path, limit);
+    let anchors = hunk_anchors(hunk, file, limit, numbering);
     for row in rendered {
         let Some(index) = row.source_line else {
             rows.push(DiffRow::plain(row.line));
@@ -379,21 +370,17 @@ fn typechange_label(mode: FileMode) -> &'static str {
 /// rename header) plus a muted "Rendering…" line. No syntect, so holding
 /// `j` across many files never blocks. Its height is fixed and known, so
 /// the assembled window has a definite length every frame.
-fn placeholder_file_block(
-    resolved: &ResolvedFile,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let path = display_path(&resolved.file);
+fn placeholder_file_block(file: &FileDiff, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let path = display_path(file);
     let mut lines = render_tui::render_file_header(path, width, theme);
-    if let Some(old_path) = &resolved.file.rename_from {
+    if let Some(old_path) = &file.rename_from {
         lines.push(render_tui::render_rename_header(
             old_path,
-            &resolved.file.new_path,
+            &file.new_path,
             theme,
         ));
     }
-    if let Some(note) = typechange_note(&resolved.file, theme) {
+    if let Some(note) = typechange_note(file, theme) {
         lines.push(Line::from(""));
         lines.extend(note);
     }
@@ -412,7 +399,7 @@ fn placeholder_file_block(
 /// multi-line text (a message plus a `hint:` line) is fully visible.
 #[derive(PartialEq, Eq)]
 struct WindowKey {
-    range: Option<Range<usize>>,
+    files: Option<Vec<usize>>,
     epoch: CacheEpoch,
     blocks: u64,
     comments: u64,
@@ -428,12 +415,16 @@ enum EmptyPane {
 /// bookkeeping needed to scroll it and keep it aligned with the sidebar's
 /// selection.
 pub(super) struct DiffPane {
+    /// The staging column whose bodies this pane renders.
+    column: Column,
     /// Retained per-file rendered blocks.
     pub(super) cache: DiffCache,
-    /// File indices in sidebar (display) order.
-    pub(super) display_order: Vec<usize>,
-    /// The width the cache was built for; a change clears it.
+    /// The width the last window was assembled at.
     pub(super) cached_width: usize,
+    /// What the border title names.
+    title: PaneTitle,
+    /// True when the pane's column has no files, so it draws its empty state.
+    empty: bool,
     /// The diff cursor's row and the pane's scroll offset, both relative
     /// to the top of the current selection's assembled window.
     pub(super) cursor: Cursor,
@@ -455,11 +446,13 @@ pub(super) struct DiffPane {
 }
 
 impl DiffPane {
-    pub(super) fn new(display_order: Vec<usize>, width: usize) -> Self {
+    pub(super) fn new(column: Column, width: usize) -> Self {
         Self {
+            column,
             cache: DiffCache::default(),
-            display_order,
             cached_width: width,
+            title: PaneTitle::Diff,
+            empty: true,
             cursor: Cursor::default(),
             cursor_ready: true,
             window: Vec::new(),
@@ -489,16 +482,25 @@ impl DiffPane {
         self.empty_state = EmptyPane::NoChanges;
     }
 
+    /// Record what this draw shows: title, emptiness, width, and layout.
+    fn adopt_spec(&mut self, spec: &PaneSpec<'_>, width: usize, layout: ChangeLayout) {
+        debug_assert_eq!(spec.column, self.column);
+        self.current_layout = layout;
+        self.cached_width = width;
+        self.title = spec.title;
+        self.empty = spec.order.is_empty();
+    }
+
     /// Assemble the selected window's file blocks into one line vector and
     /// record its length in `window_rows`. Missing blocks render outside
     /// the UI thread and contribute placeholders until ready. Reuse the
-    /// assembled window while its rows stay unchanged. `display_range` is
-    /// the sidebar's selection range in
-    /// display order: a single file, a directory subtree, or `None`.
+    /// assembled window while its rows stay unchanged. `spec` names the
+    /// pane's files in display order and the selection's slice of them: a
+    /// single file, a directory subtree, or `None`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble_window(
         &mut self,
-        display_range: Option<Range<usize>>,
+        spec: &PaneSpec<'_>,
         model: &Model,
         width: usize,
         layout: ChangeLayout,
@@ -506,9 +508,12 @@ impl DiffPane {
         _budget: DrawBudget,
         comments: &CommentStore,
     ) {
-        self.current_layout = layout;
+        self.adopt_spec(spec, width, layout);
+        let display_range = spec.range.clone();
         let mut key = WindowKey {
-            range: display_range.clone(),
+            files: display_range
+                .clone()
+                .map(|range| spec.order[range].to_vec()),
             epoch: CacheEpoch {
                 width,
                 layout,
@@ -520,7 +525,7 @@ impl DiffPane {
         let same_selection = self
             .window_key
             .as_ref()
-            .is_some_and(|old| old.range == key.range);
+            .is_some_and(|old| old.files == key.files);
         let old_top = same_selection
             .then(|| {
                 self.file_starts
@@ -533,7 +538,8 @@ impl DiffPane {
         self.cache.request(
             key.epoch,
             model,
-            &self.display_order,
+            self.column,
+            spec.order,
             display_range.clone(),
             old_top.map(|(file, _)| file),
             theme,
@@ -544,10 +550,10 @@ impl DiffPane {
                 .as_ref()
                 .is_some_and(|old| old.epoch != key.epoch)
             && self.window.iter().any(DiffRow::is_selectable)
-            && key.range.as_ref().is_some_and(|range| {
-                range
-                    .clone()
-                    .any(|pos| !self.cache.complete(key.epoch, self.display_order[pos]))
+            && key.files.as_ref().is_some_and(|files| {
+                files
+                    .iter()
+                    .any(|file| !self.cache.complete(key.epoch, *file))
             })
         {
             return;
@@ -555,19 +561,18 @@ impl DiffPane {
         if self.window_key.as_ref() == Some(&key) {
             return;
         }
-        let Some(range) = display_range else {
+        let Some(files) = key.files.clone() else {
             self.set_window(Vec::new(), false);
             return;
         };
-        if range.is_empty() || self.display_order.is_empty() {
+        if files.is_empty() {
             self.set_window(Vec::new(), false);
             return;
         }
 
         let mut window = Vec::new();
         let mut starts = Vec::new();
-        for (i, pos) in range.clone().enumerate() {
-            let input_idx = self.display_order[pos];
+        for (i, input_idx) in files.into_iter().enumerate() {
             if i > 0 {
                 window.push(DiffRow::plain(Line::from("")));
             }
@@ -654,10 +659,12 @@ impl DiffPane {
     ) -> Vec<DiffRow> {
         if let Some(rows) = self.cache.get(epoch, input_idx) {
             with_comments(rows, comments, epoch.width, theme, |anchor, comment| {
-                line_content(model, anchor).is_some_and(|content| content != comment.code)
+                model
+                    .line(anchor)
+                    .is_some_and(|(content, _)| content != comment.code)
             })
         } else {
-            placeholder_file_block(&model.files[input_idx], epoch.width, theme)
+            placeholder_file_block(model.view(input_idx, self.column).file, epoch.width, theme)
                 .into_iter()
                 .map(DiffRow::plain)
                 .collect()
@@ -754,9 +761,9 @@ impl DiffPane {
         // With no files, render an empty state rather than a blank pane:
         // either the clean "No local changes." line (a reverted/committed
         // tree or a non-repo) or a build-error message.
-        if self.display_order.is_empty() {
-            let block = pane_block_with_footer(
-                "─[2]─Diff─",
+        if self.empty {
+            let block = pane_block_with_tabs(
+                heading(self.title, theme),
                 color,
                 status.map(|message| format!(" {message} ")),
             );
@@ -830,7 +837,7 @@ impl DiffPane {
         let footer = status
             .map(|status| format!(" {status} "))
             .or_else(|| self.footer());
-        let block = pane_block_with_footer("─[2]─Diff─", color, footer);
+        let block = pane_block_with_tabs(heading(self.title, theme), color, footer);
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new(visible), inner);
 
@@ -862,9 +869,40 @@ impl DiffPane {
     }
 }
 
+/// The pane's border title. With both columns in the selection it names
+/// both, the shown one highlighted as in the sidebar's mode strip.
+fn heading(title: PaneTitle, theme: &Theme) -> Line<'static> {
+    let label = |column| match column {
+        Column::Staged => "Staged",
+        Column::Unstaged => "Unstaged",
+    };
+    match title {
+        PaneTitle::Diff => Line::from("─[2]─Diff─"),
+        PaneTitle::One(column) => Line::from(format!("─[2]─{} changes─", label(column))),
+        PaneTitle::Both(shown) => {
+            let active = Style::default()
+                .fg(rgb_to_color(theme.border_active))
+                .add_modifier(Modifier::BOLD);
+            let inactive = Style::default().fg(Color::Reset);
+            let tab = |column| {
+                let style = if column == shown { active } else { inactive };
+                Span::styled(label(column), style)
+            };
+            Line::from(vec![
+                Span::raw("─[2]─"),
+                tab(Column::Staged),
+                Span::styled(" - ", inactive),
+                tab(Column::Unstaged),
+                Span::raw("─"),
+            ])
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::browse::files::model::ResolvedFile;
     use crate::cli::browse::files::test_support::*;
 
     fn grouped_epoch(width: usize) -> CacheEpoch {
@@ -890,7 +928,7 @@ mod tests {
         // changes." message off `display_order.is_empty()`.
         let state = make_state(&[]);
         assert!(
-            state.diff.display_order.is_empty(),
+            state.display_order.is_empty(),
             "expected empty display order for a zero-file model"
         );
     }
@@ -900,7 +938,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let mut pane = DiffPane::new(Vec::new(), 80);
+        let mut pane = DiffPane::new(Column::Unstaged, 80);
         pane.set_empty_error("missing index blob deadbeef\nhint: try again".to_string());
 
         let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
@@ -929,7 +967,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let mut pane = DiffPane::new(Vec::new(), 80);
+        let mut pane = DiffPane::new(Column::Unstaged, 80);
         pane.set_empty_loading();
 
         let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
@@ -972,17 +1010,15 @@ mod tests {
         ] {
             let theme = Theme::for_mode(mode);
             let mut terminal = Terminal::new(TestBackend::new(60, 40)).unwrap();
-            state.ensure_width(27);
-            state.diff.assemble_window(
-                state.sidebar.selection_display_range(),
+            assemble_unstaged(
+                &mut state.unstaged,
                 &state.model,
+                &state.sidebar,
                 27,
                 layout,
                 &theme,
-                DrawBudget::Fast,
-                &state.comments,
             );
-            wait_for_render(&mut state.diff);
+            wait_for_render(&mut state.unstaged);
             terminal
                 .draw(|frame| {
                     state.draw(
@@ -1011,7 +1047,7 @@ mod tests {
                 .count();
             assert!(added_count > 1);
             assert!(removed_count > 1);
-            assert_eq!(state.diff.cached_width, 27);
+            assert_eq!(state.unstaged.cached_width, 27);
             assert_eq!(buffer[(59, 0)].symbol(), "╮");
             assert_eq!(buffer[(59, 39)].symbol(), "╯");
         }
@@ -1029,7 +1065,7 @@ mod tests {
         }];
         let mut state = make_state(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
-        let cursor_row = state.diff.cursor.row;
+        let cursor_row = state.unstaged.cursor.row;
 
         let selection_bg = rgb_to_color(theme().selection_bg);
         let bg_of_row = |focused: bool, pane: &mut DiffPane| {
@@ -1045,12 +1081,12 @@ mod tests {
         };
 
         assert_eq!(
-            bg_of_row(true, &mut state.diff),
+            bg_of_row(true, &mut state.unstaged),
             Some(selection_bg),
             "the focused pane highlights the line the cursor is on"
         );
         assert_ne!(
-            bg_of_row(false, &mut state.diff),
+            bg_of_row(false, &mut state.unstaged),
             Some(selection_bg),
             "an unfocused pane draws no cursor"
         );
@@ -1061,7 +1097,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let mut pane = DiffPane::new(Vec::new(), 80);
+        let mut pane = DiffPane::new(Column::Unstaged, 80);
         let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
         term.draw(|f| {
             let area = f.area();
@@ -1082,7 +1118,7 @@ mod tests {
         let resolved = vec![resolved("a.txt"), resolved("b.txt")];
         let state = make_state(&resolved);
         assert!(
-            state.diff.cache.is_empty(),
+            state.unstaged.cache.is_empty(),
             "diff cache should start empty (highlighting deferred)"
         );
         assert_eq!(state.sidebar.display_order().len(), 2);
@@ -1333,11 +1369,11 @@ mod tests {
     fn completed_render_is_retained() {
         let resolved = vec![resolved("a.txt")];
         let mut state = make_state(&resolved);
-        assert!(state.diff.cache.is_empty());
+        assert!(state.unstaged.cache.is_empty());
 
         // The test helper waits for completion before reading retained rows.
         let _ = state.visible_diff_window(DrawBudget::Full);
-        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
     }
 
     #[test]
@@ -1348,7 +1384,7 @@ mod tests {
             after: "world\n".to_string(),
         }];
         let mut state = make_state(&resolved);
-        assert!(state.diff.cache.is_empty());
+        assert!(state.unstaged.cache.is_empty());
 
         // An uncached file submits work and immediately shows its header.
         let window = state.visible_diff_window(DrawBudget::Fast);
@@ -1366,14 +1402,14 @@ mod tests {
             "placeholder must not highlight the diff body, got: {texts:#?}"
         );
         assert!(
-            state.diff.cache.is_empty(),
+            state.unstaged.cache.is_empty(),
             "Fast frame must not cache the file"
         );
 
-        wait_for_render(&mut state.diff);
+        wait_for_render(&mut state.unstaged);
         let ready = state.visible_diff_window(DrawBudget::Fast);
         assert!(ready.iter().any(|line| line_text(line).contains("world")));
-        assert!(state.diff.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
     }
 
     #[test]
@@ -1431,13 +1467,21 @@ mod tests {
         let _ = state.visible_diff_window(DrawBudget::Full);
         state.focus = Focus::Diff;
 
-        let first = state.diff.cursor_anchor().cloned().expect("a diff line");
+        let first = state
+            .unstaged
+            .cursor_anchor()
+            .cloned()
+            .expect("a diff line");
         handle_key(&mut state, KeyCode::Char('j'), 4, 4);
-        let second = state.diff.cursor_anchor().cloned().expect("a diff line");
+        let second = state
+            .unstaged
+            .cursor_anchor()
+            .cloned()
+            .expect("a diff line");
         assert_ne!(first, second, "j moves to the next diff line");
         // The pane scrolls only as much as it takes to keep it visible.
-        assert!(state.diff.cursor.row >= state.diff.cursor.scroll);
-        assert!(state.diff.cursor.row < state.diff.cursor.scroll + 4);
+        assert!(state.unstaged.cursor.row >= state.unstaged.cursor.scroll);
+        assert!(state.unstaged.cursor.row < state.unstaged.cursor.scroll + 4);
     }
 
     #[test]
@@ -1453,7 +1497,7 @@ mod tests {
         // Stay in Sidebar focus; Shift+J should still scroll the diff.
         assert_eq!(state.focus, Focus::Sidebar);
         handle_key(&mut state, KeyCode::Char('J'), 4, 4);
-        assert_eq!(state.diff.cursor.scroll, SCROLL_STEP_LARGE);
+        assert_eq!(state.unstaged.cursor.scroll, SCROLL_STEP_LARGE);
     }
 
     #[test]
@@ -1579,7 +1623,7 @@ mod tests {
         }];
         let mut state = make_state(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
-        let footer = state.diff.footer().expect("footer present");
+        let footer = state.unstaged.footer().expect("footer present");
         assert!(
             footer.contains("? help"),
             "expected '? help' hint in footer, got {footer:?}"
@@ -1597,16 +1641,16 @@ mod tests {
         let mut state = make_state_with_rects(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
         state.focus = Focus::Diff;
-        let before = state.diff.cursor.scroll;
+        let before = state.unstaged.cursor.scroll;
 
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollDown, 50, 5);
         crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
-        assert!(state.diff.cursor.scroll > before);
+        assert!(state.unstaged.cursor.scroll > before);
 
-        let after_down = state.diff.cursor.scroll;
+        let after_down = state.unstaged.cursor.scroll;
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollUp, 50, 5);
         crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
-        assert!(state.diff.cursor.scroll < after_down);
+        assert!(state.unstaged.cursor.scroll < after_down);
     }
 
     #[test]
@@ -1621,7 +1665,7 @@ mod tests {
             .collect();
         let mut state = make_state_with_rects(&resolved);
         state.focus = Focus::Diff;
-        state.diff.cursor.scroll = 4;
+        state.unstaged.cursor.scroll = 4;
 
         let right = make_mouse_mods(
             crossterm::event::MouseEventKind::ScrollRight,
@@ -1631,7 +1675,7 @@ mod tests {
         );
         crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
-        assert_eq!(state.diff.cursor.scroll, 0);
+        assert_eq!(state.unstaged.cursor.scroll, 0);
         assert_eq!(state.focus, Focus::Diff);
 
         crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
@@ -1675,7 +1719,7 @@ mod tests {
         let mut state = make_state_with_rects(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
         let initial = state.sidebar.selected();
-        let diff_before = state.diff.cursor.scroll;
+        let diff_before = state.unstaged.cursor.scroll;
 
         // Cursor over the diff (col 50), Ctrl held.
         let mouse = make_mouse_mods(
@@ -1691,7 +1735,7 @@ mod tests {
             "ctrl+scroll should move the sidebar selection"
         );
         assert_eq!(
-            state.diff.cursor.scroll, diff_before,
+            state.unstaged.cursor.scroll, diff_before,
             "ctrl+scroll should not scroll the diff"
         );
     }

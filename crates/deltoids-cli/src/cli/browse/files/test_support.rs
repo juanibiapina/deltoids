@@ -16,9 +16,41 @@ use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
 
 use super::diff_pane::DiffPane;
 use crate::cli::browse::comments::CommentStore;
+use crate::cli::browse::mode::DrawBudget;
 
-use super::model::{Model, ResolvedFile, body_deltas, precompute_bodies};
+use super::model::{Column, Model, ResolvedFile, body_deltas, precompute_bodies};
+use super::reload::Patches;
+use super::stage_panes::StagePanes;
 use super::{FilesMode, Focus, InputState};
+
+/// Assemble `pane` as the unstaged (or only) pane for `sidebar`'s selection
+/// of `model`.
+pub(super) fn assemble_unstaged(
+    pane: &mut DiffPane,
+    model: &Model,
+    sidebar: &Sidebar,
+    width: usize,
+    layout: deltoids::ChangeLayout,
+    theme: &Theme,
+) {
+    let order = sidebar.display_order();
+    let panes = StagePanes::new(model, &order);
+    let spec = panes.view(sidebar.selection_display_range(), Column::Unstaged);
+    assert_eq!(
+        spec.column,
+        Column::Unstaged,
+        "the selection shows unstaged changes"
+    );
+    pane.assemble_window(
+        &spec,
+        model,
+        width,
+        layout,
+        theme,
+        DrawBudget::Full,
+        &CommentStore::default(),
+    );
+}
 
 pub(super) fn wait_for_render(diff: &mut DiffPane) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -62,6 +94,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
     let owned: Vec<ResolvedFile> = files.to_vec();
     let bodies = precompute_bodies(&owned);
     let model = Model {
+        splits: owned.iter().map(|_| None).collect(),
         files: owned,
         bodies,
         stages: Default::default(),
@@ -82,9 +115,13 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         .collect();
     let sidebar = Sidebar::build_with_icons(&sidebar_files, &theme(), IconMode::Off);
     let display_order = sidebar.display_order();
-    let diff = DiffPane::new(display_order, 80);
+    let panes = StagePanes::new(&model, &display_order);
     FilesMode {
-        diff,
+        staged: DiffPane::new(Column::Staged, 80),
+        unstaged: DiffPane::new(Column::Unstaged, 80),
+        display_order,
+        panes,
+        column: Column::Unstaged,
         sidebar,
         focus: Focus::Sidebar,
         sidebar_rect: Rect::default(),
@@ -98,7 +135,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         is_static: true,
         startup_pending: false,
         loading_since: None,
-        last_input: String::new(),
+        last_input: Patches::default(),
         _watcher: None,
         reload_failed: false,
         action_job: None,
@@ -171,6 +208,7 @@ pub(super) fn model_of(paths: &[&str]) -> Model {
     let files: Vec<ResolvedFile> = paths.iter().map(|p| resolved(p)).collect();
     let bodies = precompute_bodies(&files);
     Model {
+        splits: files.iter().map(|_| None).collect(),
         files,
         bodies,
         stages: Default::default(),

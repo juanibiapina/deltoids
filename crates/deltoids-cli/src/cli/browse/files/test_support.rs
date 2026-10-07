@@ -206,12 +206,28 @@ pub(super) fn resolved(path: &str) -> ResolvedFile {
 
 pub(super) fn model_of(paths: &[&str]) -> Model {
     let files: Vec<ResolvedFile> = paths.iter().map(|p| resolved(p)).collect();
+    model_from(&files)
+}
+
+pub(super) fn model_from(files: &[ResolvedFile]) -> Model {
+    let files = files.to_vec();
     let bodies = precompute_bodies(&files);
     Model {
         splits: files.iter().map(|_| None).collect(),
         files,
         bodies,
         stages: Default::default(),
+    }
+}
+
+/// A resolved file with `lines` added lines, enough to scroll.
+pub(super) fn long_file(path: &str, lines: usize) -> ResolvedFile {
+    ResolvedFile {
+        file: file_diff(path),
+        before: String::new(),
+        after: (0..lines)
+            .map(|line| format!("{path} line {line}\n"))
+            .collect(),
     }
 }
 

@@ -1302,9 +1302,7 @@ mod tests {
             .unwrap();
         state.unstaged.select_row(last);
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
-        state.unstaged.cache.clear();
-        state.unstaged.reset_window();
-        state.unstaged.after_reload();
+        state.unstaged.carry_over(&Default::default());
         state.visible_diff_window(DrawBudget::Fast);
         let deadline = Instant::now() + Duration::from_secs(10);
         while !state.unstaged.cache.contains(grouped_epoch(80), 0) {
@@ -1856,8 +1854,7 @@ mod tests {
         let before = state.unstaged.cursor_anchor().cloned().unwrap();
 
         // A reload rebuilds every row from scratch.
-        state.unstaged.cache.clear();
-        state.unstaged.after_reload();
+        state.unstaged.carry_over(&Default::default());
         rebuild_window(&mut state);
 
         assert_eq!(state.unstaged.cursor_anchor(), Some(&before));
@@ -1886,17 +1883,6 @@ mod tests {
     }
 
     /// Build a model from resolved files, as `make_state` does.
-    fn model_from(files: &[ResolvedFile]) -> Model {
-        let owned: Vec<ResolvedFile> = files.to_vec();
-        let bodies = model::precompute_bodies(&owned);
-        Model {
-            splits: owned.iter().map(|_| None).collect(),
-            files: owned,
-            bodies,
-            stages: Default::default(),
-        }
-    }
-
     /// Draw one frame of Files mode and return the flattened screen text.
     fn drawn_screen(mode: &mut FilesMode) -> String {
         use ratatui::Terminal;

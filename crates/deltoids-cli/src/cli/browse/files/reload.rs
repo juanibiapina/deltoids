@@ -231,6 +231,7 @@ fn apply_reload(
     reload_view(
         panes,
         sidebar,
+        model,
         &new_model,
         prev_path.as_deref(),
         theme,
@@ -252,21 +253,20 @@ fn apply_reload(
 /// restore would break when files are added or removed); when the file is
 /// gone the fresh sidebar's default (first file) stands. Focus, sidebar
 /// width, help visibility, and wheel state live on `state` and are left
-/// untouched. Scroll is clamped to the new range then snapped to the
-/// restored selection.
+/// untouched. Each pane keeps the rendered blocks of files that did not
+/// change, and its scroll when the file at the top of the viewport is one
+/// of them.
 fn reload_view(
-    mut panes: [&mut DiffPane; 2],
+    panes: [&mut DiffPane; 2],
     sidebar: &mut Sidebar,
+    old: &Model,
     model: &Model,
     prev_path: Option<&str>,
     theme: &Theme,
     diff_viewport: usize,
 ) {
-    // Disk changed: drop the retained per-file blocks and rebuild lazily on
-    // the next draw.
-    for pane in &mut panes {
-        pane.cache.clear();
-        pane.reset_window();
+    for pane in panes {
+        pane.carry_over(&old.unchanged_views(model, pane.column()));
     }
     *sidebar = build_sidebar(model, theme);
 
@@ -278,17 +278,13 @@ fn reload_view(
     {
         sidebar.select_file_index(idx, diff_viewport);
     }
-
-    // Start from the top of the restored selection's window, keeping the
-    // reviewer's cursor on the diff line it was on.
-    for pane in panes {
-        pane.after_reload();
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::browse::files::FilesMode;
+    use crate::cli::browse::files::model::ResolvedFile;
     use crate::cli::browse::files::sidebar_pane::sidebar_footer;
     use crate::cli::browse::files::test_support::*;
 
@@ -332,6 +328,7 @@ mod tests {
         reload_view(
             [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
+            &m1,
             &m2,
             prev.as_deref(),
             &theme(),
@@ -360,6 +357,7 @@ mod tests {
         reload_view(
             [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
+            &m1,
             &empty,
             Some("a.txt"),
             &theme(),
@@ -395,6 +393,7 @@ mod tests {
         reload_view(
             [&mut state.staged, &mut state.unstaged],
             &mut state.sidebar,
+            &m1,
             &m2,
             Some("b.txt"),
             &theme(),
@@ -489,6 +488,118 @@ mod tests {
         assert_eq!(outcome, ReloadOutcome::Rebuilt);
         assert_ne!(last_input.all(), "original diff", "last_input must advance");
         assert_eq!(model.files.len(), 2, "model must swap to the new one");
+    }
+
+    /// Reload `state` onto a model built from `files`, then assemble the
+    /// unstaged window as the next draw would, without waiting for renders.
+    fn reload_onto(state: &mut FilesMode, files: &[ResolvedFile]) {
+        let outcome = apply_reload(
+            [&mut state.staged, &mut state.unstaged],
+            &mut state.sidebar,
+            &mut state.model,
+            &mut state.last_input,
+            Ok(Some(Update::Model(
+                Patches::net(&format!("{:?}", files.len())),
+                model_from(files),
+            ))),
+            &theme(),
+            4,
+        );
+        assert_eq!(outcome, ReloadOutcome::Rebuilt);
+        assemble_unstaged(
+            &mut state.unstaged,
+            &state.model,
+            &state.sidebar,
+            80,
+            deltoids::ChangeLayout::Grouped,
+            &theme(),
+        );
+    }
+
+    /// Assemble the unstaged window and wait until every block is rendered.
+    fn settle(state: &mut FilesMode) {
+        for _ in 0..2 {
+            assemble_unstaged(
+                &mut state.unstaged,
+                &state.model,
+                &state.sidebar,
+                80,
+                deltoids::ChangeLayout::Grouped,
+                &theme(),
+            );
+            wait_for_render(&mut state.unstaged);
+        }
+        assemble_unstaged(
+            &mut state.unstaged,
+            &state.model,
+            &state.sidebar,
+            80,
+            deltoids::ChangeLayout::Grouped,
+            &theme(),
+        );
+    }
+
+    fn top_line(state: &FilesMode) -> String {
+        line_text(&state.unstaged.rows()[state.unstaged.cursor.scroll].line)
+    }
+
+    fn is_rendering(state: &FilesMode) -> bool {
+        state
+            .unstaged
+            .rows()
+            .iter()
+            .any(|row| line_text(&row.line).contains("Rendering"))
+    }
+
+    #[test]
+    fn reload_keeps_scroll_when_only_another_file_changed() {
+        let b = long_file("b.txt", 40);
+        let mut state = make_state(&[b.clone(), resolved("c.txt")]);
+        settle(&mut state);
+        state.unstaged.scroll_by(20, 4);
+        let before = top_line(&state);
+
+        let mut c = resolved("c.txt");
+        c.after.push_str("more\n");
+        reload_onto(&mut state, &[resolved("a.txt"), b, c]);
+
+        assert!(!is_rendering(&state), "b.txt must come from the cache");
+        assert_eq!(state.unstaged.cursor.scroll, 20);
+        assert_eq!(top_line(&state), before);
+    }
+
+    #[test]
+    fn reload_resets_scroll_when_the_shown_file_changed() {
+        let mut state = make_state(&[long_file("b.txt", 40), resolved("c.txt")]);
+        settle(&mut state);
+        state.unstaged.scroll_by(20, 4);
+
+        reload_onto(&mut state, &[long_file("b.txt", 41), resolved("c.txt")]);
+
+        assert_eq!(state.unstaged.cursor.scroll, 0);
+    }
+
+    #[test]
+    fn directory_reload_keeps_the_top_file_when_an_earlier_file_grows() {
+        let mut state = make_state(&[long_file("src/a.txt", 10), long_file("src/b.txt", 40)]);
+        state.sidebar.set_selected(0, 4);
+        settle(&mut state);
+        let b_start = state
+            .unstaged
+            .rows()
+            .iter()
+            .position(|row| line_text(&row.line) == "src/b.txt")
+            .unwrap();
+        state.unstaged.scroll_by((b_start + 10) as isize, 4);
+        let before = top_line(&state);
+
+        reload_onto(
+            &mut state,
+            &[long_file("src/a.txt", 25), long_file("src/b.txt", 40)],
+        );
+        settle(&mut state);
+
+        assert_eq!(top_line(&state), before);
     }
 
     #[test]

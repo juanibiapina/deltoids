@@ -3,8 +3,9 @@
 //!
 //! Each staging column's pane owns one cache and always renders the same
 //! body for a file index ([`Model::view`] for its column) until a reload
-//! clears it: a file only gains or loses its split bodies through a rebuilt
-//! model.
+//! replaces the model: a file only gains or loses its split bodies through
+//! a rebuilt model. A reload keeps the blocks of files that render the same
+//! and moves them to their new indices ([`DiffCache::carry_over`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
@@ -245,6 +246,23 @@ impl DiffCache {
         self.pause();
         self.rows.clear();
         self.bytes = 0;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Adopt a rebuilt model: keep the blocks of files in `survivors` (old
+    /// index -> new index), re-keyed to their new index, and drop the rest.
+    /// In-flight renders belong to the old model, so they are cancelled.
+    pub(super) fn carry_over(&mut self, survivors: &HashMap<usize, usize>) {
+        self.pause();
+        self.visible.clear();
+        let rows = std::mem::take(&mut self.rows);
+        self.bytes = 0;
+        for (old, block) in rows {
+            if let Some(&new) = survivors.get(&old) {
+                self.bytes += block.bytes;
+                self.rows.insert(new, block);
+            }
+        }
         self.revision = self.revision.wrapping_add(1);
     }
 

@@ -49,6 +49,8 @@ pub(in crate::cli::browse) enum Column {
 pub(super) struct SideBody {
     pub(super) file: FileDiff,
     pub(super) body: FileBody,
+    /// Hash of what renders this side; see [`content_fingerprint`].
+    fingerprint: u64,
 }
 
 /// The HEAD → index and index → worktree bodies of one file.
@@ -103,6 +105,39 @@ impl Model {
                 body: &self.bodies[index],
                 numbering: Numbering::PLAIN,
             },
+        }
+    }
+
+    /// Old index -> index in `next` for every file whose `column` view
+    /// renders identically in both models, matched by display path. A
+    /// reload keeps those files' rendered blocks and scroll position.
+    pub(super) fn unchanged_views(&self, next: &Model, column: Column) -> HashMap<usize, usize> {
+        let old: HashMap<&str, usize> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| (display_path(&file.file), index))
+            .collect();
+        next.files
+            .iter()
+            .enumerate()
+            .filter_map(|(new, file)| {
+                let old = *old.get(display_path(&file.file))?;
+                (self.view_fingerprint(old, column) == next.view_fingerprint(new, column))
+                    .then_some((old, new))
+            })
+            .collect()
+    }
+
+    /// What file `index` renders in `column`: the body's inputs and
+    /// which numbering the view uses.
+    fn view_fingerprint(&self, index: usize, column: Column) -> (Option<Column>, u64) {
+        match self.splits.get(index).and_then(Option::as_ref) {
+            Some(split) => match column {
+                Column::Staged => (Some(column), split.staged.fingerprint),
+                Column::Unstaged => (Some(column), split.unstaged.fingerprint),
+            },
+            None => (None, content_fingerprint(&self.files[index])),
         }
     }
 
@@ -312,6 +347,7 @@ fn side_bodies(patch: &str, repo: &git::Repo) -> Result<HashMap<String, SideBody
             (
                 display_path(&resolved.file).to_string(),
                 SideBody {
+                    fingerprint: content_fingerprint(&resolved),
                     file: resolved.file,
                     body,
                 },
@@ -517,6 +553,29 @@ fn missing_blob_message(hash: &str, path: &str) -> String {
         "missing index blob {hash} for {path} \u{2014} not found in local repository\n\
          hint: fetch the source ref (e.g. `git fetch <remote> <ref>`) and try again"
     )
+}
+
+/// Hash of everything a file's rendered block is computed from: its diff
+/// metadata and its before/after content. The hunks follow from the
+/// content, so they are left out.
+fn content_fingerprint(resolved: &ResolvedFile) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let file = &resolved.file;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (
+        &file.preamble,
+        &file.old_path,
+        &file.new_path,
+        &file.rename_from,
+        &file.old_hash,
+        &file.new_hash,
+        &file.old_mode,
+        &file.new_mode,
+    )
+        .hash(&mut hasher);
+    resolved.before.hash(&mut hasher);
+    resolved.after.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Decide one [`FileBody`] per resolved file. Done once at build time so

@@ -9,6 +9,8 @@
 //! selection and uses ready blocks or cheap placeholders. The assembled
 //! window survives cursor and focus changes; comments remain an overlay.
 
+use std::collections::HashMap;
+
 use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -439,6 +441,10 @@ pub(super) struct DiffPane {
     /// behind, so this is only armed when the window was rebuilt under
     /// the user.
     reveal_cursor: bool,
+    /// Set by a reload whose top-of-viewport file survived: that file's new
+    /// index and the scroll offset into it. The next assembly puts the
+    /// viewport back there.
+    reload_top: Option<(usize, usize)>,
     /// The layout the last window was assembled with; shown in the footer.
     current_layout: ChangeLayout,
     /// What the no-files render shows: the clean state or a build error.
@@ -459,9 +465,15 @@ impl DiffPane {
             window_key: None,
             file_starts: Vec::new(),
             reveal_cursor: false,
+            reload_top: None,
             current_layout: ChangeLayout::Grouped,
             empty_state: EmptyPane::NoChanges,
         }
+    }
+
+    /// The staging column this pane renders.
+    pub(super) fn column(&self) -> Column {
+        self.column
     }
 
     /// Switch the no-files render to show a build-error message instead of
@@ -526,15 +538,12 @@ impl DiffPane {
             .window_key
             .as_ref()
             .is_some_and(|old| old.files == key.files);
-        let old_top = same_selection
-            .then(|| {
-                self.file_starts
-                    .iter()
-                    .rev()
-                    .find(|(_, start)| *start <= self.cursor.scroll)
-                    .map(|(file, start)| (*file, self.cursor.scroll - start))
-            })
-            .flatten();
+        let reload_top = self.reload_top.take();
+        let old_top = if same_selection {
+            self.top_file()
+        } else {
+            reload_top
+        };
         self.cache.request(
             key.epoch,
             model,
@@ -579,10 +588,12 @@ impl DiffPane {
             starts.push((input_idx, window.len()));
             window.extend(self.file_block(input_idx, model, key.epoch, theme, comments));
         }
-        if let Some((file, offset)) = old_top
-            && let Some((_, start)) = starts.iter().find(|(index, _)| *index == file)
-        {
-            self.cursor.scroll = start + offset;
+        if let Some((file, offset)) = old_top {
+            match starts.iter().find(|(index, _)| *index == file) {
+                Some((_, start)) => self.cursor.scroll = start + offset,
+                None if reload_top.is_some() => self.reset_after_reload(),
+                None => {}
+            }
         }
         self.reveal_cursor |= same_selection
             && self
@@ -712,15 +723,37 @@ impl DiffPane {
         self.cursor = Cursor::default();
         self.window_key = None;
         self.reveal_cursor = false;
+        self.reload_top = None;
     }
 
-    /// Prepare the pane for a rebuilt model: start from the top of the
-    /// window, but keep the diff line the cursor was on and reveal it
-    /// again once the new window is assembled. A working tree changes
-    /// under the reviewer; their place in it should not.
-    pub(super) fn after_reload(&mut self) {
+    /// Adopt a rebuilt model. `survivors` maps old to new indices of the
+    /// files whose view renders the same. When the file at the top of the
+    /// viewport survived, the next assembly keeps the viewport where it
+    /// was. Otherwise the view starts from the top of the window, with the
+    /// cursor still on its diff line and revealed again. A working tree
+    /// changes under the reviewer; their place in it should not.
+    pub(super) fn carry_over(&mut self, survivors: &HashMap<usize, usize>) {
+        let top = self.reload_top.take().or_else(|| self.top_file());
+        self.reload_top = top.and_then(|(file, offset)| Some((*survivors.get(&file)?, offset)));
+        if self.reload_top.is_none() {
+            self.reset_after_reload();
+        }
+        self.cache.carry_over(survivors);
+        self.reset_window();
+    }
+
+    fn reset_after_reload(&mut self) {
         self.cursor.scroll = 0;
         self.reveal_cursor = true;
+    }
+
+    /// The file at the top of the viewport and the scroll offset into it.
+    fn top_file(&self) -> Option<(usize, usize)> {
+        self.file_starts
+            .iter()
+            .rev()
+            .find(|(_, start)| *start <= self.cursor.scroll)
+            .map(|(file, start)| (*file, self.cursor.scroll - start))
     }
 
     /// Handle a key while the diff pane is focused: `j`/`k` walk diff

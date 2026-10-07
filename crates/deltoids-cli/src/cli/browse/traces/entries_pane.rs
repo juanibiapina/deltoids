@@ -40,13 +40,13 @@ impl EntryRow {
     }
 }
 
-/// Every row for `entries`, in display order. Only entries with more than
-/// one file get file rows; a single-file entry is one row, as it always was.
+/// Every row for `entries`, in display order. An entry named by its file is
+/// one row; an entry named by its reason lists its files under it.
 pub(super) fn entry_rows(entries: &[HistoryEntry]) -> Vec<EntryRow> {
     let mut rows = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         rows.push(EntryRow::Entry(index));
-        if entry.files.len() > 1 {
+        if let EntryName::Reason(_) = entry_name(entry) {
             rows.extend((0..entry.files.len()).map(|file| EntryRow::File(index, file)));
         }
     }
@@ -158,7 +158,9 @@ fn path_parts(path: &str, cwd: &str) -> (String, String) {
     }
 }
 
-/// What an entry row names: its only file, or its reason.
+/// What an entry row names. An edit or write of one file is named by that
+/// file; anything else (a command, several files, none) by its reason, with
+/// its files listed under it.
 enum EntryName {
     File(String, String),
     Reason(String),
@@ -166,7 +168,7 @@ enum EntryName {
 
 fn entry_name(entry: &HistoryEntry) -> EntryName {
     match entry.files.as_slice() {
-        [file] => {
+        [file] if entry.command.is_none() => {
             let (filename, parent) = path_parts(&file.path, &entry.cwd);
             EntryName::File(filename, parent)
         }
@@ -420,6 +422,20 @@ mod tests {
                 "  b.rs  src"
             ]
         );
+    }
+
+    #[test]
+    fn a_command_entry_shows_its_command_and_lists_even_one_file() {
+        let mut command = edit_entry();
+        command.command = Some("echo x >> app.txt".to_string());
+        command.reason = "echo x >> app.txt".to_string();
+        let entries = vec![edit_entry(), command];
+        let labels: Vec<String> = entry_rows(&entries)
+            .iter()
+            .map(|row| row_label_plain(&entries, *row))
+            .collect();
+
+        assert_eq!(labels, ["✓ app.txt", "✓ echo x >> app.txt", "  app.txt"]);
     }
 
     #[test]

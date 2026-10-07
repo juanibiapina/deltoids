@@ -7,6 +7,7 @@
 //! - `serve`     read-only HTTP server + web app for reviewing traces
 //! - `edit`      agent edit tool, appends to a trace
 //! - `write`     agent write tool, appends to a trace
+//! - `record`    import a Kao capture as a trace entry
 //! - `hook`      coding-agent lifecycle adapters (Claude Code, …)
 //!
 //! Default (no subcommand): if stdin is a pipe, run `pager` (so
@@ -18,7 +19,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use deltoids_cli::cli::{edit, hook, pager, serve, tui, write};
+use deltoids_cli::cli::{edit, hook, pager, record, serve, tui, write};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -52,6 +53,8 @@ enum Command {
     Edit(edit::Args),
     /// Agent write tool — appends to a trace.
     Write(write::Args),
+    /// Import a Kao capture archive as one trace entry.
+    Record(record::Args),
     /// Coding-agent lifecycle adapters (e.g. Claude Code PostToolUse).
     #[command(hide = true)]
     Hook(hook::Args),
@@ -65,6 +68,7 @@ fn main() -> ExitCode {
         Some(Command::Serve(args)) => serve::run(args),
         Some(Command::Edit(args)) => edit::run(args),
         Some(Command::Write(args)) => write::run(args),
+        Some(Command::Record(args)) => record::run(args),
         Some(Command::Hook(args)) => hook::run(args),
         None => {
             // Smart default: a piped diff feeds the pager (preserving

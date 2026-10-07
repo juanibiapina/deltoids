@@ -307,6 +307,12 @@ pub(super) fn build_diff_rows(
         .into_iter()
         .map(DiffRow::plain)
         .collect();
+    if let Some(origin) = &entry.origin {
+        rendered.push(DiffRow::plain(Line::from(Span::styled(
+            origin_label(origin),
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ))));
+    }
 
     // A failed invocation can still have changed files, so its error and
     // its diff are shown together.
@@ -336,9 +342,16 @@ pub(super) fn build_diff_rows(
             );
         }
         if file.hunks.is_empty() {
-            // A successful entry whose file has no hunks predates recorded
-            // hunks; a failed one simply changed nothing there.
-            if entry.ok {
+            // A captured file says why it has no line diff (binary, symlink,
+            // mode). Otherwise a successful entry predates recorded hunks,
+            // and a failed one simply changed nothing there.
+            if let Some(notice) = file.notice() {
+                rendered.push(DiffRow::plain(Line::from("")));
+                rendered.push(DiffRow::plain(Line::from(Span::styled(
+                    notice,
+                    Style::default().fg(rgb_to_color(theme.muted)),
+                ))));
+            } else if entry.ok {
                 rendered.push(DiffRow::plain(Line::from("")));
                 rendered.push(DiffRow::plain(Line::from("(old format, cannot display)")));
             }
@@ -411,6 +424,11 @@ fn push_hunk_rows(
             row.last_row,
         ));
     }
+}
+
+/// `pi · session <id>`: who made the entry.
+pub(super) fn origin_label(origin: &crate::Origin) -> String {
+    format!("{} \u{00b7} session {}", origin.agent, origin.session_id)
 }
 
 /// The header block: the entry's reason, then the shown file's path, or a
@@ -552,6 +570,34 @@ mod tests {
         for (index, place) in places.iter().enumerate() {
             assert!(!places[..index].contains(place), "duplicate stop {place:?}");
         }
+    }
+
+    #[test]
+    fn a_captured_entry_shows_its_origin_and_why_a_file_has_no_diff() {
+        let mut entry = hunk_entry();
+        entry.origin = Some(crate::Origin {
+            agent: "pi".to_string(),
+            session_id: "s1".to_string(),
+            tool_call_id: None,
+        });
+        entry.files.push(FileChange {
+            path: "/tmp/project/logo.png".to_string(),
+            before_sha256: Some("a".to_string()),
+            after_sha256: Some("b".to_string()),
+            before_mode: Some("100644".to_string()),
+            after_mode: Some("100644".to_string()),
+            ..FileChange::default()
+        });
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![entry],
+        };
+
+        let text = rendered_text(&trace, Selection::entry(0));
+
+        assert!(text.contains("pi \u{00b7} session s1"), "{text}");
+        assert!(text.contains("Binary file changed"), "{text}");
+        assert!(!text.contains("old format"), "{text}");
     }
 
     #[test]

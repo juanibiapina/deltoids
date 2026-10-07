@@ -38,6 +38,7 @@ pub(super) fn edit_entry() -> HistoryEntry {
             ),
             ..FileChange::default()
         }],
+        ..HistoryEntry::default()
     }
 }
 
@@ -60,6 +61,7 @@ pub(super) fn write_entry() -> HistoryEntry {
             ),
             ..FileChange::default()
         }],
+        ..HistoryEntry::default()
     }
 }
 

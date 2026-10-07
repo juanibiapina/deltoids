@@ -92,7 +92,8 @@ fn try_execute_edit(
                 highlight,
                 ..FileChange::default()
             },
-        ),
+        )
+        .with_origin(request.origin.clone()),
     )?;
 
     Ok(SuccessResponse {
@@ -125,7 +126,8 @@ fn log_edit_failure(
                     edits: vec![trace_edit(&request)],
                     ..FileChange::default()
                 },
-            ),
+            )
+            .with_origin(request.origin.clone()),
         )
         .err();
 
@@ -204,6 +206,7 @@ mod tests {
             path: "test.txt".to_string(),
             old_text: old_text.to_string(),
             new_text: new_text.to_string(),
+            origin: None,
         }
     }
 

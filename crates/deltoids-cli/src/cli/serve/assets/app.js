@@ -250,6 +250,7 @@ async function renderEntry() {
       <div class="entry-head">
         <div class="entry-reason">${esc(detail.reason || "(no summary)")}</div>
         <div class="entry-path">${esc(pathsLabel(detail.files.map((f) => f.path), state.trace.cwd))}</div>
+        ${detail.origin ? `<div class="entry-path">${esc(detail.origin.agent)} · session ${esc(detail.origin.sessionId)}</div>` : ""}
       </div>
       ${errorBlock}
       ${fileBlocks}

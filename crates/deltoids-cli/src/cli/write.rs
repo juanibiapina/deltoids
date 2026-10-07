@@ -131,6 +131,7 @@ fn write_request_from_shorthand(args: &Args) -> Result<WriteRequest, String> {
         reason,
         path,
         content,
+        origin: None,
     })
 }
 

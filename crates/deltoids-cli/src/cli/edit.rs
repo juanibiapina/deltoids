@@ -152,6 +152,7 @@ fn edit_request_from_shorthand(args: &Args) -> Result<EditRequest, String> {
         path,
         old_text,
         new_text,
+        origin: None,
     })
 }
 

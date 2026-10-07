@@ -330,7 +330,7 @@ pub(crate) const ENTRY_VERSION: u8 = 4;
 /// Entries written before multi-file support stored a single file's fields
 /// at the top level. Those records load as an entry with one file; the
 /// conversion lives in [`WireEntry`] and nothing else knows about it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(try_from = "WireEntry")]
 pub struct HistoryEntry {
     pub v: u8,
@@ -344,6 +344,44 @@ pub struct HistoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub files: Vec<FileChange>,
+    /// The shell command a captured invocation ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// How a captured command ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<CommandOutcome>,
+    /// The capture's operation id, unique per captured invocation.
+    #[serde(rename = "operationId", skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// Which agent session and tool call made this entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    /// The capture's raw patch, relative to the trace directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+}
+
+/// How a captured command ended: its exit code, or the signal that ended it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandOutcome {
+    #[serde(rename = "exitCode")]
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+/// The agent session and tool call that made an entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    pub agent: String,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(
+        rename = "toolCallId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tool_call_id: Option<String>,
 }
 
 /// One file changed (or attempted) by an entry's invocation.
@@ -364,6 +402,62 @@ pub struct FileChange {
     pub language: Option<deltoids::Language>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub highlight: Option<String>,
+    /// Captured files carry their exact before/after hashes and Git modes;
+    /// `None` on a side where the file is absent.
+    #[serde(
+        rename = "beforeSha256",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub before_sha256: Option<String>,
+    #[serde(
+        rename = "afterSha256",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub after_sha256: Option<String>,
+    #[serde(
+        rename = "beforeMode",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub before_mode: Option<String>,
+    #[serde(rename = "afterMode", default, skip_serializing_if = "Option::is_none")]
+    pub after_mode: Option<String>,
+}
+
+const SYMLINK_MODE: &str = "120000";
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+impl FileChange {
+    /// What a reader should see instead of hunks when a captured file
+    /// changed in a way a line diff cannot show. `None` for files with no
+    /// captured hashes (edit/write and older entries).
+    pub fn notice(&self) -> Option<String> {
+        let (before, after) = (self.before_sha256.as_deref(), self.after_sha256.as_deref());
+        if before.is_none() && after.is_none() {
+            return None;
+        }
+        let is_symlink = [&self.before_mode, &self.after_mode]
+            .iter()
+            .any(|mode| mode.as_deref() == Some(SYMLINK_MODE));
+        let notice = if is_symlink {
+            "Symlink changed".to_string()
+        } else if before == after {
+            format!(
+                "Mode changed from {} to {}",
+                self.before_mode.as_deref().unwrap_or("?"),
+                self.after_mode.as_deref().unwrap_or("?")
+            )
+        } else if before.is_none() && after == Some(EMPTY_SHA256) {
+            "Empty file created".to_string()
+        } else if after.is_none() && before == Some(EMPTY_SHA256) {
+            "Empty file deleted".to_string()
+        } else {
+            "Binary file changed".to_string()
+        };
+        Some(notice)
+    }
 }
 
 impl HistoryEntry {
@@ -387,7 +481,13 @@ impl HistoryEntry {
             ok: error.is_none(),
             error,
             files: vec![file],
+            ..Self::default()
         }
+    }
+
+    /// This entry, made by `origin`.
+    pub(crate) fn with_origin(self, origin: Option<Origin>) -> Self {
+        Self { origin, ..self }
     }
 
     /// Paths of every file in this entry, in stored order.
@@ -413,6 +513,16 @@ struct WireEntry {
     error: Option<String>,
     #[serde(default)]
     files: Option<Vec<FileChange>>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    outcome: Option<CommandOutcome>,
+    #[serde(rename = "operationId", default)]
+    operation_id: Option<String>,
+    #[serde(default)]
+    origin: Option<Origin>,
+    #[serde(default)]
+    patch: Option<String>,
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
@@ -443,6 +553,7 @@ impl TryFrom<WireEntry> for HistoryEntry {
                 hunks: wire.hunks,
                 language: wire.language,
                 highlight: wire.highlight,
+                ..FileChange::default()
             }],
             (None, None) => return Err("history entry has neither files nor path".to_string()),
         };
@@ -456,6 +567,11 @@ impl TryFrom<WireEntry> for HistoryEntry {
             ok: wire.ok,
             error: wire.error,
             files,
+            command: wire.command,
+            outcome: wire.outcome,
+            operation_id: wire.operation_id,
+            origin: wire.origin,
+            patch: wire.patch,
         })
     }
 }

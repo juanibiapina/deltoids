@@ -13,6 +13,7 @@ pub mod terminal;
 pub mod trace_store;
 
 mod edit;
+mod record;
 mod types;
 mod write;
 
@@ -22,9 +23,10 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 
 pub use edit::{apply_edit, execute_request, execute_request_with_trace, render_diff};
+pub use record::{RecordRequest, RecordResponse, record_capture};
 pub use trace_store::{
-    FileChange, HistoryEntry, ProjectSummary, TraceStore, TraceSummary, project_id,
-    trace_root_directory,
+    CommandOutcome, FileChange, HistoryEntry, Origin, ProjectSummary, TraceStore, TraceSummary,
+    project_id, trace_root_directory,
 };
 pub use types::{EditRequest, ErrorResponse, SuccessResponse, TextEdit, ToolError, WriteRequest};
 pub use write::{

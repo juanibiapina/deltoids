@@ -102,7 +102,8 @@ fn try_execute_write(
                 highlight,
                 ..FileChange::default()
             },
-        ),
+        )
+        .with_origin(request.origin.clone()),
     )?;
 
     Ok(SuccessResponse {
@@ -135,7 +136,8 @@ fn log_write_failure(
                     content: request.content,
                     ..FileChange::default()
                 },
-            ),
+            )
+            .with_origin(request.origin),
         )
         .err();
 
@@ -180,6 +182,7 @@ mod tests {
                 reason: "Rewrite config".to_string(),
                 path: path.to_string_lossy().into_owned(),
                 content: "{\n  \"version\": 2\n}\n".to_string(),
+                origin: None,
             },
             None,
         )
@@ -206,6 +209,7 @@ mod tests {
                 reason: String::new(),
                 path: "test.txt".to_string(),
                 content: "hello\n".to_string(),
+                origin: None,
             },
             None,
         )

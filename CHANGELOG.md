@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: directory rows show an open-directory arrow.
 - TUI: add shortcuts to stage and discard changes in git.
 - Traces: add support for multi file entries
+- Add `deltoids record` to import Kao command captures into traces.
+- Pi: record file changes from bash commands when Kao is installed.
+- Traces: show which agent session made each entry.
 
 ### Changed
 

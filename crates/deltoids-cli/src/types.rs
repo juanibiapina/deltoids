@@ -12,6 +12,9 @@ pub struct EditRequest {
     pub old_text: String,
     #[serde(rename = "newText")]
     pub new_text: String,
+    /// The agent session and tool call making the edit, when known.
+    #[serde(default)]
+    pub origin: Option<crate::Origin>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -30,6 +33,9 @@ pub struct WriteRequest {
     pub reason: String,
     pub path: String,
     pub content: String,
+    /// The agent session and tool call making the write, when known.
+    #[serde(default)]
+    pub origin: Option<crate::Origin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

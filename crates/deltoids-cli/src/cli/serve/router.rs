@@ -187,6 +187,10 @@ struct EntryDetail {
     timestamp: String,
     error: Option<String>,
     files: Vec<FileDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<crate::Origin>,
 }
 
 /// One file of an entry: its path and its rendered diff.
@@ -228,6 +232,8 @@ fn trace_entry(
         timestamp: entry.timestamp.clone(),
         error: entry.error.clone(),
         files,
+        command: entry.command.clone(),
+        origin: entry.origin.clone(),
     })
 }
 
@@ -236,6 +242,9 @@ fn trace_entry(
 fn file_html(entry: &HistoryEntry, file: &FileChange, syntax_theme: Option<&str>) -> String {
     if !file.hunks.is_empty() {
         return render_entry_html(&file.hunks, file.highlight.as_deref(), syntax_theme);
+    }
+    if let Some(notice) = file.notice() {
+        return format!("<div class=\"notice\">{notice}</div>");
     }
     if !entry.ok {
         return String::new(); // the error text is delivered as a field

@@ -7,6 +7,7 @@ pub mod browse;
 pub mod edit;
 pub mod hook;
 pub mod pager;
+pub mod record;
 pub mod serve;
 pub mod tui;
 pub mod write;

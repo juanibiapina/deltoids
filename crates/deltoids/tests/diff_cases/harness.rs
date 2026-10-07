@@ -18,7 +18,9 @@
 //!                      format below.
 //!   5-expand.txt       Optional. One hunk index per line, each passed in
 //!                      order to `Diff::expand` on the previous result
-//!                      (`Diff::shrink` when prefixed with `-`).
+//!                      (`Diff::shrink` when prefixed with `-`). `*`
+//!                      calls `Diff::expand_all` and `-*`
+//!                      `Diff::shrink_all`.
 //!   6-expanded.diff    Expected output after each expansion, required
 //!                      when `5-expand.txt` exists (see [`format_expansions`]).
 //! ```
@@ -71,10 +73,11 @@ use deltoids::{Diff, Hunk, LineKind};
 // Case discovery and loading
 // ---------------------------------------------------------------------------
 
-/// One line of `5-expand.txt`: expand (`N`) or shrink (`-N`) hunk `N`.
+/// One line of `5-expand.txt`: expand (`N`) or shrink (`-N`) hunk `N`,
+/// or every hunk (`*` / `-*`) when `index` is `None`.
 pub struct Step {
     pub shrink: bool,
-    pub index: usize,
+    pub index: Option<usize>,
 }
 
 /// One discovered diff case on disk.
@@ -112,20 +115,32 @@ impl Case {
         text.lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
-            .map(|line| {
-                let (shrink, index) = match line.strip_prefix('-') {
-                    Some(index) => (true, index),
-                    None => (false, line),
-                };
-                let index = index.parse().unwrap_or_else(|e| {
-                    panic!(
-                        "{}: bad hunk index {line:?}: {e}",
-                        self.expand_path.display()
-                    )
-                });
-                Step { shrink, index }
-            })
+            .map(|line| self.step(line))
             .collect()
+    }
+
+    /// Parse one `5-expand.txt` line: `N`, `-N`, `*` or `-*`.
+    fn step(&self, line: &str) -> Step {
+        let (shrink, target) = match line.strip_prefix('-') {
+            Some(target) => (true, target),
+            None => (false, line),
+        };
+        if target == "*" {
+            return Step {
+                shrink,
+                index: None,
+            };
+        }
+        let index = target.parse().unwrap_or_else(|e| {
+            panic!(
+                "{}: bad hunk index {line:?}: {e}",
+                self.expand_path.display()
+            )
+        });
+        Step {
+            shrink,
+            index: Some(index),
+        }
     }
 
     pub fn expanded(&self) -> String {
@@ -288,9 +303,9 @@ fn format_range(start: usize, count: usize) -> String {
 }
 
 /// Render each of `steps` applied to `diff` in turn. Every step starts
-/// with `## expand N` or `## shrink N`, followed by the hunks after it,
-/// or `(unchanged)` when the step returns `None`, which keeps the
-/// previous diff for the next step.
+/// with `## expand N` or `## shrink N` (`all` for every hunk), followed
+/// by the hunks after it, or `(unchanged)` when the step returns `None`,
+/// which keeps the previous diff for the next step.
 pub fn format_expansions(diff: &Diff, steps: &[Step]) -> String {
     let mut out = String::new();
     let mut current = diff.clone();
@@ -298,12 +313,16 @@ pub fn format_expansions(diff: &Diff, steps: &[Step]) -> String {
         if position > 0 {
             out.push('\n');
         }
-        let (name, next) = if step.shrink {
-            ("shrink", current.shrink(step.index))
-        } else {
-            ("expand", current.expand(step.index))
+        let (name, next) = match (step.shrink, step.index) {
+            (true, Some(index)) => ("shrink", current.shrink(index)),
+            (true, None) => ("shrink", current.shrink_all()),
+            (false, Some(index)) => ("expand", current.expand(index)),
+            (false, None) => ("expand", current.expand_all()),
         };
-        out.push_str(&format!("## {name} {}\n", step.index));
+        let target = step
+            .index
+            .map_or("all".to_string(), |index| index.to_string());
+        out.push_str(&format!("## {name} {target}\n"));
         match next {
             Some(next) => {
                 out.push_str(&format_hunks(next.hunks()));

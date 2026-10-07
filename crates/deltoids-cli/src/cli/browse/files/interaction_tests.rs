@@ -1007,3 +1007,99 @@ fn z_expands_the_hunk_under_the_cursor_and_keeps_it_until_the_file_changes() {
     reload_now(&mut mode);
     assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
 }
+
+/// [`COUNTER`] with a third method, edited in `increment` and `reset`:
+/// two hunks whose next level, the `impl`, shows `new`'s body.
+const TWO_HUNKS: &str = "struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Counter { value: 0 }
+    }
+
+    fn increment(&mut self) {
+        self.value += 1;
+    }
+
+    fn reset(&mut self) {
+        self.value = 0;
+    }
+}
+";
+
+fn two_hunk_fixture(paths: &[&str]) -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    for path in paths {
+        let path = dir.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, TWO_HUNKS).unwrap();
+    }
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    let edited = TWO_HUNKS
+        .replace("+= 1", "+= 2")
+        .replace("self.value = 0;", "self.value = -1;");
+    for path in paths {
+        write_and_store(dir.path(), path, &edited);
+    }
+    dir
+}
+
+#[test]
+fn sidebar_z_and_x_expand_and_shrink_every_hunk_of_the_selected_file() {
+    let dir = two_hunk_fixture(&["a.rs"]);
+    let mut mode = live(dir.path());
+    assert_eq!(mode.focus, Focus::Sidebar);
+    assert_eq!(window_text(&mut mode).matches("╮").count(), 2);
+    assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
+    assert!(!window_text(&mut mode).contains("struct Counter {"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    assert!(window_text(&mut mode).contains("struct Counter {"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20, 20);
+    assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
+    assert_eq!(window_text(&mut mode).matches("╮").count(), 2);
+}
+
+#[test]
+fn sidebar_z_on_a_directory_expands_every_file_under_it() {
+    let dir = two_hunk_fixture(&["src/a.rs", "src/b.rs", "other.rs"]);
+    let mut mode = live(dir.path());
+    assert!(mode.sidebar.select_directory_path("src/", 20));
+    mode.snap_diff_to_selected_file();
+
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    assert_eq!(
+        window_text(&mut mode)
+            .matches("Counter { value: 0 }")
+            .count(),
+        2
+    );
+
+    mode.sidebar.top(20);
+    mode.snap_diff_to_selected_file();
+    assert!(window_text(&mut mode).starts_with("other.rs"));
+    assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
+}
+
+#[test]
+fn sidebar_z_keeps_the_diff_scroll() {
+    let dir = two_hunk_fixture(&["a.rs"]);
+    let mut mode = live(dir.path());
+    window_text(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Char('J'), 4, 20);
+    let scroll = mode.unstaged.cursor.scroll;
+    assert!(scroll > 0);
+
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 4, 20);
+    assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
+    assert_eq!(mode.unstaged.cursor.scroll, scroll);
+}

@@ -693,11 +693,17 @@ fn handle_key(
             AppCommand::Continue
         }
         KeyCode::Char('z') => {
-            reshape_hunk(state, Diff::expand);
+            match state.focus {
+                Focus::Diff => reshape_hunk(state, Diff::expand),
+                Focus::Sidebar => reshape_selection(state, Diff::expand_all),
+            }
             AppCommand::Continue
         }
         KeyCode::Char('x') => {
-            reshape_hunk(state, Diff::shrink);
+            match state.focus {
+                Focus::Diff => reshape_hunk(state, Diff::shrink),
+                Focus::Sidebar => reshape_selection(state, Diff::shrink_all),
+            }
             AppCommand::Continue
         }
         KeyCode::Tab | KeyCode::BackTab => {
@@ -754,9 +760,6 @@ fn handle_key(
 /// (a single-column file's body is shared by both columns); the cursor
 /// stays on its file line.
 fn reshape_hunk(state: &mut FilesMode, reshape: fn(&Diff, usize) -> Option<Diff>) {
-    if state.focus != Focus::Diff {
-        return;
-    }
     let column = state.shown();
     let Some((place, anchor)) = state
         .pane(column)
@@ -783,6 +786,26 @@ fn reshape_hunk(state: &mut FilesMode, reshape: fn(&Diff, usize) -> Option<Diff>
             Column::Unstaged => Column::Staged,
         };
         state.pane_mut(other).cache.refresh(index);
+    }
+}
+
+/// Expand or shrink every hunk of every file the diff pane shows for the
+/// sidebar selection with `reshape` ([`Diff::expand_all`] or
+/// [`Diff::shrink_all`]), in the column the pane shows. The pane keeps
+/// its scroll: its window is rebuilt from the new blocks around the same
+/// file offset.
+fn reshape_selection(state: &mut FilesMode, reshape: fn(&Diff) -> Option<Diff>) {
+    let spec = state.spec();
+    let column = spec.column;
+    let Some(range) = spec.range.clone() else {
+        return;
+    };
+    let files = spec.order[range].to_vec();
+    for index in files {
+        if state.model.reshape(index, column, reshape) {
+            state.staged.cache.refresh(index);
+            state.unstaged.cache.refresh(index);
+        }
     }
 }
 

@@ -68,6 +68,50 @@ fn shrink_undoes_the_last_expansion() {
     assert!(back.shrink(0).is_none());
 }
 
+#[test]
+fn expand_all_grows_every_hunk_like_expanding_each_one() {
+    let (original, updated) = two_distant_changes();
+    let diff = Diff::compute(&original, &updated, "notes.txt");
+    assert_eq!(diff.hunks().len(), 2);
+    let one_by_one = diff.expand(0).unwrap().expand(1).unwrap();
+    let all = diff.expand_all().expect("every hunk can grow");
+    assert_eq!(old_spans(&all), old_spans(&one_by_one));
+}
+
+#[test]
+fn expand_all_is_none_once_the_whole_file_shows() {
+    let (original, updated) = two_distant_changes();
+    let mut diff = Diff::compute(&original, &updated, "notes.txt");
+    for _ in 0..20 {
+        let Some(next) = diff.expand_all() else {
+            assert_eq!(old_spans(&diff), vec![1..201]);
+            return;
+        };
+        diff = next;
+    }
+    panic!("expand_all never reached the whole file");
+}
+
+#[test]
+fn shrink_all_undoes_expand_all() {
+    let (original, updated) = two_distant_changes();
+    let diff = Diff::compute(&original, &updated, "notes.txt");
+    assert!(diff.shrink_all().is_none());
+    let back = diff.expand_all().unwrap().shrink_all().unwrap();
+    assert_eq!(format!("{:?}", back.hunks()), format!("{:?}", diff.hunks()));
+    assert!(back.shrink_all().is_none());
+}
+
+/// A 200-line plain text file with changes on lines 10 and 190: far
+/// enough apart that one expansion step keeps them in separate hunks.
+fn two_distant_changes() -> (String, String) {
+    let original: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+    let updated = original
+        .replace("line 10\n", "line ten\n")
+        .replace("line 190\n", "line one-ninety\n");
+    (original, updated)
+}
+
 // -----------------------------------------------------------------------
 // Hunk::runs tests
 // -----------------------------------------------------------------------

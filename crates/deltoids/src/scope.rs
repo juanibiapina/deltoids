@@ -180,6 +180,32 @@ impl Diff {
         })
     }
 
+    /// This diff with every hunk's context grown one scope level outward,
+    /// as [`Diff::expand`] grows one. Levels come from the hunks as they
+    /// are now, so hunks that the growth merges still each grow once;
+    /// hunks that grow to the same scope record it once. Returns `None` when every hunk already shows the whole old file.
+    pub fn expand_all(&self) -> Option<Diff> {
+        let (original, updated) = (&*self.original, &*self.updated);
+        with_expansion(original, updated, self.language, |expansion| {
+            let total_old = original.lines().count();
+            let mut levels: Vec<Range<usize>> = self
+                .hunks
+                .iter()
+                .filter_map(|hunk| {
+                    expansion.next_level(old_span(hunk), changed_span(hunk), total_old)
+                })
+                .collect();
+            levels.sort_by_key(|level| (level.start, level.end));
+            levels.dedup();
+            if levels.is_empty() {
+                return None;
+            }
+            let mut widened = self.widened.clone();
+            widened.extend(levels);
+            Some(self.rebuilt(expansion, widened))
+        })
+    }
+
     /// This diff with the latest [`Diff::expand`] that reached hunk
     /// `index` undone. A hunk that expansion merged splits back apart.
     /// Returns `None` when no expansion reached the hunk or `index` is out
@@ -192,6 +218,35 @@ impl Diff {
             .rposition(|range| range.start <= changed.end && changed.start <= range.end)?;
         let mut widened = self.widened.clone();
         widened.remove(latest);
+        with_expansion(&self.original, &self.updated, self.language, |expansion| {
+            Some(self.rebuilt(expansion, widened))
+        })
+    }
+
+    /// This diff with every hunk shrunk as [`Diff::shrink`] shrinks one:
+    /// the latest expansion that reached each hunk is undone. A hunk that
+    /// several expansions merged loses only its latest one. Returns
+    /// `None` when no expansion reached any hunk.
+    pub fn shrink_all(&self) -> Option<Diff> {
+        let mut latest: Vec<usize> = self
+            .hunks
+            .iter()
+            .filter_map(|hunk| {
+                let changed = changed_span(hunk);
+                self.widened
+                    .iter()
+                    .rposition(|range| range.start <= changed.end && changed.start <= range.end)
+            })
+            .collect();
+        if latest.is_empty() {
+            return None;
+        }
+        latest.sort_unstable();
+        latest.dedup();
+        let mut widened = self.widened.clone();
+        for index in latest.into_iter().rev() {
+            widened.remove(index);
+        }
         with_expansion(&self.original, &self.updated, self.language, |expansion| {
             Some(self.rebuilt(expansion, widened))
         })

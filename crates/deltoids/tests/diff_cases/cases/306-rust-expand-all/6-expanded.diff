@@ -1,0 +1,95 @@
+## expand all
+@@ -7,17 +7,17 @@ [impl_item Counter]
+ impl Counter {
+     fn new() -> Self {
+         Counter { value: 0 }
+     }
+ 
+     fn increment(&mut self) {
+-        self.value += 1;
++        self.value += 2;
+     }
+ 
+     fn describe(&self) -> String {
+         format!("{}", self.value)
+     }
+ 
+     fn reset(&mut self) {
+-        self.value = 0;
++        self.value = -1;
+     }
+ }
+
+## expand all
+@@ -1,28 +1,28 @@ [impl_item Counter]
+ use std::fmt;
+ 
+ struct Counter {
+     value: i32,
+ }
+ 
+ impl Counter {
+     fn new() -> Self {
+         Counter { value: 0 }
+     }
+ 
+     fn increment(&mut self) {
+-        self.value += 1;
++        self.value += 2;
+     }
+ 
+     fn describe(&self) -> String {
+         format!("{}", self.value)
+     }
+ 
+     fn reset(&mut self) {
+-        self.value = 0;
++        self.value = -1;
+     }
+ }
+ 
+ fn main() {
+     let mut counter = Counter::new();
+     counter.increment();
+ }
+
+## expand all
+(unchanged)
+
+## shrink all
+@@ -7,17 +7,17 @@ [impl_item Counter]
+ impl Counter {
+     fn new() -> Self {
+         Counter { value: 0 }
+     }
+ 
+     fn increment(&mut self) {
+-        self.value += 1;
++        self.value += 2;
+     }
+ 
+     fn describe(&self) -> String {
+         format!("{}", self.value)
+     }
+ 
+     fn reset(&mut self) {
+-        self.value = 0;
++        self.value = -1;
+     }
+ }
+
+## shrink all
+@@ -12,3 +12,3 @@ [impl_item Counter] [function_item increment]
+     fn increment(&mut self) {
+-        self.value += 1;
++        self.value += 2;
+     }
+
+@@ -20,3 +20,3 @@ [impl_item Counter] [function_item reset]
+     fn reset(&mut self) {
+-        self.value = 0;
++        self.value = -1;
+     }
+
+## shrink all
+(unchanged)

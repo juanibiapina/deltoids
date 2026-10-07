@@ -1,0 +1,11 @@
+@@ -12,3 +12,3 @@ [impl_item Counter] [function_item increment]
+     fn increment(&mut self) {
+-        self.value += 1;
++        self.value += 2;
+     }
+
+@@ -20,3 +20,3 @@ [impl_item Counter] [function_item reset]
+     fn reset(&mut self) {
+-        self.value = 0;
++        self.value = -1;
+     }

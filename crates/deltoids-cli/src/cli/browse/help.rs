@@ -35,7 +35,11 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("c", "comment on the diff line under the cursor"),
     (
         "z / x",
-        "expand / shrink the hunk under the cursor one scope level (Files)",
+        "expand / shrink hunk under the cursor (Files diff)",
+    ),
+    (
+        "z / x",
+        "expand / shrink every hunk of selection (Files sidebar)",
     ),
     ("Space", "stage / unstage selection (Files sidebar)"),
     ("a", "stage / unstage all files (Files sidebar)"),

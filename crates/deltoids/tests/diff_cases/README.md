@@ -49,7 +49,8 @@ cases/<NNN-slug>/
   4-expected.diff    Recorded `Diff::compute` output (case format below).
   5-expand.txt       Optional: hunk indices passed in order to
                      `Diff::expand` (`Diff::shrink` when prefixed
-                     with `-`), one per line.
+                     with `-`), one per line. `*` calls
+                     `Diff::expand_all` and `-*` `Diff::shrink_all`.
   6-expanded.diff    Recorded output after each expansion; required
                      with `5-expand.txt`.
 ```
@@ -80,8 +81,9 @@ hunk has no ancestors the breadcrumb section is empty.
 * A diff that produces no hunks (identical files) is the empty string.
 
 `6-expanded.diff` holds one section per line of `5-expand.txt`: a
-`## expand N` or `## shrink N` line, then the hunks after that step on
-the previous result, or `(unchanged)` when there is no larger level.
+`## expand N` or `## shrink N` line (`all` for `*` steps), then the
+hunks after that step on the previous result, or `(unchanged)` when
+there is no larger level.
 
 ## Running the cases
 

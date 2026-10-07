@@ -42,7 +42,7 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("Enter", "fold / unfold directory (Files sidebar)"),
     ("s", "switch staged / unstaged diff (Files)"),
     ("d", "discard (Files sidebar) / delete comment (diff)"),
-    ("y", "copy comments as an agent prompt"),
+    ("y", "copy comments"),
     ("D", "clear all comments"),
     ("< / >", "narrow / widen sidebar (shared by modes)"),
     ("\\", "cycle diff layout (grouped \u{2194} interleaved)"),

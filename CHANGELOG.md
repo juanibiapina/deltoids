@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: performance improvements
 - Traces: a failed entry shows its diff alongside the error.
+- TUI: copied review comments contain only each comment's file, line, quoted code, and note, without agent instructions.
 
 ### Fixed
 

@@ -20,15 +20,6 @@
 //! - [`detail`]: the detail/diff slice (cache + renderers).
 //! - [`reload`]: reload from disk, preserving selection.
 //! - [`scripted`]: the headless (non-TTY) render path.
-//!
-//! Review comments live in the shell-level [`super::comments`] (the pure
-//! store/prompt core), [`super::comment_view`] (how they look), and
-//! [`super::diff_cursor`] (rows and cursor), all shared with Files mode.
-//!
-//! With the diff pane focused, `j`/`k` move a cursor between logical diff
-//! lines (headers, spacers, and wrapped continuation rows are skipped);
-//! `c` comments on the selected line, `d` deletes that comment, and `y`
-//! copies every comment on the trace as one agent-ready prompt.
 
 use crate::cli::browse::watch::{ChangeReceiver, ChangeWatcher};
 use std::path::PathBuf;
@@ -60,7 +51,7 @@ mod traces_pane;
 
 use super::comment_view::render_comment_editor;
 use super::comments::{
-    CommentAnchor, CommentScope, CommentStore, Numbering, PromptSection, build_prompt, hunk_lines,
+    CommentAnchor, CommentScope, CommentStore, DiffSection, Numbering, hunk_lines, review_text,
 };
 use super::diff_cursor::{Cursor, DiffRow, Step, select_row, step_cursor};
 use detail::{DiffCache, max_detail_scroll, render_diff_pane};
@@ -462,17 +453,15 @@ fn delete_comment(state: &mut AppState) {
     state.comments.remove(&anchor);
 }
 
-/// Build the review prompt for the selected trace and ask the shell to
-/// copy it, recording what happened in the Diff pane footer.
 fn copy_comments(state: &mut AppState, traces: &[LoadedTrace]) -> AppCommand {
-    let prompt = traces
+    let text = traces
         .get(state.trace_index)
-        .and_then(|trace| trace_prompt(trace, &state.comments));
-    match prompt {
-        Some((prompt, count)) => {
+        .and_then(|trace| trace_review(trace, &state.comments));
+    match text {
+        Some((text, count)) => {
             let noun = if count == 1 { "comment" } else { "comments" };
             state.status = Some(format!("Copied {count} {noun}"));
-            AppCommand::CopyToClipboard(prompt)
+            AppCommand::CopyToClipboard(text)
         }
         None => {
             state.status = Some("No comments to copy".to_string());
@@ -481,9 +470,6 @@ fn copy_comments(state: &mut AppState, traces: &[LoadedTrace]) -> AppCommand {
     }
 }
 
-/// Drop every session comment, recording the count in the footer. Leaves
-/// the diff cache untouched: comments are an overlay, so the notes vanish
-/// on the next render with no rebuild.
 fn clear_comments(state: &mut AppState) -> AppCommand {
     let count = state.comments.clear();
     state.status = Some(if count == 0 {
@@ -495,16 +481,13 @@ fn clear_comments(state: &mut AppState) -> AppCommand {
     AppCommand::Continue
 }
 
-/// Every comment on `trace`, as one prompt ordered by entry, then file,
-/// then diff position. Paths are shown relative to the entries' working
-/// directory.
-fn trace_prompt(trace: &LoadedTrace, comments: &CommentStore) -> Option<(String, usize)> {
-    let sections: Vec<PromptSection<'_>> = trace
+fn trace_review(trace: &LoadedTrace, comments: &CommentStore) -> Option<(String, usize)> {
+    let sections: Vec<DiffSection<'_>> = trace
         .entries
         .iter()
         .enumerate()
         .flat_map(|(entry_index, entry)| {
-            entry.files.iter().map(move |file| PromptSection {
+            entry.files.iter().map(move |file| DiffSection {
                 scope: detail::scope(trace, entry_index),
                 path: file.path.clone(),
                 hunks: &file.hunks,
@@ -517,7 +500,7 @@ fn trace_prompt(trace: &LoadedTrace, comments: &CommentStore) -> Option<(String,
         .first()
         .map(|entry| entry.cwd.as_str())
         .unwrap_or_default();
-    build_prompt(cwd, comments, &sections)
+    review_text(cwd, comments, &sections)
 }
 
 /// Move the diff cursor one diff line, keeping it in view.
@@ -1300,7 +1283,7 @@ mod tests {
         note(&mut state, &traces, &anchor, "look here");
         let command = handle_key(&mut state, &traces, KeyCode::Char('y'), 40, 10);
         match command {
-            AppCommand::CopyToClipboard(prompt) => assert!(prompt.contains("note: look here")),
+            AppCommand::CopyToClipboard(text) => assert!(text.contains("\nlook here\n")),
             other => panic!("expected a clipboard copy, got {other:?}"),
         }
         assert_eq!(state.status.as_deref(), Some("Copied 1 comment"));
@@ -1682,13 +1665,13 @@ mod tests {
             &new_side(&traces, "/tmp/project/src/b.rs", 11),
             "second",
         );
-        let (prompt, count) = trace_prompt(&traces[0], &state.comments).unwrap();
+        let (text, count) = trace_review(&traces[0], &state.comments).unwrap();
 
         assert_eq!(count, 2);
-        let first = prompt.find("src/a.rs:11\n+ let x = 2;\nnote: first");
-        let second = prompt.find("src/b.rs:11\n+ let y = 2;\nnote: second");
-        assert!(first.is_some() && second.is_some(), "{prompt}");
-        assert!(first < second, "prompt follows file order: {prompt}");
+        let first = text.find("src/a.rs:11\n+ let x = 2;\nfirst\n");
+        let second = text.find("src/b.rs:11\n+ let y = 2;\nsecond\n");
+        assert!(first.is_some() && second.is_some(), "{text}");
+        assert!(first < second, "text follows file order: {text}");
     }
 
     #[test]

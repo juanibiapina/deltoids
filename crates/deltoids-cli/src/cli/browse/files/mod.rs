@@ -36,13 +36,6 @@
 //! - [`stage_panes`]: which staging column the diff shows, with which files.
 //! - [`sidebar_pane`]: the sidebar's build, keys, render, footer.
 //! - [`reload`]: the working-tree watcher and in-place rebuild.
-//!
-//! Review comments live in the shell-level [`super::comments`] (the pure
-//! store/prompt core), [`super::comment_view`] (how they look), and
-//! [`super::diff_cursor`] (rows and cursor), all shared with Traces mode.
-//! With the diff pane focused, `j`/`k` move a cursor between diff lines,
-//! `c` comments on the selected line, `d` deletes that comment, and `y`
-//! copies every working-tree comment as one agent-ready prompt.
 
 use crate::cli::browse::watch::{ChangeReceiver, ChangeWatcher};
 use std::path::PathBuf;
@@ -57,7 +50,7 @@ use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::{Sidebar, display_path};
 
 use super::comment_view::render_comment_editor;
-use super::comments::{CommentAnchor, CommentStore, build_prompt, reanchor};
+use super::comments::{CommentAnchor, CommentStore, reanchor, review_text};
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport, TabStrip};
 
 mod action_menu;
@@ -877,14 +870,12 @@ fn anchored_line(model: &Model, anchor: &CommentAnchor) -> Option<(String, LineK
         .map(|(content, kind)| (content.to_string(), kind.clone()))
 }
 
-/// Build the review prompt for every working-tree comment and ask the
-/// shell to copy it, recording what happened in the diff pane footer.
 fn copy_comments(state: &mut FilesMode) -> AppCommand {
-    match working_tree_prompt(state) {
-        Some((prompt, count)) => {
+    match working_tree_review(state) {
+        Some((text, count)) => {
             let noun = if count == 1 { "comment" } else { "comments" };
             state.status = Some(format!("Copied {count} {noun}"));
-            AppCommand::CopyToClipboard(prompt)
+            AppCommand::CopyToClipboard(text)
         }
         None => {
             state.status = Some("No comments to copy".to_string());
@@ -893,9 +884,6 @@ fn copy_comments(state: &mut FilesMode) -> AppCommand {
     }
 }
 
-/// Drop every session comment, recording the count in the footer. Leaves
-/// the diff cache untouched: comments are an overlay, so the notes vanish
-/// on the next render with no rebuild.
 fn clear_comments(state: &mut FilesMode) -> AppCommand {
     let count = state.comments.clear();
     state.status = Some(if count == 0 {
@@ -907,11 +895,9 @@ fn clear_comments(state: &mut FilesMode) -> AppCommand {
     AppCommand::Continue
 }
 
-/// Every comment on the working tree, as one prompt ordered by the
-/// sidebar's file order and then by position in each file's diff.
-fn working_tree_prompt(state: &FilesMode) -> Option<(String, usize)> {
+fn working_tree_review(state: &FilesMode) -> Option<(String, usize)> {
     let sections = state.model.sections(&state.display_order);
-    build_prompt("", &state.comments, &sections)
+    review_text("", &state.comments, &sections)
 }
 
 fn pane_at(state: &FilesMode, col: u16, row: u16) -> Option<Focus> {
@@ -1686,21 +1672,21 @@ mod tests {
         note(&mut state, &in_a, "first");
 
         let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
-        let prompt = match command {
-            AppCommand::CopyToClipboard(prompt) => prompt,
+        let text = match command {
+            AppCommand::CopyToClipboard(text) => text,
             other => panic!("expected a clipboard copy, got {other:?}"),
         };
         assert_eq!(state.status.as_deref(), Some("Copied 2 comments"));
         // Repo-relative paths, correct sides, sidebar order.
         assert!(
-            prompt.contains("src/a.txt:3\n- const x = 1;\nnote: first"),
-            "prompt was:\n{prompt}"
+            text.contains("src/a.txt:3\n- const x = 1;\nfirst\n"),
+            "text was:\n{text}"
         );
         assert!(
-            prompt.contains("src/b.txt:3\n+ const x = 2;\nnote: second"),
-            "prompt was:\n{prompt}"
+            text.contains("src/b.txt:3\n+ const x = 2;\nsecond\n"),
+            "text was:\n{text}"
         );
-        assert!(prompt.find("note: first").unwrap() < prompt.find("note: second").unwrap());
+        assert!(text.find("\nfirst\n").unwrap() < text.find("\nsecond\n").unwrap());
     }
 
     #[test]

@@ -24,7 +24,7 @@ Hunks expand to show the enclosing function, so you always know where you are.
 - **Expanded context:** understand changes within their enclosing scope.
 - **Agent traces:** follow agent changes in real time.
 - **Git integration:** review file status and manage changes in one place.
-- **Review comments:** turn review feedback into prompts for coding agents.
+- **Review comments:** copy review notes with file and line references for coding agents.
 - **Responsive TUI:** keep up with changes without unnecessary redraws.
 - **Syntax themes:** choose colors that suit your workflow.
 - **Custom commands:** use your own tools while reviewing.

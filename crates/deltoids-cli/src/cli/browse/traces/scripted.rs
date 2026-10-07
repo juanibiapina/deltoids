@@ -57,8 +57,6 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
         }
     };
 
-    // Text typed into the comment editor is echoed nowhere; the printed
-    // snapshot and any copied prompt are the observable result.
     let mut copied: Option<String> = None;
 
     for ch in input.chars() {
@@ -99,8 +97,8 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
                 delete_comment(&mut state);
             }
             'y' => {
-                if let AppCommand::CopyToClipboard(prompt) = copy_comments(&mut state, traces) {
-                    copied = Some(prompt);
+                if let AppCommand::CopyToClipboard(text) = copy_comments(&mut state, traces) {
+                    copied = Some(text);
                 }
             }
             '\t' => {
@@ -120,10 +118,9 @@ pub(super) fn run_scripted(traces: &[LoadedTrace], theme: &Theme) -> Result<(), 
         }
     }
 
-    // Without a terminal there is no clipboard to write to, so the prompt
-    // goes to stdout: the scripted path's observable copy result.
-    if let Some(prompt) = copied {
-        print!("{prompt}");
+    // Without a terminal, copied review text goes to stdout.
+    if let Some(text) = copied {
+        print!("{text}");
     }
     print!(
         "{}",

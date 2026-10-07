@@ -1,7 +1,4 @@
-//! Presentation of review comments: the inline rows drawn under a
-//! commented diff line, the cursor highlight, and the single-line editor
-//! popup. Shared by both modes, and kept apart from [`super::comments`]
-//! (the pure store/prompt core) and from the diff panes themselves.
+//! Review comment rows, cursor highlight, and editor popup.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

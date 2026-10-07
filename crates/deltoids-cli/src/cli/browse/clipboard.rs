@@ -139,14 +139,14 @@ mod tests {
         let terminal_calls = std::cell::Cell::new(0);
 
         let result = copy_with(
-            "review prompt",
+            "review text",
             |text| {
-                assert_eq!(text, "review prompt");
+                assert_eq!(text, "review text");
                 native_calls.set(native_calls.get() + 1);
                 true
             },
             |text| {
-                assert_eq!(text, "review prompt");
+                assert_eq!(text, "review text");
                 terminal_calls.set(terminal_calls.get() + 1);
                 Ok(())
             },
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn base64_round_trips_unicode_and_multiline_text() {
         // Decoding is not needed at runtime, but the encoder must handle
-        // multi-byte characters and newlines the prompt contains.
+        // multi-byte characters and newlines the review text contains.
         assert_eq!(base64_encode("é\n".as_bytes()), "w6kK");
         assert_eq!(base64_encode(b"a\nb"), "YQpi");
     }

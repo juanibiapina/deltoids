@@ -10,7 +10,7 @@ use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::{Diff, LineKind, SymlinkView, content, git};
 
 use crate::cli::browse::comments::{
-    CommentAnchor, CommentScope, Numbering, PromptSection, numbered_lines,
+    CommentAnchor, CommentScope, DiffSection, Numbering, numbered_lines,
 };
 use crate::sidebar::{ChangeKind, StageStatus, display_path};
 
@@ -218,9 +218,8 @@ impl Model {
     }
 
     /// The text diffs on screen in sidebar order, left pane first for a
-    /// file with both columns: what the comment core needs to order,
-    /// re-anchor, and copy notes.
-    pub(super) fn sections(&self, display_order: &[usize]) -> Vec<PromptSection<'_>> {
+    /// file with both columns.
+    pub(super) fn sections(&self, display_order: &[usize]) -> Vec<DiffSection<'_>> {
         display_order
             .iter()
             .filter(|index| **index < self.files.len())
@@ -229,7 +228,7 @@ impl Model {
                 self.views(index)
                     .into_iter()
                     .filter_map(move |view| match view.body {
-                        FileBody::Diff(diff) => Some(PromptSection {
+                        FileBody::Diff(diff) => Some(DiffSection {
                             scope: CommentScope::WorkingTree,
                             path: path.clone(),
                             hunks: diff.hunks(),

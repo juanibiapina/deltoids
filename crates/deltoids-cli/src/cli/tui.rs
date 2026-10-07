@@ -35,12 +35,13 @@ has both, the diff title reads "Staged - Unstaged" and s switches between them.
 Review comments, with the diff pane focused (2 in Files, 3 in Traces):
 - c:               comment on the diff line under the cursor
 - d:               delete that line's comment
-- y:               copy every comment in the view as one prompt
+- y:               copy every comment in the view
 
 Comments live in the running session only; they are never written to disk.
-Copying builds a prompt listing each file, line, diff line, and note, ready
-to paste into a coding agent. In Files mode comments follow their line as
-the working tree changes, and are marked stale when the line moves on.
+Copying gives one block per comment: the file and line, the quoted diff
+line, and the note, ready to paste into a coding agent. In Files mode
+comments follow their line as the working tree changes, and are marked
+outdated when the line moves on.
 
 Set RV_NO_ICONS=1 to disable nerd-font glyphs in the sidebar.
 "#;

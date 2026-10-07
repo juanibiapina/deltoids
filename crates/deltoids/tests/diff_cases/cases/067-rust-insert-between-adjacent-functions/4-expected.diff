@@ -1,0 +1,11 @@
+@@ -1,3 +1,3 @@ [function_item a]
+ fn a() {
+-    let x = 1;
++    let x = 10;
+ }
+
+@@ -4,3 +4,4 @@ [function_item b]
++const LIMIT: u8 = 3;
+ fn b() {
+     let y = 2;
+ }

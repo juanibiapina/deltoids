@@ -18,14 +18,13 @@ pub mod render_tui;
 pub mod reverse;
 mod scope;
 pub mod symlink;
-pub mod syntax;
+mod syntax;
 
 pub use change_layout::{ChangeLayout, arrange_change};
 pub use config::{
     ColorMode, SyntaxAssets, TOKYO_NIGHT_THEME_NAME, Theme, theme_by_name, theme_name_key,
     theme_names,
 };
-pub use engine::{DiffOp, Snapshot};
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 pub use language::Language;
 pub use scope::{Diff, DiffLine, Hunk, HunkRun, LineKind, ScopeNode};

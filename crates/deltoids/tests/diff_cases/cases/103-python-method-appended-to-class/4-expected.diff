@@ -1,5 +1,4 @@
-@@ -5 +5,4 @@ [class_definition Store] [function_definition put]
+@@ -5,0 +5,3 @@ [class_definition Store] [function_definition put]
 +    def put(self, key, value):
 +        self.data[key] = value
 +
- 

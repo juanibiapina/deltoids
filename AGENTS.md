@@ -38,9 +38,9 @@ crates/
     src/config.rs             # Theme + syntax-theme registry (theme_by_name/theme_names)
     src/engine.rs             # Line-level diff engine
     src/parse.rs              # Git diff parsing
-    src/scope.rs              # Hunk types and scope context
-    src/scope/range.rs        # Context-range planning phase
-    src/scope/hunk_builder.rs # Hunk filling phase
+    src/scope.rs              # Hunk types and Diff::compute
+    src/scope/expansion.rs    # Context window per change (hunk expansion rules)
+    src/scope/hunks.rs        # Grouping, emission, breadcrumbs (exact cover)
     src/hunk_header.rs        # Shared header layout
     src/render.rs             # Diff rendering as ANSI
     src/render_tui.rs         # Diff rendering for ratatui
@@ -51,8 +51,9 @@ crates/
     src/reverse.rs            # Diff reversal
     src/language.rs           # Language detection and config
     src/syntax.rs             # Tree-sitter parsing and scopes
-    tests/diff_cases.rs       # Diff-case suite entry point
-    tests/diff_cases/         # Diff-case harness and cases
+    tests/diff_cases.rs       # Diff-case suite + exact-cover random-edit sweep
+    tests/diff_cases/         # Diff-case harness, exact-cover check, and cases
+    tests/diff_compute.rs     # Diff::compute property tests
       cases/<NNN-slug>/       # One case per directory
 
   deltoids-cli/
@@ -219,5 +220,7 @@ user re-runs `claude plugin install`.
 - Extract small, single-purpose helpers over generic utility modules.
 - Add tests alongside refactors.
 - For diff-engine changes, the diff-case suite is the canonical test
-  surface (see above). Inline `#[test]`s in `scope.rs` etc. remain
-  useful for narrow property assertions; cases are the broad spec.
+  surface (see above). Every case and a seeded random-edit sweep must
+  also show each changed line exactly once in ordered, disjoint hunks
+  (`tests/diff_cases/exact_cover.rs`). Narrow `Diff::compute`
+  properties live in `tests/diff_compute.rs`.

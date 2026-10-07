@@ -11,4 +11,4 @@ A hunk's lines must be contiguous in both files because every consumer numbers t
 - The new `### Added` section is one hunk of its own.
 - The bullet added to `### Changed` is a separate hunk whose new-file start accounts for the inserted lines.
 - Hunks are emitted in file order.
-- `### Changed` is the shared boundary between the two hunks. A single shared context line is expected, but neither hunk spans content owned by the other.
+- The hunks share no line: the inserted section's hunk has no context, and `### Changed` appears only as context of the second hunk.

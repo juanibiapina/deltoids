@@ -15,7 +15,11 @@ ordered.
 
 The same files double as an integration test. The harness in
 [`harness.rs`](./harness.rs) walks every case, runs `Diff::compute`, and
-asserts the result matches the recorded expectation.
+asserts the result matches the recorded expectation. Every case, and a
+seeded sweep of random edits over the case inputs, must also pass the
+exact-cover check in [`exact_cover.rs`](./exact_cover.rs): each changed
+line appears in exactly one hunk, hunks are ordered and disjoint, and
+no hunk is context only.
 
 ## Why this exists
 
@@ -127,83 +131,8 @@ Cases are organised loosely by theme via their numeric prefix:
 * `190-199` — CSS scope behaviour
 * `200-209` — Markdown scope behaviour
 * `220-229` — TOML scope behaviour
+* `230-239` — replaces that add or split scopes
 * `240-249` — SQL scope behaviour
 * `250-259` — Kotlin scope behaviour
 
-Current cases:
-
-| Slug                                                | What it pins                                                              |
-| --------------------------------------------------- | ------------------------------------------------------------------------- |
-| `010-identical-files`                               | Identical input → no hunks                                                |
-| `015-new-file-from-empty`                           | Empty `original` → single hunk, no breadcrumb                             |
-| `020-deleted-file-to-empty`                         | Empty `updated` → single hunk, no breadcrumb                              |
-| `025-plain-text-line-added`                         | Plain-text append produces one `+` line                                   |
-| `030-plain-text-line-replaced`                      | Plain-text replace produces adjacent `-`/`+` lines                        |
-| `035-unsupported-language-extension`                | Unknown extension falls back to plain unified diff                        |
-| `040-rust-line-in-function`                         | Hunk inside Rust `fn` carries the function as ancestor                    |
-| `042-rust-add-new-function`                         | Adding a new top-level fn anchors the hunk on the new scope               |
-| `043-rust-delete-entire-function`                   | Deleting a fn anchors the hunk on the deleted scope                       |
-| `045-rust-nested-impl-method`                       | `impl` + `fn` produces a two-level breadcrumb                             |
-| `047-rust-merged-hunk-lca-breadcrumb`                | Merged hunk spanning a `mod`'s const + inner fn names the LCA (`[mod_item outer]`), not the inner fn |
-| `048-rust-large-function-falls-back-to-default-context` | Bodies > `MAX_SCOPE_LINES` use 3-line context with full breadcrumb    |
-| `050-rust-top-level-statement`                      | Top-level statement → no breadcrumb                                       |
-| `055-rust-add-helper-no-duplication`                | New helper appears in exactly one hunk, not duplicated as context         |
-| `056-rust-const-multiline-array-context`            | Multi-line `const &[…]` literal expands hunk to cover the whole array     |
-| `057-rust-multiline-struct-literal-context`         | Multi-line `Foo { … }` literal expands hunk to cover the whole literal    |
-| `060-rust-comment-anchor-inside-fn`                 | Doc-comment edit above a fn keeps the fn as ancestor                      |
-| `070-json-property-change`                          | JSON change → no breadcrumb (data-only language)                          |
-| `075-typescript-config-property-change`             | TS config object literal → no breadcrumb                                  |
-| `076-typescript-wrapped-assignment-context`         | Edit on the value line of a wrapped `const x =\n  expr;` expands to the whole statement |
-| `077-typescript-call-arg-object-context`            | Edit inside a multi-line object passed as a call arg expands through the call to the whole statement |
-| `078-typescript-call-arg-array-context`             | Edit to an array arg of `const … = call(…)` expands to the whole statement (no breadcrumb) |
-| `080-typescript-method-modification`                | Class method change → `[class_declaration X] [method_definition Y]`       |
-| `082-typescript-merged-hunk-lca-breadcrumb`         | Merged hunk spanning a class field + method body names the LCA (`[class_declaration Outer]`), not the inner method |
-| `085-typescript-multi-pair-replace`                 | Multi-pair `Replace` stays in a single hunk                               |
-| `090-yaml-property-change`                          | YAML change → no breadcrumb, scope-expanded context                       |
-| `100-python-multiline-dict-context`                 | Multi-line Python dict literal expands hunk to cover the whole literal    |
-| `110-go-composite-literal-context`                  | Multi-line Go composite literal expands hunk to cover the whole literal   |
-| `120-ruby-multiline-hash-context`                   | Multi-line Ruby hash literal expands hunk to cover the whole literal      |
-| `121-ruby-nested-scope-no-duplicate-hunk`           | Nested outer/inner scope edits collapse into one hunk (no duplicated lines)|
-| `130-c-initializer-list-context`                    | Multi-line C `{ … }` initializer expands hunk to cover the whole literal  |
-| `140-cpp-initializer-list-context`                  | Multi-line C++ `{ … }` initializer expands hunk to cover the whole literal|
-| `150-lua-table-constructor-context`                 | Multi-line Lua table constructor expands hunk to cover the whole literal  |
-| `160-terraform-resource-block-context`              | Terraform `resource` block edit → `[block resource "…" "…"]` breadcrumb, with multi-line `tuple`/`object` literals inside the block kept as context |
-| `061-rust-comment-only-edit-above-method`           | Rust `///` doc-comment-only edit above an impl method anchors on the method, not the impl |
-| `062-rust-attribute-only-edit-above-fn`             | Rust `#[…]` attribute-only edit above a fn anchors on the fn |
-| `063-rust-block-comment-only-edit-above-fn`         | Rust `/* … */` block-comment-only edit above a fn anchors on the fn |
-| `081-typescript-jsdoc-only-edit-above-method`       | TS `/** */` JSDoc-only edit above a class method anchors on the method |
-| `091-javascript-comment-only-edit-above-fn`         | JS `//` line-comment-only edit above a top-level fn anchors on the fn |
-| `093-typescript-exported-arrow-body-edit-includes-leading-comment` | Body edit in `export const f = () => {}` starts the hunk at the leading comments |
-| `094-typescript-exported-function-body-edit-includes-leading-comment` | Body edit in `export function f()` starts the hunk at the leading comments |
-| `099-typescript-comment-only-edit-above-exported-arrow-fn` | Comment-only edit above `export const f = () => {}` anchors on the function |
-| `102-python-comment-only-edit-above-method`         | Python `#` comment-only edit above a class method anchors on the method |
-| `112-go-doc-comment-only-edit-above-fn`             | Go `//` doc-comment-only edit above a fn anchors on the fn |
-| `122-ruby-comment-only-edit-above-method`           | Ruby `#` comment-only edit above a class method anchors on the method |
-| `132-c-block-comment-only-edit-above-fn`            | C `/* … */` comment-only edit above a fn anchors on the fn |
-| `142-cpp-line-comment-only-edit-above-fn`           | C++ `//` comment-only edit above a fn anchors on the fn |
-| `152-lua-comment-only-edit-above-fn`                | Lua `--` comment-only edit above a fn anchors on the fn |
-| `162-hcl-comment-only-edit-above-block`             | HCL `#` comment-only edit above a block anchors on the block |
-| `170-java-javadoc-only-edit-above-method`           | Java `/** */` Javadoc-only edit above a class method anchors on the method |
-| `180-bash-comment-only-edit-above-fn`               | Bash `#` comment-only edit above a function anchors on the function |
-| `190-css-comment-only-edit-above-rule`              | CSS `/* … */` comment-only edit above a rule_set anchors on the rule |
-| `200-markdown-line-edit-default-context`            | Markdown body line edit uses 3-line default context, not the whole document |
-| `201-markdown-paragraph-edit-default-context`       | Markdown paragraph rewrite uses default context, not the whole document |
-| `220-toml-comment-only-edit-above-table`            | TOML `#` comment-only edit above a table anchors on the table |
-| `095-typescript-large-fn-no-hunk-overlap`          | Insert beside object literal in 200+ line fn → no overlapping hunks       |
-| `096-typescript-large-fn-nearby-changes-merge`     | Three replaces in adjacent objects in 200+ line fn → one merged hunk      |
-| `097-typescript-method-rename-split`             | Method rename + body change + new wrapper render faithfully in one hunk, `+/-` counts match git |
-| `237-rust-replace-adds-multiple-new-functions`      | A Replace that edits one fn and appends new fns renders every line by op kind, `+/-` counts match git |
-| `238-markdown-new-section-before-neighbour-change`  | An inserted section above another change produces ordered, contiguous hunks with correct line numbers |
-| `240-sql-create-table-column-change`                | SQL `CREATE TABLE` column edit → `[create_table users]` breadcrumb (name from `object_reference`) |
-| `241-sql-create-function-body-change`               | SQL `CREATE FUNCTION` body edit → `[create_function add]` breadcrumb |
-| `242-sql-select-statement-no-breadcrumb`            | Bare SQL `SELECT` change → no breadcrumb |
-| `250-kotlin-function-body` | Function body edit includes the whole function and its name |
-| `251-kotlin-class-method` | Class method edit names the class and method, excluding sibling methods |
-| `252-kotlin-object-method` | Object method edit names the singleton object and method |
-| `253-kotlin-kdoc-method` | KDoc-only edit anchors on the documented method |
-| `254-kotlin-script-lambda` | Gradle script edit includes its trailing lambda without a breadcrumb |
-| `255-kotlin-callback-context` | Callback inside a function retains the enclosing function context |
-| `256-kotlin-nested-script-lambda` | Nested script lambda edit excludes sibling blocks |
-| `257-kotlin-annotated-expression-function` | Expression-bodied extension function preserves annotations, documentation, and backtick names |
-| `258-kotlin-annotation-only-edit` | Annotation-only edit anchors on the annotated method |
-| `259-kotlin-script-statement` | Top-level script statement uses default context without a breadcrumb |
+Each case's `1-case.md` describes what it pins.

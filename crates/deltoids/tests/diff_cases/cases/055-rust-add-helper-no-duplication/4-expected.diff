@@ -1,4 +1,4 @@
-@@ -5 +5,23 @@ [struct_item VisibleChar]
+@@ -5,0 +5,22 @@
 +struct VisibleChar {
 +    text: String,
 +    width: usize,
@@ -21,7 +21,6 @@
 +    })
 +}
 +
- fn truncate_ranges(base_style: Style) -> Vec<Span> {
 
 @@ -5,19 +27,14 @@ [function_item truncate_ranges]
  fn truncate_ranges(base_style: Style) -> Vec<Span> {

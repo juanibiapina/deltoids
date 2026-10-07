@@ -2,7 +2,7 @@
 
 ## Why this case exists
 
-When a single fn is deleted just below an in-place edit, `similar` is
+When a single fn is deleted just below an in-place edit, the line diff is
 free to align the deleted fn's closing `}` with the surviving fn's
 closing `}`. Both choices have the same edit cost, but the alignment
 it picks marks the **survivor's** `}` as removed and the **deleted

@@ -1,0 +1,6 @@
+[server]
+host = "a"
+
+# Docs
+[other]
+port = 2

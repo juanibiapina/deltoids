@@ -1,13 +1,8 @@
-//! Diff engine: thin layer over `gix-imara-diff`.
+//! Line-level diff engine: a thin layer over `gix-imara-diff`.
 //!
-//! Public surface for deltoids consumers is [`Snapshot`] (and the
-//! `align_old_to_new` method on it). [`DiffOp`] is re-exported from
-//! `lib.rs` for callers that want to walk the raw operation stream
-//! (e.g. to bypass tree-sitter scope expansion).
-//!
-//! Internal to deltoids: the free [`align_old_to_new`] function, which
-//! the scope planner uses with hand-built `Vec<DiffOp>` test fixtures
-//! without constructing a [`Snapshot`].
+//! [`Snapshot::compute`] runs the histogram diff once and keeps the op
+//! stream (for hunk construction in [`crate::scope`]) and the standard
+//! unified text (for [`crate::Diff::text`]).
 
 use gix_imara_diff::{
     Algorithm, BasicLineDiffPrinter, Diff as ImaraDiff, InternedInput, UnifiedDiffConfig,
@@ -90,64 +85,11 @@ impl Snapshot {
     pub fn unified_text(&self) -> &str {
         &self.unified_text
     }
-
-    /// Map an OLD-file 0-indexed line to its NEW-file equivalent
-    /// through this snapshot's op stream. See [`align_old_to_new`].
-    pub fn align_old_to_new(&self, line: usize) -> Option<usize> {
-        align_old_to_new(line, &self.ops)
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Free helpers
+// Helpers
 // ---------------------------------------------------------------------------
-
-/// Map an OLD-file 0-indexed line to its NEW-file equivalent through
-/// the diff ops.
-///
-/// - Lines in an `Equal` op return their aligned new position.
-/// - Lines in a `Replace` op return the closest line in the new range,
-///   clamped to the last line of the new range. The clamp matters for
-///   `scope.end` of multi-line replaces so `}` maps to `}` rather than
-///   to the start of the new range.
-/// - Lines in a `Delete` op return `None` (no counterpart in NEW).
-/// - Lines outside any op return `None`.
-pub fn align_old_to_new(line: usize, ops: &[DiffOp]) -> Option<usize> {
-    for op in ops {
-        match op {
-            DiffOp::Equal {
-                old_index,
-                new_index,
-                len,
-            } => {
-                if line >= *old_index && line < old_index + len {
-                    return Some(new_index + (line - old_index));
-                }
-            }
-            DiffOp::Replace {
-                old_index,
-                old_len,
-                new_index,
-                new_len,
-            } => {
-                if line >= *old_index && line < old_index + old_len {
-                    let local = line - old_index;
-                    let clamped = local.min(new_len.saturating_sub(1));
-                    return Some(new_index + clamped);
-                }
-            }
-            DiffOp::Delete {
-                old_index, old_len, ..
-            } => {
-                if line >= *old_index && line < old_index + old_len {
-                    return None;
-                }
-            }
-            DiffOp::Insert { .. } => {}
-        }
-    }
-    None
-}
 
 /// Build a `Vec<DiffOp>` from a `gix_imara_diff::Diff`, synthesizing
 /// `Equal` gaps between consecutive hunks (and at the head/tail of the
@@ -281,107 +223,5 @@ mod tests {
                 .all(|op| matches!(op, DiffOp::Equal { .. }))
         );
         assert!(snap.unified_text().is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // align_old_to_new unit tests
-    //
-    // Pin the contract per `DiffOp` variant. These tests use hand-built
-    // op fixtures so they do not depend on the imara algorithm picking
-    // a particular shape.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn align_old_to_new_equal_op_returns_aligned_line() {
-        // Equal { old=5..10, new=8..13 }: line 5 -> 8, 7 -> 10, 9 -> 12.
-        let ops = vec![DiffOp::Equal {
-            old_index: 5,
-            new_index: 8,
-            len: 5,
-        }];
-        assert_eq!(align_old_to_new(5, &ops), Some(8));
-        assert_eq!(align_old_to_new(7, &ops), Some(10));
-        assert_eq!(align_old_to_new(9, &ops), Some(12));
-        // Line outside the equal range has no mapping.
-        assert_eq!(align_old_to_new(10, &ops), None);
-    }
-
-    #[test]
-    fn align_old_to_new_replace_op_clamps_to_last_new_line() {
-        // Replace { old=10..15 (5 lines), new=20..23 (3 lines) }.
-        // Inside the replace, lines map to ni + min(local_offset, new_len-1).
-        // This keeps the LAST old line mapped to the LAST new line, which
-        // callers rely on for `scope.end` of asymmetric replaces
-        // (e.g. `};` -> `}` where the closing brace IS the replace).
-        let ops = vec![DiffOp::Replace {
-            old_index: 10,
-            old_len: 5,
-            new_index: 20,
-            new_len: 3,
-        }];
-        assert_eq!(align_old_to_new(10, &ops), Some(20)); // first -> first
-        assert_eq!(align_old_to_new(11, &ops), Some(21));
-        assert_eq!(align_old_to_new(12, &ops), Some(22)); // clamped
-        assert_eq!(align_old_to_new(13, &ops), Some(22)); // clamped
-        assert_eq!(align_old_to_new(14, &ops), Some(22)); // last old -> last new
-    }
-
-    #[test]
-    fn align_old_to_new_delete_op_returns_none() {
-        // Delete { old=4..7 }: lines 4..7 have no NEW counterpart.
-        let ops = vec![DiffOp::Delete {
-            old_index: 4,
-            old_len: 3,
-            new_index: 4,
-        }];
-        assert_eq!(align_old_to_new(4, &ops), None);
-        assert_eq!(align_old_to_new(5, &ops), None);
-        assert_eq!(align_old_to_new(6, &ops), None);
-    }
-
-    #[test]
-    fn align_old_to_new_chain_with_insert_keeps_alignment() {
-        // Realistic chain: Equal -> Insert (no OLD lines) -> Equal.
-        // The insert shifts NEW indices but does not consume OLD indices,
-        // so OLD lines after the insert map cleanly via the second Equal
-        // op (whose new_index already accounts for the shift).
-        let ops = vec![
-            DiffOp::Equal {
-                old_index: 0,
-                new_index: 0,
-                len: 3,
-            },
-            DiffOp::Insert {
-                old_index: 3,
-                new_index: 3,
-                new_len: 2,
-            },
-            DiffOp::Equal {
-                old_index: 3,
-                new_index: 5,
-                len: 4,
-            },
-        ];
-        // Lines 0..3 map identity (first Equal).
-        assert_eq!(align_old_to_new(0, &ops), Some(0));
-        assert_eq!(align_old_to_new(2, &ops), Some(2));
-        // Lines 3..7 map +2 (after the 2-line Insert).
-        assert_eq!(align_old_to_new(3, &ops), Some(5));
-        assert_eq!(align_old_to_new(4, &ops), Some(6));
-        assert_eq!(align_old_to_new(6, &ops), Some(8));
-        // Beyond the last op: no mapping.
-        assert_eq!(align_old_to_new(7, &ops), None);
-    }
-
-    #[test]
-    fn snapshot_align_old_to_new_delegates_to_free_function() {
-        // Insert at line 1 -> NEW line 1 has no OLD counterpart, but
-        // OLD line 0 still maps to NEW 0, and OLD line 1 (which becomes
-        // NEW 2 after the insert) is reachable via the trailing Equal op
-        // synthesized by `ops_from_imara`.
-        let snap = Snapshot::compute("a\nb\n", "a\nINSERTED\nb\n");
-        assert_eq!(snap.align_old_to_new(0), Some(0));
-        // OLD `b` (line 1) shifts to NEW line 2 after the insert.
-        assert_eq!(snap.align_old_to_new(1), Some(2));
     }
 }

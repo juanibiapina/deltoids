@@ -13,11 +13,12 @@ sibling's context expansion.
 
 ## Behaviours pinned
 
-- The new helper appears in exactly one hunk anchored on the new scope
-  (`function_item visible_char` / `struct_item VisibleChar`).
+- The new struct (`VisibleChar`) and helper (`fn visible_char`) appear
+  together in exactly one hunk with no context. They share no parent
+  scope, so that hunk has no breadcrumb.
 - The hunk for the modified sibling (`fn truncate_ranges`) does **not**
-  include `fn visible_char` as a context line.
-- The new struct (`VisibleChar`) similarly appears in a single hunk.
+  include `fn visible_char` as a context line, and the two hunks share no
+  line.
 
 ## Notes
 

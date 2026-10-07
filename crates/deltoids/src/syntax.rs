@@ -1,9 +1,8 @@
 //! Tree-sitter parsing and scope queries.
 //!
-//! Parses source code for the stable [`Language`] detected by the language
-//! module. Constructed via [`ParsedFile::parse`]; all syntax-level questions
-//! (enclosing scopes, structure membership) are answered through methods on
-//! [`ParsedFile`].
+//! Parses source code for a detected [`Language`]. All syntax-level
+//! questions (enclosing scopes, breadcrumbs, expansion anchors) are answered
+//! through methods on [`ParsedFile`].
 //!
 //! The ancestor chain (breadcrumb) is built from *boundary* node kinds:
 //! named structures (functions, classes, methods, modules) plus the
@@ -12,76 +11,48 @@
 //! transparent ancestors is [`ParsedFile::expansion_anchor`], which walks
 //! the raw tree-sitter chain rather than this filtered breadcrumb chain.
 
+use std::ops::Range;
+
 use tree_sitter::{Node, Parser, Point, Tree};
 
 use crate::Language;
+use crate::language::TreeSitterConfig;
 use crate::scope::ScopeNode;
 
 /// A parsed source file: its syntax tree, the source it came from, and the
-/// language taxonomy needed to interpret nodes. Constructed via
-/// [`ParsedFile::parse`].
-pub struct ParsedFile {
+/// language taxonomy needed to interpret nodes.
+pub(crate) struct ParsedFile {
     tree: Tree,
-    source: Vec<u8>,
-    /// Node kinds used for the ancestor chain (display breadcrumb).
-    structure_kinds: &'static [&'static str],
-    /// Wrapper kinds promoted to structure when their `value` field is a
-    /// function body.
-    promoted_kinds: &'static [&'static str],
-    /// Node kinds that introduce a function body.
-    function_body_kinds: &'static [&'static str],
-    /// Anonymous function-body kinds that act as anchors but never appear
-    /// in the breadcrumb. See [`crate::language::TreeSitterConfig`].
-    anchor_only_kinds: &'static [&'static str],
-    /// Wrapper kinds (e.g. `call_expression`) promoted to a named
-    /// structure when one of their arguments is a function body. Their
-    /// breadcrumb name is derived from the callee plus the first
-    /// string-literal argument when present.
-    call_promoted_kinds: &'static [&'static str],
-    /// Node kinds whose breadcrumb name is built from concatenated
-    /// positional `identifier` / `string_lit` children rather than a
-    /// `name` field. See [`crate::language::TreeSitterConfig`].
-    positional_name_kinds: &'static [&'static str],
-    /// Node kinds whose breadcrumb name is the text of their descendant
-    /// `object_reference` child (SQL DDL). See
-    /// [`crate::language::TreeSitterConfig`].
-    object_reference_name_kinds: &'static [&'static str],
-    /// Node kinds that, when they appear as siblings above a structure,
-    /// attach to that structure for scope queries. See
-    /// [`crate::language::TreeSitterConfig`].
-    leading_comment_kinds: &'static [&'static str],
-    /// Whether [`Self::expansion_anchor`] may grow context through
-    /// transparent ancestors. False for prose (Markdown). See
-    /// [`crate::language::TreeSitterConfig`].
-    transparent_expansion: bool,
+    source: String,
+    /// Byte span of each source line, as split by `str::lines`.
+    lines: Vec<Range<usize>>,
+    config: TreeSitterConfig,
 }
 
 impl ParsedFile {
     /// Parse `source` for the language detected from `path`.
-    ///
-    /// Returns `None` if the language is not recognized or parsing fails.
-    pub fn parse(path: &str, source: &str) -> Option<Self> {
-        let language = Language::detect(path, source)?;
-        Self::parse_as(language, source)
+    #[cfg(test)]
+    pub(crate) fn parse(path: &str, source: &str) -> Option<Self> {
+        Self::parse_as(Language::detect(path, source)?, source)
     }
 
     pub(crate) fn parse_as(language: Language, source: &str) -> Option<Self> {
-        let entry = language.tree_sitter_config();
+        let config = language.tree_sitter_config();
         let mut parser = Parser::new();
-        parser.set_language(&entry.language.into()).ok()?;
+        parser.set_language(&config.language.into()).ok()?;
         let tree = parser.parse(source, None)?;
+        let lines = source
+            .lines()
+            .map(|line| {
+                let start = line.as_ptr() as usize - source.as_ptr() as usize;
+                start..start + line.len()
+            })
+            .collect();
         Some(ParsedFile {
             tree,
-            source: source.as_bytes().to_vec(),
-            structure_kinds: entry.structure_kinds,
-            promoted_kinds: entry.promoted_kinds,
-            function_body_kinds: entry.function_body_kinds,
-            anchor_only_kinds: entry.anchor_only_kinds,
-            call_promoted_kinds: entry.call_promoted_kinds,
-            positional_name_kinds: entry.positional_name_kinds,
-            object_reference_name_kinds: entry.object_reference_name_kinds,
-            leading_comment_kinds: entry.leading_comment_kinds,
-            transparent_expansion: entry.transparent_expansion,
+            source: source.to_string(),
+            lines,
+            config,
         })
     }
 
@@ -101,6 +72,18 @@ impl ParsedFile {
             .collect()
     }
 
+    /// Innermost enclosing scope at `line` (the last entry of
+    /// [`Self::enclosing_scopes`]), regardless of size.
+    pub(crate) fn innermost_structure(&self, line: usize) -> Option<ScopeNode> {
+        let node = *self.enclosing_scope_nodes(line).last()?;
+        Some(self.scope_node_from(node))
+    }
+
+    /// Number of source lines.
+    pub(crate) fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
     /// Collect the enclosing *boundary* tree-sitter nodes at `line`,
     /// outermost first. This is the shared walk behind
     /// [`Self::enclosing_scopes`] (which maps each node to a [`ScopeNode`])
@@ -115,10 +98,10 @@ impl ParsedFile {
         let mut ancestors = Vec::new();
         let mut current = Some(node);
         while let Some(n) = current {
-            let kind_is_structure = self.structure_kinds.contains(&n.kind());
-            let kind_is_promoted = self.promoted_kinds.contains(&n.kind());
-            let kind_is_anchor_only = self.anchor_only_kinds.contains(&n.kind());
-            let kind_is_call_promoted = self.call_promoted_kinds.contains(&n.kind());
+            let kind_is_structure = self.config.structure_kinds.contains(&n.kind());
+            let kind_is_promoted = self.config.promoted_kinds.contains(&n.kind());
+            let kind_is_anchor_only = self.config.anchor_only_kinds.contains(&n.kind());
+            let kind_is_call_promoted = self.config.call_promoted_kinds.contains(&n.kind());
             let include = kind_is_structure
                 || kind_is_anchor_only
                 || (kind_is_promoted && self.has_function_value(&n))
@@ -160,13 +143,14 @@ impl ParsedFile {
     ///
     /// Call-promoted wrappers that carry an identifying argument
     /// (`it "…" do`, `namespace :github do`, `task sync: :environment do`,
-    /// `RSpec.describe UserService do`) are kept. This is a looser rule than
-    /// [`Self::named_scope_at`]'s string-literal label: breadcrumbs want any
-    /// non-block argument, not just a string.
+    /// `RSpec.describe UserService do`) are kept: breadcrumbs accept any
+    /// non-block argument as a label, not just a string.
     pub fn breadcrumb_scopes(&self, line: usize) -> Vec<ScopeNode> {
         self.enclosing_scope_nodes(line)
             .into_iter()
-            .filter(|n| !self.anchor_only_kinds.contains(&n.kind()) && !self.is_block_only_call(*n))
+            .filter(|n| {
+                !self.config.anchor_only_kinds.contains(&n.kind()) && !self.is_block_only_call(*n)
+            })
             .map(|n| self.scope_node_from(n))
             .collect()
     }
@@ -175,78 +159,25 @@ impl ParsedFile {
     /// breadcrumb name, leading-comment-adjusted start, and end line the
     /// same way [`Self::enclosing_scopes`] does.
     fn scope_node_from(&self, n: Node) -> ScopeNode {
-        let start_line = leading_adjusted_start(n, self.leading_comment_kinds) + 1;
+        let start_line = leading_adjusted_start(n, self.config.leading_comment_kinds) + 1;
         let end_line = node_end_line(n);
-        let kind_is_call_promoted = self.call_promoted_kinds.contains(&n.kind());
-        let kind_is_positional = self.positional_name_kinds.contains(&n.kind());
-        let kind_is_object_reference = self.object_reference_name_kinds.contains(&n.kind());
+        let kind_is_call_promoted = self.config.call_promoted_kinds.contains(&n.kind());
+        let kind_is_positional = self.config.positional_name_kinds.contains(&n.kind());
+        let kind_is_object_reference = self.config.object_reference_name_kinds.contains(&n.kind());
         let name = self.scope_name(
             n,
             kind_is_call_promoted,
             kind_is_positional,
             kind_is_object_reference,
         );
-        let text = self
-            .source_line_raw(n.start_position().row)
-            .unwrap_or_default();
+        let text = self.source_line(n.start_position().row).unwrap_or_default();
         ScopeNode {
             kind: n.kind().to_string(),
             name,
             start_line,
             end_line,
-            text,
+            text: text.to_string(),
         }
-    }
-
-    /// Innermost **named** scope at `line`: the shared "named boundary"
-    /// definition for new-scope detection. A named scope is either a real
-    /// structure (`structure_kinds`, or a `promoted_kinds` wrapper whose
-    /// value is a function body) or a **labeled** call-promoted node
-    /// (`it("…", …)`, `t.Run("…", …)`, RSpec `it "…" do`).
-    ///
-    /// Explicitly excludes anchor-only blocks (anonymous `do_block` /
-    /// `arrow_function`) and **unlabeled** call-promoted wrappers
-    /// (`withDORetry(() => {})`, `expect { … }`, `xs.map(x => …)`): those
-    /// are restructured expressions, not brand-new named units, and must
-    /// not spawn their own hunk.
-    ///
-    /// Walks the tree-sitter node chain (same start resolution and
-    /// in-function demotion as [`Self::enclosing_scopes`]) so labeled-ness
-    /// is decided from the node via [`Self::is_labeled_call_promoted`]
-    /// rather than the synthesised name string. Returns the innermost
-    /// match, whose bounds are the labeled-call / structure bounds.
-    pub fn named_scope_at(&self, line: usize) -> Option<ScopeNode> {
-        let node = self.resolve_start_node(line)?;
-        let mut current = Some(node);
-        while let Some(n) = current {
-            let kind_is_structure = self.structure_kinds.contains(&n.kind());
-            let kind_is_promoted = self.promoted_kinds.contains(&n.kind());
-            let is_named = kind_is_structure
-                || (kind_is_promoted && self.has_function_value(&n))
-                || self.is_labeled_call_promoted(n);
-            // Apply the same local-helper demotion as `enclosing_scopes`;
-            // a labeled call-promoted node is never demoted (see
-            // `is_nested_in_function`).
-            if is_named && !self.is_nested_in_function(n) {
-                return Some(self.scope_node_from(n));
-            }
-            current = n.parent();
-        }
-        None
-    }
-
-    /// True when `scope`'s kind belongs to this language's structure tier.
-    ///
-    /// Promoted kinds (e.g. a JS class field whose value is an arrow
-    /// function) also count as structures. `enclosing_scopes` only emits
-    /// promoted-kind scopes when their value is function-like, so the
-    /// kind alone is enough to decide.
-    pub fn is_structure(&self, scope: &ScopeNode) -> bool {
-        let kind = scope.kind.as_str();
-        self.structure_kinds.contains(&kind)
-            || self.promoted_kinds.contains(&kind)
-            || self.anchor_only_kinds.contains(&kind)
-            || self.call_promoted_kinds.contains(&kind)
     }
 
     /// Resolve the tree-sitter node a scope query starts from for `line`.
@@ -273,7 +204,7 @@ impl ParsedFile {
             .tree
             .root_node()
             .descendant_for_point_range(point, point)?;
-        let skipped = skip_leading_comments(node, self.leading_comment_kinds);
+        let skipped = skip_leading_comments(node, self.config.leading_comment_kinds);
         // Landing on a wrapper (`export const f = () => {}`) hides the
         // scope: it is a *descendant* of the wrapper, and the caller only
         // walks upward from here. Descend back into it.
@@ -302,8 +233,8 @@ impl ParsedFile {
             .named_child(0)
             .filter(|c| c.start_position().row == row)
         {
-            let kind_is_promoted = self.promoted_kinds.contains(&child.kind());
-            if self.structure_kinds.contains(&child.kind())
+            let kind_is_promoted = self.config.promoted_kinds.contains(&child.kind());
+            if self.config.structure_kinds.contains(&child.kind())
                 || (kind_is_promoted && self.has_function_value(&child))
             {
                 best = child;
@@ -344,7 +275,7 @@ impl ParsedFile {
         range_end: usize,
         budget: usize,
     ) -> Option<ScopeNode> {
-        if !self.transparent_expansion {
+        if !self.config.transparent_expansion {
             return None;
         }
         let node = self.resolve_start_node(range_start)?;
@@ -367,38 +298,29 @@ impl ParsedFile {
         // ancestor that both contains the change and fits the budget is
         // the outermost fitting ancestor.
         let anchor = chain.into_iter().rev().find(|n| {
-            let start = leading_adjusted_start(*n, self.leading_comment_kinds);
+            let start = leading_adjusted_start(*n, self.config.leading_comment_kinds);
             let end = node_end_line(*n).saturating_sub(1);
             let lines = end - start + 1;
             let contains = start <= range_start && end >= range_end.saturating_sub(1);
             contains && lines <= budget
         })?;
 
-        let start_line = leading_adjusted_start(anchor, self.leading_comment_kinds) + 1;
+        let start_line = leading_adjusted_start(anchor, self.config.leading_comment_kinds) + 1;
         let end_line = node_end_line(anchor);
         // Floor: the anchor must add context beyond the change itself.
         if end_line.saturating_sub(start_line) < change_lines {
             return None;
         }
         let text = self
-            .source_line_raw(anchor.start_position().row)
+            .source_line(anchor.start_position().row)
             .unwrap_or_default();
         Some(ScopeNode {
             kind: anchor.kind().to_string(),
             name: String::new(),
             start_line,
             end_line,
-            text,
+            text: text.to_string(),
         })
-    }
-
-    /// True when `scope`'s kind is anchor-only — a hunk-anchor that must
-    /// not appear in the breadcrumb. Anonymous callbacks (arrow functions,
-    /// function expressions passed inline) carry their identity in the
-    /// call signature on the opening line of the hunk, so a synthesised
-    /// `[KIND name]` entry would just add noise.
-    pub fn is_anchor_only(&self, scope: &ScopeNode) -> bool {
-        self.anchor_only_kinds.contains(&scope.kind.as_str())
     }
 
     /// True when `node`'s `value` field holds a function body (arrow
@@ -409,7 +331,7 @@ impl ParsedFile {
         let Some(value) = node.child_by_field_name("value") else {
             return false;
         };
-        self.function_body_kinds.contains(&value.kind())
+        self.config.function_body_kinds.contains(&value.kind())
     }
 
     /// Resolve the breadcrumb name for a scope node. Call-promoted nodes
@@ -440,7 +362,7 @@ impl ParsedFile {
             .or_else(|| node.child_by_field_name("property"))
             .or_else(|| node.child_by_field_name("type"))
             .or_else(|| node.child_by_field_name("key"))
-            .and_then(|name_node| name_node.utf8_text(&self.source).ok())
+            .and_then(|name_node| name_node.utf8_text(self.source.as_bytes()).ok())
             .unwrap_or("")
             .to_string()
     }
@@ -459,7 +381,7 @@ impl ParsedFile {
             if !matches!(child.kind(), "identifier" | "string_lit") {
                 break;
             }
-            if let Ok(text) = child.utf8_text(&self.source) {
+            if let Ok(text) = child.utf8_text(self.source.as_bytes()) {
                 parts.push(text);
             }
         }
@@ -476,7 +398,7 @@ impl ParsedFile {
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
             .find(|c| c.kind() == "object_reference")
-            .and_then(|reference| reference.utf8_text(&self.source).ok())
+            .and_then(|reference| reference.utf8_text(self.source.as_bytes()).ok())
             .unwrap_or("")
             .to_string()
     }
@@ -500,13 +422,13 @@ impl ParsedFile {
         let Some(target) = node.child_by_field_name(field) else {
             return false;
         };
-        if self.function_body_kinds.contains(&target.kind()) {
+        if self.config.function_body_kinds.contains(&target.kind()) {
             return true;
         }
         let mut cursor = target.walk();
         target
             .named_children(&mut cursor)
-            .any(|c| self.function_body_kinds.contains(&c.kind()))
+            .any(|c| self.config.function_body_kinds.contains(&c.kind()))
     }
 
     /// Synthesise a breadcrumb name for a labeled call:
@@ -527,20 +449,26 @@ impl ParsedFile {
     fn call_callee_text(&self, node: Node) -> String {
         // Ruby: optional `receiver` plus required `method`.
         if let Some(method) = node.child_by_field_name("method") {
-            let method_text = method.utf8_text(&self.source).unwrap_or("");
+            let method_text = method.utf8_text(self.source.as_bytes()).unwrap_or("");
             if let Some(receiver) = node.child_by_field_name("receiver") {
-                let receiver_text = receiver.utf8_text(&self.source).unwrap_or("");
+                let receiver_text = receiver.utf8_text(self.source.as_bytes()).unwrap_or("");
                 return format!("{receiver_text}.{method_text}");
             }
             return method_text.to_string();
         }
         // JS / TS / Go.
         if let Some(func) = node.child_by_field_name("function") {
-            return func.utf8_text(&self.source).unwrap_or("").to_string();
+            return func
+                .utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string();
         }
         // Lua.
         if let Some(name) = node.child_by_field_name("name") {
-            return name.utf8_text(&self.source).unwrap_or("").to_string();
+            return name
+                .utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string();
         }
         String::new()
     }
@@ -550,7 +478,10 @@ impl ParsedFile {
         let mut cursor = args.walk();
         let first = args.named_children(&mut cursor).next()?;
         if is_string_literal_kind(first.kind()) {
-            first.utf8_text(&self.source).ok().map(String::from)
+            first
+                .utf8_text(self.source.as_bytes())
+                .ok()
+                .map(String::from)
         } else {
             None
         }
@@ -577,8 +508,8 @@ impl ParsedFile {
             // do not demote anything: nested labeled callbacks are
             // siblings, not local helpers.
             let pkind = p.kind();
-            let parent_is_function_body = self.function_body_kinds.contains(&pkind);
-            let parent_is_anchor_only = self.anchor_only_kinds.contains(&pkind);
+            let parent_is_function_body = self.config.function_body_kinds.contains(&pkind);
+            let parent_is_anchor_only = self.config.anchor_only_kinds.contains(&pkind);
             if parent_is_function_body && !parent_is_anchor_only {
                 return true;
             }
@@ -602,7 +533,7 @@ impl ParsedFile {
     /// transient computation (`xs.map(x => …)` is unlabeled and stays
     /// subject to demotion).
     fn is_labeled_call_promoted(&self, node: Node) -> bool {
-        self.call_promoted_kinds.contains(&node.kind())
+        self.config.call_promoted_kinds.contains(&node.kind())
             && self.has_function_argument(node)
             && self.call_first_string_label(node).is_some()
     }
@@ -623,7 +554,7 @@ impl ParsedFile {
         };
         let mut cursor = args.walk();
         args.named_children(&mut cursor)
-            .any(|c| !self.function_body_kinds.contains(&c.kind()))
+            .any(|c| !self.config.function_body_kinds.contains(&c.kind()))
     }
 
     /// True when `node` is a call-promoted wrapper whose only argument is
@@ -633,12 +564,13 @@ impl ParsedFile {
     /// must not appear as breadcrumb boundaries. See
     /// [`Self::breadcrumb_scopes`].
     fn is_block_only_call(&self, node: Node) -> bool {
-        self.call_promoted_kinds.contains(&node.kind()) && !self.call_has_identifying_argument(node)
+        self.config.call_promoted_kinds.contains(&node.kind())
+            && !self.call_has_identifying_argument(node)
     }
 
     fn point_at_first_non_whitespace(&self, line: usize) -> Point {
         let column = self
-            .source_line_raw(line)
+            .source_line(line)
             .map(|text| {
                 let trimmed = text.trim_start_matches(|c: char| c.is_whitespace());
                 text.len().saturating_sub(trimmed.len())
@@ -647,10 +579,9 @@ impl ParsedFile {
         Point::new(line, column)
     }
 
-    /// Return the 0-indexed source line with original indentation preserved.
-    fn source_line_raw(&self, line: usize) -> Option<String> {
-        let text = std::str::from_utf8(&self.source).ok()?;
-        text.lines().nth(line).map(|l| l.to_string())
+    /// The 0-indexed source line with original indentation preserved.
+    fn source_line(&self, line: usize) -> Option<&str> {
+        self.lines.get(line).map(|span| &self.source[span.clone()])
     }
 }
 
@@ -836,63 +767,6 @@ mod tests {
     }
 
     #[test]
-    fn is_structure_true_for_function_item_in_rust() {
-        let parsed = ParsedFile::parse("src/x.rs", "fn main() {}\n").expect("parse");
-        let scopes = parsed.enclosing_scopes(0);
-        let func = scopes
-            .iter()
-            .find(|s| s.kind == "function_item")
-            .expect("function_item scope");
-        assert!(parsed.is_structure(func));
-    }
-
-    #[test]
-    fn named_scope_at_returns_labeled_call_for_rspec_it_block() {
-        let source = "\
-RSpec.describe Thing do
-  it \"raises when nothing\" do
-    expect { run }.to raise_error(Boom)
-  end
-end
-";
-        let parsed = ParsedFile::parse("spec.rb", source).expect("parse");
-        // Line 2 (0-indexed) is the `expect { run }` body of the `it` block.
-        // The innermost named unit is the labeled `it("…")` call, not the
-        // anonymous `do_block`.
-        let scope = parsed.named_scope_at(2).expect("named scope");
-        assert_eq!(scope.name, "it(\"raises when nothing\")");
-        assert_eq!(scope.start_line, 2);
-    }
-
-    #[test]
-    fn named_scope_at_returns_promoted_arrow_const() {
-        let source = "\
-export const getUserDO = (env) => {
-  return env.get();
-};
-";
-        let parsed = ParsedFile::parse("do.ts", source).expect("parse");
-        // Line 1 is inside the arrow body; the named unit is the promoted
-        // `getUserDO` variable declarator.
-        let scope = parsed.named_scope_at(1).expect("named scope");
-        assert_eq!(scope.name, "getUserDO");
-        assert_eq!(scope.kind, "variable_declarator");
-    }
-
-    #[test]
-    fn named_scope_at_none_for_unlabeled_call_wrapper() {
-        let source = "\
-withDORetry(() => {
-  doThing();
-});
-";
-        let parsed = ParsedFile::parse("wrap.ts", source).expect("parse");
-        // `withDORetry(() => {…})` is an unlabeled call-promoted wrapper.
-        // Its body is a restructured expression, not a named unit.
-        assert!(parsed.named_scope_at(1).is_none());
-    }
-
-    #[test]
     fn breadcrumb_scopes_drops_block_only_expect() {
         let source = "\
 RSpec.describe Client do
@@ -972,20 +846,6 @@ describe(\"suite\", () => {
     }
 
     #[test]
-    fn named_scope_at_none_for_bare_anonymous_callback() {
-        let source = "\
-const ys = xs.map((x) => {
-  return x + 1;
-});
-";
-        let parsed = ParsedFile::parse("map.ts", source).expect("parse");
-        // `xs.map(x => …)` is an unlabeled callback; the innermost named
-        // unit at the body is... the `ys` declarator is NOT function-valued
-        // (its value is a call, not an arrow), so there is no named scope.
-        assert!(parsed.named_scope_at(1).is_none());
-    }
-
-    #[test]
     fn enclosing_scopes_omits_anonymous_data_containers() {
         let source = "\
 const config = {
@@ -1044,7 +904,7 @@ export const compute = (a: number) => {
     }
 
     #[test]
-    fn named_scope_at_comment_above_exported_arrow_fn_is_the_function() {
+    fn innermost_structure_at_comment_above_exported_arrow_fn_is_the_function() {
         let source = "\
 const prefix = 1;
 
@@ -1055,13 +915,15 @@ export const compute = (a: number) => {
 ";
         let parsed = ParsedFile::parse("app.ts", source).expect("parse");
         // line 2 (0-indexed) is the comment; it documents `compute`.
-        let scope = parsed.named_scope_at(2).expect("scope at comment line");
+        let scope = parsed
+            .innermost_structure(2)
+            .expect("scope at comment line");
         assert_eq!(scope.kind, "variable_declarator");
         assert_eq!(scope.name, "compute");
     }
 
     #[test]
-    fn named_scope_at_comment_above_exported_function_is_the_function() {
+    fn innermost_structure_at_comment_above_exported_function_is_the_function() {
         let source = "\
 const prefix = 1;
 
@@ -1071,7 +933,9 @@ export function compute(a: number) {
 }
 ";
         let parsed = ParsedFile::parse("app.ts", source).expect("parse");
-        let scope = parsed.named_scope_at(2).expect("scope at comment line");
+        let scope = parsed
+            .innermost_structure(2)
+            .expect("scope at comment line");
         assert_eq!(scope.kind, "function_declaration");
         assert_eq!(scope.name, "compute");
     }
@@ -1094,6 +958,55 @@ const compute = (a: number) => {
             .find(|s| s.name == "compute")
             .expect("declarator scope");
         assert_eq!(scope.start_line, 3);
+    }
+
+    fn scopes_at(source: &str, line: usize) -> Vec<ScopeNode> {
+        ParsedFile::parse("test.rs", source)
+            .expect("parse")
+            .enclosing_scopes(line)
+    }
+
+    #[test]
+    fn enclosing_scopes_extracts_name_for_various_kinds() {
+        // struct
+        let source = "struct MyStruct {\n    field: i32,\n}\n";
+        let scopes = scopes_at(source, 1);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].kind, "struct_item");
+        assert_eq!(scopes[0].name, "MyStruct");
+
+        // enum
+        let source = "enum Color {\n    Red,\n}\n";
+        let scopes = scopes_at(source, 1);
+        assert_eq!(scopes[0].kind, "enum_item");
+        assert_eq!(scopes[0].name, "Color");
+
+        // trait
+        let source = "trait Drawable {\n    fn draw(&self);\n}\n";
+        let scopes = scopes_at(source, 1);
+        assert_eq!(scopes[0].kind, "trait_item");
+        assert_eq!(scopes[0].name, "Drawable");
+
+        // mod
+        let source = "mod utils {\n    fn helper() {}\n}\n";
+        let scopes = scopes_at(source, 1);
+        assert_eq!(scopes[0].kind, "mod_item");
+        assert_eq!(scopes[0].name, "utils");
+    }
+
+    #[test]
+    fn enclosing_scopes_preserves_original_indentation() {
+        let source = "\
+impl Foo {
+    fn compute(&self) -> i32 {
+        let x = 1;
+        x + 1
+    }
+}
+";
+        let scopes = scopes_at(source, 3);
+        assert_eq!(scopes[0].text, "impl Foo {");
+        assert_eq!(scopes[1].text, "    fn compute(&self) -> i32 {");
     }
 
     #[test]

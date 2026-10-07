@@ -10,43 +10,7 @@
 //! 3. The second hunk shows only added lines (missing corresponding deletions)
 //! 4. Some changes may be missing entirely
 
-use deltoids::{Diff, LineKind};
-
-/// Debug test that prints the actual hunks produced.
-/// Run with: cargo test -p deltoids --test scope_multi_pair_replace -- debug_print --nocapture
-#[test]
-#[ignore] // Run manually to see output
-fn debug_print_actual_hunks() {
-    let before = read_fixture("scope_multi_pair_before.ts");
-    let after = read_fixture("scope_multi_pair_after.ts");
-
-    let diff = Diff::compute(&before, &after, "task.service.ts");
-    let hunks = diff.hunks();
-
-    println!("\n=== ACTUAL HUNKS ===");
-    for (i, hunk) in hunks.iter().enumerate() {
-        println!(
-            "\n--- Hunk {} (old_start: {}, new_start: {}) ---",
-            i, hunk.old_start, hunk.new_start
-        );
-        println!(
-            "Ancestors: {:?}",
-            hunk.ancestors.iter().map(|a| &a.name).collect::<Vec<_>>()
-        );
-        for line in &hunk.lines {
-            let prefix = match line.kind {
-                LineKind::Added => "+",
-                LineKind::Removed => "-",
-                LineKind::Context => " ",
-            };
-            println!("{}{}", prefix, line.content);
-        }
-    }
-    println!("\n=== END HUNKS ===");
-
-    // Fail to ensure output is shown
-    panic!("Debug test - see output above");
-}
+use deltoids::Diff;
 
 fn read_fixture(name: &str) -> String {
     let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);

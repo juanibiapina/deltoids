@@ -8,7 +8,7 @@
  		}
  	})
 
-@@ -13 +13,8 @@ [function_declaration TestClient] [call_expression t.Run("raises when recovery returns nothing")]
+@@ -13,0 +13,7 @@ [function_declaration TestClient] [call_expression t.Run("raises when recovery returns nothing")]
 +	t.Run("raises when recovery returns nothing", func(t *testing.T) {
 +		setupStub()
 +		if err := run(); err == nil {
@@ -16,4 +16,3 @@
 +		}
 +	})
 +
- 	t.Run("exposes the total count", func(t *testing.T) {

@@ -69,7 +69,7 @@ fn retention_pressure_keeps_the_selected_file_and_stops_when_preparation_finishe
 
 #[test]
 fn changing_render_settings_rejects_old_width_layout_and_theme_results() {
-    let model = model_of(&["a.rs", "b.rs", "c.rs"]);
+    let model = model_of(&["a.txt", "b.txt", "c.txt"]);
     let mut cache = DiffCache::default();
     let initial_theme = theme();
     let initial = epoch(80, &initial_theme);
@@ -103,7 +103,7 @@ fn changing_render_settings_rejects_old_width_layout_and_theme_results() {
     finish(&mut cache);
     assert!(cache.get(initial, 0).is_none());
     let rows = cache.get(changed, 2).unwrap();
-    assert_eq!(line_text(&rows[0].line), "c.rs");
+    assert_eq!(line_text(&rows[0].line), "c.txt");
     assert!(rows.iter().all(|row| row.line.width() <= changed.width));
 }
 

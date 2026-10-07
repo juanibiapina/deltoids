@@ -84,6 +84,7 @@ crates/
       mode.rs               #   Mode trait + TabStrip + AppCommand
       help.rs               #   shared help popup
       theme_picker.rs       #   live syntax-theme picker popup (`t`)
+      syntax_badge.rs       #   file-header language / scope-support badge
       comments.rs           #   review comments
       comment_view.rs       #   comment rows
       diff_cursor.rs        #   the cursor that walks lines

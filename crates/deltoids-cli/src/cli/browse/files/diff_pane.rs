@@ -31,6 +31,7 @@ use crate::cli::browse::diff_cursor::{
 };
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label};
+use crate::cli::browse::syntax_badge::with_syntax_badge;
 use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
 
 use super::model::{Column, FileBody, Model};
@@ -82,7 +83,7 @@ pub(super) fn render_file_block(
         },
     };
     let path = display_path(file);
-    let mut rows: Vec<DiffRow> = render_tui::render_file_header(path, width, theme)
+    let mut rows: Vec<DiffRow> = file_header(file, body, width, theme)
         .into_iter()
         .map(DiffRow::plain)
         .collect();
@@ -368,13 +369,39 @@ fn typechange_label(mode: FileMode) -> &'static str {
     }
 }
 
+/// The file header, with the syntax badge on the path line for a text diff.
+fn file_header(
+    file: &FileDiff,
+    body: &FileBody,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let path = display_path(file);
+    let mut lines = render_tui::render_file_header(path, width, theme);
+    if let FileBody::Diff(diff) = body {
+        lines[0] = with_syntax_badge(
+            lines[0].clone(),
+            diff.language(),
+            diff.highlight(),
+            path,
+            width,
+            theme,
+        );
+    }
+    lines
+}
+
 /// Cheap stand-in for a not-yet-highlighted file: the file header (and any
 /// rename header) plus a muted "Rendering…" line. No syntect, so holding
 /// `j` across many files never blocks. Its height is fixed and known, so
 /// the assembled window has a definite length every frame.
-fn placeholder_file_block(file: &FileDiff, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let path = display_path(file);
-    let mut lines = render_tui::render_file_header(path, width, theme);
+fn placeholder_file_block(
+    file: &FileDiff,
+    body: &FileBody,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = file_header(file, body, width, theme);
     if let Some(old_path) = &file.rename_from {
         lines.push(render_tui::render_rename_header(
             old_path,
@@ -689,7 +716,8 @@ impl DiffPane {
                     .is_some_and(|(content, _)| content != comment.code)
             })
         } else {
-            placeholder_file_block(model.view(input_idx, self.column).file, epoch.width, theme)
+            let view = model.view(input_idx, self.column);
+            placeholder_file_block(view.file, view.body, epoch.width, theme)
                 .into_iter()
                 .map(DiffRow::plain)
                 .collect()
@@ -1460,6 +1488,34 @@ mod tests {
     }
 
     #[test]
+    fn file_headers_show_syntax_support_before_and_after_rendering() {
+        let headers = |path: &str| -> (String, String) {
+            let resolved = vec![ResolvedFile {
+                file: file_diff(path),
+                before: "val x = 1\n".to_string(),
+                after: "val x = 2\n".to_string(),
+            }];
+            let mut state = make_state(&resolved);
+            let placeholder = line_text(&state.visible_diff_window(DrawBudget::Fast)[0]);
+            wait_for_render(&mut state.unstaged);
+            let rendered = line_text(&state.visible_diff_window(DrawBudget::Fast)[0]);
+            (placeholder, rendered)
+        };
+
+        for path in ["Main.kt", "Dockerfile", "notes.txt"] {
+            let (placeholder, rendered) = headers(path);
+            assert_eq!(placeholder, rendered, "{path}");
+        }
+        assert!(headers("Main.kt").1.ends_with(" Kotlin"));
+        assert!(
+            headers("Dockerfile")
+                .1
+                .ends_with(" Dockerfile · no scope context")
+        );
+        assert_eq!(headers("notes.txt").1, "notes.txt");
+    }
+
+    #[test]
     fn assemble_window_renders_in_display_order() {
         // Files supplied in input order [a, b]; the window walks display
         // order, so the first header is whichever file sorts first.
@@ -1621,17 +1677,17 @@ mod tests {
 
     #[test]
     fn window_narrows_to_subtree_on_dir_selection() {
-        // Two files in different dirs: src/a.rs and other/b.rs. Selecting a
+        // Two files in different dirs: src/a.txt and other/b.txt. Selecting a
         // dir restricts the window to that dir's file; selecting the other
         // dir restricts to the other file.
         let resolved = vec![
             ResolvedFile {
-                file: file_diff("src/a.rs"),
+                file: file_diff("src/a.txt"),
                 before: "a1\n".to_string(),
                 after: "a2\n".to_string(),
             },
             ResolvedFile {
-                file: file_diff("other/b.rs"),
+                file: file_diff("other/b.txt"),
                 before: "b1\n".to_string(),
                 after: "b2\n".to_string(),
             },
@@ -1644,7 +1700,7 @@ mod tests {
             line_text(&window[0])
         };
         assert!(
-            file_first == "src/a.rs" || file_first == "other/b.rs",
+            file_first == "src/a.txt" || file_first == "other/b.txt",
             "expected a file header at start, got {file_first:?}"
         );
 
@@ -1656,7 +1712,7 @@ mod tests {
             line_text(&window[0])
         };
         assert!(
-            first_line == "src/a.rs" || first_line == "other/b.rs",
+            first_line == "src/a.txt" || first_line == "other/b.txt",
             "expected the dir's file header at start, got {first_line:?}"
         );
     }

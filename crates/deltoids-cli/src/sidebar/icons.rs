@@ -10,7 +10,7 @@
 
 /// A nerd-font glyph plus its lazygit-defined colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct IconSpec {
+pub struct IconSpec {
     pub glyph: &'static str,
     pub color: (u8, u8, u8),
 }
@@ -69,7 +69,7 @@ pub(super) const ICON_DIR: IconSpec = IconSpec {
 /// Mirrors lazygit's `IconForFile`: exact basename (case-sensitive) in
 /// [`NAME_ICONS`] first, then the lowercased final extension in
 /// [`EXT_ICONS`], then [`DEFAULT_FILE`].
-pub(super) fn file_icon(name: &str) -> IconSpec {
+pub fn file_icon(name: &str) -> IconSpec {
     let base = name.rsplit('/').next().unwrap_or(name);
     if let Some(spec) = NAME_ICONS.iter().find(|(k, _)| *k == base).map(|(_, v)| *v) {
         return spec;

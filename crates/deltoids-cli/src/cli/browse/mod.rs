@@ -68,6 +68,7 @@ pub mod files;
 mod help;
 pub mod mode;
 mod suspend;
+mod syntax_badge;
 mod text;
 mod theme_picker;
 pub mod traces;

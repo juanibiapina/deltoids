@@ -18,6 +18,7 @@ use deltoids::{ChangeLayout, Theme};
 
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label, should_build_body};
+use crate::cli::browse::syntax_badge::with_syntax_badge;
 use crate::cli::browse::text::wrap_text;
 use crate::{FileChange, HistoryEntry};
 
@@ -329,11 +330,10 @@ pub(super) fn build_diff_rows(
     for file in files {
         if file_headers {
             rendered.push(DiffRow::plain(Line::from("")));
-            rendered.extend(
-                render_file_header(&display_path(&file.path, &entry.cwd), width, theme)
-                    .into_iter()
-                    .map(DiffRow::plain),
-            );
+            let path = display_path(&file.path, &entry.cwd);
+            let mut header = render_file_header(&path, width, theme);
+            header[0] = syntax_badge_line(header[0].clone(), file, &path, width, theme);
+            rendered.extend(header.into_iter().map(DiffRow::plain));
         }
         if file.hunks.is_empty() {
             // A successful entry whose file has no hunks predates recorded
@@ -426,7 +426,11 @@ fn render_detail_header(
         [] => "no files".to_string(),
         files => format!("{} files", files.len()),
     };
-    render_header_block(&entry.reason, &path, width, theme)
+    let badge_file = match files {
+        [file] => Some(*file),
+        _ => None,
+    };
+    render_header_block(&entry.reason, &path, badge_file, width, theme)
 }
 
 fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
@@ -442,6 +446,7 @@ fn labeled_line(label: &str, value: &str, color: Color) -> Line<'static> {
 fn render_header_block(
     reason: &str,
     path: &str,
+    badge_file: Option<&FileChange>,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
@@ -468,9 +473,30 @@ fn render_header_block(
     for wrapped in wrap_text(reason, width) {
         lines.push(Line::from(Span::styled(wrapped, reason_style)));
     }
-    lines.push(Line::from(Span::styled(fit_line(path, width), path_style)));
+    let path_line = Line::from(Span::styled(fit_line(path, width), path_style));
+    lines.push(match badge_file {
+        Some(file) => syntax_badge_line(path_line, file, path, width, theme),
+        None => path_line,
+    });
     lines.push(Line::from(Span::styled(bot, border)));
     lines
+}
+
+fn syntax_badge_line(
+    line: Line<'static>,
+    file: &FileChange,
+    path: &str,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    with_syntax_badge(
+        line,
+        file.language,
+        file.highlight.as_deref(),
+        path,
+        width,
+        theme,
+    )
 }
 
 pub(super) fn fit_line(line: &str, width: usize) -> String {
@@ -531,6 +557,40 @@ mod tests {
             !second.contains("let x = 2;") && !second.contains("src/a.rs"),
             "{second}"
         );
+    }
+
+    #[test]
+    fn file_headers_show_syntax_support() {
+        let mut entry = two_file_entry();
+        entry.files[0].language = Some(deltoids::Language::Rust);
+        entry.files[0].highlight = Some("Rust".to_string());
+        entry.files[1].highlight = Some("Dockerfile".to_string());
+        let trace = LoadedTrace {
+            trace: trace_summary("01JTESTTRACE00000000000000", 1, "a"),
+            entries: vec![entry],
+        };
+        let line_of = |text: &str, path: &str| {
+            text.lines()
+                .find(|line| line.starts_with(path))
+                .unwrap_or_else(|| panic!("no {path} line in {text}"))
+                .to_string()
+        };
+
+        let whole = rendered_text(&trace, Selection::entry(0));
+        assert!(line_of(&whole, "src/a.rs").ends_with(" Rust"), "{whole}");
+        assert!(
+            line_of(&whole, "src/b.rs").ends_with(" Dockerfile · no scope context"),
+            "{whole}"
+        );
+
+        let single = rendered_text(
+            &trace,
+            Selection {
+                entry: 0,
+                file: Some(0),
+            },
+        );
+        assert!(line_of(&single, "src/a.rs").ends_with(" Rust"), "{single}");
     }
 
     #[test]

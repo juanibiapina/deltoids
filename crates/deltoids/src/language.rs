@@ -119,6 +119,32 @@ impl Language {
         }
     }
 
+    /// Human-readable name for display.
+    pub fn name(self) -> &'static str {
+        match self {
+            Language::Bash => "Bash",
+            Language::C => "C",
+            Language::Cpp => "C++",
+            Language::Css => "CSS",
+            Language::Go => "Go",
+            Language::Hcl => "HCL",
+            Language::Java => "Java",
+            Language::JavaScript => "JavaScript",
+            Language::Json => "JSON",
+            Language::Kotlin => "Kotlin",
+            Language::Lua => "Lua",
+            Language::Markdown => "Markdown",
+            Language::Python => "Python",
+            Language::Ruby => "Ruby",
+            Language::Rust => "Rust",
+            Language::Sql => "SQL",
+            Language::Toml => "TOML",
+            Language::Tsx => "TSX",
+            Language::TypeScript => "TypeScript",
+            Language::Yaml => "YAML",
+        }
+    }
+
     /// Parse a stable language identifier.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {

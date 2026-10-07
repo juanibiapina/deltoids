@@ -226,12 +226,23 @@ pub(super) fn resolve(
 
         // Binary changes are decided straight from the parsed diff too:
         // their blobs are not valid UTF-8, so resolving them would fail
-        // and blank the whole panel. Skip content resolution entirely.
+        // and blank the whole panel. Skip content resolution entirely,
+        // unless a content filter (git-crypt) hides text behind the
+        // binary-looking stored blob.
         if crate::sidebar::file_metadata(&file).binary {
+            let mut file = file;
+            let (before, after) = match repo.and_then(|repo| filtered_text(&file, repo)) {
+                Some(text) => {
+                    file.preamble
+                        .retain(|line| !crate::sidebar::is_binary_marker(line));
+                    text
+                }
+                None => (String::new(), String::new()),
+            };
             files.push(ResolvedFile {
                 file,
-                before: String::new(),
-                after: String::new(),
+                before,
+                after,
             });
             continue;
         }
@@ -272,6 +283,33 @@ pub(super) fn resolve(
     }
 
     Ok(files)
+}
+
+/// Plaintext for both sides of a binary-flagged file whose path has a
+/// content filter. libgit2 cannot run the filter and judges the stored
+/// (e.g. encrypted) bytes; `git diff` shows the filtered text. Returns
+/// `None` when the file has no filter, a side cannot be resolved, or the
+/// plaintext itself looks binary.
+fn filtered_text(file: &FileDiff, repo: &git::Repo) -> Option<(String, String)> {
+    if !repo.has_content_filter(display_path(file)) {
+        return None;
+    }
+    let resolved = content::retrieve(file, Some(repo));
+    let before = side_text(resolved.before)?;
+    let after = side_text(resolved.after)?;
+    Some((before, after))
+}
+
+/// Text of one resolved side, or `None` when it is missing or looks
+/// binary by git's heuristic (a NUL in the first 8000 bytes).
+fn side_text(side: SideContent) -> Option<String> {
+    let text = match side {
+        SideContent::Resolved(text) => text,
+        SideContent::Absent => String::new(),
+        SideContent::Missing { .. } => return None,
+    };
+    let head = &text.as_bytes()[..text.len().min(8000)];
+    (!head.contains(&0)).then_some(text)
 }
 
 fn missing_blob_message(hash: &str, path: &str) -> String {
@@ -443,6 +481,83 @@ mod tests {
             (0, 0),
             "binary file shows no +/- counts"
         );
+    }
+
+    /// Commit `secret.txt` behind a reversible content filter whose
+    /// stored form starts with a NUL byte, like git-crypt's
+    /// `\0GITCRYPT\0` header, so libgit2 judges the stored blob binary.
+    fn commit_nul_filtered(dir: &std::path::Path, plaintext: &str) {
+        git_cli(dir, &["init", "-q"]);
+        git_cli(dir, &["config", "filter.nul.clean", "printf '\\000'; cat"]);
+        git_cli(dir, &["config", "filter.nul.smudge", "tr -d '\\000'"]);
+        std::fs::write(dir.join(".gitattributes"), "secret.txt filter=nul\n").unwrap();
+        std::fs::write(dir.join("secret.txt"), plaintext).unwrap();
+        git_cli(dir, &["add", "-A"]);
+        git_cli(dir, &["commit", "-qm", "init"]);
+    }
+
+    /// Build the working model for `dir`, keeping working-tree content
+    /// resolvable without depending on the process cwd.
+    fn working_model(dir: &std::path::Path) -> Model {
+        let raw = git2::Repository::open(dir).unwrap();
+        raw.blob(&std::fs::read(dir.join("secret.txt")).unwrap())
+            .unwrap();
+        let repo = git::Repo::discover_at(dir).unwrap();
+        build_working_model(&repo.working_tree_snapshot().unwrap(), &repo).unwrap()
+    }
+
+    fn secret_body(model: &Model) -> (&ResolvedFile, &FileBody) {
+        let idx = model
+            .files
+            .iter()
+            .position(|f| display_path(&f.file) == "secret.txt")
+            .expect("secret.txt present in model");
+        (&model.files[idx], &model.bodies[idx])
+    }
+
+    #[test]
+    fn unstaged_edit_to_filtered_file_with_binary_blob_shows_text_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        commit_nul_filtered(dir.path(), "hello\nworld\n");
+        std::fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
+
+        let model = working_model(dir.path());
+        let (file, body) = secret_body(&model);
+
+        assert!(matches!(body, FileBody::Diff(_)), "expected a text diff");
+        assert_eq!(body_deltas(body), (1, 1));
+        assert!(!crate::sidebar::file_metadata(&file.file).binary);
+    }
+
+    #[test]
+    fn staged_edit_to_filtered_file_with_binary_blob_shows_text_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        commit_nul_filtered(dir.path(), "hello\nworld\n");
+        std::fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
+        git_cli(dir.path(), &["add", "secret.txt"]);
+
+        let model = working_model(dir.path());
+        let (file, body) = secret_body(&model);
+
+        assert!(matches!(body, FileBody::Diff(_)), "expected a text diff");
+        assert_eq!(body_deltas(body), (1, 1));
+        assert!(!crate::sidebar::file_metadata(&file.file).binary);
+    }
+
+    #[test]
+    fn unresolvable_filtered_file_stays_binary_without_erroring() {
+        let dir = tempfile::tempdir().unwrap();
+        commit_nul_filtered(dir.path(), "hello\nworld\n");
+        std::fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
+
+        // The working-tree plaintext is neither in the ODB nor readable
+        // from the process cwd, so the after side cannot be resolved.
+        let repo = git::Repo::discover_at(dir.path()).unwrap();
+        let model = build_working_model(&repo.working_tree_snapshot().unwrap(), &repo)
+            .expect("unresolvable filtered file must not error");
+        let (_, body) = secret_body(&model);
+
+        assert!(matches!(body, FileBody::Binary), "expected a Binary body");
     }
 
     #[test]

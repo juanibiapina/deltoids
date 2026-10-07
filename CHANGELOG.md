@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: performance improvements
 - Traces: a failed entry shows its diff alongside the error.
 
+### Fixed
+
+- TUI: git-crypt encrypted files show a text diff instead of "Binary file".
+
 ## [0.13.0] - 2026-10-02
 
 ### Added

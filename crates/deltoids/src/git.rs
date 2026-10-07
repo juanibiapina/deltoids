@@ -7,7 +7,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use git2::{
-    DiffFindOptions, DiffFormat, DiffOptions, ObjectType, Oid, Repository, Status, StatusOptions,
+    AttrCheckFlags, AttrValue, DiffFindOptions, DiffFormat, DiffOptions, ObjectType, Oid,
+    Repository, Status, StatusOptions,
 };
 
 /// A discovered git repository, used to look up blobs by hash.
@@ -99,6 +100,20 @@ impl Repo {
             None => path,
         };
         self.0.is_path_ignored(rel).unwrap_or(false)
+    }
+
+    /// Whether `path` (workdir-relative) names a content filter driver
+    /// through the `filter` attribute, as git-crypt and transcrypt set.
+    ///
+    /// libgit2 diffs the stored (cleaned) bytes of such files, so its
+    /// binary verdict can disagree with what git shows through the
+    /// filter. Returns `false` when the attribute is unset, unspecified,
+    /// or the lookup fails.
+    pub fn has_content_filter(&self, path: &str) -> bool {
+        self.0
+            .get_attr_bytes(Path::new(path), "filter", AttrCheckFlags::FILE_THEN_INDEX)
+            .ok()
+            .is_some_and(|value| matches!(AttrValue::always_bytes(value), AttrValue::Bytes(_)))
     }
 
     /// Full working-tree-equivalent text of the blob named by `hash`, with

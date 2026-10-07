@@ -221,7 +221,7 @@ pub fn file_metadata(file: &FileDiff) -> FileMetadata {
 
     for line in &file.preamble {
         let line = line.trim_start();
-        if line.starts_with("Binary files ") && line.ends_with(" differ") {
+        if is_binary_marker(line) {
             out.binary = true;
         } else if let Some(rest) = line.strip_prefix("old mode ") {
             old_mode = Some(FileMode::parse(rest));
@@ -267,6 +267,12 @@ pub fn file_metadata(file: &FileDiff) -> FileMetadata {
     }
 
     out
+}
+
+/// Whether a preamble line is git's `Binary files ... differ` marker.
+pub fn is_binary_marker(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("Binary files ") && line.ends_with(" differ")
 }
 
 fn preamble_has_prefix(preamble: &[String], prefix: &str) -> bool {

@@ -44,7 +44,7 @@ mod tree;
 pub use icons::{IconMode, symlink_icon};
 pub use status::{
     ChangeKind, DirStage, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
-    display_path, file_metadata, file_status,
+    display_path, file_metadata, file_status, is_binary_marker,
 };
 
 use render::{copy_origin, rename_leaf, render_row};

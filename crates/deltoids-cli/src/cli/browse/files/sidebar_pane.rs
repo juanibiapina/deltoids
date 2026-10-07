@@ -53,7 +53,8 @@ fn sidebar_files(model: &Model) -> Vec<SidebarFile<'_>> {
 
 /// Handle a movement key while the sidebar is focused. Returns `true`
 /// when the selection moved, so the shell can snap the diff pane to the
-/// newly selected file (the cross-pane coordination it owns).
+/// newly selected file (the cross-pane coordination it owns). Enter
+/// folds or unfolds the selected directory; the selection stays put.
 pub(super) fn handle_key(sidebar: &mut Sidebar, key: KeyCode, viewport: usize) -> bool {
     match key {
         KeyCode::Char('j') | KeyCode::Down => sidebar.move_down(viewport),
@@ -62,6 +63,10 @@ pub(super) fn handle_key(sidebar: &mut Sidebar, key: KeyCode, viewport: usize) -
         KeyCode::PageUp => sidebar.page_up(viewport),
         KeyCode::Char('g') | KeyCode::Home => sidebar.top(viewport),
         KeyCode::Char('G') | KeyCode::End => sidebar.bottom(viewport),
+        KeyCode::Enter => {
+            sidebar.toggle_selected_dir(viewport);
+            return false;
+        }
         _ => return false,
     }
     true
@@ -202,6 +207,27 @@ mod tests {
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
         // The diff snapped to the top of the newly selected file's window.
         assert_eq!(state.unstaged.cursor.scroll, 0);
+    }
+
+    #[test]
+    fn enter_in_sidebar_folds_and_unfolds_the_selected_directory() {
+        let resolved: Vec<_> = ["src/a.txt", "src/b.txt", "z.txt"]
+            .into_iter()
+            .map(|path| ResolvedFile {
+                file: file_diff(path),
+                before: "1\n".to_string(),
+                after: "2\n".to_string(),
+            })
+            .collect();
+        let mut state = make_state(&resolved);
+        state.sidebar.set_selected(0, 4);
+
+        handle_key(&mut state, KeyCode::Enter, 4, 4);
+        assert_eq!(state.sidebar.row_count(), 2);
+        assert_eq!(state.sidebar.selection_display_range(), Some(0..2));
+
+        handle_key(&mut state, KeyCode::Enter, 4, 4);
+        assert_eq!(state.sidebar.row_count(), 4);
     }
 
     #[test]

@@ -56,6 +56,7 @@ pub(super) fn render_row(
     row: &Row,
     meta: &FileRowMeta,
     selected: bool,
+    folded: bool,
     icons: IconMode,
     theme: &Theme,
 ) -> Line<'static> {
@@ -79,7 +80,7 @@ pub(super) fn render_row(
 
     match row {
         Row::Dir { label, depth } => {
-            dir_row_spans(&mut spans, label, *depth, meta, icons, theme, base)
+            dir_row_spans(&mut spans, label, *depth, folded, meta, icons, theme, base)
         }
         Row::File { name, depth, .. } => {
             file_row_spans(&mut spans, name, *depth, meta, icons, theme, base)
@@ -94,13 +95,15 @@ fn dir_row_spans(
     spans: &mut Vec<Span<'static>>,
     label: &str,
     depth: usize,
+    folded: bool,
     meta: &FileRowMeta,
     icons: IconMode,
     theme: &Theme,
     base: Style,
 ) {
     spans.push(Span::styled(indent(depth), base));
-    spans.push(Span::styled("▼ ", base));
+    let arrow = if folded { "▶ " } else { "▼ " };
+    spans.push(Span::styled(arrow, base));
     if icons == IconMode::On {
         // Look the icon up by the deepest segment of the label (strip the
         // trailing `/`, take the last path component), since that segment

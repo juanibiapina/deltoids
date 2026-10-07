@@ -251,7 +251,8 @@ fn apply_reload(
 /// Rebuild the sidebar and diff view from `model`, preserving the user's
 /// navigation state. Selection is restored by `prev_path` (index-based
 /// restore would break when files are added or removed); when the file is
-/// gone the fresh sidebar's default (first file) stands. Focus, sidebar
+/// gone the fresh sidebar's default (first file) stands. Folded
+/// directories that still exist stay folded. Focus, sidebar
 /// width, help visibility, and wheel state live on `state` and are left
 /// untouched. Each pane keeps the rendered blocks of files that did not
 /// change, and its scroll when the file at the top of the viewport is one
@@ -268,7 +269,9 @@ fn reload_view(
     for pane in panes {
         pane.carry_over(&old.unchanged_views(model, pane.column()));
     }
+    let folds = sidebar.folds();
     *sidebar = build_sidebar(model, theme);
+    sidebar.apply_folds(folds, diff_viewport);
 
     if let Some(path) = prev_path
         && let Some(idx) = model
@@ -347,6 +350,32 @@ mod tests {
         );
         assert_eq!(line_text(&state.unstaged.rows()[0].line), "b.txt");
         assert_eq!(state.unstaged.cursor.scroll, 0);
+    }
+
+    #[test]
+    fn reload_keeps_folds_and_selects_the_folded_directory_of_a_hidden_file() {
+        let m1 = model_of(&["src/a.txt", "src/b.txt", "z.txt"]);
+        let mut state = make_state(&m1.files);
+        state.sidebar.set_selected(0, 4);
+        state.sidebar.toggle_selected_dir(4);
+
+        let m2 = model_of(&["src/a.txt", "src/b.txt", "src/c.txt", "z.txt"]);
+        reload_view(
+            [&mut state.staged, &mut state.unstaged],
+            &mut state.sidebar,
+            &m1,
+            &m2,
+            Some("src/a.txt"),
+            &theme(),
+            4,
+        );
+
+        assert_eq!(state.sidebar.row_count(), 2);
+        assert_eq!(
+            state.sidebar.selected_directory_path().as_deref(),
+            Some("src/")
+        );
+        assert_eq!(state.sidebar.selection_display_range(), Some(0..3));
     }
 
     #[test]

@@ -10,11 +10,14 @@
 //!   slice, or `None` when a directory row is selected.
 //! - [`Sidebar::move_up`] / [`Sidebar::move_down`] / [`Sidebar::top`] /
 //!   [`Sidebar::bottom`] / [`Sidebar::page_up`] / [`Sidebar::page_down`]
-//!   — navigation. Selection skips directory rows so j/k always lands on
-//!   a file.
+//!   — navigation over visible rows (files and directories).
+//! - [`Sidebar::toggle_selected_dir`] — fold or unfold the selected
+//!   directory; [`Sidebar::folds`] / [`Sidebar::apply_folds`] carry
+//!   folds into a rebuilt sidebar.
 //! - [`Sidebar::scroll`] — current scroll offset (auto-tracked to keep
 //!   selection visible).
-//! - [`Sidebar::row_count`] — total renderable rows.
+//! - [`Sidebar::row_count`] — visible rows (rows under a folded
+//!   directory are hidden).
 //!
 //! ## Module layout
 //!
@@ -29,6 +32,7 @@
 //! This module owns the [`Sidebar`] state itself: selection, scroll, the
 //! cached rendered lines, and the navigation/selection-range interface.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use deltoids::Theme;
@@ -63,27 +67,42 @@ pub struct Totals {
 /// Pre-rendered rows + selection + scroll. Driven by the rv main loop:
 /// build once per resolved file set, then call `move_*` and `rows()`
 /// each frame.
+///
+/// Positions in the interface (`selected`, `scroll`, `row_count`,
+/// `rows`, `set_selected`) count visible rows only: rows under a folded
+/// directory are skipped. Subtree queries (`selection_display_range`,
+/// `display_order`, `nearest_file_index`) still see every file.
 #[derive(Debug)]
 pub struct Sidebar {
+    /// Every row of the tree, folded or not.
     rows: Vec<Row>,
-    /// Index of currently-highlighted row (always a `Row::File` if any
-    /// files exist).
+    /// Workdir-relative path of each directory row; `None` for files.
+    dir_paths: Vec<Option<String>>,
+    /// Row indices currently shown, in order.
+    visible: Vec<usize>,
+    /// Paths of folded directories.
+    folds: Folds,
+    /// Visible position of the highlighted row.
     selected: usize,
-    /// First visible row in the viewport.
+    /// First visible position in the viewport.
     scroll: usize,
-    /// Cached rendered lines, regenerated whenever `selected` or the
-    /// theme changes.
+    /// One cached line per visible row, regenerated whenever `selected`,
+    /// the folds, or the staging data change.
     rendered: Vec<Line<'static>>,
     /// Captured at build time so tests can supply specific values.
     icons: IconMode,
-    /// Cached for re-rendering after selection moves.
-    /// Stored as `(label, status, deltas, rename_arrow)` per row.
+    /// Per-row display data, indexed like `rows`.
     file_meta: Vec<FileRowMeta>,
     /// Theme stored so re-rendering on selection change is self-contained.
     theme: Theme,
     /// Aggregate statistics computed at build time.
     totals: Totals,
 }
+
+/// The set of folded directories, carried from one sidebar to the next
+/// when the file set is rebuilt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Folds(BTreeSet<String>);
 
 #[derive(Debug, Clone)]
 pub(super) struct FileRowMeta {
@@ -168,7 +187,10 @@ impl Sidebar {
         };
 
         let mut sidebar = Self {
+            dir_paths: dir_paths(&rows),
+            visible: (0..rows.len()).collect(),
             rows,
+            folds: Folds::default(),
             selected,
             scroll: 0,
             rendered: Vec::new(),
@@ -199,13 +221,14 @@ impl Sidebar {
         self.totals
     }
 
-    /// Total number of renderable rows (dirs + files).
+    /// Number of visible rows (dirs + files outside folded directories).
     pub fn row_count(&self) -> usize {
-        self.rows.len()
+        self.visible.len()
     }
 
     /// File indices (into the original `&[SidebarFile]` slice) in the
-    /// order they appear in the sidebar.
+    /// order they appear in the tree, including files inside folded
+    /// directories.
     ///
     /// Used by the rv main loop to render diff content in tree order so
     /// the diff pane's vertical layout always matches the sidebar.
@@ -219,15 +242,20 @@ impl Sidebar {
             .collect()
     }
 
-    /// Pre-styled rows ready for a `Paragraph`. Borrowed; owned by the
-    /// sidebar.
+    /// Pre-styled visible rows ready for a `Paragraph`. Borrowed; owned
+    /// by the sidebar.
     pub fn rows(&self) -> &[Line<'static>] {
         &self.rendered
     }
 
-    /// Currently-selected row index.
+    /// Currently-selected visible position.
     pub fn selected(&self) -> usize {
         self.selected
+    }
+
+    /// Index into `rows` of the selected row.
+    fn selected_row(&self) -> Option<usize> {
+        self.visible.get(self.selected).copied()
     }
 
     /// Index into the original `&[SidebarFile]` slice for the selected
@@ -239,13 +267,13 @@ impl Sidebar {
     /// distinguish "a file is selected" from "a directory is selected".
     #[allow(dead_code)]
     pub fn selected_file_index(&self) -> Option<usize> {
-        match self.rows.get(self.selected) {
+        match self.rows.get(self.selected_row()?) {
             Some(Row::File { file_index, .. }) => Some(*file_index),
             _ => None,
         }
     }
 
-    /// First row visible in the viewport. Auto-tracked by the move
+    /// First visible position in the viewport. Auto-tracked by the move
     /// methods so the selection always stays in view.
     pub fn scroll(&self) -> usize {
         self.scroll
@@ -253,44 +281,94 @@ impl Sidebar {
 
     /// Whether the currently-selected row is a directory header.
     pub fn selected_is_dir(&self) -> bool {
-        matches!(self.rows.get(self.selected), Some(Row::Dir { .. }))
+        self.selected_row()
+            .is_some_and(|row| matches!(self.rows[row], Row::Dir { .. }))
     }
 
     /// Workdir-relative identity of the selected directory, including collapsed chains.
     pub fn selected_directory_path(&self) -> Option<String> {
-        self.directory_path_at(self.selected)
+        self.dir_paths.get(self.selected_row()?)?.clone()
     }
 
-    /// Restore a directory selection after rebuilding the tree.
+    /// Restore a directory selection after rebuilding the tree. A
+    /// directory inside a folded one selects the folded ancestor.
     pub fn select_directory_path(&mut self, path: &str, viewport: usize) -> bool {
-        let mut parents = Vec::new();
-        let row = self.rows.iter().enumerate().find_map(|(index, row)| {
-            let Row::Dir { label, depth } = row else {
-                return None;
-            };
-            parents.truncate(*depth);
-            parents.push(label.as_str());
-            (parents.concat() == path).then_some(index)
-        });
-        let Some(row) = row else {
+        let Some(row) = self
+            .dir_paths
+            .iter()
+            .position(|dir| dir.as_deref() == Some(path))
+        else {
             return false;
         };
-        self.set_selected(row, viewport);
+        self.set_selected(self.position_of_row(row), viewport);
         true
     }
 
-    fn directory_path_at(&self, index: usize) -> Option<String> {
-        if !matches!(self.rows.get(index), Some(Row::Dir { .. })) {
-            return None;
+    /// Fold the selected directory, or unfold it when already folded.
+    /// Returns `false` (and does nothing) on a file row.
+    pub fn toggle_selected_dir(&mut self, viewport: usize) -> bool {
+        let Some(row) = self.selected_row() else {
+            return false;
+        };
+        let Some(path) = self.dir_paths[row].clone() else {
+            return false;
+        };
+        if !self.folds.0.remove(&path) {
+            self.folds.0.insert(path);
         }
-        let mut parents = Vec::new();
-        for row in &self.rows[..=index] {
-            if let Row::Dir { label, depth } = row {
-                parents.truncate(*depth);
-                parents.push(label.as_str());
+        self.refold(row, viewport);
+        true
+    }
+
+    /// The folded directories, to carry into a rebuilt sidebar.
+    pub fn folds(&self) -> Folds {
+        self.folds.clone()
+    }
+
+    /// Fold the directories in `folds` that exist in this tree. Keeps
+    /// the selected row, or its folded ancestor when it becomes hidden.
+    pub fn apply_folds(&mut self, folds: Folds, viewport: usize) {
+        let mut paths = folds.0;
+        paths.retain(|path| self.dir_paths.iter().flatten().any(|dir| dir == path));
+        self.folds = Folds(paths);
+        let row = self.selected_row().unwrap_or(0);
+        self.refold(row, viewport);
+    }
+
+    /// Recompute visibility after the folds changed, keeping `row` (or
+    /// its folded ancestor) selected.
+    fn refold(&mut self, row: usize, viewport: usize) {
+        let mut visible = Vec::with_capacity(self.rows.len());
+        let mut folded_depth: Option<usize> = None;
+        for (index, candidate) in self.rows.iter().enumerate() {
+            let depth = row_depth(candidate);
+            if folded_depth.is_some_and(|folded| depth > folded) {
+                continue;
+            }
+            folded_depth = None;
+            visible.push(index);
+            if self.is_folded(index) {
+                folded_depth = Some(depth);
             }
         }
-        Some(parents.concat())
+        self.visible = visible;
+        self.selected = self.position_of_row(row);
+        self.scroll = self.scroll.min(self.selected);
+        self.adjust_scroll(viewport);
+        self.render_all();
+    }
+
+    fn is_folded(&self, row: usize) -> bool {
+        self.dir_paths[row]
+            .as_ref()
+            .is_some_and(|path| self.folds.0.contains(path))
+    }
+
+    /// Visible position of `row`, or of the folded directory that hides it.
+    fn position_of_row(&self, row: usize) -> usize {
+        self.visible
+            .partition_point(|&index| index <= row)
+            .saturating_sub(1)
     }
 
     /// Input index of the file the diff pane should snap to for the
@@ -302,17 +380,20 @@ impl Sidebar {
     /// header is followed by its contents). `None` only when there are
     /// no files at all.
     pub fn nearest_file_index(&self) -> Option<usize> {
-        self.rows.iter().skip(self.selected).find_map(|r| match r {
-            Row::File { file_index, .. } => Some(*file_index),
-            Row::Dir { .. } => None,
-        })
+        self.rows
+            .iter()
+            .skip(self.selected_row()?)
+            .find_map(|r| match r {
+                Row::File { file_index, .. } => Some(*file_index),
+                Row::Dir { .. } => None,
+            })
     }
 
     /// Display-order positions of files matching the current selection.
     ///
     /// - File row: a single-element range covering just that file.
     /// - Directory row: the contiguous range of every file inside the
-    ///   subtree.
+    ///   subtree, folded or not.
     /// - No files at all: `None`.
     ///
     /// Either way, the renderer can slice the diff lines between the
@@ -320,43 +401,31 @@ impl Sidebar {
     /// file's separator. This is the single source of truth for the
     /// diff pane's filter.
     pub fn selection_display_range(&self) -> Option<Range<usize>> {
-        match self.rows.get(self.selected)? {
-            Row::Dir {
-                depth: parent_depth,
-                ..
-            } => self.subtree_range_for_dir(*parent_depth),
+        let row = self.selected_row()?;
+        match self.rows[row] {
+            Row::Dir { depth, .. } => self.subtree_range_for_dir(row, depth),
             Row::File { .. } => {
-                let start = self.files_before(self.selected);
+                let start = self.files_before(row);
                 Some(start..start + 1)
             }
         }
     }
 
-    /// Display-order range covering the directory's subtree files.
+    /// Display-order range covering the subtree files of the directory
+    /// at `dir_row`.
     ///
     /// Walks rows after the directory header until it hits one at or
     /// above the parent's depth. Returns `None` when the subtree is
     /// empty (defensive — directories are only emitted when they
     /// contain files).
-    fn subtree_range_for_dir(&self, parent_depth: usize) -> Option<Range<usize>> {
-        let start = self.files_before(self.selected);
-        let mut count = 0usize;
-        for row in &self.rows[self.selected + 1..] {
-            let row_depth = match row {
-                Row::Dir { depth, .. } => *depth,
-                Row::File { depth, .. } => *depth,
-            };
-            if row_depth <= parent_depth {
-                break;
-            }
-            if matches!(row, Row::File { .. }) {
-                count += 1;
-            }
-        }
-        if count == 0 {
-            return None;
-        }
-        Some(start..start + count)
+    fn subtree_range_for_dir(&self, dir_row: usize, parent_depth: usize) -> Option<Range<usize>> {
+        let start = self.files_before(dir_row);
+        let count = self.rows[dir_row + 1..]
+            .iter()
+            .take_while(|row| row_depth(row) > parent_depth)
+            .filter(|row| matches!(row, Row::File { .. }))
+            .count();
+        (count > 0).then_some(start..start + count)
     }
 
     /// Count of file rows strictly before `row_idx`. Equivalent to
@@ -369,14 +438,14 @@ impl Sidebar {
             .count()
     }
 
-    /// Move to the next row (file or directory).
+    /// Move to the next visible row (file or directory).
     pub fn move_down(&mut self, viewport: usize) {
-        if self.selected + 1 < self.rows.len() {
+        if self.selected + 1 < self.visible.len() {
             self.set_selected(self.selected + 1, viewport);
         }
     }
 
-    /// Move to the previous row (file or directory).
+    /// Move to the previous visible row (file or directory).
     pub fn move_up(&mut self, viewport: usize) {
         if self.selected > 0 {
             self.set_selected(self.selected - 1, viewport);
@@ -385,24 +454,24 @@ impl Sidebar {
 
     /// Jump to the first row.
     pub fn top(&mut self, viewport: usize) {
-        if !self.rows.is_empty() {
+        if !self.visible.is_empty() {
             self.set_selected(0, viewport);
         }
     }
 
-    /// Jump to the last row.
+    /// Jump to the last visible row.
     pub fn bottom(&mut self, viewport: usize) {
-        if let Some(last) = self.rows.len().checked_sub(1) {
+        if let Some(last) = self.visible.len().checked_sub(1) {
             self.set_selected(last, viewport);
         }
     }
 
-    /// Move down by `viewport` rows, clamped at the last row.
+    /// Move down by `viewport` rows, clamped at the last visible row.
     pub fn page_down(&mut self, viewport: usize) {
         let target = self
             .selected
             .saturating_add(viewport.max(1))
-            .min(self.rows.len().saturating_sub(1));
+            .min(self.visible.len().saturating_sub(1));
         self.set_selected(target, viewport);
     }
 
@@ -412,9 +481,10 @@ impl Sidebar {
         self.set_selected(target, viewport);
     }
 
-    /// Select the row for the file with input index `file_index`.
-    /// Returns `true` when a matching file row was found and selected.
-    /// No-op (returns `false`) when no row owns that file index.
+    /// Select the row for the file with input index `file_index`, or the
+    /// folded directory that hides it. Returns `true` when a matching
+    /// file row was found. No-op (returns `false`) when no row owns that
+    /// file index.
     pub fn select_file_index(&mut self, file_index: usize, viewport: usize) -> bool {
         let row = self
             .rows
@@ -422,13 +492,14 @@ impl Sidebar {
             .position(|r| matches!(r, Row::File { file_index: fi, .. } if *fi == file_index));
         match row {
             Some(row) => {
-                self.set_selected(row, viewport);
+                self.set_selected(self.position_of_row(row), viewport);
                 true
             }
             None => false,
         }
     }
 
+    /// Select the visible row at position `target`.
     pub fn set_selected(&mut self, target: usize, viewport: usize) {
         if target == self.selected {
             return;
@@ -436,15 +507,9 @@ impl Sidebar {
         let previous = self.selected;
         self.selected = target;
         self.adjust_scroll(viewport);
-        for index in [previous, target] {
-            if let Some(row) = self.rows.get(index) {
-                self.rendered[index] = render_row(
-                    row,
-                    &self.file_meta[index],
-                    index == target,
-                    self.icons,
-                    &self.theme,
-                );
+        for position in [previous, target] {
+            if position < self.visible.len() {
+                self.rendered[position] = self.render_position(position);
             }
         }
     }
@@ -459,22 +524,45 @@ impl Sidebar {
         }
     }
 
+    fn render_position(&self, position: usize) -> Line<'static> {
+        let index = self.visible[position];
+        render_row(
+            &self.rows[index],
+            &self.file_meta[index],
+            position == self.selected,
+            self.is_folded(index),
+            self.icons,
+            &self.theme,
+        )
+    }
+
     fn render_all(&mut self) {
-        self.rendered = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(idx, row)| {
-                render_row(
-                    row,
-                    &self.file_meta[idx],
-                    idx == self.selected,
-                    self.icons,
-                    &self.theme,
-                )
-            })
+        self.rendered = (0..self.visible.len())
+            .map(|position| self.render_position(position))
             .collect();
     }
+}
+
+fn row_depth(row: &Row) -> usize {
+    match row {
+        Row::Dir { depth, .. } | Row::File { depth, .. } => *depth,
+    }
+}
+
+/// Workdir-relative path of every directory row (the concatenated
+/// labels of its ancestors and itself); `None` for file rows.
+fn dir_paths(rows: &[Row]) -> Vec<Option<String>> {
+    let mut parents: Vec<&str> = Vec::new();
+    rows.iter()
+        .map(|row| match row {
+            Row::Dir { label, depth } => {
+                parents.truncate(*depth);
+                parents.push(label);
+                Some(parents.concat())
+            }
+            Row::File { .. } => None,
+        })
+        .collect()
 }
 
 /// Fold the staging state of every file beneath the directory row at
@@ -929,6 +1017,104 @@ mod tests {
             "selection {s} not in viewport [{scroll}, {})",
             scroll + 3
         );
+    }
+
+    fn plain_files(diffs: &[FileDiff]) -> Vec<SidebarFile<'_>> {
+        diffs
+            .iter()
+            .map(|file| SidebarFile {
+                file,
+                added: 0,
+                deleted: 0,
+                stage: None,
+            })
+            .collect()
+    }
+
+    fn texts(sidebar: &Sidebar) -> Vec<String> {
+        sidebar.rows().iter().map(line_text).collect()
+    }
+
+    #[test]
+    fn folding_a_directory_hides_its_subtree_until_unfolded() {
+        let diffs = [fd("src/a.rs"), fd("src/b.rs"), fd("z.rs")];
+        let files = plain_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        sidebar.top(20);
+
+        assert!(sidebar.toggle_selected_dir(20));
+        assert_eq!(texts(&sidebar), ["▶ src/", "M z.rs"]);
+        assert_eq!(sidebar.row_count(), 2);
+        assert!(sidebar.selected_is_dir());
+
+        assert!(sidebar.toggle_selected_dir(20));
+        assert_eq!(sidebar.row_count(), 4);
+        assert_eq!(line_text(&sidebar.rows()[0]), "▼ src/");
+    }
+
+    #[test]
+    fn folded_directory_is_skipped_by_navigation_but_selects_its_whole_subtree() {
+        let diffs = [fd("a.rs"), fd("src/b.rs"), fd("src/c.rs"), fd("z.rs")];
+        let files = plain_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        let order = sidebar.display_order();
+        sidebar.move_down(20);
+        sidebar.toggle_selected_dir(20);
+
+        assert_eq!(sidebar.selection_display_range(), Some(1..3));
+        assert_eq!(sidebar.display_order(), order);
+        sidebar.move_down(20);
+        assert_eq!(sidebar.selected_file_index(), Some(3));
+        sidebar.bottom(20);
+        assert_eq!(sidebar.selected(), 2);
+        sidebar.move_up(20);
+        assert_eq!(sidebar.selected_directory_path().as_deref(), Some("src/"));
+    }
+
+    #[test]
+    fn nested_fold_survives_folding_and_unfolding_its_parent() {
+        let diffs = [fd("src/a.rs"), fd("src/lib/b.rs"), fd("src/lib/c.rs")];
+        let files = plain_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        assert!(sidebar.select_directory_path("src/lib/", 20));
+        sidebar.toggle_selected_dir(20);
+        sidebar.top(20);
+        sidebar.toggle_selected_dir(20);
+        assert_eq!(texts(&sidebar), ["▶ src/"]);
+
+        sidebar.toggle_selected_dir(20);
+        assert_eq!(texts(&sidebar), ["▼ src/", "  M a.rs", "  ▶ lib/"]);
+    }
+
+    #[test]
+    fn selecting_a_hidden_file_selects_its_folded_directory() {
+        let diffs = [fd("src/a.rs"), fd("src/b.rs"), fd("z.rs")];
+        let files = plain_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        sidebar.top(20);
+        sidebar.toggle_selected_dir(20);
+        sidebar.bottom(20);
+
+        assert!(sidebar.select_file_index(1, 20));
+        assert_eq!(sidebar.selected_directory_path().as_deref(), Some("src/"));
+    }
+
+    #[test]
+    fn rebuilt_sidebar_keeps_folds_for_directories_that_still_exist() {
+        let before = [fd("src/a.rs"), fd("tests/b.rs"), fd("z.rs")];
+        let mut sidebar = Sidebar::build_with_icons(&plain_files(&before), &theme(), IconMode::Off);
+        sidebar.top(20);
+        sidebar.toggle_selected_dir(20);
+        sidebar.move_down(20);
+        sidebar.toggle_selected_dir(20);
+
+        let after = [fd("src/a.rs"), fd("src/c.rs"), fd("z.rs")];
+        let mut rebuilt = Sidebar::build_with_icons(&plain_files(&after), &theme(), IconMode::Off);
+        rebuilt.apply_folds(sidebar.folds(), 20);
+
+        assert_eq!(texts(&rebuilt), ["▶ src/", "M z.rs"]);
+        assert!(rebuilt.selected_is_dir());
+        assert_eq!(rebuilt.folds(), Folds(BTreeSet::from(["src/".to_string()])));
     }
 
     #[test]

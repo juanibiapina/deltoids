@@ -8,7 +8,7 @@
 //!
 //! Entry point: [`build`].
 
-use super::range::insert_forms_new_scope;
+use super::range::inserted_scope;
 use super::{AncestorSource, ContextRange, DiffLine, Hunk, LineKind, ScopeNode};
 use crate::engine::DiffOp;
 
@@ -93,7 +93,7 @@ fn collect_insert_lines(
     // Skip inserts that form a new scope when building an old-scope hunk.
     // The new scope has its own hunk; we don't want to duplicate it as context.
     if range.ancestor_source == AncestorSource::Old
-        && insert_forms_new_scope(ctx.new_parsed, new_index, new_index + new_len)
+        && inserted_scope(ctx.new_parsed, new_index, new_index + new_len).is_some()
     {
         return;
     }

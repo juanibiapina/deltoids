@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - TUI: git-crypt encrypted files show a text diff instead of "Binary file".
+- diff: a field added just before a new `impl` (or other new scope) keeps its enclosing struct as context instead of showing the new scope's breadcrumb.
 
 ## [0.13.0] - 2026-10-02
 

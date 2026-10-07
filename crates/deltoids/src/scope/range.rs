@@ -153,43 +153,55 @@ fn query_old_line(old_index: usize, total_old: usize) -> usize {
     }
 }
 
-fn find_inserted_scope_line(
+/// The structure an insert of new lines `[new_start, new_end)` introduces,
+/// when the insert is a clean insertion of whole new scopes. Such an
+/// insert gets its own hunk anchored on the new scope, and old-anchored
+/// hunks leave its lines out.
+///
+/// An insert is clean only when every structure boundary (first or last
+/// line) inside it belongs to a structure that lies wholly inside it. An
+/// insert that carries the closing line of a struct opened before it, for
+/// example, is an edit to that struct even when it also holds a whole new
+/// function. A structure enclosing the whole insert has no boundary
+/// inside it, and a boundary shared with an inner new structure (a Python
+/// class ending on its appended method's last line) does not count.
+pub(super) fn inserted_scope(
     parsed: &crate::syntax::ParsedFile,
     new_start: usize,
     new_end: usize,
-    total_new: usize,
-) -> Option<usize> {
-    for line in new_start..new_end.min(total_new) {
-        let Some(scope) = scope_at(parsed, line) else {
-            continue;
-        };
-        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
-        let is_new_scope = scope_start >= new_start && scope_end < new_end;
-        if scope_lines <= MAX_SCOPE_LINES && is_new_scope {
-            return Some(scope_start + 1);
-        }
-    }
-    None
-}
-
-/// Check if an insert operation forms a new scope that should have its own hunk.
-/// Used to avoid duplicating new scope content in sibling function hunks.
-pub(super) fn insert_forms_new_scope(
-    parsed: &crate::syntax::ParsedFile,
-    new_start: usize,
-    new_end: usize,
-) -> bool {
+) -> Option<ScopeNode> {
+    let within = |line: usize| line >= new_start && line < new_end;
+    let mut inner: Vec<(usize, usize)> = Vec::new();
+    let mut outer: Vec<(usize, usize)> = Vec::new();
     for line in new_start..new_end {
-        let Some(scope) = scope_at(parsed, line) else {
-            continue;
-        };
-        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
-        let is_new_scope = scope_start >= new_start && scope_end < new_end;
-        if scope_lines <= MAX_SCOPE_LINES && is_new_scope {
-            return true;
+        for scope in parsed.enclosing_scopes(line) {
+            if !parsed.is_structure(&scope) {
+                continue;
+            }
+            let (start, end, _) = scope_bounds(&scope);
+            let side = if within(start) && within(end) {
+                &mut inner
+            } else {
+                &mut outer
+            };
+            if !side.contains(&(start, end)) {
+                side.push((start, end));
+            }
         }
     }
-    false
+    let straddles = outer.iter().any(|&(start, end)| {
+        (within(start) && !inner.iter().any(|&(s, _)| s == start))
+            || (within(end) && !inner.iter().any(|&(_, e)| e == end))
+    });
+    if straddles {
+        return None;
+    }
+    (new_start..new_end).find_map(|line| {
+        let scope = scope_at(parsed, line)?;
+        let (scope_start, scope_end, scope_lines) = scope_bounds(&scope);
+        let is_new_scope = scope_start >= new_start && scope_end < new_end;
+        (scope_lines <= MAX_SCOPE_LINES && is_new_scope).then_some(scope)
+    })
 }
 
 fn context_ranges_for_insert(
@@ -201,20 +213,15 @@ fn context_ranges_for_insert(
     let new_start = new_index;
     let new_end = new_index + new_len;
 
-    if let Some(scope_line) =
-        find_inserted_scope_line(ctx.new_parsed, new_start, new_end, ctx.total_new)
-    {
-        let scope_id = scope_at(ctx.new_parsed, scope_line.saturating_sub(1)).map(|s| {
-            let (s0, s1, _) = scope_bounds(&s);
-            (s0, s1)
-        });
+    if let Some(scope) = inserted_scope(ctx.new_parsed, new_start, new_end.min(ctx.total_new)) {
+        let (scope_start, scope_end, _) = scope_bounds(&scope);
         return vec![ContextRange {
             start: old_index,
             end: old_index,
             ancestor_source: AncestorSource::New,
-            scope_line,
+            scope_line: scope_start + 1,
             prevent_merge: true,
-            scope_id,
+            scope_id: Some((scope_start, scope_end)),
         }];
     }
 

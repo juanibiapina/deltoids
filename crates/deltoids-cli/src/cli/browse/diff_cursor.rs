@@ -50,6 +50,8 @@ pub(super) struct DiffRow {
     pub(super) place: Option<LinePlace>,
     /// Set on the row that *ends* the line: where an inline comment goes.
     pub(super) ends_line: bool,
+    /// Set on the first row of a hunk (its line-number box).
+    pub(super) hunk_start: bool,
 }
 
 impl DiffRow {
@@ -61,6 +63,7 @@ impl DiffRow {
             anchor: None,
             place: None,
             ends_line: false,
+            hunk_start: false,
         }
     }
 
@@ -80,6 +83,7 @@ impl DiffRow {
             anchor: Some(anchor),
             place,
             ends_line,
+            hunk_start: false,
         }
     }
 

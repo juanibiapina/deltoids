@@ -1103,3 +1103,123 @@ fn sidebar_z_keeps_the_diff_scroll() {
     assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
     assert_eq!(mode.unstaged.cursor.scroll, scroll);
 }
+
+fn long_function(lines: usize, changed: Option<usize>) -> String {
+    let mut text = String::from("fn long() {\n");
+    for n in 1..=lines {
+        if Some(n) == changed {
+            text.push_str(&format!("    let v{n} = {n} * 2;\n"));
+        } else {
+            text.push_str(&format!("    let v{n} = {n};\n"));
+        }
+    }
+    text.push_str("}\n");
+    text
+}
+
+fn diff_body(screen: &[String]) -> Vec<String> {
+    screen
+        .iter()
+        .map(|row| row.chars().skip(31).collect::<String>())
+        .collect()
+}
+
+#[test]
+fn a_visited_file_opens_with_its_first_change_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    fs::write(dir.path().join("a.rs"), long_function(40, None)).unwrap();
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    write_and_store(dir.path(), "a.rs", &long_function(40, Some(36)));
+    let mut mode = live(dir.path());
+
+    let body = diff_body(&settle(&mut mode));
+    assert!(
+        body.iter().any(|row| row.contains("let v36 = 36 * 2;")),
+        "{}",
+        body.join("\n")
+    );
+    assert!(cursor_text(&mut mode).contains("let v36 = 36;"));
+}
+
+fn edited_txt(changed: &[usize]) -> String {
+    (1..=100)
+        .map(|n| {
+            if changed.contains(&n) {
+                format!("line {n} edited\n")
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect()
+}
+
+fn txt_repo(changed: &[usize]) -> (TempDir, git2::Repository) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    fs::write(dir.path().join("a.txt"), numbered(100)).unwrap();
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    write_and_store(dir.path(), "a.txt", &edited_txt(changed));
+    (dir, repo)
+}
+
+#[test]
+fn a_visited_file_taller_than_the_screen_opens_at_its_first_hunk() {
+    let (dir, _repo) = txt_repo(&[10, 60]);
+    let mut mode = live(dir.path());
+
+    let body = diff_body(&settle(&mut mode));
+    assert!(body[1].starts_with("──╮"), "{}", body.join("\n"));
+    assert!(body[2].starts_with("7 │"), "{}", body.join("\n"));
+}
+
+#[test]
+fn a_visited_file_that_fits_keeps_its_header() {
+    let (dir, _repo) = txt_repo(&[10]);
+    let mut mode = live(dir.path());
+
+    let body = diff_body(&settle(&mut mode));
+    assert!(body[1].starts_with("a.txt"), "{}", body.join("\n"));
+}
+
+#[test]
+fn each_staging_column_opens_at_its_own_first_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    fs::write(dir.path().join("a.rs"), long_function(40, None)).unwrap();
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    let staged = long_function(40, Some(36));
+    fs::write(dir.path().join("a.rs"), &staged).unwrap();
+    stage_all(&repo);
+    write_and_store(
+        dir.path(),
+        "a.rs",
+        &staged.replace("let v38 = 38;", "let v38 = 38 * 2;"),
+    );
+    let mut mode = live(dir.path());
+
+    let body = settle(&mut mode).join("\n");
+    assert!(body.contains("let v38 = 38 * 2;"), "{body}");
+
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    let body = settle(&mut mode).join("\n");
+    assert!(body.contains("let v36 = 36 * 2;"), "{body}");
+}
+
+#[test]
+fn scrolling_before_the_file_renders_cancels_the_landing() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    fs::write(dir.path().join("a.rs"), long_function(40, None)).unwrap();
+    stage_all(&repo);
+    commit_index(&repo, "initial");
+    write_and_store(dir.path(), "a.rs", &long_function(40, Some(36)));
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('K'), 20, 20);
+
+    let body = diff_body(&settle(&mut mode));
+    assert!(body[1].starts_with("a.rs"), "{}", body.join("\n"));
+}

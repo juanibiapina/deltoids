@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use deltoids::render_tui::{self, pane_block_with_tabs, pane_border_color, rgb_to_color};
-use deltoids::{ChangeLayout, Hunk, Theme};
+use deltoids::{ChangeLayout, Hunk, LineKind, Theme};
 
 use deltoids::parse::FileDiff;
 
@@ -188,6 +188,7 @@ impl FileRender<'_> {
         let keep_going = || keep();
         for (index, hunk) in diff.hunks().iter().enumerate() {
             rows.push(DiffRow::plain(Line::from("")));
+            let start = rows.len();
             let enabled = !self.preview.published;
             let numbering = self.numbering;
             let mut publish_hunk = |partial: &[render_tui::HunkRow]| {
@@ -221,6 +222,9 @@ impl FileRender<'_> {
                 )
             }?;
             push_hunk_rows(rows, rendered, hunk, (path, index), self.numbering);
+            if header && let Some(row) = rows.get_mut(start) {
+                row.hunk_start = true;
+            }
             self.preview.rows(rows);
         }
         Some(())
@@ -472,6 +476,12 @@ pub(super) struct DiffPane {
     /// index and the scroll offset into it. The next assembly puts the
     /// viewport back there.
     reload_top: Option<(usize, usize)>,
+    /// Set when a file is visited: the first render of its complete block
+    /// scrolls to the first hunk and puts the cursor on its first change.
+    /// Any scroll or cursor move before then cancels it.
+    landing: bool,
+    /// True when the window holds one file whose block is fully rendered.
+    window_complete: bool,
     /// The layout the last window was assembled with; shown in the footer.
     current_layout: ChangeLayout,
     /// What the no-files render shows: the clean state or a build error.
@@ -493,6 +503,8 @@ impl DiffPane {
             file_starts: Vec::new(),
             reveal_cursor: false,
             reload_top: None,
+            landing: true,
+            window_complete: false,
             current_layout: ChangeLayout::Grouped,
             empty_state: EmptyPane::NoChanges,
         }
@@ -597,10 +609,9 @@ impl DiffPane {
         if self.window_key.as_ref() == Some(&key) {
             return;
         }
-        let Some(files) = key.files.clone() else {
-            self.set_window(Vec::new(), false);
-            return;
-        };
+        let files = key.files.clone().unwrap_or_default();
+        self.window_complete =
+            matches!(files.as_slice(), [file] if self.cache.complete(key.epoch, *file));
         if files.is_empty() {
             self.set_window(Vec::new(), false);
             return;
@@ -688,6 +699,7 @@ impl DiffPane {
     /// Re-render file `index` after its body changed shape, keeping the
     /// cursor on the file line `anchor` at its screen row.
     pub(super) fn reshape_file(&mut self, index: usize, anchor: CommentAnchor) {
+        self.landing = false;
         self.cache.refresh(index);
         self.cursor.retarget(anchor);
         self.window_key = None;
@@ -731,6 +743,7 @@ impl DiffPane {
     }
 
     pub(super) fn scroll_by(&mut self, delta: isize, viewport: usize) {
+        self.landing = false;
         let max = self.max_scroll(viewport) as isize;
         let target = (self.cursor.scroll as isize + delta).clamp(0, max.max(0));
         self.cursor.scroll = target as usize;
@@ -738,6 +751,7 @@ impl DiffPane {
 
     /// Move the diff cursor one diff line, keeping it in view.
     pub(super) fn step_cursor(&mut self, step: Step, viewport: usize) {
+        self.landing = false;
         step_cursor(&self.window, step, viewport, &mut self.cursor);
         self.cursor_ready = true;
     }
@@ -745,27 +759,32 @@ impl DiffPane {
     /// Put the cursor on `row` when that row starts a diff line. Used by
     /// a click in the pane.
     pub(super) fn select_row(&mut self, row: usize) {
+        self.landing = false;
         select_row(&self.window, row, &mut self.cursor);
         self.cursor_ready = true;
     }
 
     fn scroll_to_top(&mut self) {
+        self.landing = false;
         self.cursor.scroll = 0;
     }
 
     fn scroll_to_bottom(&mut self, viewport: usize) {
+        self.landing = false;
         self.cursor.scroll = self.max_scroll(viewport);
     }
 
     /// Reset the view to the top of the current selection's window. A
-    /// sidebar move re-derives the window, so showing the newly selected
-    /// file from its top is always scroll 0, with the cursor back on the
-    /// window's first diff line.
+    /// sidebar move re-derives the window, so the newly selected file
+    /// starts from scroll 0 with the cursor on the window's first diff
+    /// line, until its block is rendered and the view lands on its first
+    /// hunk (see [`land`]).
     pub(super) fn snap_to_top(&mut self) {
         self.cursor = Cursor::default();
         self.window_key = None;
         self.reveal_cursor = false;
         self.reload_top = None;
+        self.landing = true;
     }
 
     /// Adopt a rebuilt model. `survivors` maps old to new indices of the
@@ -877,6 +896,15 @@ impl DiffPane {
         let inner = diff_scrollbar::body_area(area);
         let viewport = inner.height as usize;
 
+        if self.landing && self.window_complete {
+            self.landing = false;
+            if let Some((scroll, row)) = land(&self.window, viewport) {
+                select_row(&self.window, row, &mut self.cursor);
+                self.cursor_ready = true;
+                self.cursor.scroll = scroll;
+            }
+        }
+
         if self.cursor_ready
             && self
                 .window
@@ -942,6 +970,34 @@ impl DiffPane {
             " line {pos} of {span}{progress}  \u{00b7}  {layout}  \u{00b7}  ? help "
         ))
     }
+}
+
+/// Where a visited file opens: the scroll offset and the cursor row.
+///
+/// The first hunk's box goes to the top of the viewport when the hunk
+/// fits, or when its first change shows in the top two thirds that way.
+/// Otherwise the first change sits a third of the way down, so a hunk
+/// expanded to a long scope still opens on its change. `None` when the
+/// window has no boxed hunk (binary, symlink, type change), which keeps
+/// the view at the top. The caller clamps the scroll, so a file that
+/// fits on screen keeps its header in view.
+fn land(rows: &[DiffRow], viewport: usize) -> Option<(usize, usize)> {
+    let top = rows.iter().position(|row| row.hunk_start)?;
+    let change = top
+        + rows[top..].iter().position(|row| {
+            row.is_selectable() && matches!(row.kind, Some(LineKind::Added | LineKind::Removed))
+        })?;
+    let end = rows[top + 1..]
+        .iter()
+        .position(|row| row.hunk_start)
+        .map_or(rows.len(), |next| top + next);
+    let viewport = viewport.max(1);
+    let scroll = if end - top <= viewport || change < top + viewport * 2 / 3 {
+        top
+    } else {
+        change - viewport / 3
+    };
+    Some((scroll, change))
 }
 
 /// The pane's border title. With both columns in the selection it names
@@ -1140,16 +1196,21 @@ mod tests {
         }];
         let mut state = make_state(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
-        let cursor_row = state.unstaged.cursor.row;
-
-        let selection_bg = rgb_to_color(theme().selection_bg);
-        let bg_of_row = |focused: bool, pane: &mut DiffPane| {
+        let draw = |focused: bool, pane: &mut DiffPane| {
             let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
             term.draw(|f| {
                 let area = f.area();
                 pane.render(f, area, focused, &theme(), None);
             })
             .unwrap();
+            term
+        };
+        draw(false, &mut state.unstaged);
+        let cursor_row = state.unstaged.cursor.row;
+
+        let selection_bg = rgb_to_color(theme().selection_bg);
+        let bg_of_row = |focused: bool, pane: &mut DiffPane| {
+            let term = draw(focused, pane);
             // Row 0 of the body sits one row below the pane border.
             let y = (cursor_row + 1) as u16;
             term.backend().buffer()[(1, y)].style().bg

@@ -46,6 +46,7 @@ mod test_support;
 mod tree;
 
 pub use icons::{IconMode, file_icon, symlink_icon};
+pub use render::render_note;
 pub use status::{
     ChangeKind, DirStage, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
     display_path, file_metadata, file_status, is_binary_marker,
@@ -89,6 +90,7 @@ pub struct Sidebar {
     /// One cached line per visible row, regenerated whenever `selected`,
     /// the folds, or the staging data change.
     rendered: Vec<Line<'static>>,
+    rendered_notes: Vec<Option<Line<'static>>>,
     /// Captured at build time so tests can supply specific values.
     icons: IconMode,
     /// Per-row display data, indexed like `rows`.
@@ -103,6 +105,16 @@ pub struct Sidebar {
 /// when the file set is rebuilt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folds(BTreeSet<String>);
+
+/// `level`: 0 straightforward (no dot), 1 careful, 2 critical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowNote {
+    pub tag: &'static str,
+    pub level: u8,
+    pub low: bool,
+    /// Drawn as `!` after the tag.
+    pub breaking: bool,
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct FileRowMeta {
@@ -125,6 +137,7 @@ pub(super) struct FileRowMeta {
     /// Binary / mode-change / submodule flags pulled from the diff
     /// preamble. Empty for directory rows.
     pub(super) extra: FileMetadata,
+    pub(super) note: Option<RowNote>,
 }
 
 impl Sidebar {
@@ -136,7 +149,28 @@ impl Sidebar {
 
     /// Same as `build` but with an explicit icon mode (for tests).
     pub fn build_with_icons(files: &[SidebarFile<'_>], theme: &Theme, icons: IconMode) -> Self {
-        let rows = build_rows(files);
+        Self::from_rows(files, theme, icons, build_rows(files, &[]))
+    }
+
+    pub fn build_hiding(
+        files: &[SidebarFile<'_>],
+        theme: &Theme,
+        icons: IconMode,
+        hidden: &[bool],
+    ) -> Self {
+        Self::from_rows(files, theme, icons, build_rows(files, hidden))
+    }
+
+    pub fn rebuilt(&self, files: &[SidebarFile<'_>], hidden: &[bool]) -> Self {
+        Self::build_hiding(files, &self.theme, self.icons, hidden)
+    }
+
+    fn from_rows(
+        files: &[SidebarFile<'_>],
+        theme: &Theme,
+        icons: IconMode,
+        rows: Vec<Row>,
+    ) -> Self {
         let stages: Vec<_> = files.iter().map(|file| file.stage).collect();
         let file_meta = rows
             .iter()
@@ -149,6 +183,7 @@ impl Sidebar {
                     deltas: None,
                     rename: None,
                     extra: FileMetadata::default(),
+                    note: None,
                 },
                 Row::File { file_index, .. } => {
                     let f = &files[*file_index];
@@ -170,6 +205,7 @@ impl Sidebar {
                         deltas: Some((f.added, f.deleted)),
                         rename,
                         extra: file_metadata(f.file),
+                        note: None,
                     }
                 }
             })
@@ -194,6 +230,7 @@ impl Sidebar {
             selected,
             scroll: 0,
             rendered: Vec::new(),
+            rendered_notes: Vec::new(),
             icons,
             file_meta,
             theme: theme.clone(),
@@ -211,6 +248,16 @@ impl Sidebar {
                 Row::Dir { .. } => {
                     self.file_meta[index].dir_stage = dir_aggregate(&self.rows, stages, index)
                 }
+            }
+        }
+        self.render_all();
+    }
+
+    /// Re-renders in place; selection and scroll stay.
+    pub fn update_notes(&mut self, notes: &[Option<RowNote>]) {
+        for (index, row) in self.rows.iter().enumerate() {
+            if let Row::File { file_index, .. } = row {
+                self.file_meta[index].note = notes.get(*file_index).copied().flatten();
             }
         }
         self.render_all();
@@ -246,6 +293,11 @@ impl Sidebar {
     /// by the sidebar.
     pub fn rows(&self) -> &[Line<'static>] {
         &self.rendered
+    }
+
+    /// Drawn apart from the rows so the pane can align them right.
+    pub fn row_notes(&self) -> &[Option<Line<'static>>] {
+        &self.rendered_notes
     }
 
     /// Currently-selected visible position.
@@ -510,6 +562,7 @@ impl Sidebar {
         for position in [previous, target] {
             if position < self.visible.len() {
                 self.rendered[position] = self.render_position(position);
+                self.rendered_notes[position] = self.render_note_at(position);
             }
         }
     }
@@ -536,9 +589,22 @@ impl Sidebar {
         )
     }
 
+    fn render_note_at(&self, position: usize) -> Option<Line<'static>> {
+        let note = self.file_meta[self.visible[position]].note?;
+        Some(render_note(
+            &note,
+            position == self.selected,
+            true,
+            &self.theme,
+        ))
+    }
+
     fn render_all(&mut self) {
         self.rendered = (0..self.visible.len())
             .map(|position| self.render_position(position))
+            .collect();
+        self.rendered_notes = (0..self.visible.len())
+            .map(|position| self.render_note_at(position))
             .collect();
     }
 }
@@ -611,6 +677,7 @@ mod tests {
     use super::*;
     use crate::sidebar::test_support::*;
     use deltoids::parse::FileDiff;
+    use deltoids::render_tui::rgb_to_color;
 
     #[test]
     fn navigation_highlights_only_the_selected_row() {
@@ -1115,6 +1182,157 @@ mod tests {
         assert_eq!(texts(&rebuilt), ["▶ src/", "M z.rs"]);
         assert!(rebuilt.selected_is_dir());
         assert_eq!(rebuilt.folds(), Folds(BTreeSet::from(["src/".to_string()])));
+    }
+
+    fn counted_files(diffs: &[FileDiff]) -> Vec<SidebarFile<'_>> {
+        diffs
+            .iter()
+            .map(|file| SidebarFile {
+                file,
+                added: 3,
+                deleted: 1,
+                stage: None,
+            })
+            .collect()
+    }
+
+    fn note(tag: &'static str, level: u8, low: bool) -> Option<RowNote> {
+        Some(RowNote {
+            tag,
+            level,
+            low,
+            breaking: false,
+        })
+    }
+
+    #[test]
+    fn a_breaking_note_ends_its_tag_with_a_bang() {
+        let diffs = [fd("src/api.rs")];
+        let files = counted_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+
+        sidebar.update_notes(&[Some(RowNote {
+            tag: "core",
+            level: 2,
+            low: false,
+            breaking: true,
+        })]);
+
+        assert_eq!(note_texts(&sidebar), [None, Some("core! ●".to_string())]);
+    }
+
+    fn note_texts(sidebar: &Sidebar) -> Vec<Option<String>> {
+        sidebar
+            .row_notes()
+            .iter()
+            .map(|note| note.as_ref().map(line_text))
+            .collect()
+    }
+
+    #[test]
+    fn notes_render_apart_from_the_row_with_one_dot() {
+        let diffs = [fd("src/a.rs"), fd("src/b.rs"), fd("src/c.rs"), fd("z.rs")];
+        let files = counted_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+        sidebar.move_down(20);
+        let selected = sidebar.selected();
+
+        sidebar.update_notes(&[
+            note("core", 2, false),
+            note("test", 1, true),
+            note("imports", 0, true),
+            None,
+        ]);
+
+        assert_eq!(
+            texts(&sidebar),
+            [
+                "▼ src/",
+                "  M a.rs +3 -1",
+                "  M b.rs +3 -1",
+                "  M c.rs +3 -1",
+                "M z.rs +3 -1"
+            ]
+        );
+        assert_eq!(
+            note_texts(&sidebar),
+            [
+                None,
+                Some("core ●".to_string()),
+                Some("test ●".to_string()),
+                Some("imports  ".to_string()),
+                None
+            ]
+        );
+        assert_eq!(sidebar.selected(), selected);
+    }
+
+    #[test]
+    fn the_dot_color_shows_the_level_while_tags_stay_muted() {
+        let diffs = [fd("a.rs"), fd("b.rs"), fd("c.rs")];
+        let files = counted_files(&diffs);
+        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
+
+        sidebar.update_notes(&[
+            note("refactor", 0, false),
+            note("core", 1, false),
+            note("test", 2, true),
+        ]);
+
+        let notes = sidebar.row_notes();
+        let style = |row: usize, text: &str| {
+            notes[row]
+                .as_ref()
+                .unwrap()
+                .spans
+                .iter()
+                .find(|span| span.content == text)
+                .unwrap_or_else(|| panic!("no span {text:?} in row {row}"))
+                .style
+                .fg
+        };
+        let muted = Some(rgb_to_color(theme().muted));
+        assert!(
+            notes[0]
+                .as_ref()
+                .unwrap()
+                .spans
+                .iter()
+                .all(|span| span.content != "●")
+        );
+        assert_eq!(style(1, "●"), Some(rgb_to_color(theme().status_partial)));
+        assert_eq!(style(2, "●"), Some(rgb_to_color(theme().status_deleted)));
+        for (row, tag) in [(0, "refactor"), (1, "core"), (2, "test")] {
+            assert_eq!(style(row, tag), muted);
+        }
+        let name = |row: usize, text: &str| {
+            sidebar.rows()[row]
+                .spans
+                .iter()
+                .find(|span| span.content == text)
+                .unwrap()
+                .style
+                .fg
+        };
+        assert_ne!(name(1, "b.rs"), muted);
+        assert_eq!(name(2, "c.rs"), muted);
+    }
+
+    #[test]
+    fn hidden_files_and_folders_left_empty_drop_out_of_the_tree() {
+        let diffs = [
+            fd("src/a.rs"),
+            fd("tests/a.rs"),
+            fd("src/b_test.rs"),
+            fd("z.rs"),
+        ];
+        let files = plain_files(&diffs);
+
+        let sidebar =
+            Sidebar::build_hiding(&files, &theme(), IconMode::Off, &[false, true, true, false]);
+
+        assert_eq!(texts(&sidebar), ["▼ src/", "  M a.rs", "M z.rs"]);
+        assert_eq!(sidebar.display_order(), [0, 3]);
     }
 
     #[test]

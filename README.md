@@ -24,6 +24,7 @@ Hunks expand to show the enclosing function, so you always know where you are.
 - **Expanded context:** understand changes within their enclosing scope.
 - **Git integration:** review file status and manage changes in one place.
 - **Review comments:** copy review notes with file and line references for coding agents.
+- **Review guidance:** see which changes need attention first.
 - **Responsive TUI:** keep up with changes without unnecessary redraws.
 - **Syntax themes:** choose colors that suit your workflow.
 - **Custom commands:** use your own tools while reviewing.
@@ -123,6 +124,22 @@ default and `t` overrides it for the session.
 Individual chrome colors (diff backgrounds, borders, status letters) can
 also be overridden per-field with hex values in the same `[theme]`
 section.
+
+### Review guidance
+
+`deltoids tui` tags each file in the sidebar, at the right edge, with
+what kind of change it holds (`core`, `refactor`, `test`, `docs`, …)
+and a dot when it needs attention: orange for careful, red for
+critical; straightforward changes get no dot. A tag ends in `!`, as in conventional
+commits, when the change breaks code or users outside its package. A
+file shows its hunk that needs the most attention. The names of tests, code comments, import-only changes, and
+lockfiles are muted; press `f` to hide them. Each hunk header shows its
+own tag and dot.
+
+Set `TYPESAFE_API_KEY` to let TypeSafe's Jev model judge each change
+when the TUI opens. Every changed file goes to Jev except package
+manager lockfiles, which are tagged `lockfile`, and generated files.
+Without the key, the sidebar shows no guidance.
 
 ### Custom commands
 

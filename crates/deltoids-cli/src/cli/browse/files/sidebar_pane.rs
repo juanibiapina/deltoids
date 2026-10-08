@@ -8,7 +8,7 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use deltoids::Theme;
 use deltoids::render_tui::{
@@ -41,6 +41,10 @@ pub(crate) fn sidebar_title(rule_color: Color, theme: &Theme) -> Line<'static> {
 /// Build the sidebar from a model plus per-file delta counts.
 pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
     Sidebar::build(&sidebar_files(model), theme)
+}
+
+pub(super) fn rebuild_sidebar(sidebar: &Sidebar, model: &Model, hidden: &[bool]) -> Sidebar {
+    sidebar.rebuilt(&sidebar_files(model), hidden)
 }
 
 pub(super) fn update_staging(sidebar: &mut Sidebar, model: &Model) {
@@ -95,7 +99,7 @@ pub(super) fn draw_sidebar(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     sidebar: &Sidebar,
-    display_order: &[usize],
+    footer: Option<String>,
     focused: bool,
     theme: &Theme,
 ) {
@@ -109,7 +113,20 @@ pub(super) fn draw_sidebar(
     let total = sidebar.row_count();
     let start = scroll.min(total);
     let end = start.saturating_add(viewport.max(1)).min(total);
-    let mut visible: Vec<Line<'static>> = sidebar.rows()[start..end].to_vec();
+    let selected_bg = Style::default().bg(rgb_to_color(theme.selection_bg));
+    let mut visible: Vec<Line<'static>> = sidebar.rows()[start..end]
+        .iter()
+        .zip(&sidebar.row_notes()[start..end])
+        .enumerate()
+        .map(|(offset, (row, note))| {
+            let fill = if start + offset == sidebar.selected() {
+                selected_bg
+            } else {
+                Style::default()
+            };
+            with_note_at_right(row, note.as_ref(), inner_width, fill)
+        })
+        .collect();
 
     // Extend the selection background across the full inner pane width
     // so the highlighted row reads as a continuous bar (matching
@@ -122,7 +139,6 @@ pub(super) fn draw_sidebar(
     }
 
     let color = pane_border_color(focused, theme);
-    let footer = sidebar_footer(sidebar, display_order);
     let block = pane_block_with_title_line(sidebar_title(color, theme), color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
 
@@ -135,6 +151,75 @@ pub(super) fn draw_sidebar(
         focused,
         theme,
     );
+}
+
+/// A row too long for both is cut so the note stays whole.
+fn with_note_at_right(
+    row: &Line<'static>,
+    note: Option<&Line<'static>>,
+    width: usize,
+    fill: Style,
+) -> Line<'static> {
+    let Some(note) = note else {
+        return row.clone();
+    };
+    let note_width = note.width();
+    let room = width.saturating_sub(note_width + 1);
+    let mut spans = row.spans.clone();
+    while spans_width(&spans) > room && spans.last().is_some_and(is_line_count) {
+        spans.pop();
+        while spans
+            .last()
+            .is_some_and(|span| span.content.trim().is_empty())
+        {
+            spans.pop();
+        }
+    }
+    let mut spans = cut_to_width(&spans, room);
+    let used: usize = spans.iter().map(|span| span.content.width()).sum();
+    spans.push(Span::styled(
+        " ".repeat(width.saturating_sub(used + note_width).max(1)),
+        fill,
+    ));
+    spans.extend(note.spans.iter().cloned());
+    Line::from(spans)
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| span.content.width()).sum()
+}
+
+/// `+N` and `-N` line counts give way before the file name is cut.
+fn is_line_count(span: &Span<'_>) -> bool {
+    let text = span.content.as_ref();
+    text.len() > 1
+        && (text.starts_with('+') || text.starts_with('-'))
+        && text[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+fn cut_to_width(spans: &[Span<'static>], width: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let span_width = span.content.width();
+        if used + span_width <= width {
+            used += span_width;
+            out.push(span.clone());
+            continue;
+        }
+        let mut cut = String::new();
+        for ch in span.content.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if used + ch_width > width {
+                break;
+            }
+            used += ch_width;
+            cut.push(ch);
+        }
+        out.push(Span::styled(cut, span.style));
+        break;
+    }
+    out
 }
 
 /// Append a trailing span of `selection_bg`-styled spaces so the row's
@@ -197,6 +282,73 @@ mod tests {
     use crate::cli::browse::files::test_support::*;
     use crate::cli::browse::files::{Focus, handle_key, handle_mouse};
     use crossterm::event::{MouseButton, MouseEventKind};
+
+    fn drawn_rows(sidebar: &Sidebar, width: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, 6);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_sidebar(frame, frame.area(), sidebar, None, true, &Theme::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (1..5)
+            .map(|y| {
+                (1..width - 1)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn noted(paths: &[&str], note: crate::sidebar::RowNote) -> Sidebar {
+        let diffs: Vec<_> = paths.iter().map(|path| file_diff(path)).collect();
+        let files: Vec<_> = diffs
+            .iter()
+            .map(|file| SidebarFile {
+                file,
+                added: 1,
+                deleted: 1,
+                stage: None,
+            })
+            .collect();
+        let mut sidebar =
+            Sidebar::build_with_icons(&files, &Theme::default(), crate::sidebar::IconMode::Off);
+        sidebar.update_notes(&vec![Some(note); paths.len()]);
+        sidebar
+    }
+
+    #[test]
+    fn notes_sit_at_the_right_edge_and_line_counts_give_way_first() {
+        let note = crate::sidebar::RowNote {
+            tag: "core",
+            level: 1,
+            low: false,
+            breaking: false,
+        };
+        let sidebar = noted(&["a.rs", "much_longer_name.rs"], note);
+
+        let rows = drawn_rows(&sidebar, 32);
+
+        assert_eq!(rows[0], format!("M a.rs +1 -1{}core ●", " ".repeat(12)));
+        assert_eq!(
+            rows[1],
+            format!("M much_longer_name.rs{}core ●", " ".repeat(3))
+        );
+    }
+
+    #[test]
+    fn a_long_name_is_cut_so_the_note_stays_visible() {
+        let note = crate::sidebar::RowNote {
+            tag: "core",
+            level: 1,
+            low: false,
+            breaking: false,
+        };
+        let sidebar = noted(&["a_really_long_file_name.rs"], note);
+
+        let rows = drawn_rows(&sidebar, 20);
+
+        assert_eq!(rows[0], "M a_really_ core ●");
+    }
 
     #[test]
     fn sidebar_title_reads_files_with_accent_label_and_border_rules() {

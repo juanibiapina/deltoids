@@ -57,10 +57,16 @@ impl Node {
 /// 3. Collapse single-child directory chains: if a directory has
 ///    exactly one child and that child is a directory, fold the child's
 ///    name into the parent's label and continue collapsing.
-pub(super) fn build_rows(files: &[SidebarFile<'_>]) -> Vec<Row> {
+///
+/// Files whose `hidden[file_index]` is `true` are left out, and so are
+/// directories left without files; row file indices stay those of `files`.
+pub(super) fn build_rows(files: &[SidebarFile<'_>], hidden: &[bool]) -> Vec<Row> {
     let mut root = Node::new_dir(String::new());
 
     for (file_index, file) in files.iter().enumerate() {
+        if hidden.get(file_index).copied().unwrap_or(false) {
+            continue;
+        }
         let path = display_path(file.file);
         insert_path(&mut root, path, file_index);
     }
@@ -161,7 +167,7 @@ mod tests {
                 stage: None,
             },
         ];
-        let rows = build_rows(&files);
+        let rows = build_rows(&files, &[]);
         // 1 dir header + 2 files
         assert_eq!(rows.len(), 3);
         match &rows[0] {
@@ -201,7 +207,7 @@ mod tests {
                 stage: None,
             },
         ];
-        let rows = build_rows(&files);
+        let rows = build_rows(&files, &[]);
         assert_eq!(rows.len(), 3);
         match &rows[0] {
             Row::Dir { label, depth } => {
@@ -232,7 +238,7 @@ mod tests {
                 stage: None,
             },
         ];
-        let rows = build_rows(&files);
+        let rows = build_rows(&files, &[]);
         // crates/ + deltoids/src/ + lib.rs + deltoids-cli/src/ + lib.rs
         assert_eq!(rows.len(), 5);
         match &rows[0] {
@@ -259,7 +265,7 @@ mod tests {
                 stage: None,
             },
         ];
-        let rows = build_rows(&files);
+        let rows = build_rows(&files, &[]);
         assert_eq!(rows.len(), 2);
         for row in &rows {
             match row {
@@ -294,7 +300,7 @@ mod tests {
                 stage: None,
             },
         ];
-        let rows = build_rows(&files);
+        let rows = build_rows(&files, &[]);
         // Expect (mixed): aaa.rs ; src/ ; src/a.rs ; zzz.rs
         match &rows[0] {
             Row::File { name, .. } => assert_eq!(name, "aaa.rs"),

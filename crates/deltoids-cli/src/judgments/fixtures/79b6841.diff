@@ -1,0 +1,127 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 967f379..92314c9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ - TUI: git-crypt encrypted files show a text diff instead of "Binary file".
+ - TUI: the diff keeps its scroll position when a refresh only changes other files.
++- TUI: restore the terminal when deltoids is killed with `killall deltoids`, SIGHUP, or SIGQUIT.
+ - diff: a field added just before a new `impl` (or other new scope) keeps its enclosing struct as context instead of showing the new scope's breadcrumb.
+ - diff: hunks no longer drop, repeat, or overlap lines around deleted scopes, new scopes, and hunk edges.
+ 
+diff --git a/Cargo.lock b/Cargo.lock
+index 35e1a70..6aa3485 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -592,6 +592,7 @@ dependencies = [
+  "ratatui",
+  "serde",
+  "serde_json",
++ "signal-hook",
+  "tempfile",
+  "terminal_size",
+  "tiny_http",
+diff --git a/crates/deltoids-cli/Cargo.toml b/crates/deltoids-cli/Cargo.toml
+index 5269a19..3b10c74 100644
+--- a/crates/deltoids-cli/Cargo.toml
++++ b/crates/deltoids-cli/Cargo.toml
+@@ -37,6 +37,7 @@ notify = "8"
+ ratatui = "0.30"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
++signal-hook = "0.3"
+ terminal_size = "0.4"
+ tiny_http = "0.12"
+ toml = "1"
+diff --git a/crates/deltoids-cli/src/cli/browse/mod.rs b/crates/deltoids-cli/src/cli/browse/mod.rs
+index 54a200c..0d38006 100644
+--- a/crates/deltoids-cli/src/cli/browse/mod.rs
++++ b/crates/deltoids-cli/src/cli/browse/mod.rs
+@@ -117,7 +117,7 @@ pub fn run_traces_scripted() -> Result<(), String> {
+ /// [`TRACES_MODE`]).
+ pub fn run(active_mode: usize) -> Result<(), String> {
+     let mut theme = Theme::load();
+-    let _session = TerminalSession::enter()?;
++    let session = TerminalSession::enter()?;
+     let backend = buffered_backend();
+     let mut terminal =
+         Terminal::new(backend).map_err(|err| format!("failed to create screen: {err}"))?;
+@@ -149,6 +149,9 @@ pub fn run(active_mode: usize) -> Result<(), String> {
+ 
+     let mut vp = ReloadViewport::default();
+     loop {
++        if session.quit_requested() {
++            break;
++        }
+         // Drain queued input before refreshes, including focus loss that
+         // arrived while the previous synchronous operation was finishing.
+         let queued = read_event_burst(Duration::ZERO)?;
+@@ -189,7 +192,7 @@ pub fn run(active_mode: usize) -> Result<(), String> {
+     }
+ 
+     // Restore the user's terminal before watcher teardown finishes.
+-    drop(_session);
++    drop(session);
+     Ok(())
+ }
+ 
+diff --git a/crates/deltoids-cli/src/terminal.rs b/crates/deltoids-cli/src/terminal.rs
+index 4536e56..7dd9c4b 100644
+--- a/crates/deltoids-cli/src/terminal.rs
++++ b/crates/deltoids-cli/src/terminal.rs
+@@ -1,8 +1,18 @@
+ //! Shared terminal session guard for TUI subcommands.
+ 
+ use std::io::{self, Write};
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, Ordering};
+ 
+-pub struct TerminalSession;
++use signal_hook::SigId;
++use signal_hook::consts::{SIGHUP, SIGQUIT, SIGTERM};
++
++const QUIT_SIGNALS: [i32; 3] = [SIGTERM, SIGHUP, SIGQUIT];
++
++pub struct TerminalSession {
++    quit: Arc<AtomicBool>,
++    signal_ids: Vec<SigId>,
++}
+ 
+ impl TerminalSession {
+     // Do NOT call `terminal.clear()` here. On `ratatui-core >= 0.1.1`,
+@@ -12,6 +22,13 @@ impl TerminalSession {
+     // before the first draw. The alternate screen is already blank after
+     // `?1049h`, so the first `terminal.draw` paints everything.
+     pub fn enter() -> Result<Self, String> {
++        let quit = Arc::new(AtomicBool::new(false));
++        let signal_ids = QUIT_SIGNALS
++            .iter()
++            .map(|&signal| signal_hook::flag::register(signal, Arc::clone(&quit)))
++            .collect::<Result<Vec<_>, _>>()
++            .map_err(|err| format!("failed to register signal handler: {err}"))?;
++        let session = Self { quit, signal_ids };
+         crossterm::terminal::enable_raw_mode()
+             .map_err(|err| format!("failed to enable raw mode: {err}"))?;
+         crossterm::execute!(
+@@ -22,12 +39,19 @@ impl TerminalSession {
+             crossterm::event::EnableFocusChange
+         )
+         .map_err(|err| format!("failed to enter screen: {err}"))?;
+-        Ok(Self)
++        Ok(session)
++    }
++
++    pub fn quit_requested(&self) -> bool {
++        self.quit.load(Ordering::Relaxed)
+     }
+ }
+ 
+ impl Drop for TerminalSession {
+     fn drop(&mut self) {
++        for id in self.signal_ids.drain(..) {
++            signal_hook::low_level::unregister(id);
++        }
+         let _ = crossterm::terminal::disable_raw_mode();
+         let _ = crossterm::execute!(
+             io::stdout(),

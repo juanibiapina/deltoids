@@ -30,7 +30,9 @@ use crate::cli::browse::diff_cursor::{
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label};
 use crate::cli::browse::syntax_badge::with_syntax_badge;
-use crate::sidebar::{FileMode, IconMode, ModeChange, display_path, file_metadata, symlink_icon};
+use crate::sidebar::{
+    FileMode, IconMode, ModeChange, RowNote, display_path, file_metadata, render_note, symlink_icon,
+};
 
 use super::model::{Column, FileBody, Model};
 use super::render::DiffCache;
@@ -370,6 +372,38 @@ fn typechange_label(mode: FileMode) -> &'static str {
     }
 }
 
+fn label_hunks(
+    rows: &mut [DiffRow],
+    width: usize,
+    theme: &Theme,
+    label: impl Fn(usize) -> Option<RowNote>,
+) {
+    let starts: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].hunk_start).collect();
+    for (hunk, start) in starts.into_iter().enumerate() {
+        let Some(label) = label(hunk) else {
+            continue;
+        };
+        let Some(bottom) = (start + 1..rows.len()).find(|&i| line_ends_with(&rows[i].line, '╯'))
+        else {
+            continue;
+        };
+        let note = render_note(&label, false, false, theme);
+        let line = &mut rows[bottom - 1].line;
+        let used = line.width() + note.width();
+        if used + 2 > width {
+            continue;
+        }
+        line.spans.push(Span::raw(" ".repeat(width - used)));
+        line.spans.extend(note.spans);
+    }
+}
+
+fn line_ends_with(line: &Line<'_>, end: char) -> bool {
+    line.spans
+        .last()
+        .is_some_and(|span| span.content.ends_with(end))
+}
+
 /// The file header, with the syntax badge on the path line for a text diff.
 fn file_header(
     file: &FileDiff,
@@ -433,6 +467,21 @@ struct WindowKey {
     epoch: CacheEpoch,
     blocks: u64,
     comments: u64,
+    labels: u64,
+}
+
+/// `revision` changes whenever `lookup` may answer differently.
+pub(super) struct HunkLabels<'a> {
+    pub(super) revision: u64,
+    pub(super) lookup: &'a dyn Fn(usize, usize) -> Option<RowNote>,
+}
+
+#[cfg(test)]
+impl HunkLabels<'_> {
+    pub(super) const NONE: HunkLabels<'static> = HunkLabels {
+        revision: 0,
+        lookup: &|_, _| None,
+    };
 }
 
 enum EmptyPane {
@@ -555,6 +604,7 @@ impl DiffPane {
         theme: &Theme,
         _budget: DrawBudget,
         comments: &CommentStore,
+        labels: &HunkLabels<'_>,
     ) {
         self.adopt_spec(spec, width, layout);
         let display_range = spec.range.clone();
@@ -569,6 +619,7 @@ impl DiffPane {
             },
             blocks: self.cache.revision,
             comments: comments.revision(),
+            labels: labels.revision,
         };
         let same_selection = self
             .window_key
@@ -621,7 +672,7 @@ impl DiffPane {
                 window.push(DiffRow::plain(Line::from("")));
             }
             starts.push((input_idx, window.len()));
-            window.extend(self.file_block(input_idx, model, key.epoch, theme, comments));
+            window.extend(self.file_block(input_idx, model, key.epoch, theme, comments, labels));
         }
         if let Some((file, offset)) = old_top {
             match starts.iter().find(|(index, _)| *index == file) {
@@ -709,7 +760,8 @@ impl DiffPane {
     }
 
     /// One file's block for the current frame: the retained highlighted
-    /// lines when ready; otherwise a cheap placeholder.
+    /// lines, with comments and hunk labels, when ready; otherwise a cheap
+    /// placeholder.
     fn file_block(
         &self,
         input_idx: usize,
@@ -717,13 +769,18 @@ impl DiffPane {
         epoch: CacheEpoch,
         theme: &Theme,
         comments: &CommentStore,
+        labels: &HunkLabels<'_>,
     ) -> Vec<DiffRow> {
         if let Some(rows) = self.cache.get(epoch, input_idx) {
-            with_comments(rows, comments, epoch.width, theme, |anchor, comment| {
+            let mut rows = with_comments(rows, comments, epoch.width, theme, |anchor, comment| {
                 model
                     .line(anchor)
                     .is_some_and(|(content, _)| content != comment.code)
-            })
+            });
+            label_hunks(&mut rows, epoch.width, theme, |hunk| {
+                (labels.lookup)(input_idx, hunk)
+            });
+            rows
         } else {
             let view = model.view(input_idx, self.column);
             placeholder_file_block(view.file, view.body, epoch.width, theme)

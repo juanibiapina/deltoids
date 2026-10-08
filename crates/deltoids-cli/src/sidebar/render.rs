@@ -8,10 +8,10 @@ use deltoids::render_tui::rgb_to_color;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::FileRowMeta;
 use super::icons::{IconMode, dir_icon, file_icon};
 use super::status::{FileMode, FileStatus, ModeChange};
 use super::tree::Row;
+use super::{FileRowMeta, RowNote};
 
 /// Just the basename (last `/`-separated segment) of a path.
 pub(super) fn rename_leaf(path: &str) -> String {
@@ -134,6 +134,45 @@ fn dir_row_spans(
     spans.push(Span::styled(label.to_string(), label_style));
 }
 
+/// The tag (muted when `muted_tag`), then one dot: orange careful, red
+/// critical, none for straightforward.
+pub fn render_note(
+    note: &RowNote,
+    selected: bool,
+    muted_tag: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut base = Style::default();
+    if selected {
+        base = base
+            .bg(rgb_to_color(theme.selection_bg))
+            .add_modifier(Modifier::BOLD);
+    }
+    let tag = if note.breaking {
+        format!("{}!", note.tag)
+    } else {
+        note.tag.to_string()
+    };
+    let tag_style = if muted_tag {
+        base.fg(rgb_to_color(theme.muted))
+    } else {
+        base
+    };
+    let mut spans = vec![Span::styled(tag, tag_style)];
+    let dot_color = match note.level {
+        0 => None,
+        1 => Some(theme.status_partial),
+        _ => Some(theme.status_deleted),
+    };
+    spans.push(Span::styled(" ".to_string(), base));
+    match dot_color {
+        Some(color) => spans.push(Span::styled("●".to_string(), base.fg(rgb_to_color(color)))),
+        // Keep the dot column so tags line up with or without a dot.
+        None => spans.push(Span::styled(" ".to_string(), base)),
+    }
+    Line::from(spans)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn file_row_spans(
     spans: &mut Vec<Span<'static>>,
@@ -212,6 +251,10 @@ fn file_row_spans(
         },
         None if meta.status == Some(FileStatus::Added) => base.fg(rgb_to_color(theme.status_added)),
         None => base,
+    };
+    let name_style = match meta.note {
+        Some(note) if note.low => base.fg(rgb_to_color(theme.muted)),
+        _ => name_style,
     };
     spans.push(Span::styled(display_name, name_style));
 

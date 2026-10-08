@@ -1,4 +1,5 @@
 use super::model::FileBody;
+use super::review_tests::{fake_jev, wait_for_review};
 use super::test_support::*;
 use super::*;
 use crate::cli::browse::comments::LineSide;
@@ -1210,4 +1211,36 @@ fn scrolling_before_the_file_renders_cancels_the_landing() {
 
     let body = diff_body(&settle(&mut mode));
     assert!(body[1].starts_with("a.rs"), "{}", body.join("\n"));
+}
+
+#[test]
+fn hidden_low_value_files_stay_hidden_across_a_reload() {
+    let (dir, _) = fixture(&["CHANGELOG.md", "src/a.txt", "tests/a.txt"]);
+    for path in ["CHANGELOG.md", "tests/a.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    mode.review = super::review::Review::with_sender(fake_jev("src/a.txt"));
+    mode.start_review();
+    wait_for_review(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Char('f'), 20);
+
+    fs::write(dir.path().join("src/a.txt"), "edited\n").unwrap();
+    mode.reload(
+        Viewport {
+            height: 20,
+            diff_width: 80,
+        },
+        &theme(),
+    )
+    .unwrap();
+    wait_for_review(&mut mode);
+
+    let shown: Vec<_> = mode
+        .sidebar
+        .display_order()
+        .iter()
+        .map(|&index| display_path(&mode.model.files[index].file).to_string())
+        .collect();
+    assert_eq!(shown, ["CHANGELOG.md", "src/a.txt"]);
 }

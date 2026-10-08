@@ -61,10 +61,18 @@ crates/
     src/sidebar/             # File tree sidebar
       mod.rs                 #   Sidebar state + navigation
       status.rs            #   file classification
-      tree.rs              #   path-tree construction
+      tree.rs              #   path-tree construction (hidden files left out)
       icons.rs             #   nerd-font glyph tables
       render.rs            #   row -> styled line
       test_support.rs      #   shared test fixtures
+    src/judgments/           # Jev judgments: role + attention per hunk
+      mod.rs                 #   change model, absorb Jev answers, file notes
+      request.rs             #   Jev request bodies and batching
+      paths.rs               #   files Jev never sees (lockfiles, generated)
+      jev.rs                 #   blocking HTTP transport + TYPESAFE_API_KEY
+      tests.rs               #   interface tests; fixtures/ holds recorded
+                             #     patches and Jev answers (re-record with
+                             #     `record_jev_fixtures -- --ignored`)
     src/cli.rs               # Subcommand module declarations
     src/cli/pager.rs         # `deltoids pager` subcommand
     src/cli/browse/          # scrolling TUI
@@ -92,6 +100,7 @@ crates/
         stage_panes.rs       #     which staging column the diff shows, with which files
         sidebar_pane.rs      #     sidebar pane slice
         reload.rs            #     working-tree watcher + rebuild
+        review.rs            #     review guidance: Jev job, judgments, row notes
         test_support.rs      #     shared test fixtures
     src/cli/tui.rs           # `deltoids tui` entry (requires a terminal)
     src/bin/deltoids.rs      # Single binary dispatcher

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: show staged and unstaged changes separately, and press `s` to switch between them when a file or directory has both.
 - TUI: press `z` on a diff line to expand its hunk one scope level (the enclosing function, class, section, or the whole file), and `x` to shrink it back. From the Files sidebar, `z` and `x` act on every hunk of the selected file or directory.
 - TUI: file headers show the file's language, or mark files whose language has no scope context.
+- TUI: the Files sidebar tags each file with its kind of change and an attention dot and mutes tests, comment-only changes, import-only changes, and lockfiles. Press `f` to hide low-value files. Tags end in `!` for changes that break callers. With `TYPESAFE_API_KEY` set, TypeSafe's Jev model judges every hunk, and hunk headers show its tag.
 
 ### Changed
 

@@ -65,12 +65,15 @@ mod model;
 mod performance_tests;
 mod reload;
 mod render;
+mod review;
+#[cfg(test)]
+mod review_tests;
 mod sidebar_pane;
 mod stage_panes;
 #[cfg(test)]
 mod test_support;
 
-use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
+use diff_pane::{DiffPane, HunkLabels, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 #[cfg(test)]
 use model::build_model;
 use model::{Column, Model};
@@ -165,6 +168,9 @@ pub(super) struct FilesMode {
     reload_failed: bool,
     action_job: Option<std::sync::mpsc::Receiver<Result<actions::DiscardOutcome, String>>>,
     refresh_requested: bool,
+    review: review::Review,
+    guidance: review::Guidance,
+    hide_low: bool,
 }
 
 impl FilesMode {
@@ -193,6 +199,8 @@ impl FilesMode {
             Err(_) => Self::loading(repo, theme, initial_diff_width),
         };
         mode._watcher = watcher;
+        mode.review = review::Review::from_env();
+        mode.start_review();
         mode
     }
 
@@ -247,7 +255,7 @@ impl FilesMode {
         let sidebar = build_sidebar(&model, theme);
         let display_order = sidebar.display_order();
         let panes = StagePanes::new(&model, &display_order);
-        Self {
+        let mut mode = Self {
             staged: DiffPane::new(Column::Staged, width),
             unstaged: DiffPane::new(Column::Unstaged, width),
             display_order,
@@ -270,7 +278,12 @@ impl FilesMode {
             reload_failed: false,
             action_job: None,
             refresh_requested: false,
-        }
+            review: review::Review::default(),
+            guidance: review::Guidance::default(),
+            hide_low: false,
+        };
+        mode.start_review();
+        mode
     }
 
     fn pane(&self, column: Column) -> &DiffPane {
@@ -306,6 +319,68 @@ impl FilesMode {
                 Column::Unstaged => Column::Staged,
             };
         }
+    }
+
+    fn start_review(&mut self) {
+        self.review.request(&self.model);
+        self.refresh_guidance();
+        self.sidebar.update_notes(&self.guidance.rows);
+    }
+
+    fn refresh_guidance(&mut self) {
+        self.guidance = self.review.guidance(&self.model);
+    }
+
+    fn hidden(&self) -> Vec<bool> {
+        if self.hide_low {
+            self.guidance.low.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn rebuild_sidebar(&mut self, height: usize) {
+        let directory = self.sidebar.selected_directory_path();
+        let file = self.sidebar.nearest_file_index();
+        let folds = self.sidebar.folds();
+        self.sidebar = sidebar_pane::rebuild_sidebar(&self.sidebar, &self.model, &self.hidden());
+        self.sidebar.apply_folds(folds, height);
+        let restored = directory
+            .as_deref()
+            .is_some_and(|path| self.sidebar.select_directory_path(path, height));
+        if !restored && let Some(index) = file {
+            self.sidebar.select_file_index(index, height);
+        }
+        self.sidebar.update_notes(&self.guidance.rows);
+        self.refresh_panes();
+    }
+
+    fn toggle_hidden(&mut self, height: usize) {
+        self.hide_low = !self.hide_low;
+        self.rebuild_sidebar(height);
+        self.snap_diff_to_selected_file();
+    }
+
+    /// Reports whether anything changed on screen.
+    fn collect_review(&mut self) -> bool {
+        let Some(result) = self.review.collect() else {
+            return false;
+        };
+        self.status = result
+            .err()
+            .map(|error| format!("Jev unavailable: {error}"));
+        self.refresh_guidance();
+        if self.hide_low {
+            let height = self.sidebar_rect.height.saturating_sub(2) as usize;
+            self.rebuild_sidebar(height);
+        } else {
+            self.sidebar.update_notes(&self.guidance.rows);
+        }
+        true
+    }
+
+    fn sidebar_footer(&self) -> Option<String> {
+        sidebar_pane::sidebar_footer(&self.sidebar, &self.display_order)
     }
 
     /// Re-sort files into columns after the model or its staging changed.
@@ -363,6 +438,9 @@ impl FilesMode {
             Column::Staged => &mut self.staged,
             Column::Unstaged => &mut self.unstaged,
         };
+        let column = spec.column;
+        let (model, review) = (&self.model, &self.review);
+        let lookup = |file: usize, hunk: usize| review.hunk_label(model, column, file, hunk);
         pane.assemble_window(
             &spec,
             &self.model,
@@ -371,6 +449,10 @@ impl FilesMode {
             theme,
             budget,
             &self.comments,
+            &HunkLabels {
+                revision: self.review.revision(),
+                lookup: &lookup,
+            },
         );
     }
 
@@ -633,6 +715,10 @@ fn handle_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand 
 
     if state.action_job.is_none() {
         state.status = None;
+    }
+    if key == KeyCode::Char('f') {
+        state.toggle_hidden(height);
+        return AppCommand::Continue;
     }
     if state.focus == Focus::Sidebar && key == KeyCode::Char('a') {
         start_stage_all(state);
@@ -1014,7 +1100,7 @@ impl Mode for FilesMode {
     }
 
     fn background(&mut self, active: bool) -> BackgroundWork {
-        let action_changed = collect_action(self);
+        let action_changed = collect_action(self) | self.collect_review();
         if !active {
             self.staged.cache.pause();
             self.unstaged.cache.pause();
@@ -1026,7 +1112,8 @@ impl Mode for FilesMode {
             changed: staged_changed || unstaged_changed || action_changed,
             pending: self.staged.cache.pending()
                 || self.unstaged.cache.pending()
-                || self.action_job.is_some(),
+                || self.action_job.is_some()
+                || self.review.pending(),
         }
     }
 
@@ -1035,7 +1122,8 @@ impl Mode for FilesMode {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))
+        key == KeyCode::Char('f')
+            || self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))
     }
 
     fn draw(
@@ -1055,7 +1143,7 @@ impl Mode for FilesMode {
             frame,
             left,
             &self.sidebar,
-            &self.display_order,
+            self.sidebar_footer(),
             sidebar_focused,
             theme,
         );
@@ -1068,6 +1156,9 @@ impl Mode for FilesMode {
             Column::Unstaged => &mut self.unstaged,
         };
         let width = super::diff_scrollbar::body_area(right).width as usize;
+        let column = spec.column;
+        let (model, review) = (&self.model, &self.review);
+        let lookup = |file: usize, hunk: usize| review.hunk_label(model, column, file, hunk);
         pane.assemble_window(
             &spec,
             &self.model,
@@ -1076,6 +1167,10 @@ impl Mode for FilesMode {
             theme,
             budget,
             &self.comments,
+            &HunkLabels {
+                revision: self.review.revision(),
+                lookup: &lookup,
+            },
         );
         pane.render(
             frame,
@@ -1159,6 +1254,15 @@ impl Mode for FilesMode {
             ReloadOutcome::Rebuilt | ReloadOutcome::StagingUpdated
         ) {
             self.refresh_panes();
+        }
+        if outcome == ReloadOutcome::Rebuilt {
+            self.review.request(&self.model);
+            self.refresh_guidance();
+            if self.hide_low {
+                self.rebuild_sidebar(viewport.height);
+            } else {
+                self.sidebar.update_notes(&self.guidance.rows);
+            }
         }
         // A rebuilt diff may have shifted the lines comments point at:
         // follow them onto their new numbers before anything renders.

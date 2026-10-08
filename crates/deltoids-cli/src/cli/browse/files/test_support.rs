@@ -49,6 +49,7 @@ pub(super) fn assemble_unstaged(
         theme,
         DrawBudget::Full,
         &CommentStore::default(),
+        &super::diff_pane::HunkLabels::NONE,
     );
 }
 
@@ -116,7 +117,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
     let sidebar = Sidebar::build_with_icons(&sidebar_files, &theme(), IconMode::Off);
     let display_order = sidebar.display_order();
     let panes = StagePanes::new(&model, &display_order);
-    FilesMode {
+    let mut state = FilesMode {
         staged: DiffPane::new(Column::Staged, 80),
         unstaged: DiffPane::new(Column::Unstaged, 80),
         display_order,
@@ -139,7 +140,12 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         reload_failed: false,
         action_job: None,
         refresh_requested: false,
-    }
+        review: super::review::Review::default(),
+        guidance: super::review::Guidance::default(),
+        hide_low: false,
+    };
+    state.start_review();
+    state
 }
 
 pub(super) fn make_state_with_rects(files: &[ResolvedFile]) -> FilesMode {

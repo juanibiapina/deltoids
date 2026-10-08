@@ -1,0 +1,434 @@
+diff --git a/crates/deltoids-cli/src/cli/browse/files/actions.rs b/crates/deltoids-cli/src/cli/browse/files/actions.rs
+index 61b7e27..9b77c8f 100644
+--- a/crates/deltoids-cli/src/cli/browse/files/actions.rs
++++ b/crates/deltoids-cli/src/cli/browse/files/actions.rs
+@@ -90,18 +90,7 @@ pub(super) fn toggle_stage(workdir: &Path, targets: Vec<PathBuf>) -> Result<Stri
+         return Ok(String::new());
+     }
+     if state.changes.iter().any(|c| c.unstaged) {
+-        let index = repo.index().map_err(message)?;
+-        let paths: BTreeSet<_> = state
+-            .changes
+-            .iter()
+-            .filter(|c| c.unstaged)
+-            .flat_map(|c| c.paths.iter())
+-            .filter(|p| {
+-                index.get_path(p, 0).is_some() || workdir.join(p).symlink_metadata().is_ok()
+-            })
+-            .cloned()
+-            .collect();
+-        git(workdir, &["add", "-A"], &paths)?;
++        stage_changes(&repo, &state)?;
+         Ok("Staged selection".into())
+     } else {
+         let paths = paths(&state);
+@@ -110,6 +99,35 @@ pub(super) fn toggle_stage(workdir: &Path, targets: Vec<PathBuf>) -> Result<Stri
+     }
+ }
+ 
++pub(super) fn toggle_stage_all(workdir: &Path) -> Result<String, String> {
++    let repo = open(workdir)?;
++    let state = read_scope(&repo, None, false)?;
++    if state.changes.is_empty() {
++        return Ok("No changes".into());
++    }
++    if state.changes.iter().any(|c| c.unstaged) {
++        stage_changes(&repo, &state)?;
++        Ok("Staged all files".into())
++    } else {
++        reset_index(&repo, &paths(&state))?;
++        Ok("Unstaged all files".into())
++    }
++}
++
++fn stage_changes(repo: &Repository, state: &State) -> Result<(), String> {
++    let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
++    let index = repo.index().map_err(message)?;
++    let paths: BTreeSet<_> = state
++        .changes
++        .iter()
++        .filter(|c| c.unstaged)
++        .flat_map(|c| c.paths.iter())
++        .filter(|p| index.get_path(p, 0).is_some() || workdir.join(p).symlink_metadata().is_ok())
++        .cloned()
++        .collect();
++    git(workdir, &["add", "-A"], &paths)
++}
++
+ pub(super) fn discard(workdir: &Path, targets: Vec<PathBuf>) -> Result<DiscardOutcome, String> {
+     let repo = open(workdir)?;
+     let state = read(&repo, &targets, true)?;
+@@ -167,7 +185,16 @@ fn head(repo: &Repository) -> Result<Option<git2::Tree<'_>>, String> {
+ }
+ 
+ fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result<State, String> {
+-    let targets: HashSet<&Path> = targets.iter().map(PathBuf::as_path).collect();
++    read_scope(repo, Some(targets), capture_content)
++}
++
++fn read_scope(
++    repo: &Repository,
++    targets: Option<&[PathBuf]>,
++    capture_content: bool,
++) -> Result<State, String> {
++    let targets: Option<HashSet<&Path>> =
++        targets.map(|paths| paths.iter().map(PathBuf::as_path).collect());
+     let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
+     let mut options = StatusOptions::new();
+     options
+@@ -179,13 +206,14 @@ fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result
+     let mut changes = Vec::new();
+     for entry in statuses.iter() {
+         let deltas = [entry.head_to_index(), entry.index_to_workdir()];
+-        if !deltas
+-            .iter()
+-            .flatten()
+-            .flat_map(|delta| [delta.old_file(), delta.new_file()])
+-            .filter_map(|file| file.path())
+-            .any(|path| targets.contains(path))
+-        {
++        if targets.as_ref().is_some_and(|targets| {
++            !deltas
++                .iter()
++                .flatten()
++                .flat_map(|delta| [delta.old_file(), delta.new_file()])
++                .filter_map(|file| file.path())
++                .any(|path| targets.contains(path))
++        }) {
+             continue;
+         }
+         let names: BTreeSet<_> = deltas
+@@ -201,9 +229,7 @@ fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result
+             .any(|file| file.mode() == git2::FileMode::Commit);
+         let flags = entry.status();
+         if flags.contains(Status::CONFLICTED) {
+-            return Err(
+-                "Resolve merge conflicts before staging or discarding this selection".into(),
+-            );
++            return Err("Resolve merge conflicts before staging or discarding files".into());
+         }
+         if submodule {
+             return Err("Submodule actions are not supported".into());
+diff --git a/crates/deltoids-cli/src/cli/browse/files/actions/tests.rs b/crates/deltoids-cli/src/cli/browse/files/actions/tests.rs
+index 20c7963..7ca8d1d 100644
+--- a/crates/deltoids-cli/src/cli/browse/files/actions/tests.rs
++++ b/crates/deltoids-cli/src/cli/browse/files/actions/tests.rs
+@@ -78,6 +78,81 @@ fn pending(outcome: DiscardOutcome) -> PendingDiscard {
+     }
+ }
+ 
++#[test]
++fn stage_all_then_unstage_all_preserves_the_worktree() {
++    let dir = fixture();
++    fs::write(dir.path().join("delete.txt"), "delete\n").unwrap();
++    fs::write(dir.path().join("rename.txt"), "rename\n").unwrap();
++    fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
++    command(dir.path(), &["add", "."]);
++    command(dir.path(), &["commit", "-qm", "more files"]);
++    fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
++    command(dir.path(), &["add", "a.txt"]);
++    fs::write(dir.path().join("a.txt"), "latest\n").unwrap();
++    fs::remove_file(dir.path().join("delete.txt")).unwrap();
++    fs::rename(
++        dir.path().join("rename.txt"),
++        dir.path().join("renamed.txt"),
++    )
++    .unwrap();
++    fs::create_dir(dir.path().join("nested")).unwrap();
++    fs::write(dir.path().join("nested/new.txt"), "new\n").unwrap();
++    fs::write(dir.path().join(":(glob)*.txt"), "literal\n").unwrap();
++    fs::write(dir.path().join("ignored.txt"), "ignored\n").unwrap();
++
++    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "Staged all files");
++    assert_eq!(command(dir.path(), &["show", ":a.txt"]), "latest\n");
++    assert_eq!(command(dir.path(), &["show", ":nested/new.txt"]), "new\n");
++    assert_eq!(command(dir.path(), &["show", ":renamed.txt"]), "rename\n");
++    assert_eq!(command(dir.path(), &["show", "::(glob)*.txt"]), "literal\n");
++    let indexed = command(dir.path(), &["ls-files"]);
++    assert!(
++        !indexed
++            .lines()
++            .any(|p| matches!(p, "delete.txt" | "rename.txt" | "ignored.txt"))
++    );
++    assert!(command(dir.path(), &["diff"]).is_empty());
++    assert_eq!(
++        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
++        "latest\n"
++    );
++    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "Unstaged all files");
++    assert!(command(dir.path(), &["diff", "--cached"]).is_empty());
++    assert_eq!(command(dir.path(), &["show", ":a.txt"]), "original\n");
++    assert_eq!(
++        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
++        "latest\n"
++    );
++    assert!(!dir.path().join("delete.txt").exists());
++    assert_eq!(
++        fs::read_to_string(dir.path().join("renamed.txt")).unwrap(),
++        "rename\n"
++    );
++    assert_eq!(
++        fs::read_to_string(dir.path().join("nested/new.txt")).unwrap(),
++        "new\n"
++    );
++}
++
++#[test]
++fn stage_all_supports_clean_and_unborn_repositories_and_empty_selections_stay_empty() {
++    let dir = fixture();
++    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "No changes");
++    let dir = tempfile::tempdir().unwrap();
++    command(dir.path(), &["init", "-q"]);
++    fs::write(dir.path().join("new.txt"), "new\n").unwrap();
++    toggle_stage(dir.path(), vec![]).unwrap();
++    assert!(command(dir.path(), &["ls-files"]).is_empty());
++    toggle_stage_all(dir.path()).unwrap();
++    assert_eq!(command(dir.path(), &["show", ":new.txt"]), "new\n");
++    assert_eq!(toggle_stage_all(dir.path()).unwrap(), "Unstaged all files");
++    assert!(command(dir.path(), &["ls-files"]).is_empty());
++    assert_eq!(
++        fs::read_to_string(dir.path().join("new.txt")).unwrap(),
++        "new\n"
++    );
++}
++
+ #[test]
+ fn space_twice_stages_then_unstages_without_changing_worktree() {
+     let dir = fixture();
+@@ -407,6 +482,12 @@ fn submodules_reject_the_complete_selection_before_deleting_other_files() {
+     fs::write(dir.path().join("other.txt"), "keep\n").unwrap();
+     assert!(discard(dir.path(), targets(&["module", "other.txt"])).is_err());
+     assert!(toggle_stage(dir.path(), targets(&["module", "other.txt"])).is_err());
++    assert!(toggle_stage_all(dir.path()).is_err());
++    assert!(
++        !command(dir.path(), &["ls-files"])
++            .lines()
++            .any(|p| p == "other.txt")
++    );
+     assert!(dir.path().join("other.txt").exists());
+ }
+ 
+@@ -478,6 +559,12 @@ fn conflicts_reject_the_complete_selection_before_any_writes() {
+     fs::write(dir.path().join("other.txt"), "keep\n").unwrap();
+     assert!(discard(dir.path(), targets(&["other.txt", "a.txt"])).is_err());
+     assert!(toggle_stage(dir.path(), targets(&["other.txt", "a.txt"])).is_err());
++    assert!(toggle_stage_all(dir.path()).is_err());
++    assert!(
++        !command(dir.path(), &["ls-files"])
++            .lines()
++            .any(|p| p == "other.txt")
++    );
+     assert!(dir.path().join("other.txt").exists());
+     assert!(repo.index().unwrap().has_conflicts());
+ }
+diff --git a/crates/deltoids-cli/src/cli/browse/files/interaction_tests.rs b/crates/deltoids-cli/src/cli/browse/files/interaction_tests.rs
+index e71af79..0719f7a 100644
+--- a/crates/deltoids-cli/src/cli/browse/files/interaction_tests.rs
++++ b/crates/deltoids-cli/src/cli/browse/files/interaction_tests.rs
+@@ -58,6 +58,78 @@ fn refresh(mode: &mut FilesMode) {
+     .unwrap();
+ }
+ 
++#[test]
++fn sidebar_a_stages_outside_the_selected_directory_and_refreshes_without_notifications() {
++    let (dir, _) = fixture(&["src/a.txt", "src/nested/b.txt", "other.txt"]);
++    for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
++        fs::write(dir.path().join(path), "edited\n").unwrap();
++    }
++    let mut mode = live(dir.path());
++    assert!(mode.sidebar.select_directory_path("src/", 20));
++    let before: Vec<_> = mode
++        .visible_diff_window(DrawBudget::Full)
++        .iter()
++        .map(line_text)
++        .collect();
++    assert!(Mode::reserves_key(&mode, KeyCode::Char('a')));
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
++    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
++    assert_eq!(mode.focus, Focus::Diff);
++    finish(&mut mode);
++    refresh(&mut mode);
++    for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
++        assert!(mode.model.stages[path].is_staged());
++        assert!(!mode.model.stages[path].is_unstaged());
++    }
++    assert_eq!(
++        mode.sidebar.selected_directory_path().as_deref(),
++        Some("src/")
++    );
++    let after: Vec<_> = mode
++        .visible_diff_window(DrawBudget::Fast)
++        .iter()
++        .map(line_text)
++        .collect();
++    assert_eq!(after, before);
++    assert!(!Mode::reserves_key(&mode, KeyCode::Char('a')));
++    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
++    finish(&mut mode);
++    refresh(&mut mode);
++    for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
++        assert!(!mode.model.stages[path].is_staged());
++        assert!(mode.model.stages[path].is_unstaged());
++        assert_eq!(
++            fs::read_to_string(dir.path().join(path)).unwrap(),
++            "edited\n"
++        );
++    }
++    let repo = git2::Repository::open(dir.path()).unwrap();
++    assert_eq!(
++        repo.index().unwrap().write_tree().unwrap(),
++        repo.head().unwrap().peel_to_tree().unwrap().id()
++    );
++}
++
++#[test]
++fn sidebar_a_uses_fresh_status_even_when_the_sidebar_is_empty() {
++    let (dir, _) = fixture(&["a.txt"]);
++    let mut mode = live(dir.path());
++    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
++    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
++    finish(&mut mode);
++    refresh(&mut mode);
++    let repo = git2::Repository::open(dir.path()).unwrap();
++    let entry = repo
++        .index()
++        .unwrap()
++        .get_path(Path::new("a.txt"), 0)
++        .unwrap();
++    assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"edited\n");
++}
++
+ #[test]
+ fn sidebar_space_then_space_toggles_staging_without_watcher_events() {
+     let (dir, repo) = fixture(&["a.txt"]);
+@@ -364,12 +436,22 @@ fn piped_diff_and_diff_focus_cannot_mutate_the_repository() {
+     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+     let mut mode = live(dir.path());
+     mode.is_static = true;
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
++    assert!(mode.action_job.is_none());
++    assert!(
++        mode.status
++            .as_deref()
++            .unwrap()
++            .contains("repository-backed")
++    );
+     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+     assert!(mode.captures_text_input());
+     assert!(mode.action_job.is_none());
+     Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+     mode.is_static = false;
+     Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
++    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+     assert!(mode.action_job.is_none());
+diff --git a/crates/deltoids-cli/src/cli/browse/files/mod.rs b/crates/deltoids-cli/src/cli/browse/files/mod.rs
+index 373d5c7..3f0e732 100644
+--- a/crates/deltoids-cli/src/cli/browse/files/mod.rs
++++ b/crates/deltoids-cli/src/cli/browse/files/mod.rs
+@@ -398,6 +398,29 @@ impl FilesMode {
+     }
+ }
+ 
++fn start_stage_all(state: &mut FilesMode) {
++    if state.action_job.is_some() {
++        return;
++    }
++    if state.is_static {
++        state.status = Some("Git actions require repository-backed Files mode".into());
++        return;
++    }
++    let Some(workdir) = state
++        .repo
++        .as_ref()
++        .and_then(|r| r.workdir())
++        .map(PathBuf::from)
++    else {
++        state.status = Some("Git actions require a working tree".into());
++        return;
++    };
++    state.status = Some("Updating staging for all files…".into());
++    spawn_action(state, move || {
++        actions::toggle_stage_all(&workdir).map(actions::DiscardOutcome::Applied)
++    });
++}
++
+ fn start_action(state: &mut FilesMode, stage: bool) {
+     if !stage {
+         state.input = InputState::Discarding {
+@@ -576,6 +599,10 @@ fn handle_key(
+     if state.action_job.is_none() {
+         state.status = None;
+     }
++    if state.focus == Focus::Sidebar && key == KeyCode::Char('a') {
++        start_stage_all(state);
++        return AppCommand::Continue;
++    }
+     if state.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd')) {
+         start_action(state, key == KeyCode::Char(' '));
+         return AppCommand::Continue;
+@@ -930,7 +957,7 @@ impl Mode for FilesMode {
+     }
+ 
+     fn reserves_key(&self, key: KeyCode) -> bool {
+-        self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd'))
++        self.focus == Focus::Sidebar && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))
+     }
+ 
+     fn draw(
+diff --git a/crates/deltoids-cli/src/cli/browse/help.rs b/crates/deltoids-cli/src/cli/browse/help.rs
+index 2d54782..1038331 100644
+--- a/crates/deltoids-cli/src/cli/browse/help.rs
++++ b/crates/deltoids-cli/src/cli/browse/help.rs
+@@ -34,6 +34,7 @@ pub(super) const HELP_KEYS: &[(&str, &str)] = &[
+     ("Home / End", "top / bottom of current pane"),
+     ("c", "comment on the diff line under the cursor"),
+     ("Space", "stage / unstage selection (Files sidebar)"),
++    ("a", "stage / unstage all files (Files sidebar)"),
+     ("d", "discard (Files sidebar) / delete comment (diff)"),
+     ("y", "copy comments as an agent prompt"),
+     ("D", "clear all comments"),
+diff --git a/crates/deltoids-cli/src/cli/browse/tests.rs b/crates/deltoids-cli/src/cli/browse/tests.rs
+index 7aa897d..bbba573 100644
+--- a/crates/deltoids-cli/src/cli/browse/tests.rs
++++ b/crates/deltoids-cli/src/cli/browse/tests.rs
+@@ -71,7 +71,7 @@ impl Mode for RecordingMode {
+     }
+ 
+     fn reserves_key(&self, key: KeyCode) -> bool {
+-        self.rec.borrow().reserve_actions && matches!(key, KeyCode::Char(' ' | 'd'))
++        self.rec.borrow().reserve_actions && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))
+     }
+ 
+     fn take_refresh_request(&mut self) -> bool {
+@@ -179,13 +179,21 @@ fn completed_action_refreshes_the_active_mode_immediately() {
+ fn reserved_mode_actions_beat_custom_commands() {
+     let (mut modes, files, _) = two_modes();
+     let mut s = shell();
+-    s.commands = vec![custom_command('d', "touch unwanted", false)];
++    s.commands = vec![
++        custom_command('a', "touch unwanted", false),
++        custom_command('d', "touch unwanted", false),
++    ];
+     files.borrow_mut().reserve_actions = true;
++    for key in ['a', 'd'] {
++        assert_eq!(
++            s.handle_key(&mut modes, KeyCode::Char(key), 20, 20),
++            AppCommand::Continue
++        );
++    }
+     assert_eq!(
+-        s.handle_key(&mut modes, KeyCode::Char('d'), 20, 20),
+-        AppCommand::Continue
++        files.borrow().keys,
++        vec![KeyCode::Char('a'), KeyCode::Char('d')]
+     );
+-    assert_eq!(files.borrow().keys, vec![KeyCode::Char('d')]);
+ }
+ 
+ #[test]

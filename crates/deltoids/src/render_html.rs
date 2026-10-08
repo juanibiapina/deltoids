@@ -36,34 +36,24 @@ use crate::{DiffLine, Hunk, HunkRun, LineKind, ScopeNode};
 
 /// Render a list of hunks as the HTML diff body for one file.
 ///
-/// `highlight` is the syntect syntax name (from `Diff::highlight()`). `syntax_theme` is a registry theme name resolved
-/// through [`crate::theme_by_name`]; `None` uses the default. The returned
-/// string is the inner HTML the web app injects into its diff container. The
-/// first changed row across all hunks carries a `data-first-change` attribute.
-pub fn render_entry_html(
-    hunks: &[Hunk],
-    highlight: Option<&str>,
-    syntax_theme: Option<&str>,
-) -> String {
-    render_entry_html_inner(hunks, highlight, syntax_theme, None)
-}
-
-/// Like [`render_entry_html`], but also emits a trailing gap divider down to
-/// `total_new_lines` (the new-file line count) when the last hunk stops before
-/// end of file. Callers that know the file length — the web reviewer, which
-/// holds the after content — use this so the end-of-file unshown lines are
-/// shown and expandable too. Callers rendering from hunks alone use
-/// [`render_entry_html`], which omits the trailing gap.
-pub fn render_entry_html_with_file_len(
+/// `highlight` is the syntect syntax name (from `Diff::highlight()`).
+/// `syntax_theme` is a registry theme name resolved through
+/// [`crate::theme_by_name`]; `None` uses the default. `total_new_lines` is
+/// the new-file line count: when the last hunk stops before end of file, a
+/// trailing gap divider stands in for the unshown lines so the client can
+/// expand them. The returned string is the inner HTML the web app injects into
+/// its diff container. The first changed row across all hunks carries a
+/// `data-first-change` attribute.
+pub fn render_file_html(
     hunks: &[Hunk],
     highlight: Option<&str>,
     syntax_theme: Option<&str>,
     total_new_lines: usize,
 ) -> String {
-    render_entry_html_inner(hunks, highlight, syntax_theme, Some(total_new_lines))
+    render_hunks_html(hunks, highlight, syntax_theme, Some(total_new_lines))
 }
 
-fn render_entry_html_inner(
+fn render_hunks_html(
     hunks: &[Hunk],
     highlight: Option<&str>,
     syntax_theme: Option<&str>,
@@ -165,7 +155,7 @@ fn render_gap(new_start: usize, old_start: usize, count: usize, html: &mut Strin
 ///
 /// The range is clamped to the content; an empty or reversed range renders
 /// nothing. `highlight` is the syntect syntax name and `syntax_theme` a
-/// registry theme name (`None` = default), matching [`render_entry_html`].
+/// registry theme name (`None` = default), matching [`render_file_html`].
 ///
 /// Highlighting starts fresh at `start`, so a range that opens mid block
 /// comment or string may mis-colour — acceptable for revealed context.
@@ -506,7 +496,7 @@ mod tests {
             lines: vec![line(LineKind::Context, "let x = 1;")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None, None);
+        let html = render_hunks_html(&[hunk], None, None, None);
         assert!(html.contains("class=\"row context\""));
         assert!(!html.contains("data-first-change"));
         // No scope: line-number header.
@@ -532,7 +522,7 @@ mod tests {
                 text: "fn my_func() {".to_string(),
             }],
         };
-        let html = render_entry_html(&[hunk], None, None);
+        let html = render_hunks_html(&[hunk], None, None, None);
         assert_eq!(html.matches("data-first-change").count(), 1);
         // The marker is on a removed row, before the added rows.
         let marker = html.find("data-first-change").unwrap();
@@ -552,7 +542,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "if a < b && c > d {")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None, None);
+        let html = render_hunks_html(&[hunk], None, None, None);
         assert!(html.contains("&lt;"));
         assert!(html.contains("&gt;"));
         assert!(html.contains("&amp;"));
@@ -624,7 +614,7 @@ mod tests {
             lines: vec![line(LineKind::Context, "omega")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[first, second], None, None);
+        let html = render_hunks_html(&[first, second], None, None, None);
 
         assert_eq!(html.matches("class=\"gap\"").count(), 1);
         assert!(html.contains("data-gap-lines=\"7\""));
@@ -648,7 +638,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "x")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None, None);
+        let html = render_hunks_html(&[hunk], None, None, None);
         assert_eq!(html.matches("class=\"gap\"").count(), 1);
         assert!(html.contains("data-gap-lines=\"4\""));
         assert!(html.contains("data-gap-new-start=\"1\""));
@@ -665,7 +655,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "x")],
             ancestors: Vec::new(),
         };
-        assert!(!render_entry_html(&[hunk], None, None).contains("class=\"gap\""));
+        assert!(!render_hunks_html(&[hunk], None, None, None).contains("class=\"gap\""));
     }
 
     #[test]
@@ -683,7 +673,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html_with_file_len(&[hunk], None, None, 10);
+        let html = render_file_html(&[hunk], None, None, 10);
         assert_eq!(html.matches("class=\"gap\"").count(), 1);
         assert!(html.contains("data-gap-lines=\"7\""));
         assert!(html.contains("data-gap-new-start=\"4\""));
@@ -701,12 +691,12 @@ mod tests {
             ancestors: Vec::new(),
         };
         // Hunk covers new lines 1..=2 and the file is 2 lines: nothing below.
-        assert!(!render_entry_html_with_file_len(&[hunk], None, None, 2).contains("class=\"gap\""));
+        assert!(!render_file_html(&[hunk], None, None, 2).contains("class=\"gap\""));
     }
 
     #[test]
     fn plain_render_omits_trailing_gap() {
-        // render_entry_html has no file length, so it never emits a trailing
+        // Without a file length, render_hunks_html never emits a trailing
         // gap even when the last hunk stops early.
         let hunk = Hunk {
             old_start: 1,
@@ -714,7 +704,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "a")],
             ancestors: Vec::new(),
         };
-        assert!(!render_entry_html(&[hunk], None, None).contains("class=\"gap\""));
+        assert!(!render_hunks_html(&[hunk], None, None, None).contains("class=\"gap\""));
     }
 
     #[test]
@@ -725,7 +715,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "solo")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None, None);
+        let html = render_hunks_html(&[hunk], None, None, None);
         assert!(!html.contains("class=\"gap\""));
     }
 
@@ -745,7 +735,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "c")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[first, second], None, None);
+        let html = render_hunks_html(&[first, second], None, None, None);
         assert!(!html.contains("class=\"gap\""));
     }
 
@@ -763,7 +753,7 @@ mod tests {
             lines: vec![line(LineKind::Added, "c")],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[first, second], None, None);
+        let html = render_hunks_html(&[first, second], None, None, None);
         assert!(html.contains("1 unmodified line<"));
     }
 
@@ -780,7 +770,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let html = render_entry_html(&[hunk], None, None);
+        let html = render_hunks_html(&[hunk], None, None, None);
         assert!(html.contains("class=\"emph\""));
     }
 }

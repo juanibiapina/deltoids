@@ -15,7 +15,7 @@ pub struct SidebarFile<'a> {
     pub added: usize,
     pub deleted: usize,
     /// Two-column git staging status, mirroring `git status --porcelain`
-    /// XY codes. `None` for piped diffs or when no repo is available, in
+    /// XY codes. `None` for diffs without a repo, in
     /// which case the sidebar falls back to the single change-type letter
     /// derived from the combined diff.
     pub stage: Option<StageStatus>,
@@ -49,7 +49,7 @@ impl StageStatus {
 /// lazygit's `hasStagedChanges` / `hasUnstagedChanges` OR-folded across
 /// every file beneath a directory node. Drives the directory label's
 /// green/yellow/default tint. `None` (on a row) means no stage data was
-/// available for any subtree file (piped diff / no repo), in which case
+/// available for any subtree file (no repo), in which case
 /// the sidebar keeps its muted directory styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirStage {

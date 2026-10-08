@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(state.sidebar.selected_file_index(), Some(0));
         state.unstaged.cursor.scroll = 5; // scrolled somewhere inside file 0
 
-        handle_key(&mut state, KeyCode::Char('j'), 2, 4);
+        handle_key(&mut state, KeyCode::Char('j'), 4);
         // Sidebar should now be on file 1.
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
         // The diff snapped to the top of the newly selected file's window.
@@ -254,11 +254,11 @@ mod tests {
         let mut state = make_state(&resolved);
         state.sidebar.set_selected(0, 4);
 
-        handle_key(&mut state, KeyCode::Enter, 4, 4);
+        handle_key(&mut state, KeyCode::Enter, 4);
         assert_eq!(state.sidebar.row_count(), 2);
         assert_eq!(state.sidebar.selection_display_range(), Some(0..2));
 
-        handle_key(&mut state, KeyCode::Enter, 4, 4);
+        handle_key(&mut state, KeyCode::Enter, 4);
         assert_eq!(state.sidebar.row_count(), 4);
     }
 
@@ -282,7 +282,7 @@ mod tests {
         let initial = state.sidebar.selected();
 
         let mouse = make_mouse(MouseEventKind::ScrollDown, 5, 5);
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert!(state.sidebar.selected() > initial);
     }
 
@@ -305,12 +305,7 @@ mod tests {
         let initial = state.sidebar.selected();
 
         for _ in 0..3 {
-            handle_mouse(
-                &mut state,
-                make_mouse(MouseEventKind::ScrollDown, 5, 5),
-                18,
-                18,
-            );
+            handle_mouse(&mut state, make_mouse(MouseEventKind::ScrollDown, 5, 5), 18);
         }
         assert_eq!(state.sidebar.selected(), initial + 1);
     }
@@ -340,7 +335,7 @@ mod tests {
         let target_row = row_count - 1;
         let mouse_y = 1 + target_row as u16; // +1 for top border
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, mouse_y);
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.sidebar.selected(), target_row,);
         assert_eq!(state.focus, Focus::Sidebar);
     }

@@ -4,8 +4,8 @@
 //! The shell (`super`) owns the terminal, the event loop, the one
 //! draggable divider, sidebar sizing, the help popup, and reload timing.
 //! Everything else lives behind this trait. The production adapter is
-//! [`super::files::FilesMode`] (the working-tree / piped-diff view); the
-//! shell tests use a recording adapter.
+//! [`super::files::FilesMode`] (the working-tree view); the shell tests use
+//! a recording adapter.
 //!
 //! The mode owns its full vertical slice: state, key handling, mouse
 //! hit-testing, render, and live-reload. The shell never reaches inside.
@@ -72,13 +72,13 @@ pub(crate) fn layout_label(layout: ChangeLayout) -> String {
     }
 }
 
-/// Viewport sizes a mode needs to reload in place: the inner heights of
-/// the left column and right pane, plus the right pane's inner width.
+/// Pane sizes from the last drawn frame.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ReloadViewport {
-    pub(crate) left_viewport: usize,
-    pub(crate) right_viewport: usize,
-    pub(crate) right_width: usize,
+pub(crate) struct Viewport {
+    /// Inner height shared by the sidebar and the diff pane.
+    pub(crate) height: usize,
+    /// Inner width of the diff body.
+    pub(crate) diff_width: usize,
 }
 
 /// Changes and outstanding work reported by a mode's background renderer.
@@ -98,6 +98,10 @@ pub(crate) trait Mode {
         BackgroundWork::default()
     }
 
+    /// Replace the startup placeholder with the real view, sized for a diff
+    /// body `diff_width` columns wide.
+    fn build(&mut self, theme: &Theme, diff_width: usize);
+
     /// Render the left column into `left` and the diff into `right`,
     /// caching the rects for mouse hit-testing. `budget` tells the mode
     /// whether it may defer expensive rendering this frame (`Fast` while
@@ -114,12 +118,8 @@ pub(crate) trait Mode {
 
     /// Handle a key already stripped of the shell's global bindings
     /// (quit, help, theme picker, sidebar resize, layout toggle).
-    fn handle_key(
-        &mut self,
-        key: KeyCode,
-        left_viewport: usize,
-        right_viewport: usize,
-    ) -> AppCommand;
+    /// `height` is the inner height of the panes.
+    fn handle_key(&mut self, key: KeyCode, height: usize) -> AppCommand;
 
     /// Built-in mode keys that take priority over configured custom commands.
     fn reserves_key(&self, _key: KeyCode) -> bool {
@@ -147,12 +147,7 @@ pub(crate) trait Mode {
     /// Handle a mouse event already filtered of divider-drag handling.
     /// The mode hit-tests within the left column / right pane using the
     /// rects it cached at draw time.
-    fn handle_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        left_viewport: usize,
-        right_viewport: usize,
-    ) -> AppCommand;
+    fn handle_mouse(&mut self, mouse: MouseEvent, height: usize) -> AppCommand;
 
     /// Arm the change-notification watcher for this mode's data source
     /// and return its receiver, or `None` for a static source. Called
@@ -163,11 +158,6 @@ pub(crate) trait Mode {
     /// Whether a batch of changed paths warrants a reload of this mode.
     fn should_reload(&self, paths: &[PathBuf]) -> bool;
 
-    /// Retain changes for a later refresh, including explicit reconciliation.
-    fn notify_changes(&mut self, paths: &[PathBuf], rescan: bool) -> bool {
-        rescan || self.should_reload(paths)
-    }
-
     /// Whether a failed read needs another attempt without a new event.
     fn retry_reload(&self) -> bool {
         false
@@ -175,11 +165,11 @@ pub(crate) trait Mode {
 
     /// Reload from disk in place, preserving navigation state. Returns
     /// `true` when the visible content actually changed.
-    fn reload(&mut self, viewport: ReloadViewport, theme: &Theme) -> Result<bool, String>;
+    fn reload(&mut self, viewport: Viewport, theme: &Theme) -> Result<bool, String>;
 
     /// Absolute path of the file the active selection points at, or
-    /// `None` when nothing selectable is on disk (empty state, piped
-    /// diff, directory-only selection with no file underneath). Custom
+    /// `None` when nothing selectable is on disk (empty state, no repo,
+    /// directory-only selection with no file underneath). Custom
     /// commands expand their `{{filename}}` against this.
     fn selected_path(&self) -> Option<PathBuf>;
 }

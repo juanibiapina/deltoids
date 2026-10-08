@@ -37,7 +37,9 @@
 //! - [`sidebar_pane`]: the sidebar's build, keys, render, footer.
 //! - [`reload`]: the working-tree watcher and in-place rebuild.
 
-use crate::cli::browse::watch::{ChangeReceiver, ChangeWatcher};
+use crate::cli::browse::watch::{
+    ChangeReceiver, ChangeWatcher, path_warrants_reload, spawn_workdir_watcher,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -46,12 +48,12 @@ use ratatui::layout::{Position, Rect};
 
 use deltoids::{ChangeLayout, Diff, LineKind, Theme, git};
 
-use crate::scroll::{ScrollDir, ScrollKind, WheelScroll};
+use crate::cli::browse::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::{Sidebar, display_path};
 
 use super::comment_view::render_comment_editor;
 use super::comments::{CommentAnchor, CommentStore, reanchor, review_text};
-use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport};
+use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
 
 mod action_menu;
 mod actions;
@@ -71,8 +73,8 @@ mod test_support;
 use diff_pane::{DiffPane, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 #[cfg(test)]
 use model::build_model;
-use model::{Column, DiffSource, Model};
-use reload::{Patches, ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
+use model::{Column, Model};
+use reload::{Patches, ReloadOutcome, reload_working_tree};
 use sidebar_pane::build_sidebar;
 pub(crate) use sidebar_pane::sidebar_title;
 use stage_panes::{PaneSpec, PaneTitle, StagePanes};
@@ -111,7 +113,7 @@ const STARTUP_LOADING_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Files-mode state plus the data it renders. Owns the model, the repo
 /// (for blob resolution and reload), and the reload bookkeeping; the
-/// shell owns sidebar width, focus across modes, help, and the divider.
+/// shell owns sidebar width, help, and the divider.
 pub(super) struct FilesMode {
     /// Diff pane of the staged column (HEAD → index).
     staged: DiffPane,
@@ -144,8 +146,6 @@ pub(super) struct FilesMode {
     model: Model,
     /// The repo (for blob resolution and working-tree reload), if any.
     repo: Option<git::Repo>,
-    /// True for a piped/empty source that never refreshes.
-    is_static: bool,
     /// True while a repo-backed startup is still resolving its first diff
     /// (the initial build lost a race): the pane shows "Loading…" and the
     /// first successful reload promotes it to a live view. `loading_since`
@@ -174,7 +174,7 @@ impl FilesMode {
     /// race renders a neutral, reloadable "Loading…" state that self-heals
     /// on the first successful tick. `initial_diff_width` seeds the diff
     /// cache for the first frame.
-    pub(super) fn build(theme: &Theme, initial_diff_width: usize) -> Self {
+    pub(super) fn discover(theme: &Theme, initial_diff_width: usize) -> Self {
         // Not a repo: degrade to the static empty state so the TUI still
         // opens.
         let Some(repo) = git::Repo::discover() else {
@@ -185,9 +185,7 @@ impl FilesMode {
             .ok()
             .flatten();
         let mut mode = match Self::try_model(&repo) {
-            Ok((input, model)) => {
-                Self::new(model, input, Some(repo), false, theme, initial_diff_width)
-            }
+            Ok((input, model)) => Self::new(model, input, Some(repo), theme, initial_diff_width),
             // A repo-backed build lost a race (a size-check or content
             // race). Rather than a static error screen, open a reloadable
             // "Loading…" mode; explicit retries and the first
@@ -210,7 +208,7 @@ impl FilesMode {
     /// startup placeholder for the inactive mode and as the not-a-repo
     /// fallback.
     pub(super) fn empty(theme: &Theme, width: usize) -> Self {
-        Self::new(Model::empty(), Patches::default(), None, true, theme, width)
+        Self::new(Model::empty(), Patches::default(), None, theme, width)
     }
 
     /// A reloadable Files mode that shows a neutral "Loading…" state while
@@ -221,14 +219,7 @@ impl FilesMode {
     /// the static error state once failures persist past
     /// [`STARTUP_LOADING_TIMEOUT`].
     fn loading(repo: git::Repo, theme: &Theme, width: usize) -> Self {
-        let mut mode = Self::new(
-            Model::empty(),
-            Patches::default(),
-            Some(repo),
-            false,
-            theme,
-            width,
-        );
+        let mut mode = Self::new(Model::empty(), Patches::default(), Some(repo), theme, width);
         mode.startup_pending = true;
         mode.loading_since = Some(Instant::now());
         mode.unstaged.set_empty_loading();
@@ -241,7 +232,7 @@ impl FilesMode {
     /// degrades to it once a build error persists past the loading
     /// window), so this mode is never watched or reloaded.
     pub(super) fn error(theme: &Theme, width: usize, message: String) -> Self {
-        let mut mode = Self::new(Model::empty(), Patches::default(), None, true, theme, width);
+        let mut mode = Self::new(Model::empty(), Patches::default(), None, theme, width);
         mode.unstaged.set_empty_error(message);
         mode
     }
@@ -250,7 +241,6 @@ impl FilesMode {
         model: Model,
         input: Patches,
         repo: Option<git::Repo>,
-        is_static: bool,
         theme: &Theme,
         width: usize,
     ) -> Self {
@@ -273,7 +263,6 @@ impl FilesMode {
             status: None,
             model,
             repo,
-            is_static,
             startup_pending: false,
             loading_since: None,
             last_input: input,
@@ -281,15 +270,6 @@ impl FilesMode {
             reload_failed: false,
             action_job: None,
             refresh_requested: false,
-        }
-    }
-
-    /// The active [`DiffSource`] for reload/watch, derived from owned
-    /// state. Borrows `self.repo`.
-    fn source(&self) -> DiffSource<'_> {
-        match (self.is_static, self.repo.as_ref()) {
-            (false, Some(repo)) => DiffSource::WorkingTree(repo),
-            _ => DiffSource::Static,
         }
     }
 
@@ -471,10 +451,6 @@ fn start_stage_all(state: &mut FilesMode) {
     if state.action_job.is_some() {
         return;
     }
-    if state.is_static {
-        state.status = Some("Git actions require repository-backed Files mode".into());
-        return;
-    }
     let Some(workdir) = state
         .repo
         .as_ref()
@@ -516,21 +492,17 @@ fn start_action(state: &mut FilesMode, stage: bool) {
         unavailable(state, "No files selected");
         return;
     };
-    if state.is_static {
-        let reason = "Git actions require repository-backed Files mode";
-        unavailable(state, reason);
-        if stage {
-            state.status = Some(reason.into());
-        }
-        return;
-    }
     let Some(workdir) = state
         .repo
         .as_ref()
         .and_then(|r| r.workdir())
         .map(PathBuf::from)
     else {
-        unavailable(state, "Git actions require a working tree");
+        let reason = "Git actions require a working tree";
+        unavailable(state, reason);
+        if stage {
+            state.status = Some(reason.into());
+        }
         return;
     };
     let targets: std::collections::BTreeSet<_> = range
@@ -650,12 +622,7 @@ fn handle_discard_key(state: &mut FilesMode, key: KeyCode) -> AppCommand {
 }
 
 /// Handle a mode-internal key (the shell strips global bindings first).
-fn handle_key(
-    state: &mut FilesMode,
-    key: KeyCode,
-    diff_viewport: usize,
-    sidebar_viewport: usize,
-) -> AppCommand {
+fn handle_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand {
     if matches!(state.input, InputState::Commenting { .. }) {
         return handle_comment_key(state, key);
     }
@@ -727,14 +694,14 @@ fn handle_key(
             let column = state.shown();
             state
                 .pane_mut(column)
-                .scroll_by(SCROLL_STEP_LARGE as isize, diff_viewport);
+                .scroll_by(SCROLL_STEP_LARGE as isize, height);
             AppCommand::Continue
         }
         KeyCode::Char('K') => {
             let column = state.shown();
             state
                 .pane_mut(column)
-                .scroll_by(-(SCROLL_STEP_LARGE as isize), diff_viewport);
+                .scroll_by(-(SCROLL_STEP_LARGE as isize), height);
             AppCommand::Continue
         }
         // Remaining nav keys route to the focused pane. A sidebar move
@@ -742,13 +709,13 @@ fn handle_key(
         other => {
             match state.focus {
                 Focus::Sidebar => {
-                    if sidebar_pane::handle_key(&mut state.sidebar, other, sidebar_viewport) {
+                    if sidebar_pane::handle_key(&mut state.sidebar, other, height) {
                         state.snap_diff_to_selected_file();
                     }
                 }
                 Focus::Diff => {
                     let column = state.shown();
-                    state.pane_mut(column).handle_key(other, diff_viewport);
+                    state.pane_mut(column).handle_key(other, height);
                 }
             }
             AppCommand::Continue
@@ -935,12 +902,7 @@ fn pane_at(state: &FilesMode, col: u16, row: u16) -> Option<Focus> {
     }
 }
 
-fn handle_mouse(
-    state: &mut FilesMode,
-    mouse: MouseEvent,
-    diff_viewport: usize,
-    sidebar_viewport: usize,
-) -> AppCommand {
+fn handle_mouse(state: &mut FilesMode, mouse: MouseEvent, height: usize) -> AppCommand {
     // The comment editor owns input while it is open.
     if !matches!(state.input, InputState::Normal) {
         return AppCommand::Continue;
@@ -979,7 +941,7 @@ fn handle_mouse(
             Focus::Sidebar => {
                 let steps = state.wheel.advance(target, ScrollDir::Down, list_kind);
                 for _ in 0..steps {
-                    state.sidebar.move_down(sidebar_viewport);
+                    state.sidebar.move_down(height);
                     state.snap_diff_to_selected_file();
                 }
                 AppCommand::Continue
@@ -991,7 +953,7 @@ fn handle_mouse(
                     .advance(target, ScrollDir::Down, ScrollKind::Content);
                 state
                     .pane_mut(column)
-                    .scroll_by((steps * SCROLL_STEP_SMALL) as isize, diff_viewport);
+                    .scroll_by((steps * SCROLL_STEP_SMALL) as isize, height);
                 AppCommand::Continue
             }
         },
@@ -999,7 +961,7 @@ fn handle_mouse(
             Focus::Sidebar => {
                 let steps = state.wheel.advance(target, ScrollDir::Up, list_kind);
                 for _ in 0..steps {
-                    state.sidebar.move_up(sidebar_viewport);
+                    state.sidebar.move_up(height);
                     state.snap_diff_to_selected_file();
                 }
                 AppCommand::Continue
@@ -1011,7 +973,7 @@ fn handle_mouse(
                     .advance(target, ScrollDir::Up, ScrollKind::Content);
                 state
                     .pane_mut(column)
-                    .scroll_by(-((steps * SCROLL_STEP_SMALL) as isize), diff_viewport);
+                    .scroll_by(-((steps * SCROLL_STEP_SMALL) as isize), height);
                 AppCommand::Continue
             }
         },
@@ -1023,7 +985,7 @@ fn handle_mouse(
                     let content_y = mouse.row.saturating_sub(rect.y).saturating_sub(1) as usize;
                     let clicked = state.sidebar.scroll() + content_y;
                     if clicked < state.sidebar.row_count() {
-                        state.sidebar.set_selected(clicked, sidebar_viewport);
+                        state.sidebar.set_selected(clicked, height);
                         state.snap_diff_to_selected_file();
                     }
                 }
@@ -1047,6 +1009,10 @@ fn handle_mouse(
 }
 
 impl Mode for FilesMode {
+    fn build(&mut self, theme: &Theme, diff_width: usize) {
+        *self = Self::discover(theme, diff_width);
+    }
+
     fn background(&mut self, active: bool) -> BackgroundWork {
         let action_changed = collect_action(self);
         if !active {
@@ -1128,13 +1094,8 @@ impl Mode for FilesMode {
         }
     }
 
-    fn handle_key(
-        &mut self,
-        key: KeyCode,
-        left_viewport: usize,
-        right_viewport: usize,
-    ) -> AppCommand {
-        handle_key(self, key, right_viewport, left_viewport)
+    fn handle_key(&mut self, key: KeyCode, height: usize) -> AppCommand {
+        handle_key(self, key, height)
     }
 
     fn captures_text_input(&self) -> bool {
@@ -1147,22 +1108,20 @@ impl Mode for FilesMode {
         }
     }
 
-    fn handle_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        left_viewport: usize,
-        right_viewport: usize,
-    ) -> AppCommand {
-        handle_mouse(self, mouse, right_viewport, left_viewport)
+    fn handle_mouse(&mut self, mouse: MouseEvent, height: usize) -> AppCommand {
+        handle_mouse(self, mouse, height)
     }
 
     fn watch(&mut self) -> Result<Option<ChangeReceiver>, String> {
+        let Some(repo) = self.repo.as_ref() else {
+            return Ok(None);
+        };
         if !self
             ._watcher
             .as_ref()
             .is_some_and(ChangeWatcher::is_healthy)
         {
-            self._watcher = spawn_watcher(&self.source())?;
+            self._watcher = spawn_workdir_watcher(repo)?;
             if let Some(watcher) = &self._watcher {
                 watcher.receiver().request_rescan();
             }
@@ -1171,17 +1130,16 @@ impl Mode for FilesMode {
     }
 
     fn should_reload(&self, paths: &[PathBuf]) -> bool {
-        should_reload(&self.source(), paths)
+        self.repo
+            .as_ref()
+            .is_some_and(|repo| path_warrants_reload(repo, paths))
     }
 
     fn retry_reload(&self) -> bool {
         self.startup_pending || self.reload_failed
     }
 
-    fn reload(&mut self, viewport: ReloadViewport, theme: &Theme) -> Result<bool, String> {
-        if self.is_static {
-            return Ok(false);
-        }
+    fn reload(&mut self, viewport: Viewport, theme: &Theme) -> Result<bool, String> {
         let Some(repo) = self.repo.as_ref() else {
             return Ok(false);
         };
@@ -1193,7 +1151,7 @@ impl Mode for FilesMode {
             &mut self.last_input,
             repo,
             theme,
-            viewport.right_viewport,
+            viewport.height,
         );
         self.reload_failed = matches!(outcome, ReloadOutcome::Failed(_));
         if matches!(
@@ -1208,8 +1166,8 @@ impl Mode for FilesMode {
             let sections = self.model.sections(&self.display_order);
             reanchor(&mut self.comments, &sections);
         }
-        let width = if viewport.right_width > 0 {
-            viewport.right_width
+        let width = if viewport.diff_width > 0 {
+            viewport.diff_width
         } else {
             self.unstaged.cached_width
         };
@@ -1221,8 +1179,7 @@ impl Mode for FilesMode {
 
     fn selected_path(&self) -> Option<PathBuf> {
         // The selected file's workdir-relative path, joined onto the
-        // repo's working directory. `None` for a piped/static source (no
-        // repo on disk) or when there is no file under the selection.
+        // repo's working directory. `None` without a repo or when there is no file under the selection.
         let idx = self.sidebar.nearest_file_index()?;
         let file = &self.model.files.get(idx)?.file;
         let rel = crate::sidebar::display_path(file);
@@ -1256,7 +1213,7 @@ mod tests {
                 .iter()
                 .any(|line| line_text(line).contains("Rendering"))
         );
-        handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('j'), 18);
         let immediate = state.visible_diff_window(DrawBudget::Fast);
         assert_eq!(line_text(&immediate[0]), "b.txt");
         wait_for_render(&mut state.unstaged);
@@ -1314,8 +1271,8 @@ mod tests {
     #[test]
     fn render_settings_preserve_the_selected_line_while_replacement_rows_are_pending() {
         let mut state = diff_state(&[edited("app.rs")]);
-        handle_key(&mut state, KeyCode::Char('j'), 18, 18);
-        handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('j'), 18);
+        handle_key(&mut state, KeyCode::Char('j'), 18);
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         let mut next_theme = theme();
         next_theme.syntax_theme_name = "TokyoNight".into();
@@ -1488,7 +1445,7 @@ mod tests {
     /// Type `text` into an open comment editor.
     fn type_text(state: &mut FilesMode, text: &str) {
         for ch in text.chars() {
-            handle_key(state, KeyCode::Char(ch), 18, 18);
+            handle_key(state, KeyCode::Char(ch), 18);
         }
     }
 
@@ -1528,7 +1485,7 @@ mod tests {
             if let Some(line) = cursor_line(&state) {
                 visited.push(line);
             }
-            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+            handle_key(&mut state, KeyCode::Char('j'), 18);
         }
 
         assert!(
@@ -1546,10 +1503,10 @@ mod tests {
         let mut state = diff_state(&[edited("app.rs")]);
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
 
-        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('c'), 18);
         assert!(matches!(state.input, InputState::Commenting { .. }));
         type_text(&mut state, "needs review");
-        handle_key(&mut state, KeyCode::Enter, 18, 18);
+        handle_key(&mut state, KeyCode::Enter, 18);
 
         assert!(matches!(state.input, InputState::Normal));
         assert_eq!(state.comments.note(&anchor), Some("needs review"));
@@ -1564,13 +1521,13 @@ mod tests {
     fn c_does_nothing_off_a_diff_line() {
         let mut state = diff_state(&[edited("app.rs")]);
         state.focus = Focus::Sidebar;
-        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('c'), 18);
         assert!(matches!(state.input, InputState::Normal));
 
         // Focused on the diff but parked on the file header.
         state.focus = Focus::Diff;
         state.unstaged.cursor.row = 0;
-        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('c'), 18);
         assert!(matches!(state.input, InputState::Normal));
     }
 
@@ -1580,9 +1537,9 @@ mod tests {
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         note(&mut state, &anchor, "keep me");
 
-        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('c'), 18);
         type_text(&mut state, "x");
-        handle_key(&mut state, KeyCode::Esc, 18, 18);
+        handle_key(&mut state, KeyCode::Esc, 18);
 
         assert!(matches!(state.input, InputState::Normal));
         assert_eq!(state.comments.note(&anchor), Some("keep me"));
@@ -1594,15 +1551,15 @@ mod tests {
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
 
         note(&mut state, &anchor, "first pass");
-        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('c'), 18);
         for _ in 0.."first pass".len() {
-            handle_key(&mut state, KeyCode::Backspace, 18, 18);
+            handle_key(&mut state, KeyCode::Backspace, 18);
         }
-        handle_key(&mut state, KeyCode::Enter, 18, 18);
+        handle_key(&mut state, KeyCode::Enter, 18);
         assert_eq!(state.comments.note(&anchor), None);
 
         note(&mut state, &anchor, "second pass");
-        handle_key(&mut state, KeyCode::Char('d'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('d'), 18);
         assert_eq!(state.comments.note(&anchor), None);
     }
 
@@ -1611,7 +1568,7 @@ mod tests {
         let mut state = diff_state(&[edited("app.rs")]);
         // Comment on the added line (new line 3).
         for _ in 0..3 {
-            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+            handle_key(&mut state, KeyCode::Char('j'), 18);
         }
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         assert_eq!((anchor.side, anchor.line), (LineSide::New, 3));
@@ -1672,7 +1629,7 @@ mod tests {
         rebuild_window(&mut state);
 
         // Nothing to copy yet.
-        let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        let command = handle_key(&mut state, KeyCode::Char('y'), 18);
         assert_eq!(command, AppCommand::Continue);
         assert_eq!(state.status.as_deref(), Some("No comments to copy"));
 
@@ -1689,7 +1646,7 @@ mod tests {
         note(&mut state, &in_b, "second");
         note(&mut state, &in_a, "first");
 
-        let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        let command = handle_key(&mut state, KeyCode::Char('y'), 18);
         let text = match command {
             AppCommand::CopyToClipboard(text) => text,
             other => panic!("expected a clipboard copy, got {other:?}"),
@@ -1714,7 +1671,7 @@ mod tests {
         rebuild_window(&mut state);
 
         // Nothing to clear yet.
-        let command = handle_key(&mut state, KeyCode::Char('D'), 18, 18);
+        let command = handle_key(&mut state, KeyCode::Char('D'), 18);
         assert_eq!(command, AppCommand::Continue);
         assert_eq!(state.status.as_deref(), Some("No comments to clear"));
 
@@ -1730,7 +1687,7 @@ mod tests {
                 .any(|row| row.contains("look here"))
         );
 
-        let command = handle_key(&mut state, KeyCode::Char('D'), 18, 18);
+        let command = handle_key(&mut state, KeyCode::Char('D'), 18);
         assert_eq!(command, AppCommand::Continue);
         assert_eq!(state.status.as_deref(), Some("Cleared 1 comment"));
         assert!(state.comments.is_empty());
@@ -1747,7 +1704,7 @@ mod tests {
         );
 
         // A following copy has nothing to emit.
-        let command = handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        let command = handle_key(&mut state, KeyCode::Char('y'), 18);
         assert_eq!(command, AppCommand::Continue);
         assert_eq!(state.status.as_deref(), Some("No comments to copy"));
     }
@@ -1774,16 +1731,16 @@ mod tests {
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
 
         assert!(!Mode::captures_text_input(&state));
-        Mode::handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        Mode::handle_key(&mut state, KeyCode::Char('c'), 18);
         assert!(
             Mode::captures_text_input(&state),
             "the shell must hand every key to the open editor"
         );
 
         for ch in "q?[]<>d".chars() {
-            Mode::handle_key(&mut state, KeyCode::Char(ch), 18, 18);
+            Mode::handle_key(&mut state, KeyCode::Char(ch), 18);
         }
-        Mode::handle_key(&mut state, KeyCode::Enter, 18, 18);
+        Mode::handle_key(&mut state, KeyCode::Enter, 18);
 
         assert!(!Mode::captures_text_input(&state));
         assert_eq!(state.comments.note(&anchor), Some("q?[]<>d"));
@@ -1805,12 +1762,12 @@ mod tests {
             50,
             (last_line_row + 1) as u16,
         );
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.unstaged.cursor.row, last_line_row);
 
         // A click on the file header only focuses the pane.
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 1);
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.unstaged.cursor.row, last_line_row);
     }
 
@@ -1836,7 +1793,7 @@ mod tests {
         let mut state = diff_state(&[edited("app.rs")]);
         // Comment on the added line, `const x = 2;` at new line 3.
         for _ in 0..3 {
-            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+            handle_key(&mut state, KeyCode::Char('j'), 18);
         }
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         note(&mut state, &anchor, "look here");
@@ -1871,7 +1828,7 @@ mod tests {
     fn a_comment_whose_line_changed_under_it_renders_outdated() {
         let mut state = diff_state(&[edited("app.rs")]);
         for _ in 0..3 {
-            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+            handle_key(&mut state, KeyCode::Char('j'), 18);
         }
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         note(&mut state, &anchor, "look here");
@@ -1897,7 +1854,7 @@ mod tests {
     fn a_reload_keeps_the_cursor_on_its_diff_line() {
         let mut state = diff_state(&[edited("app.rs")]);
         for _ in 0..2 {
-            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+            handle_key(&mut state, KeyCode::Char('j'), 18);
         }
         let before = state.unstaged.cursor_anchor().cloned().unwrap();
 
@@ -1912,9 +1869,9 @@ mod tests {
     fn the_open_editor_shows_the_target_line_and_typed_text() {
         let mut state = diff_state(&[edited("src/app.rs")]);
         for _ in 0..2 {
-            handle_key(&mut state, KeyCode::Char('j'), 18, 18);
+            handle_key(&mut state, KeyCode::Char('j'), 18);
         }
-        handle_key(&mut state, KeyCode::Char('c'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('c'), 18);
         type_text(&mut state, "look here");
 
         let screen = drawn_screen(&mut state);
@@ -1926,7 +1883,7 @@ mod tests {
     #[test]
     fn the_diff_pane_footer_shows_the_copy_status() {
         let mut state = diff_state(&[edited("app.rs")]);
-        handle_key(&mut state, KeyCode::Char('y'), 18, 18);
+        handle_key(&mut state, KeyCode::Char('y'), 18);
         assert!(drawn_screen(&mut state).contains("No comments to copy"));
     }
 
@@ -2030,9 +1987,9 @@ mod tests {
         }];
         let mut state = make_state(&resolved);
         assert_eq!(state.focus, Focus::Sidebar);
-        handle_key(&mut state, KeyCode::Tab, 4, 4);
+        handle_key(&mut state, KeyCode::Tab, 4);
         assert_eq!(state.focus, Focus::Diff);
-        handle_key(&mut state, KeyCode::Tab, 4, 4);
+        handle_key(&mut state, KeyCode::Tab, 4);
         assert_eq!(state.focus, Focus::Sidebar);
     }
 
@@ -2060,11 +2017,11 @@ mod tests {
         assert_eq!(state.focus, Focus::Sidebar);
 
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 5);
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.focus, Focus::Diff);
 
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 5);
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.focus, Focus::Sidebar);
     }
 
@@ -2078,7 +2035,7 @@ mod tests {
         let mut state = make_state_with_rects(&resolved);
         state.focus = Focus::Sidebar;
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 200, 200);
-        handle_mouse(&mut state, mouse, 18, 18);
+        handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.focus, Focus::Sidebar);
     }
 
@@ -2090,7 +2047,7 @@ mod tests {
             after: "b\n".to_string(),
         }];
         let state = make_state(&resolved);
-        // Static/piped source (no repo on disk) has no on-disk path.
+        // Without a repo there is no on-disk path.
         assert_eq!(Mode::selected_path(&state), None);
     }
 
@@ -2112,7 +2069,6 @@ mod tests {
             model,
             Patches::net(&input),
             Some(wrapper),
-            false,
             &Theme::default(),
             80,
         );
@@ -2121,11 +2077,10 @@ mod tests {
     }
 
     /// The reload viewport used by the startup self-heal tests.
-    fn reload_vp() -> ReloadViewport {
-        ReloadViewport {
-            left_viewport: 20,
-            right_viewport: 20,
-            right_width: 80,
+    fn reload_vp() -> Viewport {
+        Viewport {
+            height: 20,
+            diff_width: 80,
         }
     }
 
@@ -2141,7 +2096,7 @@ mod tests {
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let (input, model) = FilesMode::try_model(&wrapper).unwrap();
         let theme = theme();
-        let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), false, &theme, 80);
+        let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), &theme, 80);
         let selected = mode.selected_path();
         assert!(!mode.reload(reload_vp(), &theme).unwrap());
         stage_all(&raw);
@@ -2167,7 +2122,7 @@ mod tests {
         let (input, model) = FilesMode::try_model(&wrapper).unwrap();
         let stages = model.stages.clone();
         let theme = theme();
-        let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), false, &theme, 80);
+        let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), &theme, 80);
         let reference = raw.head().unwrap().name().unwrap().to_string();
         let path = raw.path().join(reference);
         let original = std::fs::read(&path).unwrap();
@@ -2221,7 +2176,7 @@ mod tests {
         let theme = Theme::default();
         let mut mode = FilesMode::loading(wrapper, &theme, 80);
 
-        assert!(!mode.is_static, "loading mode must be reloadable");
+        assert!(mode.repo.is_some(), "loading mode must be reloadable");
         assert!(mode.startup_pending, "loading mode is pending");
         assert!(mode.model.files.is_empty(), "loading mode has no files yet");
 
@@ -2259,7 +2214,7 @@ mod tests {
             !mode.startup_pending,
             "a confirmed clean tree leaves Loading"
         );
-        assert!(!mode.is_static, "a clean tree is still watchable");
+        assert!(mode.repo.is_some(), "a clean tree is still watchable");
     }
 
     #[test]
@@ -2278,7 +2233,7 @@ mod tests {
         );
         assert!(!changed);
         assert!(mode.startup_pending, "a fresh failure keeps Loading");
-        assert!(!mode.is_static, "a fresh failure stays reloadable");
+        assert!(mode.repo.is_some(), "a fresh failure stays reloadable");
     }
 
     #[test]
@@ -2300,7 +2255,7 @@ mod tests {
         );
         assert!(changed, "the error state requires a repaint");
         assert!(
-            mode.is_static,
+            mode.repo.is_none(),
             "a failure that persists past the window degrades to a static error"
         );
         assert!(

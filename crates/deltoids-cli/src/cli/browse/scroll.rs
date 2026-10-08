@@ -1,14 +1,14 @@
-//! Mouse-wheel scroll feel, shared by every TUI.
+//! Mouse-wheel scroll feel for the TUI panes.
 //!
 //! A single physical wheel tick fans out into a *burst* of wheel events
 //! (high-resolution scrolling). Applying one motion per event makes lists jump
 //! several items per tick. [`WheelScroll`] counts the burst and emits motion in
-//! proportion to how far the user scrolled, identical across panes and TUIs.
+//! proportion to how far the user scrolled, identical across panes.
 //!
 //! This is the one place that owns scroll feel: the quotas live here, so
-//! changing how fast any TUI scrolls is a one-file edit. Each TUI maps its own
-//! wheel events onto [`WheelScroll::advance`] and applies the returned step
-//! count to that pane's own motion (move a selection, scroll a line).
+//! changing how fast the TUI scrolls is a one-file edit. Callers map wheel
+//! events onto [`WheelScroll::advance`] and apply the returned step count to
+//! the pane's own motion (move a selection, scroll a line).
 
 /// Wheel events that advance a [`ScrollKind::List`] pane's selection by one
 /// item. A single physical tick emits several events; dividing the count keeps

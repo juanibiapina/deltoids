@@ -1,15 +1,15 @@
 use super::*;
 
-fn events(shell: &mut Shell, mode: &mut Box<dyn Mode>, events: Vec<Event>) {
+fn events(shell: &mut Shell, mode: &mut RecordingMode, events: Vec<Event>) {
     shell
-        .apply_events(mode, events, ReloadViewport::default(), &Theme::default())
+        .apply_events(mode, events, Viewport::default())
         .unwrap();
 }
 
-fn refresh(shell: &mut Shell, mode: &mut Box<dyn Mode>) {
+fn refresh(shell: &mut Shell, mode: &mut RecordingMode) {
     shell.drain_watchers(mode);
     shell
-        .reload_if_due(mode, ReloadViewport::default(), &Theme::default())
+        .reload_if_due(mode, Viewport::default(), &Theme::default())
         .unwrap();
 }
 
@@ -50,7 +50,7 @@ fn stable_refresh_does_not_redraw_and_hidden_initialization_waits() {
     assert!(!shell.needs_redraw());
     shell.built = false;
     events(&mut shell, &mut mode, vec![Event::FocusLost]);
-    shell.build(&mut mode, ReloadViewport::default(), &Theme::default());
+    shell.build(&mut mode, Viewport::default(), &Theme::default());
     assert!(!shell.built);
 }
 
@@ -104,19 +104,18 @@ fn a_late_focus_loss_in_the_input_burst_prevents_eager_reload_and_draw() {
 #[test]
 fn a_command_does_not_discard_a_later_focus_loss() {
     let (_, files) = RecordingMode::new();
-    let mut mode: Box<dyn Mode> = Box::new(RecordingMode {
+    let mut mode = RecordingMode {
         rec: files,
         selected: Some(PathBuf::from("/tmp/selected.txt")),
         capturing: false,
-    });
+    };
     let mut shell = shell();
     shell.commands = vec![custom_command('e', "echo selected", false)];
     let command = shell
         .apply_events(
             &mut mode,
             vec![Event::Key(key(KeyCode::Char('e'))), Event::FocusLost],
-            ReloadViewport::default(),
-            &Theme::default(),
+            Viewport::default(),
         )
         .unwrap();
     assert!(matches!(command, AppCommand::Run(_)));

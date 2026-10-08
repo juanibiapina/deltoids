@@ -19,7 +19,7 @@ use std::alloc::Layout;
 
 use deltoids::Diff;
 use deltoids::parse::GitDiff;
-use deltoids::render_html::{render_context_html, render_entry_html_with_file_len};
+use deltoids::render_html::{render_context_html, render_file_html};
 use deltoids::reverse::reconstruct_before;
 
 /// Layout for a raw byte buffer of `len` bytes (align 1). Allocation and
@@ -67,7 +67,7 @@ fn theme_opt(theme: &str) -> Option<&str> {
 /// the FFI wrapper only marshals strings across linear memory.
 pub fn render_html(before: &str, after: &str, path: &str, theme: &str) -> String {
     let diff = Diff::compute(before, after, path);
-    render_entry_html_with_file_len(
+    render_file_html(
         diff.hunks(),
         diff.highlight(),
         theme_opt(theme),

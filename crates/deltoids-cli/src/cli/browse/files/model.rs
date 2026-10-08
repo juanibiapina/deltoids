@@ -12,14 +12,6 @@ use deltoids::{Diff, LineKind, SymlinkView, content, git};
 use crate::cli::browse::comments::{CommentAnchor, DiffSection, Numbering, numbered_lines};
 use crate::sidebar::{ChangeKind, StageStatus, display_path};
 
-/// Describes whether and how the diff can be refreshed mid-session.
-pub(super) enum DiffSource<'a> {
-    /// Piped stdin: a closed stream, never refreshes.
-    Static,
-    /// Bare repo: re-diff the working tree when files change on disk.
-    WorkingTree(&'a git::Repo),
-}
-
 /// The owned data the TUI renders: resolved files plus their per-file
 /// bodies. Rebuilt wholesale on each working-tree reload.
 pub(super) struct Model {
@@ -30,7 +22,7 @@ pub(super) struct Model {
     /// unstaged changes.
     pub(super) splits: Vec<Option<SplitBodies>>,
     /// Per-file two-column staging status, keyed by workdir-relative
-    /// path (matching `display_path`). Empty for piped diffs / no repo,
+    /// path (matching `display_path`). Empty without a repo,
     /// in which case the sidebar falls back to single-letter status.
     pub(super) stages: HashMap<String, StageStatus>,
 }

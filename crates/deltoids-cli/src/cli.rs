@@ -3,6 +3,6 @@
 //! and a `run(args: Args) -> ExitCode` function that the top-level
 //! dispatcher in `bin/deltoids.rs` invokes.
 
-pub mod browse;
+mod browse;
 pub mod pager;
 pub mod tui;

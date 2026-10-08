@@ -2,8 +2,6 @@
 //! warrants a reload, and re-diff the working tree in place while
 //! preserving the user's navigation state.
 
-use std::path::PathBuf;
-
 use deltoids::{Theme, git};
 
 use crate::sidebar::display_path;
@@ -11,33 +9,9 @@ use crate::sidebar::display_path;
 use super::diff_pane::DiffPane;
 #[cfg(test)]
 use super::model::build_model;
-use super::model::{DiffSource, Model, stage_map};
+use super::model::{Model, stage_map};
 use super::sidebar_pane::build_sidebar;
-use crate::cli::browse::watch::{ChangeWatcher, path_warrants_reload, spawn_workdir_watcher};
 use crate::sidebar::Sidebar;
-
-/// Install a recursive filesystem watcher for a refreshable source.
-///
-/// Delegates to [`spawn_workdir_watcher`] for a
-/// [`DiffSource::WorkingTree`]; a [`DiffSource::Static`] source yields no
-/// watcher.
-pub(super) fn spawn_watcher(source: &DiffSource<'_>) -> Result<Option<ChangeWatcher>, String> {
-    match source {
-        DiffSource::WorkingTree(repo) => spawn_workdir_watcher(repo),
-        DiffSource::Static => Ok(None),
-    }
-}
-
-/// Whether a batch of changed `paths` warrants a working-tree reload.
-///
-/// Only [`DiffSource::WorkingTree`] reloads; the filter itself lives in
-/// [`path_warrants_reload`].
-pub(super) fn should_reload(source: &DiffSource<'_>, paths: &[PathBuf]) -> bool {
-    let DiffSource::WorkingTree(repo) = source else {
-        return false;
-    };
-    path_warrants_reload(repo, paths)
-}
 
 /// The patch text a model's bodies come from: the HEAD → worktree patch
 /// plus the staged and unstaged patches of files with both columns.
@@ -125,18 +99,10 @@ pub(super) fn reload_working_tree(
     last_input: &mut Patches,
     repo: &git::Repo,
     theme: &Theme,
-    diff_viewport: usize,
+    height: usize,
 ) -> ReloadOutcome {
     let computed = compute_reload(repo, last_input, model);
-    apply_reload(
-        panes,
-        sidebar,
-        model,
-        last_input,
-        computed,
-        theme,
-        diff_viewport,
-    )
+    apply_reload(panes, sidebar, model, last_input, computed, theme, height)
 }
 
 enum Update {
@@ -178,7 +144,7 @@ fn apply_reload(
     last_input: &mut Patches,
     computed: Result<Option<Update>, String>,
     theme: &Theme,
-    diff_viewport: usize,
+    height: usize,
 ) -> ReloadOutcome {
     let (input, mut new_model) = match computed {
         Ok(Some(Update::Model(input, model))) => (input, model),
@@ -236,13 +202,13 @@ fn apply_reload(
         &new_model,
         prev_path.as_deref(),
         theme,
-        diff_viewport,
+        height,
     );
     let restored_directory = prev_directory
         .as_deref()
-        .is_some_and(|directory| sidebar.select_directory_path(directory, diff_viewport));
+        .is_some_and(|directory| sidebar.select_directory_path(directory, height));
     if !restored_directory && let Some(index) = fallback {
-        sidebar.select_file_index(index, diff_viewport);
+        sidebar.select_file_index(index, height);
     }
     *model = new_model;
     *last_input = input;
@@ -265,14 +231,14 @@ fn reload_view(
     model: &Model,
     prev_path: Option<&str>,
     theme: &Theme,
-    diff_viewport: usize,
+    height: usize,
 ) {
     for pane in panes {
         pane.carry_over(&old.unchanged_views(model, pane.column()));
     }
     let folds = sidebar.folds();
     *sidebar = build_sidebar(model, theme);
-    sidebar.apply_folds(folds, diff_viewport);
+    sidebar.apply_folds(folds, height);
 
     if let Some(path) = prev_path
         && let Some(idx) = model
@@ -280,7 +246,7 @@ fn reload_view(
             .iter()
             .position(|f| display_path(&f.file) == path)
     {
-        sidebar.select_file_index(idx, diff_viewport);
+        sidebar.select_file_index(idx, height);
     }
 }
 
@@ -632,14 +598,6 @@ mod tests {
         assert_eq!(top_line(&state), before);
     }
 
-    #[test]
-    fn static_source_never_reloads() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!should_reload(
-            &DiffSource::Static,
-            &[dir.path().join("src/main.rs")]
-        ));
-    }
     #[test]
     fn staging_refreshes_sidebar_status_when_patch_is_unchanged() {
         let dir = tempfile::tempdir().unwrap();

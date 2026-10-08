@@ -1,7 +1,7 @@
 //! The scrolling TUI opened by `deltoids tui`.
 //!
 //! The left column is a file-tree sidebar and the right pane shows the
-//! working-tree (or piped) diff. Both belong to [`files::FilesMode`].
+//! working-tree diff. Both belong to [`files::FilesMode`].
 //!
 //! ## Module layout
 //!
@@ -42,28 +42,31 @@ use ratatui::widgets::Paragraph;
 use deltoids::render_tui::{pane_block, pane_block_with_title_line, rgb_to_color};
 use deltoids::{ChangeLayout, Theme};
 
-use crate::events::read_event_burst;
-use crate::sidebar_width::{self, Preference};
-use crate::terminal::TerminalSession;
-
 mod clipboard;
 mod command;
 mod comment_view;
 mod comments;
 mod diff_cursor;
 mod diff_scrollbar;
-pub mod files;
+mod events;
+mod files;
 mod help;
-pub mod mode;
+mod mode;
+mod scroll;
+mod sidebar_width;
 mod suspend;
 mod syntax_badge;
+mod terminal;
 mod text;
 mod theme_picker;
 mod watch;
 
 use command::{CustomCommand, load_commands};
+use events::read_event_burst;
 use files::FilesMode;
-use mode::{AppCommand, CustomRun, DrawBudget, Mode, ReloadViewport};
+use mode::{AppCommand, CustomRun, DrawBudget, Mode, Viewport};
+use sidebar_width::Preference;
+use terminal::TerminalSession;
 use theme_picker::{PickerAction, ThemePicker};
 
 /// Idle poll timeout for the event loop.
@@ -105,12 +108,12 @@ pub fn run() -> Result<(), String> {
     // iteration draws a loading frame and then builds it. Startup shows a
     // loading state instead of a blank screen during the (possibly slow)
     // build.
-    let mut mode: Box<dyn Mode> = Box::new(FilesMode::empty(&theme, initial_diff_width));
+    let mut mode = FilesMode::empty(&theme, initial_diff_width);
 
     let mut shell = Shell::new(sidebar_pref, total_width, theme.syntax_theme_name.clone());
     shell.commands = load_commands();
 
-    let mut vp = ReloadViewport::default();
+    let mut vp = Viewport::default();
     loop {
         if session.quit_requested() {
             break;
@@ -120,7 +123,7 @@ pub fn run() -> Result<(), String> {
         let queued = read_event_burst(Duration::ZERO)?;
         if !queued.is_empty() {
             shell.note_input(false);
-            let cmd = shell.apply_events(&mut mode, queued, vp, &theme)?;
+            let cmd = shell.apply_events(&mut mode, queued, vp)?;
             if apply_app_command(cmd, &mut terminal, &mut mode, &mut shell, &mut theme) {
                 break;
             }
@@ -148,7 +151,7 @@ pub fn run() -> Result<(), String> {
         };
         let burst = read_event_burst(timeout)?;
         shell.note_input(burst.is_empty());
-        let cmd = shell.apply_events(&mut mode, burst, vp, &theme)?;
+        let cmd = shell.apply_events(&mut mode, burst, vp)?;
         if apply_app_command(cmd, &mut terminal, &mut mode, &mut shell, &mut theme) {
             break;
         }
@@ -161,10 +164,10 @@ pub fn run() -> Result<(), String> {
 
 fn draw_frame(
     terminal: &mut BrowseTerminal,
-    mode: &mut Box<dyn Mode>,
+    mode: &mut impl Mode,
     shell: &mut Shell,
     theme: &Theme,
-) -> Result<ReloadViewport, String> {
+) -> Result<Viewport, String> {
     let help_visible = shell.help_visible;
     let pref = shell.sidebar_pref;
     let layout = shell.change_layout;
@@ -221,11 +224,9 @@ fn draw_frame(
         width: sw,
         height: area.height,
     };
-    let pane_viewport = area.height.saturating_sub(2) as usize;
-    Ok(ReloadViewport {
-        left_viewport: pane_viewport,
-        right_viewport: pane_viewport,
-        right_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
+    Ok(Viewport {
+        height: area.height.saturating_sub(2) as usize,
+        diff_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
     })
 }
 
@@ -238,7 +239,7 @@ fn draw_frame(
 fn apply_app_command(
     cmd: AppCommand,
     terminal: &mut BrowseTerminal,
-    mode: &mut Box<dyn Mode>,
+    mode: &mut impl Mode,
     shell: &mut Shell,
     theme: &mut Theme,
 ) -> bool {
@@ -370,7 +371,7 @@ impl Shell {
         self.interactive() && self.repaint
     }
 
-    fn poll_background(&mut self, mode: &mut Box<dyn Mode>) -> bool {
+    fn poll_background(&mut self, mode: &mut impl Mode) -> bool {
         let active = self.interactive() && self.built;
         let work = mode.background(active);
         if mode.take_refresh_request() {
@@ -412,7 +413,7 @@ impl Shell {
     }
 
     /// Install once, or replace a failed backend with bounded backoff.
-    fn arm(&mut self, mode: &mut Box<dyn Mode>) {
+    fn arm(&mut self, mode: &mut impl Mode) {
         if self.armed {
             return;
         }
@@ -440,7 +441,7 @@ impl Shell {
 
     /// Take one bounded batch from the watcher. Events arriving during a
     /// reload remain in the accumulator until the next loop.
-    fn drain_watchers(&mut self, mode: &mut Box<dyn Mode>) {
+    fn drain_watchers(&mut self, mode: &mut impl Mode) {
         if !self.interactive() {
             return;
         }
@@ -449,7 +450,7 @@ impl Shell {
         self.repaint |= self.refresh_error() != previous_error;
     }
 
-    fn drain_watcher(&mut self, mode: &mut Box<dyn Mode>) {
+    fn drain_watcher(&mut self, mode: &mut impl Mode) {
         if self.built && !self.armed && self.watch_retry_at.is_none_or(|at| Instant::now() >= at) {
             self.arm(mode);
         }
@@ -462,7 +463,7 @@ impl Shell {
             return;
         }
         let paths: Vec<_> = batch.paths.into_iter().collect();
-        if (batch.rescan || !paths.is_empty()) && mode.notify_changes(&paths, batch.rescan) {
+        if batch.rescan || (!paths.is_empty() && mode.should_reload(&paths)) {
             self.dirty_since.get_or_insert_with(Instant::now);
         }
     }
@@ -539,19 +540,19 @@ impl Shell {
     /// Build the mode for real once its loading frame is on screen.
     /// No-op if already built. The mode watches before loading its snapshot;
     /// retain those pending events and schedule recovery if the read failed.
-    fn build(&mut self, mode: &mut Box<dyn Mode>, vp: ReloadViewport, theme: &Theme) {
+    fn build(&mut self, mode: &mut impl Mode, vp: Viewport, theme: &Theme) {
         if self.built || !self.interactive() {
             return;
         }
-        let dw = if vp.right_width > 0 {
-            vp.right_width
+        let dw = if vp.diff_width > 0 {
+            vp.diff_width
         } else {
             diff_scrollbar::body_width(sidebar_width::diff_pane_width(
                 self.sidebar_pref.effective(self.total_width),
                 self.total_width,
             ))
         };
-        *mode = Box::new(FilesMode::build(theme, dw));
+        mode.build(theme, dw);
         self.built = true;
         self.dirty_since = None;
         self.arm(mode);
@@ -566,8 +567,8 @@ impl Shell {
     /// user just returned while it was dirty.
     fn reload_if_due(
         &mut self,
-        mode: &mut Box<dyn Mode>,
-        vp: ReloadViewport,
+        mode: &mut impl Mode,
+        vp: Viewport,
         theme: &Theme,
     ) -> Result<(), String> {
         if !self.interactive() {
@@ -598,19 +599,13 @@ impl Shell {
 
     /// Handle a key already in the shell. Global bindings are consumed
     /// here; everything else routes to the mode.
-    fn handle_key(
-        &mut self,
-        mode: &mut Box<dyn Mode>,
-        key: KeyCode,
-        left_viewport: usize,
-        right_viewport: usize,
-    ) -> AppCommand {
+    fn handle_key(&mut self, mode: &mut impl Mode, key: KeyCode, height: usize) -> AppCommand {
         // A mode with an open text editor owns every key, so global
         // bindings and custom-command keys are typed as literal text —
         // `q` included — and `Esc` closes the editor. Checked first, since
         // there is no way to type a `q` otherwise.
         if mode.captures_text_input() {
-            return mode.handle_key(key, left_viewport, right_viewport);
+            return mode.handle_key(key, height);
         }
         // `q` quits from anywhere, popup or not.
         if key == KeyCode::Char('q') {
@@ -651,7 +646,7 @@ impl Shell {
                 self.force_full = true;
                 AppCommand::Continue
             }
-            key if mode.reserves_key(key) => mode.handle_key(key, left_viewport, right_viewport),
+            key if mode.reserves_key(key) => mode.handle_key(key, height),
             // Custom commands take priority over unreserved mode keys (but not
             // over the shell globals above). A bound key with a selectable
             // file expands and bubbles up a Run request; with nothing
@@ -666,7 +661,7 @@ impl Shell {
                     None => AppCommand::Continue,
                 }
             }
-            other => mode.handle_key(other, left_viewport, right_viewport),
+            other => mode.handle_key(other, height),
         }
     }
 
@@ -701,16 +696,15 @@ impl Shell {
     /// else routes to the mode.
     fn handle_mouse(
         &mut self,
-        mode: &mut Box<dyn Mode>,
+        mode: &mut impl Mode,
         mouse: MouseEvent,
-        left_viewport: usize,
-        right_viewport: usize,
+        height: usize,
     ) -> AppCommand {
         if self.help_visible || self.theme_picker.is_some() {
             return AppCommand::Continue;
         }
         if mode.captures_text_input() {
-            return mode.handle_mouse(mouse, left_viewport, right_viewport);
+            return mode.handle_mouse(mouse, height);
         }
         match mouse.kind {
             MouseEventKind::Up(MouseButton::Left) => {
@@ -726,17 +720,16 @@ impl Shell {
             }
             _ => {}
         }
-        mode.handle_mouse(mouse, left_viewport, right_viewport)
+        mode.handle_mouse(mouse, height)
     }
 
     /// Apply a whole burst of input events, stopping early on `Quit`.
     /// Sidebar-resize keys (`<`/`>`) are coalesced to one step per burst.
     fn apply_events(
         &mut self,
-        mode: &mut Box<dyn Mode>,
+        mode: &mut impl Mode,
         events: impl IntoIterator<Item = Event>,
-        vp: ReloadViewport,
-        _theme: &Theme,
+        vp: Viewport,
     ) -> Result<AppCommand, String> {
         let mut resized = false;
         let mut command = AppCommand::Continue;
@@ -765,12 +758,7 @@ impl Shell {
     }
 
     /// Dispatch one input event to the global handlers / the mode.
-    fn dispatch(
-        &mut self,
-        mode: &mut Box<dyn Mode>,
-        event: Event,
-        vp: ReloadViewport,
-    ) -> AppCommand {
+    fn dispatch(&mut self, mode: &mut impl Mode, event: Event, vp: Viewport) -> AppCommand {
         match event {
             Event::FocusLost => {
                 self.focused = Some(false);
@@ -788,11 +776,11 @@ impl Shell {
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.resume();
-                self.handle_key(mode, key.code, vp.left_viewport, vp.right_viewport)
+                self.handle_key(mode, key.code, vp.height)
             }
             Event::Mouse(mouse) => {
                 self.resume();
-                self.handle_mouse(mode, mouse, vp.left_viewport, vp.right_viewport)
+                self.handle_mouse(mode, mouse, vp.height)
             }
             _ => AppCommand::Continue,
         }

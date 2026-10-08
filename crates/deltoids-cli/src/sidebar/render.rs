@@ -121,7 +121,7 @@ fn dir_row_spans(
     }
     // With stage data, tint the label green/yellow/default by the
     // subtree's aggregate staging state (lazygit parity). Without it
-    // (piped diff / no repo) keep the muted, bold directory styling.
+    // (no repo) keep the muted, bold directory styling.
     let label_style = match meta.dir_stage {
         Some(agg) => match stage_tint(agg.has_staged, agg.has_unstaged, theme) {
             Some(color) => base.fg(color),
@@ -175,7 +175,7 @@ fn file_row_spans(
             spans.push(Span::styled(" ".to_string(), base));
         }
         // Fallback: single change-type letter from the combined diff
-        // (piped diff / no repo).
+        // (no repo).
         None => {
             if let Some(status) = meta.status {
                 let badge = format!("{} ", status.badge());
@@ -202,7 +202,7 @@ fn file_row_spans(
     };
     // Filename colour. With stage data, follow lazygit's `getFileLine`:
     // green when fully staged, yellow when partially staged, default
-    // otherwise. Without stage data (piped diff / no repo) fall back to
+    // otherwise. Without stage data (no repo) fall back to
     // greening a fully-added file, matching lazygit's staged-add
     // treatment.
     let name_style = match meta.stage {
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn stage_none_uses_single_letter_fallback() {
-        // No stage data: the piped-diff path keeps the single change-type
+        // No stage data: a diff without a repo keeps the single change-type
         // letter derived from the diff (here an added file → 'A').
         let f = fd_added("a.rs");
         let files = vec![SidebarFile {

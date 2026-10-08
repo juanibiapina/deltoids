@@ -45,7 +45,7 @@ mod status;
 mod test_support;
 mod tree;
 
-pub use icons::{IconMode, IconSpec, file_icon, symlink_icon};
+pub use icons::{IconMode, file_icon, symlink_icon};
 pub use status::{
     ChangeKind, DirStage, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
     display_path, file_metadata, file_status, is_binary_marker,
@@ -109,12 +109,12 @@ pub(super) struct FileRowMeta {
     /// `None` for directory rows.
     pub(super) status: Option<FileStatus>,
     /// Two-column git staging status. `None` for directory rows and for
-    /// piped-diff / non-repo files, where the single-letter `status`
+    /// files outside a repo, where the single-letter `status`
     /// badge is used instead.
     pub(super) stage: Option<StageStatus>,
     /// Aggregate staging state across a directory's subtree. `Some` only
     /// for directory rows that have stage data; `None` for file rows and
-    /// for directories with no stage data (piped diff / no repo), which
+    /// for directories with no stage data (no repo), which
     /// keep the muted directory styling.
     pub(super) dir_stage: Option<DirStage>,
     /// `None` for directory rows.
@@ -570,7 +570,7 @@ fn dir_paths(rows: &[Row]) -> Vec<Option<String>> {
 /// `hasStagedChanges` / `hasUnstagedChanges`. Walks rows after the
 /// header while their depth stays greater than the directory's, so it
 /// covers the whole subtree (nested dirs included). Returns `None` when
-/// no subtree file carries stage data (piped diff / no repo), which
+/// no subtree file carries stage data (no repo), which
 /// keeps the directory's muted styling.
 fn dir_aggregate(rows: &[Row], stages: &[Option<StageStatus>], dir_idx: usize) -> Option<DirStage> {
     let Row::Dir {

@@ -1632,7 +1632,7 @@ mod tests {
             .cursor_anchor()
             .cloned()
             .expect("a diff line");
-        handle_key(&mut state, KeyCode::Char('j'), 4, 4);
+        handle_key(&mut state, KeyCode::Char('j'), 4);
         let second = state
             .unstaged
             .cursor_anchor()
@@ -1656,7 +1656,7 @@ mod tests {
         let _ = state.visible_diff_window(DrawBudget::Full);
         // Stay in Sidebar focus; Shift+J should still scroll the diff.
         assert_eq!(state.focus, Focus::Sidebar);
-        handle_key(&mut state, KeyCode::Char('J'), 4, 4);
+        handle_key(&mut state, KeyCode::Char('J'), 4);
         assert_eq!(state.unstaged.cursor.scroll, SCROLL_STEP_LARGE);
     }
 
@@ -1804,12 +1804,12 @@ mod tests {
         let before = state.unstaged.cursor.scroll;
 
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollDown, 50, 5);
-        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18);
         assert!(state.unstaged.cursor.scroll > before);
 
         let after_down = state.unstaged.cursor.scroll;
         let mouse = make_mouse(crossterm::event::MouseEventKind::ScrollUp, 50, 5);
-        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18);
         assert!(state.unstaged.cursor.scroll < after_down);
     }
 
@@ -1833,14 +1833,14 @@ mod tests {
             5,
             crossterm::event::KeyModifiers::SHIFT,
         );
-        crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, right, 18);
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
         assert_eq!(state.unstaged.cursor.scroll, 0);
         assert_eq!(state.focus, Focus::Diff);
 
-        crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, right, 18);
         assert_eq!(state.sidebar.selected_file_index(), Some(2));
-        crate::cli::browse::files::handle_mouse(&mut state, right, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, right, 18);
         assert_eq!(state.sidebar.selected_file_index(), Some(2));
 
         let left = make_mouse_mods(
@@ -1849,12 +1849,11 @@ mod tests {
             5,
             crossterm::event::KeyModifiers::SHIFT,
         );
-        crate::cli::browse::files::handle_mouse(&mut state, left, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, left, 18);
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
         crate::cli::browse::files::handle_mouse(
             &mut state,
             make_mouse(crossterm::event::MouseEventKind::ScrollRight, 50, 5),
-            18,
             18,
         );
         assert_eq!(state.sidebar.selected_file_index(), Some(1));
@@ -1888,7 +1887,7 @@ mod tests {
             5,
             crossterm::event::KeyModifiers::CONTROL,
         );
-        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18, 18);
+        crate::cli::browse::files::handle_mouse(&mut state, mouse, 18);
 
         assert!(
             state.sidebar.selected() > initial,

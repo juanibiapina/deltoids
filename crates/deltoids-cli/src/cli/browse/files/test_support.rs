@@ -11,7 +11,7 @@ use ratatui::text::Line;
 use deltoids::Theme;
 use deltoids::parse::FileDiff;
 
-use crate::scroll::WheelScroll;
+use crate::cli::browse::scroll::WheelScroll;
 use crate::sidebar::{IconMode, Sidebar, SidebarFile, display_path};
 
 use super::diff_pane::DiffPane;
@@ -132,7 +132,6 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         status: None,
         model,
         repo: None,
-        is_static: true,
         startup_pending: false,
         loading_since: None,
         last_input: Patches::default(),

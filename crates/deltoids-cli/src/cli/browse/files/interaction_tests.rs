@@ -33,7 +33,7 @@ fn live(dir: &Path) -> FilesMode {
         }
     }
     let (input, model) = FilesMode::try_model(&repo).unwrap();
-    FilesMode::new(model, input, Some(repo), false, &theme(), 80)
+    FilesMode::new(model, input, Some(repo), &theme(), 80)
 }
 
 fn finish(mode: &mut FilesMode) {
@@ -51,10 +51,9 @@ fn refresh(mode: &mut FilesMode) {
         "action must explicitly request a refresh"
     );
     mode.reload(
-        ReloadViewport {
-            left_viewport: 20,
-            right_viewport: 20,
-            right_width: 80,
+        Viewport {
+            height: 20,
+            diff_width: 80,
         },
         &theme(),
     )
@@ -75,9 +74,9 @@ fn sidebar_a_stages_outside_the_selected_directory_and_refreshes_without_notific
         .map(line_text)
         .collect();
     assert!(Mode::reserves_key(&mode, KeyCode::Char('a')));
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20);
     assert_eq!(mode.focus, Focus::Diff);
     finish(&mut mode);
     refresh(&mut mode);
@@ -98,8 +97,8 @@ fn sidebar_a_stages_outside_the_selected_directory_and_refreshes_without_notific
         .collect();
     assert_eq!(after, before);
     assert!(!Mode::reserves_key(&mode, KeyCode::Char('a')));
-    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
     finish(&mut mode);
     refresh(&mut mode);
     for path in ["src/a.txt", "src/nested/b.txt", "other.txt"] {
@@ -122,8 +121,8 @@ fn sidebar_a_uses_fresh_status_even_when_the_sidebar_is_empty() {
     let (dir, _) = fixture(&["a.txt"]);
     let mut mode = live(dir.path());
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
-    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
     finish(&mut mode);
     refresh(&mut mode);
     let repo = git2::Repository::open(dir.path()).unwrap();
@@ -145,7 +144,7 @@ fn sidebar_space_then_space_toggles_staging_without_watcher_events() {
         .iter()
         .map(line_text)
         .collect();
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     refresh(&mut mode);
     let after: Vec<_> = mode
@@ -157,7 +156,7 @@ fn sidebar_space_then_space_toggles_staging_without_watcher_events() {
     assert_eq!(mode.shown(), Column::Staged);
     let status = mode.model.stages["a.txt"];
     assert!(status.is_staged() && !status.is_unstaged());
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     refresh(&mut mode);
     let entry = repo
@@ -181,7 +180,7 @@ fn directory_space_keeps_the_directory_selected_and_toggles_all_descendants() {
     fs::write(dir.path().join("other.txt"), "keep\n").unwrap();
     let mut mode = live(dir.path());
     assert!(mode.sidebar.select_directory_path("src/", 20));
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     refresh(&mut mode);
     assert_eq!(
@@ -192,7 +191,7 @@ fn directory_space_keeps_the_directory_selected_and_toggles_all_descendants() {
         assert!(mode.model.stages[path].is_staged());
     }
     assert!(!mode.model.stages["other.txt"].is_staged());
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     refresh(&mut mode);
     for path in ["src/a.txt", "src/nested/b.txt"] {
@@ -206,12 +205,12 @@ fn repeated_action_keys_do_not_queue_extra_mutations_and_navigation_stays_availa
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     fs::write(dir.path().join("b.txt"), "other\n").unwrap();
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     assert!(mode.captures_text_input());
-    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('j'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('j'), 20);
     assert_eq!(mode.selected_path().unwrap().file_name().unwrap(), "b.txt");
     finish(&mut mode);
     refresh(&mut mode);
@@ -231,14 +230,14 @@ fn unstaged_d_requires_confirmation_and_selects_the_next_surviving_file() {
     }
     let mut mode = live(dir.path());
     mode.sidebar.select_file_index(1, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
     assert!(mode.captures_text_input());
     assert_eq!(
         fs::read_to_string(dir.path().join("b.txt")).unwrap(),
         "edited\n"
     );
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     finish(&mut mode);
     assert!(matches!(mode.input, InputState::Normal));
     refresh(&mut mode);
@@ -259,7 +258,7 @@ fn staged_d_opens_a_cancellable_menu_and_enter_discards_the_last_file() {
     fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
     stage_all(&repo);
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
     assert!(mode.captures_text_input());
     let mut terminal = Terminal::new(TestBackend::new(110, 25)).unwrap();
@@ -304,19 +303,19 @@ fn staged_d_opens_a_cancellable_menu_and_enter_discards_the_last_file() {
             );
         }
     }
-    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
-    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20);
     assert!(!mode.captures_text_input());
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "staged\n"
     );
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     finish(&mut mode);
     refresh(&mut mode);
     assert!(mode.model.files.is_empty());
@@ -344,10 +343,10 @@ fn cancelled_net_diff_stays_selectable_and_can_discard_only_unstaged_content() {
     assert!(staged.contains("staged") && staged.contains("original"));
     assert!(unstaged.contains("staged") && unstaged.contains("original"));
     assert!(!staged.contains("cancel out"));
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     finish(&mut mode);
     refresh(&mut mode);
     assert_eq!(
@@ -378,9 +377,9 @@ fn chained_rename_has_one_actionable_row_at_its_final_name() {
     );
     assert!(mode.model.stages["final.txt"].is_staged());
     assert!(mode.model.stages["final.txt"].is_unstaged());
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     finish(&mut mode);
     refresh(&mut mode);
     assert!(mode.model.files.is_empty());
@@ -421,9 +420,9 @@ fn several_chained_renames_remain_actionable_in_one_directory() {
         );
     }
     assert!(mode.sidebar.select_directory_path("final/", 20));
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     finish(&mut mode);
     refresh(&mut mode);
     assert!(mode.model.files.is_empty());
@@ -437,29 +436,24 @@ fn several_chained_renames_remain_actionable_in_one_directory() {
 }
 
 #[test]
-fn piped_diff_and_diff_focus_cannot_mutate_the_repository() {
+fn no_repo_and_diff_focus_cannot_mutate_the_repository() {
     let (dir, _) = fixture(&["a.txt"]);
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
-    mode.is_static = true;
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    let repo = mode.repo.take();
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
     assert!(mode.action_job.is_none());
-    assert!(
-        mode.status
-            .as_deref()
-            .unwrap()
-            .contains("repository-backed")
-    );
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
+    assert!(mode.status.as_deref().unwrap().contains("working tree"));
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
-    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
-    mode.is_static = false;
-    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20);
+    mode.repo = repo;
+    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     assert!(mode.action_job.is_none());
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -471,17 +465,17 @@ fn piped_diff_and_diff_focus_cannot_mutate_the_repository() {
 fn empty_and_externally_cleaned_selections_show_disabled_menus() {
     let (dir, _) = fixture(&["a.txt"]);
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     assert!(mode.action_job.is_none());
     assert!(mode.captures_text_input());
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
     fs::write(dir.path().join("a.txt"), "original\n").unwrap();
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
     assert!(mode.captures_text_input());
-    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
 }
@@ -491,9 +485,9 @@ fn cancelling_preparation_does_not_reopen_the_menu_or_write() {
     let (dir, repo) = fixture(&["a.txt"]);
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     assert!(mode.captures_text_input());
-    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20);
     finish(&mut mode);
     assert!(!mode.captures_text_input());
     assert_eq!(
@@ -512,13 +506,13 @@ fn reopening_during_preparation_cannot_receive_the_cancelled_decision() {
     let (dir, _) = fixture(&["a.txt"]);
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
     assert_eq!(
@@ -532,20 +526,20 @@ fn unstaged_menu_cancel_preserves_content_and_unstaged_choice_restores_it() {
     let (dir, _) = fixture(&["a.txt"]);
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     assert!(!mode.captures_text_input());
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "edited\n"
     );
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Down, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Down, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     finish(&mut mode);
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -559,17 +553,17 @@ fn missing_repository_and_failed_preparation_leave_discard_disabled() {
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
     mode.repo = None;
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
-    Mode::handle_key(&mut mode, KeyCode::Esc, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Esc, 20);
 
     let mut mode = live(dir.path());
     fs::remove_dir_all(dir.path().join(".git")).unwrap();
-    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
     finish(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Up, 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Up, 20);
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
     assert!(mode.captures_text_input());
     assert!(mode.action_job.is_none());
     assert_eq!(
@@ -593,7 +587,7 @@ fn space_latency_probe() {
     repo.blob(content.as_bytes()).unwrap();
     let mut mode = live(dir.path());
     let start = Instant::now();
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     let action = start.elapsed();
     let refresh_start = Instant::now();
@@ -624,10 +618,9 @@ fn files_content_reload_probe() {
     let start = Instant::now();
     assert!(
         mode.reload(
-            ReloadViewport {
-                left_viewport: 20,
-                right_viewport: 20,
-                right_width: 80,
+            Viewport {
+                height: 20,
+                diff_width: 80,
             },
             &theme()
         )
@@ -644,7 +637,7 @@ fn hidden_completion_retains_its_refresh_request() {
     let (dir, _) = fixture(&["a.txt"]);
     fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     let deadline = Instant::now() + Duration::from_secs(10);
     while mode.action_job.is_some() {
         mode.background(false);
@@ -740,7 +733,7 @@ fn a_file_with_both_columns_shows_one_and_s_switches_to_the_other() {
     assert!(body.contains("line 11 unstaged"), "unstaged is the default");
     assert!(!body.contains("line 2 staged"));
 
-    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
     assert_eq!(mode.shown(), Column::Staged);
     let body = settle(&mut mode).join("\n");
     assert!(body.contains("line 2 staged"));
@@ -751,7 +744,7 @@ fn a_file_with_both_columns_shows_one_and_s_switches_to_the_other() {
     select_file(&mut mode, "b.txt");
     let rows = settle(&mut mode);
     assert!(rows[0].contains("[2]─Unstaged changes"), "{}", rows[0]);
-    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
     assert_eq!(mode.shown(), Column::Unstaged, "s needs both columns");
     select_file(&mut mode, "a.txt");
     assert_eq!(mode.shown(), Column::Staged);
@@ -785,10 +778,9 @@ fn staging_more_of_a_file_that_keeps_both_columns_rebuilds_both_panes() {
     index.write().unwrap();
 
     mode.reload(
-        ReloadViewport {
-            left_viewport: 20,
-            right_viewport: 20,
-            right_width: 80,
+        Viewport {
+            height: 20,
+            diff_width: 80,
         },
         &theme(),
     )
@@ -826,11 +818,11 @@ fn comment_on(mode: &mut FilesMode, column: Column, side: LineSide, line: usize,
         .expect("the anchored line is on screen");
     mode.focus = Focus::Diff;
     mode.pane_mut(column).select_row(row);
-    Mode::handle_key(mode, KeyCode::Char('c'), 20, 20);
+    Mode::handle_key(mode, KeyCode::Char('c'), 20);
     for ch in note.chars() {
-        Mode::handle_key(mode, KeyCode::Char(ch), 20, 20);
+        Mode::handle_key(mode, KeyCode::Char(ch), 20);
     }
-    Mode::handle_key(mode, KeyCode::Enter, 20, 20);
+    Mode::handle_key(mode, KeyCode::Enter, 20);
 }
 
 #[test]
@@ -885,8 +877,8 @@ fn a_comment_follows_its_file_into_the_staged_pane() {
     let mut mode = live(dir.path());
     select_file(&mut mode, "b.txt");
     comment_on(&mut mode, Column::Unstaged, LineSide::New, 1, "keep me");
-    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('1'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     refresh(&mut mode);
     assert_eq!(mode.shown(), Column::Staged);
@@ -903,15 +895,15 @@ fn switching_columns_keeps_each_ones_render_and_scroll() {
     let mut mode = live(dir.path());
     select_file(&mut mode, "a.txt");
     settle(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Char('J'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('J'), 20);
     let unstaged_scroll = mode.unstaged.cursor.scroll;
-    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
     settle(&mut mode);
     assert_eq!(
         mode.staged.cursor.scroll, 0,
         "J scrolled only the shown column"
     );
-    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
     let rows = screen(&mut mode, DrawBudget::Fast);
     assert!(
         !rows.iter().any(|row| row.contains("Rendering")),
@@ -946,10 +938,9 @@ fn write_and_store(dir: &Path, path: &str, text: &str) {
 
 fn reload_now(mode: &mut FilesMode) {
     mode.reload(
-        ReloadViewport {
-            left_viewport: 20,
-            right_viewport: 20,
-            right_width: 80,
+        Viewport {
+            height: 20,
+            diff_width: 80,
         },
         &theme(),
     )
@@ -979,25 +970,25 @@ fn z_expands_the_hunk_under_the_cursor_and_keeps_it_until_the_file_changes() {
     commit_index(&repo, "initial");
     write_and_store(dir.path(), "a.rs", &COUNTER.replace("+= 1", "+= 2"));
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('2'), 20);
     while !cursor_text(&mut mode).contains("+= 2") {
-        Mode::handle_key(&mut mode, KeyCode::Char('j'), 20, 20);
+        Mode::handle_key(&mut mode, KeyCode::Char('j'), 20);
     }
     assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
 
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
     assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
     assert!(cursor_text(&mut mode).contains("+= 2"));
 
-    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20);
     assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
     assert!(cursor_text(&mut mode).contains("+= 2"));
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
 
     write_and_store(dir.path(), "b.txt", "edited\n");
     reload_now(&mut mode);
     assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
     assert!(window_text(&mut mode).contains("struct Counter {"));
 
     write_and_store(dir.path(), "a.rs", &COUNTER.replace("+= 1", "+= 3"));
@@ -1053,15 +1044,15 @@ fn sidebar_z_and_x_expand_and_shrink_every_hunk_of_the_selected_file() {
     assert_eq!(window_text(&mut mode).matches("╮").count(), 2);
     assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
 
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
     assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
     assert!(!window_text(&mut mode).contains("struct Counter {"));
 
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
     assert!(window_text(&mut mode).contains("struct Counter {"));
 
-    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20, 20);
-    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('x'), 20);
     assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
     assert_eq!(window_text(&mut mode).matches("╮").count(), 2);
 }
@@ -1073,7 +1064,7 @@ fn sidebar_z_on_a_directory_expands_every_file_under_it() {
     assert!(mode.sidebar.select_directory_path("src/", 20));
     mode.snap_diff_to_selected_file();
 
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
     assert_eq!(
         window_text(&mut mode)
             .matches("Counter { value: 0 }")
@@ -1092,11 +1083,11 @@ fn sidebar_z_keeps_the_diff_scroll() {
     let dir = two_hunk_fixture(&["a.rs"]);
     let mut mode = live(dir.path());
     window_text(&mut mode);
-    Mode::handle_key(&mut mode, KeyCode::Char('J'), 4, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('J'), 20);
     let scroll = mode.unstaged.cursor.scroll;
     assert!(scroll > 0);
 
-    Mode::handle_key(&mut mode, KeyCode::Char('z'), 4, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
     assert!(window_text(&mut mode).contains("Counter { value: 0 }"));
     assert_eq!(mode.unstaged.cursor.scroll, scroll);
 }
@@ -1201,7 +1192,7 @@ fn each_staging_column_opens_at_its_own_first_change() {
     let body = settle(&mut mode).join("\n");
     assert!(body.contains("let v38 = 38 * 2;"), "{body}");
 
-    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
     let body = settle(&mut mode).join("\n");
     assert!(body.contains("let v36 = 36 * 2;"), "{body}");
 }
@@ -1215,7 +1206,7 @@ fn scrolling_before_the_file_renders_cancels_the_landing() {
     commit_index(&repo, "initial");
     write_and_store(dir.path(), "a.rs", &long_function(40, Some(36)));
     let mut mode = live(dir.path());
-    Mode::handle_key(&mut mode, KeyCode::Char('K'), 20, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('K'), 20);
 
     let body = diff_body(&settle(&mut mode));
     assert!(body[1].starts_with("a.rs"), "{}", body.join("\n"));

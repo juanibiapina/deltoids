@@ -137,7 +137,7 @@ fn symlink_body_line(view: &SymlinkView, theme: &Theme) -> Line<'static> {
 /// A long diff line wraps onto several rows, so rendered rows and logical
 /// hunk lines are not one-to-one. Callers that need to map a row back to
 /// the line it came from (to place a cursor, attach a review comment, or
-/// insert a row after a line) render through [`render_hunk_rows`] and read
+/// insert a row after a line) render through [`render_hunk_rows_with_preview`] and read
 /// [`HunkRow::source_line`] instead of reconstructing the mapping from row
 /// counts.
 #[derive(Debug, Clone)]
@@ -197,7 +197,7 @@ pub fn render_hunk(
 
 /// Render a full hunk as structured rows: the same output as
 /// [`render_hunk`], with each row tagged by the hunk line it came from.
-pub fn render_hunk_rows(
+fn render_hunk_rows(
     hunk: &Hunk,
     highlight: Option<&str>,
     width: usize,
@@ -210,7 +210,7 @@ pub fn render_hunk_rows(
 
 /// Render a hunk while `keep_going` is true. Cancellation discards its rows.
 /// Checks occur between source lines and intraline pair comparisons.
-pub fn render_hunk_rows_while(
+fn render_hunk_rows_while(
     hunk: &Hunk,
     highlight: Option<&str>,
     width: usize,
@@ -271,50 +271,6 @@ pub fn render_hunk_rows_with_preview(
         &mut preview,
     )?);
     Some(output)
-}
-
-/// Render only a hunk's diff body (context lines + intraline-emphasised
-/// subhunks), without the leading breadcrumb / line-number box. Callers
-/// that supply their own header box (e.g. a type-change note box) use this
-/// to avoid a second, redundant box.
-pub fn render_hunk_body(
-    hunk: &Hunk,
-    highlight: Option<&str>,
-    width: usize,
-    layout: ChangeLayout,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    render_hunk_body_rows(hunk, highlight, width, layout, theme)
-        .into_iter()
-        .map(|row| row.line)
-        .collect()
-}
-
-/// Render a hunk's diff body as structured rows: the same output as
-/// [`render_hunk_body`], with each row tagged by the hunk line it came
-/// from. Used by callers that supply their own header box and still need
-/// row-to-line identity.
-pub fn render_hunk_body_rows(
-    hunk: &Hunk,
-    highlight: Option<&str>,
-    width: usize,
-    layout: ChangeLayout,
-    theme: &Theme,
-) -> Vec<HunkRow> {
-    render_hunk_body_rows_while(hunk, highlight, width, layout, theme, &|| true)
-        .expect("uninterrupted hunk body render")
-}
-
-/// Render a body while `keep_going` is true, discarding cancelled work.
-pub fn render_hunk_body_rows_while(
-    hunk: &Hunk,
-    highlight: Option<&str>,
-    width: usize,
-    layout: ChangeLayout,
-    theme: &Theme,
-    keep_going: &impl Fn() -> bool,
-) -> Option<Vec<HunkRow>> {
-    render_hunk_body_rows_with_preview(hunk, highlight, width, layout, theme, keep_going, None)
 }
 
 /// Render a body and optionally publish its first [`PREVIEW_ROWS`] rows once.
@@ -1117,14 +1073,8 @@ pub fn pane_inner_height(area: Rect) -> usize {
     area.height.saturating_sub(2) as usize
 }
 
-/// Inner width of a pane block (its area minus the two border columns).
-pub fn pane_inner_width(area: Rect) -> usize {
-    area.width.saturating_sub(2) as usize
-}
-
 /// Build a rounded-border [`Block`] with the given title and border
-/// colour. Use [`pane_block_with_footer`] when you also want a
-/// bottom-right counter.
+/// colour.
 pub fn pane_block(title: &'static str, color: Color) -> Block<'static> {
     Block::default()
         .title(title)
@@ -1133,23 +1083,9 @@ pub fn pane_block(title: &'static str, color: Color) -> Block<'static> {
         .border_style(Style::default().fg(color))
 }
 
-/// Like [`pane_block`] but also renders a right-aligned footer string
+/// Like [`pane_block`] but takes a pre-styled [`Line`] as the title, for
+/// titles with mixed styles, and renders an optional right-aligned footer
 /// inside the bottom border. Pass `None` to skip the footer.
-pub fn pane_block_with_footer(
-    title: &'static str,
-    color: Color,
-    footer: Option<String>,
-) -> Block<'static> {
-    let mut block = pane_block(title, color);
-    if let Some(footer) = footer {
-        block = block.title_bottom(Line::from(footer).right_aligned());
-    }
-    block
-}
-
-/// Like [`pane_block_with_footer`] but takes a pre-styled [`Line`] as the
-/// title instead of a plain `&str`, for titles with mixed styles.
-/// Pass `None` to skip the footer.
 pub fn pane_block_with_title_line(
     title: Line<'static>,
     color: Color,
@@ -1164,11 +1100,6 @@ pub fn pane_block_with_title_line(
         block = block.title_bottom(Line::from(footer).right_aligned());
     }
     block
-}
-
-/// Format a position counter for the pane footer: `" 3 of 12 "`.
-pub fn position_footer(position: usize, total: usize) -> String {
-    format!(" {position} of {total} ")
 }
 
 /// Render a vertical scrollbar inside the right border of `area`,

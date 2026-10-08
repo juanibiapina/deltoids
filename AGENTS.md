@@ -65,13 +65,16 @@ crates/
       icons.rs             #   nerd-font glyph tables
       render.rs            #   row -> styled line
       test_support.rs      #   shared test fixtures
-    src/scroll.rs            # Mouse-wheel scroll feel
     src/cli.rs               # Subcommand module declarations
     src/cli/pager.rs         # `deltoids pager` subcommand
     src/cli/browse/          # scrolling TUI
       mod.rs                 #   shell: loop, routing, layout, divider,
                              #     resize, help, reload orchestration
       mode.rs               #   Mode trait (seam to FilesMode) + AppCommand
+      events.rs             #   input-event burst draining
+      terminal.rs           #   terminal session guard
+      sidebar_width.rs      #   sidebar sizing policy
+      scroll.rs             #   mouse-wheel scroll feel
       help.rs               #   help popup
       theme_picker.rs       #   live syntax-theme picker popup (`t`)
       syntax_badge.rs       #   file-header language / scope-support badge
@@ -82,7 +85,7 @@ crates/
       text.rs               #   display width + word wrapping
       watch.rs              #   shared workdir watcher + reload filter
       tests.rs              #   shell tests (mock Mode)
-      files/                 #   FilesMode (working-tree / piped diff)
+      files/                 #   FilesMode (working-tree diff)
         mod.rs               #     FilesMode impl of Mode
         model.rs             #     parse/resolve/diff
         diff_pane.rs         #     diff pane slice

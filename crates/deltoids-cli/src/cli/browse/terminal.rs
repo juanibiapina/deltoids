@@ -1,4 +1,4 @@
-//! Shared terminal session guard for TUI subcommands.
+//! Terminal session guard for the TUI.
 
 use std::io::{self, Write};
 use std::sync::Arc;

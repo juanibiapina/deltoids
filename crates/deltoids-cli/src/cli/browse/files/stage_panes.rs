@@ -50,7 +50,7 @@ impl ColumnOrder {
 /// What the pane's title names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PaneTitle {
-    /// No staging information (piped or empty): a plain diff.
+    /// No staging information (no repo or empty): a plain diff.
     Diff,
     /// The selection only has changes in this column.
     One(Column),
@@ -71,7 +71,7 @@ pub(super) struct PaneSpec<'a> {
 impl StagePanes {
     /// Sort `model`'s files into columns. A file belongs to the staged
     /// column when it has staged changes, and to the unstaged column when
-    /// it has unstaged changes or no staging record at all (piped diffs).
+    /// it has unstaged changes or no staging record at all (no repo).
     pub(super) fn new(model: &Model, display_order: &[usize]) -> Self {
         let staged = ColumnOrder::new(display_order, |index| {
             model.stage(index).is_some_and(|stage| stage.is_staged())

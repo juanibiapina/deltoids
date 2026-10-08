@@ -3,7 +3,7 @@
 //! The whole sizing policy — the terminal fraction, the min/max clamp,
 //! the resize step, and the divider-drag math — lives behind a handful
 //! of verbs. Callers pass only the terminal width and the user's
-//! intent; the constants never leak. Neither sidebar ever hides:
+//! intent; the constants never leak. The sidebar never hides:
 //! [`Preference::effective`] always returns a width of at least
 //! [`MIN_SIDEBAR_WIDTH`], clamping on narrow terminals instead of
 //! disappearing.
@@ -53,7 +53,7 @@ fn clamp_width(candidate: u16, terminal_width: u16) -> u16 {
 }
 
 /// A user's preferred sidebar width plus the policy to resolve it to an
-/// on-screen width each frame. Both TUIs own one. Stores the raw
+/// on-screen width each frame. The shell owns one. Stores the raw
 /// preference; clamping happens in [`Preference::effective`]. The
 /// resize verbs hide the step size and floor.
 #[derive(Debug, Clone, Copy)]

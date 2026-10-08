@@ -1,4 +1,4 @@
-//! Shared input-event draining for the interactive TUIs.
+//! Input-event draining for the TUI event loop.
 
 use std::time::Duration;
 

@@ -23,7 +23,7 @@
 }
 
 :root {
-  /* Tokyo Night-inspired dark palette (matches the traces TUI defaults). */
+  /* Tokyo Night-inspired dark palette (matches the TUI defaults). */
   --bg: #1a1b26;
   --bg-surface: #1f2335;
   --bg-card: #232639;
@@ -625,32 +625,6 @@ pre code {
 }
 
 .faq .answer code {
-  font-size: 0.875rem;
-}
-
-/* === Pager / Agents code blocks === */
-
-.code-card {
-  max-width: 640px;
-  margin: 0 auto;
-}
-
-.code-card-label {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  text-transform: lowercase;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-  margin-bottom: 10px;
-}
-
-.code-card-coming {
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 28px 16px;
-  text-align: center;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
   font-size: 0.875rem;
 }
 

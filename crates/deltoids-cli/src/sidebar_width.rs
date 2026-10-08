@@ -1,5 +1,4 @@
-//! Single source of truth for sidebar sizing, shared by both TUIs
-//! (`review` and `traces`).
+//! Single source of truth for sidebar sizing in the TUI.
 //!
 //! The whole sizing policy — the terminal fraction, the min/max clamp,
 //! the resize step, and the divider-drag math — lives behind a handful

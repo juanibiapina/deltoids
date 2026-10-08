@@ -23,8 +23,7 @@ const COMMENT_MARKER: &str = "\u{258c} ";
 /// re-rendering (and briefly blanking) the file it belongs to.
 ///
 /// `is_outdated` decides whether a note still describes the line it points
-/// at. A pane whose diff cannot change under the reviewer (a recorded
-/// trace entry) passes a closure that always answers `false`.
+/// at.
 pub(in crate::cli::browse) fn with_comments(
     rows: &[DiffRow],
     comments: &CommentStore,

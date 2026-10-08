@@ -2,14 +2,14 @@
 
 ## Project Overview
 
-This is a Rust workspace with CLI tools that trace file edits, plus a TUI to browse traces.
+This is a Rust workspace for a diff toolkit: an ANSI diff pager, a scrolling TUI over the working-tree diff, and a browser PR reviewer.
 
 **Crates:**
 - `deltoids` — diff library with tree-sitter scope context. Optional features:
   - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by the `pager` and `tui` subcommands).
   - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by the `tui` subcommand).
-  - `html` — adds `render_html` for rendering hunks as semantic HTML (used by the `serve` subcommand and the wasm reviewer).
-- `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (unified scrolling TUI: working-tree diff + trace browser), `serve` (read-only HTTP server + mobile web trace reviewer), `edit`/`write` (agent edit tools). Also holds the trace-management library shared by `edit`/`write`. Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
+  - `html` — adds `render_html` for rendering hunks as semantic HTML (used by the wasm reviewer).
+- `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (scrolling TUI over the working-tree diff). Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
 - `deltoids-wasm` — WebAssembly build of the diff engine for the browser PR reviewer at `review.deltoids.dev` (the React app in `reviewer/`). A `cdylib` exposing `render_file`/`render_from_patch` over a C-ABI; builds for `wasm32-wasip1` via wasi-sdk. See `crates/deltoids-wasm/AGENTS.md`.
 - `tests` — cross-crate integration tests
 
@@ -57,12 +57,8 @@ crates/
       cases/<NNN-slug>/       # One case per directory
 
   deltoids-cli/
-    src/lib.rs               # Thin crate root: re-exports + shared helpers
-    src/types.rs             # Wire request/response/error types
-    src/edit.rs              # `edit` tool execution + apply_edits
-    src/write.rs             # `write` tool execution
-    src/trace_store.rs       # Trace storage
-    src/sidebar/             # File tree sidebar for Files mode
+    src/lib.rs               # Thin crate root: module declarations
+    src/sidebar/             # File tree sidebar
       mod.rs                 #   Sidebar state + navigation
       status.rs            #   file classification
       tree.rs              #   path-tree construction
@@ -72,17 +68,11 @@ crates/
     src/scroll.rs            # Mouse-wheel scroll feel
     src/cli.rs               # Subcommand module declarations
     src/cli/pager.rs         # `deltoids pager` subcommand
-    src/cli/serve/           # `deltoids serve`: HTTP server + web trace reviewer
-      mod.rs                 #   Args + tiny_http accept loop (thin shell)
-      router.rs              #   pure method+URL -> response; the JSON/HTML API
-      assets.rs              #   embeds the web-app files
-      assets/                #   index.html / app.js / style.css (no build step)
-    src/cli/browse/          # unified scrolling TUI (files / traces)
-      mod.rs                 #   mode-agnostic shell: loop, routing, layout,
-                             #     divider, resize, wheel, mode cycling, help,
-                             #     reload orchestration (active eager / lazy)
-      mode.rs               #   Mode trait + TabStrip + AppCommand
-      help.rs               #   shared help popup
+    src/cli/browse/          # scrolling TUI
+      mod.rs                 #   shell: loop, routing, layout, divider,
+                             #     resize, help, reload orchestration
+      mode.rs               #   Mode trait (seam to FilesMode) + AppCommand
+      help.rs               #   help popup
       theme_picker.rs       #   live syntax-theme picker popup (`t`)
       syntax_badge.rs       #   file-header language / scope-support badge
       comments.rs           #   review comments
@@ -100,19 +90,7 @@ crates/
         sidebar_pane.rs      #     sidebar pane slice
         reload.rs            #     working-tree watcher + rebuild
         test_support.rs      #     shared test fixtures
-      traces/                #   TracesMode (edit/write trace browser)
-        mod.rs               #     TracesMode impl of Mode
-        model.rs             #     load traces/entries
-        entries_pane.rs      #     entries list slice
-        traces_pane.rs       #     traces list slice
-        detail.rs            #     detail/diff slice (cache + renderers)
-        reload.rs            #     reload from disk
-        scripted.rs          #     headless render path
-        test_support.rs      #     shared test fixtures
-    src/cli/tui.rs           # `deltoids tui` entry (interactive / headless scripted)
-    src/cli/edit.rs          # `deltoids edit` subcommand
-    src/cli/write.rs         # `deltoids write` subcommand
-    src/cli/hook.rs          # `deltoids hook` subcommand
+    src/cli/tui.rs           # `deltoids tui` entry (requires a terminal)
     src/bin/deltoids.rs      # Single binary dispatcher
 
   deltoids-wasm/
@@ -121,22 +99,13 @@ crates/
     AGENTS.md                # wasm build, feature setup, and web app notes
 
   tests/
-    tests/tui_cli.rs          # Integration tests for edit/write/traces
     tests/cli_surface.rs      # Integration tests for the public CLI surface
-    tests/claude_code_hook.rs # Integration tests for the hook
-    fixtures/claude-code/     # Hook test fixtures
+    tests/pager_*.rs          # Integration tests for the pager
 
 reviewer/         # standalone React PR reviewer at review.deltoids.dev (see reviewer/AGENTS.md)
   src/core/       # framework-neutral core (engine, github, lib)
   src/components/ # React UI (Topbar, Sidebar, FileCard, ...)
   src/hooks/      # prefs + topbar-height hooks
-
-plugins/
-  pi/             # Pi extension
-  claude-code/    # Claude Code plugin
-
-.claude-plugin/
-  marketplace.json # Claude Code plugin marketplace
 ```
 
 ## Site
@@ -197,23 +166,18 @@ you wrote) and actual (what the engine does) drives the change.
 
 ## Releasing
 
-All workspace crates and the Claude Code plugin track the same
-version. To prep a release, bump the version in **every** file below
+All workspace crates track the same version. To prep a release, bump the version in **every** file below
 in a single `release: X.Y.Z` commit:
 
 - `Cargo.toml` (`workspace.package.version`)
 - `Cargo.lock` (run `cargo update -p deltoids -p deltoids-cli -p tests` after editing `Cargo.toml`)
 - `site/src/data/site.ts` (`SITE.version`)
-- `plugins/claude-code/.claude-plugin/plugin.json` (`version`)
-- `.claude-plugin/marketplace.json` (`version`)
 - `CHANGELOG.md` (cut a new dated section under `[Unreleased]`)
 
 Then push `main` and push a `vX.Y.Z` tag. The `release.yml` workflow
 is triggered by the tag and runs cargo-dist, which builds the shell
 installer and macOS/Linux archives and publishes the homebrew formula
-to `juanibiapina/homebrew-taps`. The Claude Code plugin marketplace is
-served straight from `main`, so the plugin bump must land before any
-user re-runs `claude plugin install`.
+to `juanibiapina/homebrew-taps`.
 
 ## Conventions
 

@@ -113,7 +113,7 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   `main.hide-ln .row .ln { display: none }` drops the gutter on every row so
   columns stay aligned. Line numbers then live only in the hunk headers —
   `.lineno` (scope-less) and `.crumb-lineno` (the hunk start number added to
-  breadcrumb headers in `render_html.rs`, shared with `deltoids serve`).
+  breadcrumb headers in `render_html.rs`).
 - "Viewed" (reviewed) state marks a file done so it stops drawing the eye.
   `useReviewed(ref, files)` stores a per-PR map `{ filename: blobSha }` in
   `localStorage` under `deltoids.review.viewed:${owner}/${repo}/${number}`

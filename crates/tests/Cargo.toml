@@ -8,10 +8,9 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
-# These tests depend on binaries from deltoids-cli (edit, write, traces)
+# These tests depend on the deltoids binary from deltoids-cli.
 # They must be built before running: cargo build --workspace
 [dev-dependencies]
-serde_json = "1"
 tempfile = "3"
 
 [lints]

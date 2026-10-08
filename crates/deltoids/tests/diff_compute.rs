@@ -1315,7 +1315,7 @@ fn rename_function_produces_single_hunk() {
     // the code treats the new function as a "new scope" and creates
     // two separate hunks instead of one merged hunk.
     //
-    // This reproduces the bug seen in edit trace entry 5 (render.rs)
+    // This reproduces a bug seen in an edit to render.rs
     // where `fn theme()` was renamed to `fn syntect_theme()` and
     // produced two separate hunks with different ancestors.
     let original = "\

@@ -5,19 +5,38 @@
 
 use crossterm::event::KeyCode;
 use ratatui::layout::{Margin, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use deltoids::Theme;
 use deltoids::render_tui::{
-    pane_block_with_tabs, pane_border_color, pane_inner_height, render_pane_scrollbar, rgb_to_color,
+    pane_block_with_title_line, pane_border_color, pane_inner_height, render_pane_scrollbar,
+    rgb_to_color,
 };
 
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
 
 use super::model::{Model, body_deltas};
+
+/// The sidebar's top border title in lazygit's style: `─[1]─Files─`. The
+/// `[1]` badge and the label use the bold accent; the `─` rules use
+/// `rule_color`, the pane's own border colour, so the title stays
+/// continuous with the border (accent when focused, plain otherwise).
+pub(crate) fn sidebar_title(rule_color: Color, theme: &Theme) -> Line<'static> {
+    let rule = Style::default().fg(rule_color);
+    let accent = Style::default()
+        .fg(rgb_to_color(theme.border_active))
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::styled("─", rule),
+        Span::styled("[1]", accent),
+        Span::styled("─", rule),
+        Span::styled("Files", accent),
+        Span::styled("─", rule),
+    ])
+}
 
 /// Build the sidebar from a model plus per-file delta counts.
 pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
@@ -78,7 +97,6 @@ pub(super) fn draw_sidebar(
     sidebar: &Sidebar,
     display_order: &[usize],
     focused: bool,
-    title: Line<'static>,
     theme: &Theme,
 ) {
     let inner = area.inner(Margin {
@@ -95,7 +113,7 @@ pub(super) fn draw_sidebar(
 
     // Extend the selection background across the full inner pane width
     // so the highlighted row reads as a continuous bar (matching
-    // lazygit and the traces TUI's `List` widget). Pad against the inner
+    // lazygit's `List` widget). Pad against the inner
     // width so the trailing block stops just before the right border.
     if let Some(rel) = sidebar.selected().checked_sub(scroll)
         && rel < visible.len()
@@ -105,7 +123,7 @@ pub(super) fn draw_sidebar(
 
     let color = pane_border_color(focused, theme);
     let footer = sidebar_footer(sidebar, display_order);
-    let block = pane_block_with_tabs(title, color, footer);
+    let block = pane_block_with_title_line(sidebar_title(color, theme), color, footer);
     frame.render_widget(Paragraph::new(visible).block(block), area);
 
     render_pane_scrollbar(
@@ -179,6 +197,20 @@ mod tests {
     use crate::cli::browse::files::test_support::*;
     use crate::cli::browse::files::{Focus, handle_key, handle_mouse};
     use crossterm::event::{MouseButton, MouseEventKind};
+
+    #[test]
+    fn sidebar_title_reads_files_with_accent_label_and_border_rules() {
+        let theme = Theme::default();
+        let rule_color = rgb_to_color(theme.border);
+        let line = sidebar_title(rule_color, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "─[1]─Files─");
+        let files = line.spans.iter().find(|s| s.content == "Files").unwrap();
+        assert_eq!(files.style.fg, Some(rgb_to_color(theme.border_active)));
+        assert!(files.style.add_modifier.contains(Modifier::BOLD));
+        let rule = line.spans.iter().find(|s| s.content == "─").unwrap();
+        assert_eq!(rule.style.fg, Some(rule_color));
+    }
 
     #[test]
     fn handle_key_j_in_sidebar_focus_moves_sidebar_and_snaps_diff() {
@@ -258,8 +290,8 @@ mod tests {
     fn sidebar_burst_scroll_moves_one_row_per_tick() {
         // A single physical wheel tick fans out into a burst of events; the
         // shared WheelScroll collapses one quota's worth of events into a
-        // single selection move, so the sidebar steps slowly like the traces
-        // lists rather than jumping several rows per tick.
+        // single selection move, so the sidebar steps slowly rather than
+        // jumping several rows per tick.
         let files: Vec<_> = (0..6).map(|i| file_diff(&format!("f{i}.txt"))).collect();
         let resolved: Vec<ResolvedFile> = files
             .into_iter()

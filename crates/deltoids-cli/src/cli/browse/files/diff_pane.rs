@@ -17,15 +17,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use deltoids::render_tui::{self, pane_block_with_tabs, pane_border_color, rgb_to_color};
+use deltoids::render_tui::{self, pane_block_with_title_line, pane_border_color, rgb_to_color};
 use deltoids::{ChangeLayout, Hunk, LineKind, Theme};
 
 use deltoids::parse::FileDiff;
 
 use crate::cli::browse::comment_view::{highlight_row, with_comments};
-use crate::cli::browse::comments::{
-    CommentAnchor, CommentScope, CommentStore, Numbering, numbered_lines,
-};
+use crate::cli::browse::comments::{CommentAnchor, CommentStore, Numbering, numbered_lines};
 use crate::cli::browse::diff_cursor::{
     Cursor, DiffRow, LinePlace, Step, keep_visible, restore_cursor, select_row, step_cursor,
 };
@@ -271,7 +269,6 @@ fn hunk_anchors(hunk: &Hunk, path: &str, limit: usize, numbering: Numbering) -> 
     numbered_lines(hunk, numbering)
         .take(limit)
         .map(|line| CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             side: line.side,
             line: line.number,
@@ -856,7 +853,7 @@ impl DiffPane {
         // either the clean "No local changes." line (a reverted/committed
         // tree or a non-repo) or a build-error message.
         if self.empty {
-            let block = pane_block_with_tabs(
+            let block = pane_block_with_title_line(
                 heading(self.title, theme),
                 color,
                 status.map(|message| format!(" {message} ")),
@@ -940,7 +937,7 @@ impl DiffPane {
         let footer = status
             .map(|status| format!(" {status} "))
             .or_else(|| self.footer());
-        let block = pane_block_with_tabs(heading(self.title, theme), color, footer);
+        let block = pane_block_with_title_line(heading(self.title, theme), color, footer);
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new(visible), inner);
 
@@ -1120,7 +1117,7 @@ mod tests {
 
     #[test]
     fn file_overview_marks_wrapped_changes_in_both_layouts_and_palettes() {
-        use crate::cli::browse::mode::{Mode, TabStrip};
+        use crate::cli::browse::mode::Mode;
         use deltoids::ColorMode;
         use ratatui::{Terminal, backend::TestBackend};
 
@@ -1156,7 +1153,6 @@ mod tests {
                         frame,
                         Rect::new(0, 0, 30, 40),
                         Rect::new(30, 0, 30, 40),
-                        TabStrip { active: 0 },
                         layout,
                         &theme,
                         DrawBudget::Full,

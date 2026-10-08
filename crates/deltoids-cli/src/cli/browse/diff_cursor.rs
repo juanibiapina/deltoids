@@ -15,8 +15,8 @@
 //!   about. Semantic, and deliberately *not* unique: the same file line
 //!   rendered in two hunks is one line and carries one comment.
 //!
-//! Both modes drive the same cursor through [`step_cursor`], so `j`/`k`
-//! feel identical in the working-tree diff and the trace browser.
+//! Every diff pane drives its cursor through [`step_cursor`], so `j`/`k`
+//! behave the same in each.
 
 use deltoids::LineKind;
 use ratatui::text::Line;
@@ -25,7 +25,7 @@ use super::comments::CommentAnchor;
 
 /// Where a rendered diff line sits in the drawn structure.
 ///
-/// Unique per rendered line: `file` names the file (or trace entry),
+/// Unique per rendered line: `file` names the file,
 /// `hunk` its position in that file's hunk list, and `index` the line's
 /// position inside the hunk. None of these come from the diff's line
 /// numbering or the model's shifting file indices, so the cursor keeps
@@ -264,7 +264,7 @@ pub(super) fn snap_to_selectable(rows: &[DiffRow], row: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::browse::comments::{CommentScope, LineSide};
+    use crate::cli::browse::comments::LineSide;
 
     fn anchor(line: usize) -> CommentAnchor {
         anchor_in("a.rs", line)
@@ -272,7 +272,6 @@ mod tests {
 
     fn anchor_in(path: &str, line: usize) -> CommentAnchor {
         CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             side: LineSide::New,
             line,

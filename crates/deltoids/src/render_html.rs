@@ -1,4 +1,4 @@
-//! Render diff hunks as semantic HTML for the `deltoids serve` web app.
+//! Render diff hunks as semantic HTML for the web PR reviewer.
 //!
 //! Sibling of [`crate::render`] (ANSI) and [`crate::render_tui`] (ratatui):
 //! same hunk model and syntax/intraline pipeline, different output. Emits a
@@ -34,10 +34,9 @@ use crate::highlight::HunkHighlighter;
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 use crate::{DiffLine, Hunk, HunkRun, LineKind, ScopeNode};
 
-/// Render a list of hunks as the HTML diff body for one trace entry.
+/// Render a list of hunks as the HTML diff body for one file.
 ///
-/// `highlight` is the syntect syntax name (from `Diff::highlight()` /
-/// the stored trace entry). `syntax_theme` is a registry theme name resolved
+/// `highlight` is the syntect syntax name (from `Diff::highlight()`). `syntax_theme` is a registry theme name resolved
 /// through [`crate::theme_by_name`]; `None` uses the default. The returned
 /// string is the inner HTML the web app injects into its diff container. The
 /// first changed row across all hunks carries a `data-first-change` attribute.
@@ -53,8 +52,8 @@ pub fn render_entry_html(
 /// `total_new_lines` (the new-file line count) when the last hunk stops before
 /// end of file. Callers that know the file length — the web reviewer, which
 /// holds the after content — use this so the end-of-file unshown lines are
-/// shown and expandable too. Callers rendering from stored hunks alone (e.g.
-/// `deltoids serve`) use [`render_entry_html`], which omits the trailing gap.
+/// shown and expandable too. Callers rendering from hunks alone use
+/// [`render_entry_html`], which omits the trailing gap.
 pub fn render_entry_html_with_file_len(
     hunks: &[Hunk],
     highlight: Option<&str>,

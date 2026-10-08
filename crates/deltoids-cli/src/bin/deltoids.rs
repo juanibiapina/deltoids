@@ -3,11 +3,7 @@
 //! Subcommands:
 //!
 //! - `pager`     ANSI diff filter for `less` / `core.pager`
-//! - `tui`       unified scrolling TUI (working-tree diff + trace browser)
-//! - `serve`     read-only HTTP server + web app for reviewing traces
-//! - `edit`      agent edit tool, appends to a trace
-//! - `write`     agent write tool, appends to a trace
-//! - `hook`      coding-agent lifecycle adapters (Claude Code, …)
+//! - `tui`       scrolling TUI over the working-tree diff
 //!
 //! Default (no subcommand): if stdin is a pipe, run `pager` (so
 //! `git config core.pager 'deltoids | less -R'` keeps working). On a
@@ -18,14 +14,14 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use deltoids_cli::cli::{edit, hook, pager, serve, tui, write};
+use deltoids_cli::cli::{pager, tui};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "deltoids",
     version,
     disable_version_flag = true,
-    about = "Diff renderer, unified scrolling TUI, and agent edit tools.",
+    about = "Diff renderer and scrolling TUI.",
     long_about = "\
 The deltoids toolkit. Run `deltoids <subcommand> --help` for details. \
 With no subcommand, a piped diff runs the pager (preserving \
@@ -44,17 +40,8 @@ struct Cli {
 enum Command {
     /// ANSI diff filter for less / core.pager.
     Pager(pager::Args),
-    /// Unified scrolling TUI: working-tree diff and trace browser.
+    /// Scrolling TUI over the working-tree diff.
     Tui(tui::Args),
-    /// Serve traces over HTTP for the mobile web reviewer.
-    Serve(serve::Args),
-    /// Agent edit tool — appends to a trace.
-    Edit(edit::Args),
-    /// Agent write tool — appends to a trace.
-    Write(write::Args),
-    /// Coding-agent lifecycle adapters (e.g. Claude Code PostToolUse).
-    #[command(hide = true)]
-    Hook(hook::Args),
 }
 
 fn main() -> ExitCode {
@@ -62,10 +49,6 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::Pager(args)) => pager::run(args),
         Some(Command::Tui(args)) => tui::run(args),
-        Some(Command::Serve(args)) => serve::run(args),
-        Some(Command::Edit(args)) => edit::run(args),
-        Some(Command::Write(args)) => write::run(args),
-        Some(Command::Hook(args)) => hook::run(args),
         None => {
             // Smart default: a piped diff feeds the pager (preserving
             // `core.pager`); a TTY opens the unified TUI.

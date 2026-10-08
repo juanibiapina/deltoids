@@ -11,7 +11,7 @@ export const SITE = {
   license: "MIT",
   tagline: "Diffs for the agentic era.",
   description:
-    "deltoids is a smart diff toolkit: a pager and terminal TUI that expand hunks to the enclosing scope, plus edit tools that trace every change your coding agent makes.",
+    "deltoids is a smart diff toolkit: a pager and terminal TUI that expand hunks to the enclosing scope.",
   statusNote:
     "Beta: diff output may still be broken. Verify important changes.",
   repo: {
@@ -97,28 +97,6 @@ git:
   },
 ];
 
-/** Agent tool install snippets per coding agent. */
-export const AGENT_TOOLS: {
-  id: string;
-  label: string;
-  code?: string;
-  coming?: boolean;
-  note?: string;
-}[] = [
-  {
-    id: "pi",
-    label: "pi",
-    code: `pi install https://github.com/juanibiapina/deltoids`,
-  },
-  {
-    id: "claude",
-    label: "Claude Code",
-    code: `claude plugin marketplace add juanibiapina/deltoids
-claude plugin install deltoids@deltoids`,
-    note: "Edits are recorded without per-edit summaries. Claude's PostToolUse hook does not expose one.",
-  },
-];
-
 export type InstallCard = {
   id: string;
   label: string;
@@ -154,7 +132,7 @@ export const INSTALL_CARDS: InstallCard[] = [
 export const FAQ: { q: string; a: string }[] = [
   {
     q: "Is `deltoids` just a pager?",
-    a: "No. Piped a diff, it's a pager. Run in a terminal, `deltoids` opens a TUI that browses your working tree and your coding agent's edits. It also ships `edit` and `write` tools for agents.",
+    a: "No. Piped a diff, it's a pager. Run in a terminal, `deltoids` opens a TUI that browses your working tree's staged and unstaged changes.",
   },
   {
     q: "How is this different from `git diff -W`?",

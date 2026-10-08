@@ -14,16 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: fold and unfold directories in the Files sidebar with Enter.
 - TUI: add shortcuts to stage and discard changes in git.
 - TUI: show staged and unstaged changes separately, and press `s` to switch between them when a file or directory has both.
-- Traces: add support for multi file entries
 - TUI: press `z` on a diff line to expand its hunk one scope level (the enclosing function, class, section, or the whole file), and `x` to shrink it back. From the Files sidebar, `z` and `x` act on every hunk of the selected file or directory.
 - TUI: file headers show the file's language, or mark files whose language has no scope context.
 
 ### Changed
 
 - TUI: performance improvements
-- Traces: a failed entry shows its diff alongside the error.
 - TUI: copied review comments contain only each comment's file, line, quoted code, and note, without agent instructions.
 - TUI: a selected file opens scrolled to its first hunk, with the first change on screen.
+
+### Removed
+
+- Remove agent traces: Traces mode in the TUI, the `edit`, `write`, and `serve` subcommands, and the pi and Claude Code plugins. Uninstall the plugins with `pi remove https://github.com/juanibiapina/deltoids` and `claude plugin uninstall deltoids@deltoids`. Recorded traces in `$XDG_DATA_HOME/edit/traces` (default `~/.local/share/edit/traces`) can be deleted.
+- TUI: `deltoids tui` no longer renders without a terminal.
 
 ### Fixed
 

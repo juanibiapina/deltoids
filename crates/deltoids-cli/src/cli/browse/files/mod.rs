@@ -51,7 +51,7 @@ use crate::sidebar::{Sidebar, display_path};
 
 use super::comment_view::render_comment_editor;
 use super::comments::{CommentAnchor, CommentStore, reanchor, review_text};
-use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport, TabStrip};
+use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, ReloadViewport};
 
 mod action_menu;
 mod actions;
@@ -74,6 +74,7 @@ use model::build_model;
 use model::{Column, DiffSource, Model};
 use reload::{Patches, ReloadOutcome, reload_working_tree, should_reload, spawn_watcher};
 use sidebar_pane::build_sidebar;
+pub(crate) use sidebar_pane::sidebar_title;
 use stage_panes::{PaneSpec, PaneTitle, StagePanes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1076,7 +1077,6 @@ impl Mode for FilesMode {
         frame: &mut ratatui::Frame<'_>,
         left: Rect,
         right: Rect,
-        tabs: TabStrip,
         layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
@@ -1085,14 +1085,12 @@ impl Mode for FilesMode {
         self.diff_rect = right;
 
         let sidebar_focused = self.focus == Focus::Sidebar;
-        let border = deltoids::render_tui::pane_border_color(sidebar_focused, theme);
         sidebar_pane::draw_sidebar(
             frame,
             left,
             &self.sidebar,
             &self.display_order,
             sidebar_focused,
-            tabs.title_line(border, theme),
             theme,
         );
 
@@ -1236,7 +1234,7 @@ impl Mode for FilesMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::browse::comments::{CommentScope, LineSide};
+    use crate::cli::browse::comments::LineSide;
     use crate::cli::browse::files::diff_pane::CacheEpoch;
     use crate::cli::browse::files::test_support::*;
     use model::ResolvedFile;
@@ -1648,7 +1646,6 @@ mod tests {
         assert!(state.unstaged.cache.contains(grouped_epoch(80), 1));
 
         let anchor = CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: "src/b.txt".to_string(),
             side: LineSide::New,
             line: 1,
@@ -1680,13 +1677,11 @@ mod tests {
         assert_eq!(state.status.as_deref(), Some("No comments to copy"));
 
         let in_b = CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: "src/b.txt".to_string(),
             side: LineSide::New,
             line: 3,
         };
         let in_a = CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: "src/a.txt".to_string(),
             side: LineSide::Old,
             line: 3,
@@ -1724,7 +1719,6 @@ mod tests {
         assert_eq!(state.status.as_deref(), Some("No comments to clear"));
 
         let anchor = CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: "src/b.txt".to_string(),
             side: LineSide::New,
             line: 1,
@@ -1963,7 +1957,6 @@ mod tests {
                 frame,
                 cols[0],
                 cols[1],
-                TabStrip { active: 0 },
                 ChangeLayout::Grouped,
                 &theme,
                 DrawBudget::Full,
@@ -2001,7 +1994,6 @@ mod tests {
                 f,
                 cols[0],
                 cols[1],
-                TabStrip { active: 0 },
                 ChangeLayout::Grouped,
                 &theme,
                 DrawBudget::Full,

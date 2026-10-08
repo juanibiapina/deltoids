@@ -39,13 +39,6 @@ export const DOCS_NAV: readonly DocsNavGroup[] = [
     ],
   },
   {
-    label: "Coding agents",
-    items: [
-      { label: "pi", href: "/docs/integrations/pi/" },
-      { label: "Claude Code", href: "/docs/integrations/claude-code/" },
-    ],
-  },
-  {
     label: "Reference",
     items: [{ label: "Configuration", href: "/docs/configuration/" }],
   },

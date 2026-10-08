@@ -22,7 +22,6 @@ Hunks expand to show the enclosing function, so you always know where you are.
 
 - **Syntax highlighting:** spot code changes at a glance.
 - **Expanded context:** understand changes within their enclosing scope.
-- **Agent traces:** follow agent changes in real time.
 - **Git integration:** review file status and manage changes in one place.
 - **Review comments:** copy review notes with file and line references for coding agents.
 - **Responsive TUI:** keep up with changes without unnecessary redraws.
@@ -31,14 +30,13 @@ Hunks expand to show the enclosing function, so you always know where you are.
 
 ## Get Started
 
-Install deltoids and the Pi plugin:
+Install deltoids:
 
 ```bash
 brew install juanibiapina/taps/deltoids
-pi install https://github.com/juanibiapina/deltoids
 ```
 
-The plugin records Pi's edits and writes as traces. In the same project directory, open the reviewer:
+In a git repository, open the reviewer:
 
 ```bash
 deltoids tui
@@ -104,8 +102,7 @@ Deltoids reads `$XDG_CONFIG_HOME/deltoids/config.toml` (falling back to
 ### Theme
 
 The `[theme]` section selects the light/dark palette and the syntax
-highlighting theme used by the pager, the `deltoids tui`, and `deltoids
-serve`:
+highlighting theme used by the pager and `deltoids tui`:
 
 ```toml
 [theme]
@@ -151,22 +148,7 @@ description = "edit file inline in neovim"
 ```
 
 `subprocess` defaults to `false`. `command` is a shell line (run via
-`sh -c`), not an argv. Custom keys work in both Files and Traces mode
-against the current selection; they cannot override the built-in keys
-(`q`, `[`, `]`, `<`, `>`, `\`, `t`, `?`) but can shadow a mode's own keys. Press
-`?` to see the configured bindings in the help popup.
-
-## Claude Code Integration
-
-Install the deltoids plugin to record every `Write` and `Edit` call as a trace, grouped by Claude session:
-
-```bash
-claude plugin marketplace add juanibiapina/deltoids
-claude plugin install deltoids@deltoids
-```
-
-Or, from inside an interactive session, run `/plugin marketplace add juanibiapina/deltoids` then `/plugin install deltoids@deltoids`.
-
-The Claude `session_id` is used directly as the deltoids trace id, so continuing a session (`claude --continue`) keeps appending to the same trace. Requires the `deltoids` binary on PATH. See [plugins/claude-code/README.md](plugins/claude-code/README.md) for details, including a `~/.claude/settings.json` snippet that bypasses the known [plugin hook delivery bug](https://github.com/anthropics/claude-code/issues/34573).
-
-Unlike the pi integration, Claude Code edits are recorded without a per-edit summary. Claude's `PostToolUse` hook does not expose one.
+`sh -c`), not an argv. Custom keys work against the current selection;
+they cannot override the built-in keys (`q`, `<`, `>`, `\`, `t`, `?`) but
+can shadow the TUI's other keys. Press `?` to see the configured bindings
+in the help popup.

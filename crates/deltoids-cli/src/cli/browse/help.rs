@@ -1,7 +1,6 @@
 //! Shared help popup: the key table that is the source of truth for
 //! bindings, the popup's own key handling, and its centered overlay
-//! render. Mode-agnostic: the unified shell owns help visibility and
-//! drives this slice for whichever mode is active.
+//! render. The shell owns help visibility and drives this slice.
 
 use crossterm::event::KeyCode;
 use ratatui::layout::{Margin, Rect};
@@ -21,34 +20,24 @@ use super::mode::AppCommand;
 /// table inside the popup.
 pub(super) const HELP_KEYS: &[(&str, &str)] = &[
     ("?", "toggle this help"),
-    ("[ / ]", "cycle Files / Traces mode"),
-    ("Tab / 1 / 2", "focus panes in the current mode"),
+    ("Tab / 1 / 2", "focus sidebar / diff"),
     ("j / k", "move (list, or between diff lines)"),
     ("Shift+J / K", "scroll diff three lines (any focus)"),
-    (
-        "Shift / Ctrl+wheel",
-        "step through files (Files) or edits (Traces)",
-    ),
+    ("Shift / Ctrl+wheel", "step through files"),
     ("PgDn / PgUp", "page in current pane"),
     ("g / G", "top / bottom of current pane"),
     ("Home / End", "top / bottom of current pane"),
     ("c", "comment on the diff line under the cursor"),
-    (
-        "z / x",
-        "expand / shrink hunk under the cursor (Files diff)",
-    ),
-    (
-        "z / x",
-        "expand / shrink every hunk of selection (Files sidebar)",
-    ),
-    ("Space", "stage / unstage selection (Files sidebar)"),
-    ("a", "stage / unstage all files (Files sidebar)"),
-    ("Enter", "fold / unfold directory (Files sidebar)"),
-    ("s", "switch staged / unstaged diff (Files)"),
-    ("d", "discard (Files sidebar) / delete comment (diff)"),
+    ("z / x", "expand / shrink hunk under the cursor (diff)"),
+    ("z / x", "expand / shrink every hunk of selection (sidebar)"),
+    ("Space", "stage / unstage selection (sidebar)"),
+    ("a", "stage / unstage all files (sidebar)"),
+    ("Enter", "fold / unfold directory (sidebar)"),
+    ("s", "switch staged / unstaged diff"),
+    ("d", "discard (sidebar) / delete comment (diff)"),
     ("y", "copy comments"),
     ("D", "clear all comments"),
-    ("< / >", "narrow / widen sidebar (shared by modes)"),
+    ("< / >", "narrow / widen sidebar"),
     ("\\", "cycle diff layout (grouped \u{2194} interleaved)"),
     ("t", "pick syntax theme"),
     ("q", "quit"),
@@ -166,16 +155,6 @@ mod tests {
             .find(|(k, _)| *k == "D")
             .expect("help popup must document the clear-all binding");
         assert!(clear.1.contains("clear"));
-    }
-
-    #[test]
-    fn help_keys_include_mode_toggle() {
-        assert!(
-            HELP_KEYS
-                .iter()
-                .any(|(k, _)| k.contains('[') && k.contains(']')),
-            "help popup must document the mode-toggle binding"
-        );
     }
 
     #[test]

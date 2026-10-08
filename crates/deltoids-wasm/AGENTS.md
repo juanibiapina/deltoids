@@ -87,8 +87,8 @@ vendored `browser_wasi_shim.js`); the UI is in `reviewer/src/components/`. See
 - calls the GitHub REST API directly (CORS-open), anonymously by default;
 - stores an optional read-only PAT in `localStorage` for higher limits and
   private repos (no OAuth — a static site cannot hold a client secret);
-- renders each changed file through the wasm engine, reusing deltoids' HTML
-  class contract and the `serve` diff CSS.
+- renders each changed file through the wasm engine, using deltoids' HTML
+  class contract.
 
 The layout is responsive over a media-query ladder (640 / 1024 / 1440px) driven
 by CSS variables. The file sidebar is a persistent grid column at ≥1024px and an

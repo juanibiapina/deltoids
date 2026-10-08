@@ -4,9 +4,5 @@
 //! dispatcher in `bin/deltoids.rs` invokes.
 
 pub mod browse;
-pub mod edit;
-pub mod hook;
 pub mod pager;
-pub mod serve;
 pub mod tui;
-pub mod write;

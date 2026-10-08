@@ -437,8 +437,8 @@ fn render_hunk_body_into(
 /// this yields `[blank, hunk_0, blank, hunk_1, …]`. Empty `hunks` yields an
 /// empty vec. The per-hunk leading blank makes the helper self-contained:
 /// prepend it to any header and the hunks are correctly separated from the
-/// header and from each other. Both the Files and Traces TUIs render their
-/// diff body through this one helper.
+/// header and from each other. The TUI renders its diff body through this
+/// one helper.
 pub fn render_hunk_list(
     hunks: &[Hunk],
     highlight: Option<&str>,
@@ -1095,13 +1095,11 @@ fn display_width(text: &str) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Pane helpers (shared between traces and review)
+// Pane helpers
 // ---------------------------------------------------------------------------
 //
 // These build the rounded, titled, optionally-footered [`Block`] used to
-// frame each pane in our TUIs, plus the matching scrollbar widget. Living
-// here keeps the two binaries visually identical without making either
-// of them depend on the other.
+// frame each pane in the TUI, plus the matching scrollbar widget.
 
 /// Pick the border colour for a pane based on whether it currently has
 /// focus. Active panes use [`Theme::border_active`] (the bright accent),
@@ -1150,10 +1148,9 @@ pub fn pane_block_with_footer(
 }
 
 /// Like [`pane_block_with_footer`] but takes a pre-styled [`Line`] as the
-/// title instead of a plain `&str`. Used by the unified TUI's top-left
-/// panel to draw the `Files│Traces` tab strip with the active mode
-/// highlighted. Pass `None` to skip the footer.
-pub fn pane_block_with_tabs(
+/// title instead of a plain `&str`, for titles with mixed styles.
+/// Pass `None` to skip the footer.
+pub fn pane_block_with_title_line(
     title: Line<'static>,
     color: Color,
     footer: Option<String>,

@@ -1,44 +1,32 @@
-//! The unified scrolling TUI opened by `deltoids tui`.
+//! The scrolling TUI opened by `deltoids tui`.
 //!
-//! The left panel cycles, lazygit-style, between two **modes**:
-//!
-//! - **Files** ([`files::FilesMode`]): a file-tree sidebar plus the
-//!   working-tree (or piped) diff.
-//! - **Traces** ([`traces::TracesMode`]): an entries list and a traces
-//!   list stacked on the left, the selected entry's detail/diff on the
-//!   right.
-//!
-//! `]` cycles to the next mode and `[` to the previous; clicking a tab
-//! label switches directly to that mode. The right pane follows whichever
-//! mode is active. The active mode's top-left panel title shows a
-//! `Files - Traces` tab strip with the active label highlighted.
+//! The left column is a file-tree sidebar and the right pane shows the
+//! working-tree (or piped) diff. Both belong to [`files::FilesMode`].
 //!
 //! ## Module layout
 //!
-//! This file is the mode-agnostic shell: it owns the terminal, the event
-//! loop, the one draggable divider between the left column and the right
-//! pane, the shared sidebar width, the `<`/`>` resize (per-burst
-//! coalesced), the help popup, the `[`/`]` mode toggle, and the
-//! live-reload orchestration. Everything that varies between the two
-//! modes lives behind [`mode::Mode`]; the two adapters live in
-//! [`files`] and [`traces`].
+//! This file is the shell: it owns the terminal, the event loop, the one
+//! draggable divider between the left column and the right pane, the
+//! sidebar width, the `<`/`>` resize (per-burst coalesced), the help
+//! popup, the theme picker, custom commands, and the live-reload
+//! orchestration. Everything else lives behind [`mode::Mode`], whose
+//! production adapter is [`files::FilesMode`]; the shell tests drive the
+//! shell through a recording adapter.
 //!
 //! Each frame the shell also derives a [`mode::DrawBudget`] from whether
 //! input is still streaming: `Fast` while a navigation key is held (an
 //! input burst is non-empty), `Full` once it settles (an empty burst =
-//! poll timeout). Modes use this to defer expensive rendering — Traces
-//! mode skips highlighting an unseen entry's diff on `Fast` frames, so
-//! holding `j` stays smooth over large edits. While input streams the
-//! poll timeout shrinks to `SETTLE_TIMEOUT` so the settled `Full` frame
-//! lands promptly after release.
+//! poll timeout). The mode uses this to defer expensive rendering. While
+//! input streams the poll timeout shrinks to `SETTLE_TIMEOUT` so the
+//! settled `Full` frame lands promptly after release.
 //!
-//! Modes load and install their watchers on first activation. The shell
-//! takes bounded notification batches each loop, reloads the active mode
-//! after a debounce, and leaves inactive modes dirty until activation.
+//! The mode loads and installs its watcher on the first loop iteration,
+//! after a loading frame is on screen. The shell takes bounded
+//! notification batches each loop and reloads the mode after a debounce.
 //! Healthy watchers cause no periodic reloads; failures trigger explicit
-//! watcher recovery or read retries. Focus loss defers refreshes, recovery,
-//! and drawing while bounded watcher batches retain changes. Idle timeouts
-//! draw only the single settled frame after fast rendering.
+//! watcher recovery or read retries. Focus loss defers refreshes,
+//! recovery, and drawing while bounded watcher batches retain changes.
+//! Idle timeouts draw only the single settled frame after fast rendering.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -51,7 +39,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
-use deltoids::render_tui::{pane_block, pane_block_with_tabs, rgb_to_color};
+use deltoids::render_tui::{pane_block, pane_block_with_title_line, rgb_to_color};
 use deltoids::{ChangeLayout, Theme};
 
 use crate::events::read_event_burst;
@@ -71,21 +59,12 @@ mod suspend;
 mod syntax_badge;
 mod text;
 mod theme_picker;
-pub mod traces;
 mod watch;
 
 use command::{CustomCommand, load_commands};
 use files::FilesMode;
-use mode::{AppCommand, CustomRun, DrawBudget, Mode, ReloadViewport, TAB_LABELS, TabStrip};
+use mode::{AppCommand, CustomRun, DrawBudget, Mode, ReloadViewport};
 use theme_picker::{PickerAction, ThemePicker};
-use traces::TracesMode;
-
-/// Active-mode index for the Files panel.
-pub const FILES_MODE: usize = 0;
-/// Active-mode index for the Traces panel.
-pub const TRACES_MODE: usize = 1;
-/// Number of left-panel modes the shell cycles through.
-pub const MODE_COUNT: usize = TAB_LABELS.len();
 
 /// Idle poll timeout for the event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
@@ -108,14 +87,8 @@ fn buffered_backend() -> CrosstermBackend<io::BufWriter<io::Stdout>> {
     CrosstermBackend::new(io::BufWriter::with_capacity(128 * 1024, io::stdout()))
 }
 
-/// Run the headless (non-TTY) scripted render path for Traces mode.
-pub fn run_traces_scripted() -> Result<(), String> {
-    traces::run_scripted_for_cwd()
-}
-
-/// Open the unified TUI seeded with `active_mode` ([`FILES_MODE`] or
-/// [`TRACES_MODE`]).
-pub fn run(active_mode: usize) -> Result<(), String> {
+/// Open the TUI on the working-tree diff.
+pub fn run() -> Result<(), String> {
     let mut theme = Theme::load();
     let session = TerminalSession::enter()?;
     let backend = buffered_backend();
@@ -128,23 +101,13 @@ pub fn run(active_mode: usize) -> Result<(), String> {
     let initial_diff_width =
         diff_scrollbar::body_width(sidebar_width::diff_pane_width(sidebar_w, total_width));
 
-    // Both modes start as cheap empty placeholders. Neither is built yet,
-    // so the loop's first iteration draws a loading frame and then builds
-    // the active mode (the same path a toggle takes). Startup shows a
+    // The mode starts as a cheap empty placeholder, so the loop's first
+    // iteration draws a loading frame and then builds it. Startup shows a
     // loading state instead of a blank screen during the (possibly slow)
-    // build. The inactive mode stays a placeholder until first activated,
-    // so a session that never opens it never pays its build/watcher cost.
-    let mut modes: [Box<dyn Mode>; MODE_COUNT] = [
-        Box::new(FilesMode::empty(&theme, initial_diff_width)),
-        Box::new(TracesMode::empty()),
-    ];
+    // build.
+    let mut mode: Box<dyn Mode> = Box::new(FilesMode::empty(&theme, initial_diff_width));
 
-    let mut shell = Shell::new(
-        active_mode,
-        sidebar_pref,
-        total_width,
-        theme.syntax_theme_name.clone(),
-    );
+    let mut shell = Shell::new(sidebar_pref, total_width, theme.syntax_theme_name.clone());
     shell.commands = load_commands();
 
     let mut vp = ReloadViewport::default();
@@ -157,24 +120,24 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         let queued = read_event_burst(Duration::ZERO)?;
         if !queued.is_empty() {
             shell.note_input(false);
-            let cmd = shell.apply_events(&mut modes, queued, vp, &theme)?;
-            if apply_app_command(cmd, &mut terminal, &mut modes, &mut shell, &mut theme) {
+            let cmd = shell.apply_events(&mut mode, queued, vp, &theme)?;
+            if apply_app_command(cmd, &mut terminal, &mut mode, &mut shell, &mut theme) {
                 break;
             }
         }
-        shell.drain_watchers(&mut modes);
-        shell.poll_background(&mut modes);
-        shell.reload_active_if_due(&mut modes, vp, &theme)?;
+        shell.drain_watchers(&mut mode);
+        shell.poll_background(&mut mode);
+        shell.reload_if_due(&mut mode, vp, &theme)?;
 
         if shell.needs_redraw() {
-            vp = draw_frame(&mut terminal, &mut modes, &mut shell, &theme)?;
-            if !shell.built[shell.active] {
-                shell.build_active(&mut modes, vp, &theme);
+            vp = draw_frame(&mut terminal, &mut mode, &mut shell, &theme)?;
+            if !shell.built {
+                shell.build(&mut mode, vp, &theme);
                 continue;
             }
         }
 
-        let pending = shell.poll_background(&mut modes);
+        let pending = shell.poll_background(&mut mode);
         if shell.needs_redraw() {
             continue;
         }
@@ -185,8 +148,8 @@ pub fn run(active_mode: usize) -> Result<(), String> {
         };
         let burst = read_event_burst(timeout)?;
         shell.note_input(burst.is_empty());
-        let cmd = shell.apply_events(&mut modes, burst, vp, &theme)?;
-        if apply_app_command(cmd, &mut terminal, &mut modes, &mut shell, &mut theme) {
+        let cmd = shell.apply_events(&mut mode, burst, vp, &theme)?;
+        if apply_app_command(cmd, &mut terminal, &mut mode, &mut shell, &mut theme) {
             break;
         }
     }
@@ -198,18 +161,16 @@ pub fn run(active_mode: usize) -> Result<(), String> {
 
 fn draw_frame(
     terminal: &mut BrowseTerminal,
-    modes: &mut [Box<dyn Mode>; MODE_COUNT],
+    mode: &mut Box<dyn Mode>,
     shell: &mut Shell,
     theme: &Theme,
 ) -> Result<ReloadViewport, String> {
-    let active = shell.active;
     let help_visible = shell.help_visible;
     let pref = shell.sidebar_pref;
     let layout = shell.change_layout;
-    // When the active mode hasn't been built yet (just toggled to), draw
-    // a loading frame instead. The tab strip already shows the switch,
-    // so the UI feels responsive while the (possibly slow) build runs.
-    let building = !shell.built[active];
+    // Until the mode is built, draw a loading frame so the UI responds
+    // while the (possibly slow) build runs.
+    let building = !shell.built;
     // Take the budget (a `&mut` op) before borrowing `commands`.
     let budget = shell.take_draw_budget();
     let commands = &shell.commands;
@@ -225,22 +186,14 @@ fn draw_frame(
                 .constraints([Constraint::Length(sw), Constraint::Min(10)])
                 .split(area);
             if building {
-                draw_loading(frame, cols[0], cols[1], TabStrip { active }, theme);
+                draw_loading(frame, cols[0], cols[1], theme);
             } else {
-                modes[active].draw(
-                    frame,
-                    cols[0],
-                    cols[1],
-                    TabStrip { active },
-                    layout,
-                    theme,
-                    budget,
-                );
+                mode.draw(frame, cols[0], cols[1], layout, theme, budget);
             }
             if help_visible {
                 let commands: Vec<_> = commands
                     .iter()
-                    .filter(|c| !modes[active].reserves_key(KeyCode::Char(c.key)))
+                    .filter(|c| !mode.reserves_key(KeyCode::Char(c.key)))
                     .cloned()
                     .collect();
                 help::draw_help_popup(frame, area, theme, &commands);
@@ -280,12 +233,12 @@ fn draw_frame(
 /// owns the terminal. Returns `true` when the app should quit.
 ///
 /// Split out of `run()` so the event loop stays readable: custom commands
-/// need the terminal, clipboard writes need the active mode, and a live
+/// need the terminal, clipboard writes need the mode, and a live
 /// theme switch needs the shared [`Theme`] and the shell's force-full flag.
 fn apply_app_command(
     cmd: AppCommand,
     terminal: &mut BrowseTerminal,
-    modes: &mut [Box<dyn Mode>; MODE_COUNT],
+    mode: &mut Box<dyn Mode>,
     shell: &mut Shell,
     theme: &mut Theme,
 ) -> bool {
@@ -309,7 +262,7 @@ fn apply_app_command(
         // a failed copy is reported honestly.
         AppCommand::CopyToClipboard(text) => {
             let result = clipboard::copy(&text);
-            modes[shell.active].report_copy(result);
+            mode.report_copy(result);
         }
         // Apply a live syntax-theme switch. Updating the shared `Theme`
         // changes every diff cache's epoch (which now includes the theme
@@ -327,9 +280,7 @@ fn apply_app_command(
 
 /// The shell's owned, mode-agnostic state.
 struct Shell {
-    /// Active mode index ([`FILES_MODE`] / [`TRACES_MODE`]).
-    active: usize,
-    /// Shared sidebar width preference (one width for both modes).
+    /// Sidebar width preference.
     sidebar_pref: Preference,
     /// True while the left button is held on the pane divider.
     dragging_divider: bool,
@@ -341,33 +292,33 @@ struct Shell {
     /// `syntax_theme_name`). Seeds the picker's initial cursor and marks the
     /// active row; the `run()` loop keeps the shared `Theme` in lockstep.
     syntax_theme: String,
-    /// Current diff change-layout, shared by both modes. Cycled with `\`.
+    /// Current diff change-layout. Cycled with `\`.
     change_layout: ChangeLayout,
     /// One-shot: force the next frame to draw `Full` (set by a layout
     /// toggle so the diff rebuilds without a scroll-resetting placeholder).
     force_full: bool,
     /// Last-drawn left-column rect, for divider hit-testing.
     left_rect: Rect,
-    /// Per-mode change receivers, armed lazily on first activation.
-    receivers: [Option<ChangeReceiver>; MODE_COUNT],
-    watch_errors: [Option<String>; MODE_COUNT],
-    watch_retry_at: [Option<Instant>; MODE_COUNT],
-    watch_retry_delay: [Duration; MODE_COUNT],
-    reload_retry_at: [Option<Instant>; MODE_COUNT],
-    refresh_now: [bool; MODE_COUNT],
-    reload_errors: [Option<String>; MODE_COUNT],
-    /// Whether each mode's watcher has been armed yet.
-    armed: [bool; MODE_COUNT],
-    /// Whether each mode has been built for real yet (vs the startup
+    /// The mode's change receiver, armed after the first build.
+    receiver: Option<ChangeReceiver>,
+    watch_error: Option<String>,
+    watch_retry_at: Option<Instant>,
+    watch_retry_delay: Duration,
+    reload_retry_at: Option<Instant>,
+    refresh_now: bool,
+    reload_error: Option<String>,
+    /// Whether the mode's watcher has been armed yet.
+    armed: bool,
+    /// Whether the mode has been built for real yet (vs the startup
     /// empty placeholder).
-    built: [bool; MODE_COUNT],
-    /// Last-known terminal width, for sizing a lazily-built mode.
+    built: bool,
+    /// Last-known terminal width, for sizing the lazily-built mode.
     total_width: u16,
-    /// Per-mode dirty timestamps (first change of the current batch).
-    dirty_since: [Option<Instant>; MODE_COUNT],
-    /// Set on a mode toggle to force an immediate reload of the now-active
-    /// mode if it is dirty.
-    toggle_pending: bool,
+    /// Dirty timestamp (first change of the current batch).
+    dirty_since: Option<Instant>,
+    /// Set when the user returns (focus regained, foreground command
+    /// finished) to force an immediate reload if the mode is dirty.
+    resume_pending: bool,
     /// Whether the most recent input burst was empty (a poll timeout). When
     /// false, the user is actively navigating and the next frame draws
     /// `Fast`; when true, it draws `Full`.
@@ -381,14 +332,8 @@ struct Shell {
 }
 
 impl Shell {
-    fn new(
-        active: usize,
-        sidebar_pref: Preference,
-        total_width: u16,
-        syntax_theme: String,
-    ) -> Self {
+    fn new(sidebar_pref: Preference, total_width: u16, syntax_theme: String) -> Self {
         Self {
-            active,
             sidebar_pref,
             dragging_divider: false,
             help_visible: false,
@@ -397,18 +342,18 @@ impl Shell {
             change_layout: ChangeLayout::Grouped,
             force_full: false,
             left_rect: Rect::default(),
-            receivers: [None, None],
-            armed: [false, false],
-            watch_errors: [None, None],
-            watch_retry_at: [None, None],
-            watch_retry_delay: [DEBOUNCE_DELAY; MODE_COUNT],
-            reload_retry_at: [None, None],
-            refresh_now: [false; MODE_COUNT],
-            reload_errors: [None, None],
-            built: [false, false],
+            receiver: None,
+            armed: false,
+            watch_error: None,
+            watch_retry_at: None,
+            watch_retry_delay: DEBOUNCE_DELAY,
+            reload_retry_at: None,
+            refresh_now: false,
+            reload_error: None,
+            built: false,
             total_width,
-            dirty_since: [None, None],
-            toggle_pending: false,
+            dirty_since: None,
+            resume_pending: false,
             input_idle: true,
             focused: None,
             repaint: true,
@@ -425,26 +370,23 @@ impl Shell {
         self.interactive() && self.repaint
     }
 
-    fn poll_background(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT]) -> bool {
-        let mut pending = false;
-        for (index, mode) in modes.iter_mut().enumerate() {
-            let active = self.interactive() && index == self.active && self.built[index];
-            let work = mode.background(active);
-            if mode.take_refresh_request() {
-                self.dirty_since[index].get_or_insert_with(Instant::now);
-                self.refresh_now[index] = true;
-            }
-            if active {
-                self.repaint |= work.changed;
-                pending |= work.pending;
-            }
+    fn poll_background(&mut self, mode: &mut Box<dyn Mode>) -> bool {
+        let active = self.interactive() && self.built;
+        let work = mode.background(active);
+        if mode.take_refresh_request() {
+            self.dirty_since.get_or_insert_with(Instant::now);
+            self.refresh_now = true;
         }
-        pending
+        if !active {
+            return false;
+        }
+        self.repaint |= work.changed;
+        work.pending
     }
 
     fn resume(&mut self) {
         if !self.interactive() {
-            self.toggle_pending = true;
+            self.resume_pending = true;
             self.force_full = true;
         }
         self.focused = Some(true);
@@ -453,84 +395,80 @@ impl Shell {
 
     fn foreground_returned(&mut self) {
         self.focused = None;
-        self.toggle_pending = true;
+        self.resume_pending = true;
         self.force_full = true;
         self.repaint = true;
     }
 
     fn refresh_error(&self) -> Option<String> {
-        self.watch_errors[self.active]
+        self.watch_error
             .as_ref()
             .map(|err| format!("Auto-refresh unavailable: {err}"))
             .or_else(|| {
-                self.reload_errors[self.active]
+                self.reload_error
                     .as_ref()
                     .map(|err| format!("Refresh failed; retrying: {err}"))
             })
     }
 
     /// Install once, or replace a failed backend with bounded backoff.
-    fn arm(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT], index: usize) {
-        if self.armed[index] {
+    fn arm(&mut self, mode: &mut Box<dyn Mode>) {
+        if self.armed {
             return;
         }
-        match modes[index].watch() {
+        match mode.watch() {
             Ok(receiver) => {
-                if self.watch_errors[index].take().is_some() && receiver.is_some() {
-                    self.dirty_since[index].get_or_insert_with(Instant::now);
+                if self.watch_error.take().is_some() && receiver.is_some() {
+                    self.dirty_since.get_or_insert_with(Instant::now);
                 }
-                self.receivers[index] = receiver;
-                self.armed[index] = true;
-                self.watch_retry_at[index] = None;
-                self.watch_retry_delay[index] = DEBOUNCE_DELAY;
+                self.receiver = receiver;
+                self.armed = true;
+                self.watch_retry_at = None;
+                self.watch_retry_delay = DEBOUNCE_DELAY;
             }
-            Err(err) => self.watch_failed(index, err),
+            Err(err) => self.watch_failed(err),
         }
     }
 
-    fn watch_failed(&mut self, index: usize, error: String) {
-        self.receivers[index] = None;
-        self.armed[index] = false;
-        self.watch_errors[index] = Some(error);
-        self.watch_retry_at[index] = Some(Instant::now() + self.watch_retry_delay[index]);
-        self.watch_retry_delay[index] =
-            (self.watch_retry_delay[index] * 2).min(MAX_WATCH_RETRY_DELAY);
+    fn watch_failed(&mut self, error: String) {
+        self.receiver = None;
+        self.armed = false;
+        self.watch_error = Some(error);
+        self.watch_retry_at = Some(Instant::now() + self.watch_retry_delay);
+        self.watch_retry_delay = (self.watch_retry_delay * 2).min(MAX_WATCH_RETRY_DELAY);
     }
 
-    /// Take one bounded batch per watcher. Events arriving during a reload
-    /// remain in the accumulator until the next loop.
-    fn drain_watchers(&mut self, modes: &mut [Box<dyn Mode>; MODE_COUNT]) {
+    /// Take one bounded batch from the watcher. Events arriving during a
+    /// reload remain in the accumulator until the next loop.
+    fn drain_watchers(&mut self, mode: &mut Box<dyn Mode>) {
         if !self.interactive() {
             return;
         }
         let previous_error = self.refresh_error();
-        for index in 0..MODE_COUNT {
-            if self.built[index]
-                && !self.armed[index]
-                && self.watch_retry_at[index].is_none_or(|at| Instant::now() >= at)
-            {
-                self.arm(modes, index);
-            }
-            let Some(receiver) = self.receivers[index].as_ref() else {
-                continue;
-            };
-            let batch = receiver.take();
-            if let Some(error) = batch.error {
-                self.watch_failed(index, error);
-                continue;
-            }
-            let paths: Vec<_> = batch.paths.into_iter().collect();
-            if (batch.rescan || !paths.is_empty())
-                && modes[index].notify_changes(&paths, batch.rescan)
-            {
-                self.dirty_since[index].get_or_insert_with(Instant::now);
-            }
-        }
+        self.drain_watcher(mode);
         self.repaint |= self.refresh_error() != previous_error;
     }
 
+    fn drain_watcher(&mut self, mode: &mut Box<dyn Mode>) {
+        if self.built && !self.armed && self.watch_retry_at.is_none_or(|at| Instant::now() >= at) {
+            self.arm(mode);
+        }
+        let Some(receiver) = self.receiver.as_ref() else {
+            return;
+        };
+        let batch = receiver.take();
+        if let Some(error) = batch.error {
+            self.watch_failed(error);
+            return;
+        }
+        let paths: Vec<_> = batch.paths.into_iter().collect();
+        if (batch.rescan || !paths.is_empty()) && mode.notify_changes(&paths, batch.rescan) {
+            self.dirty_since.get_or_insert_with(Instant::now);
+        }
+    }
+
     /// The draw budget for the current frame: `Full` when input has
-    /// settled, `Fast` while a navigation key is streaming so modes can
+    /// settled, `Fast` while a navigation key is streaming so the mode can
     /// defer expensive rendering.
     ///
     /// A one-shot `force_full` overrides the streaming heuristic for the
@@ -563,7 +501,7 @@ impl Shell {
         if !self.interactive() {
             return POLL_TIMEOUT;
         }
-        if self.refresh_now[self.active] {
+        if self.refresh_now {
             return Duration::ZERO;
         }
         let mut timeout = if self.input_idle {
@@ -571,13 +509,13 @@ impl Shell {
         } else {
             SETTLE_TIMEOUT
         };
-        if let Some(since) = self.dirty_since[self.active] {
+        if let Some(since) = self.dirty_since {
             timeout = timeout.min(DEBOUNCE_DELAY.saturating_sub(since.elapsed()));
         }
-        if let Some(at) = self.reload_retry_at[self.active] {
+        if let Some(at) = self.reload_retry_at {
             timeout = timeout.min(at.saturating_duration_since(Instant::now()));
         }
-        for at in self.watch_retry_at.iter().flatten() {
+        if let Some(at) = self.watch_retry_at {
             timeout = timeout.min(at.saturating_duration_since(Instant::now()));
         }
         timeout
@@ -598,41 +536,11 @@ impl Shell {
         matches!(self.divider_columns(), Some((a, b)) if col == a || col == b)
     }
 
-    /// Cycle the active mode by one step (`forward` = `]`, else `[`),
-    /// wrapping around, and arm an immediate lazy reload if the now-active
-    /// mode is dirty.
-    fn cycle(&mut self, forward: bool) {
-        let next = if forward {
-            (self.active + 1) % MODE_COUNT
-        } else {
-            (self.active + MODE_COUNT - 1) % MODE_COUNT
-        };
-        self.select_mode(next);
-    }
-
-    /// Make mode `index` active and arm an immediate lazy reload if it is
-    /// dirty. Shared by keyboard cycling (`cycle`) and tab clicks. A
-    /// no-op when `index` is already active, so re-selecting the current
-    /// tab never sets a spurious reload.
-    fn select_mode(&mut self, index: usize) {
-        if index == self.active {
-            return;
-        }
-        self.active = index;
-        self.toggle_pending = true;
-    }
-
-    /// Build the active mode for real once its loading frame is on screen.
+    /// Build the mode for real once its loading frame is on screen.
     /// No-op if already built. The mode watches before loading its snapshot;
     /// retain those pending events and schedule recovery if the read failed.
-    fn build_active(
-        &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
-        vp: ReloadViewport,
-        theme: &Theme,
-    ) {
-        let i = self.active;
-        if self.built[i] || !self.interactive() {
+    fn build(&mut self, mode: &mut Box<dyn Mode>, vp: ReloadViewport, theme: &Theme) {
+        if self.built || !self.interactive() {
             return;
         }
         let dw = if vp.right_width > 0 {
@@ -643,55 +551,56 @@ impl Shell {
                 self.total_width,
             ))
         };
-        modes[i] = build_mode(i, theme, dw);
-        self.built[i] = true;
-        self.dirty_since[i] = None;
-        self.arm(modes, i);
-        if modes[i].retry_reload() {
-            self.reload_retry_at[i] = Some(Instant::now() + DEBOUNCE_DELAY);
+        *mode = Box::new(FilesMode::build(theme, dw));
+        self.built = true;
+        self.dirty_since = None;
+        self.arm(mode);
+        if mode.retry_reload() {
+            self.reload_retry_at = Some(Instant::now() + DEBOUNCE_DELAY);
         }
-        self.toggle_pending = false;
+        self.resume_pending = false;
         self.repaint = true;
     }
 
-    /// Reload the active mode if its debounce has elapsed or a toggle
-    /// just made it active while dirty.
-    fn reload_active_if_due(
+    /// Reload the mode if its debounce has elapsed, or right away when the
+    /// user just returned while it was dirty.
+    fn reload_if_due(
         &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
+        mode: &mut Box<dyn Mode>,
         vp: ReloadViewport,
         theme: &Theme,
     ) -> Result<(), String> {
         if !self.interactive() {
             return Ok(());
         }
-        let active = self.active;
-        let due = self.refresh_now[active]
-            || self.dirty_since[active].is_some_and(|s| s.elapsed() >= DEBOUNCE_DELAY);
-        let retry_due = self.reload_retry_at[active].is_some_and(|at| Instant::now() >= at);
-        if due || retry_due || self.toggle_pending {
-            if self.dirty_since[active].is_some() || self.reload_retry_at[active].is_some() {
+        let due = self.refresh_now
+            || self
+                .dirty_since
+                .is_some_and(|s| s.elapsed() >= DEBOUNCE_DELAY);
+        let retry_due = self.reload_retry_at.is_some_and(|at| Instant::now() >= at);
+        if due || retry_due || self.resume_pending {
+            if self.dirty_since.is_some() || self.reload_retry_at.is_some() {
                 let previous_error = self.refresh_error();
-                let result = modes[active].reload(vp, theme);
+                let result = mode.reload(vp, theme);
                 let changed = result.as_ref().is_ok_and(|changed| *changed);
-                self.dirty_since[active] = None;
-                self.refresh_now[active] = false;
-                let failed = result.is_err() || modes[active].retry_reload();
-                self.reload_errors[active] = result.err();
-                self.reload_retry_at[active] = failed.then(|| Instant::now() + READ_RETRY_DELAY);
+                self.dirty_since = None;
+                self.refresh_now = false;
+                let failed = result.is_err() || mode.retry_reload();
+                self.reload_error = result.err();
+                self.reload_retry_at = failed.then(|| Instant::now() + READ_RETRY_DELAY);
                 self.repaint |= changed || self.refresh_error() != previous_error;
                 self.force_full |= changed;
             }
-            self.toggle_pending = false;
+            self.resume_pending = false;
         }
         Ok(())
     }
 
     /// Handle a key already in the shell. Global bindings are consumed
-    /// here; everything else routes to the active mode.
+    /// here; everything else routes to the mode.
     fn handle_key(
         &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
+        mode: &mut Box<dyn Mode>,
         key: KeyCode,
         left_viewport: usize,
         right_viewport: usize,
@@ -700,8 +609,8 @@ impl Shell {
         // bindings and custom-command keys are typed as literal text —
         // `q` included — and `Esc` closes the editor. Checked first, since
         // there is no way to type a `q` otherwise.
-        if modes[self.active].captures_text_input() {
-            return modes[self.active].handle_key(key, left_viewport, right_viewport);
+        if mode.captures_text_input() {
+            return mode.handle_key(key, left_viewport, right_viewport);
         }
         // `q` quits from anywhere, popup or not.
         if key == KeyCode::Char('q') {
@@ -725,15 +634,6 @@ impl Shell {
                 self.theme_picker = Some(ThemePicker::open(&self.syntax_theme));
                 AppCommand::Continue
             }
-            // `]` cycles to the next mode, `[` to the previous.
-            KeyCode::Char(']') => {
-                self.cycle(true);
-                AppCommand::Continue
-            }
-            KeyCode::Char('[') => {
-                self.cycle(false);
-                AppCommand::Continue
-            }
             KeyCode::Char('>') => {
                 self.sidebar_pref.widen();
                 AppCommand::Continue
@@ -742,7 +642,7 @@ impl Shell {
                 self.sidebar_pref.narrow();
                 AppCommand::Continue
             }
-            // `\` cycles the diff change-layout for both modes. The cache
+            // `\` cycles the diff change-layout. The cache
             // keys on layout, so the next draw rebuilds.
             KeyCode::Char('\\') => {
                 self.change_layout = next_layout(self.change_layout);
@@ -751,16 +651,14 @@ impl Shell {
                 self.force_full = true;
                 AppCommand::Continue
             }
-            key if modes[self.active].reserves_key(key) => {
-                modes[self.active].handle_key(key, left_viewport, right_viewport)
-            }
+            key if mode.reserves_key(key) => mode.handle_key(key, left_viewport, right_viewport),
             // Custom commands take priority over unreserved mode keys (but not
             // over the shell globals above). A bound key with a selectable
             // file expands and bubbles up a Run request; with nothing
             // selected it is a silent no-op.
             KeyCode::Char(c) if self.command_for(c).is_some() => {
                 let cmd = self.command_for(c).expect("checked by guard");
-                match modes[self.active].selected_path() {
+                match mode.selected_path() {
                     Some(path) => AppCommand::Run(CustomRun {
                         command: command::expand(&cmd.command, &path),
                         subprocess: cmd.subprocess,
@@ -768,7 +666,7 @@ impl Shell {
                     None => AppCommand::Continue,
                 }
             }
-            other => modes[self.active].handle_key(other, left_viewport, right_viewport),
+            other => mode.handle_key(other, left_viewport, right_viewport),
         }
     }
 
@@ -800,10 +698,10 @@ impl Shell {
     }
 
     /// Handle a mouse event. Divider drag is resolved here; everything
-    /// else routes to the active mode.
+    /// else routes to the mode.
     fn handle_mouse(
         &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
+        mode: &mut Box<dyn Mode>,
         mouse: MouseEvent,
         left_viewport: usize,
         right_viewport: usize,
@@ -811,21 +709,8 @@ impl Shell {
         if self.help_visible || self.theme_picker.is_some() {
             return AppCommand::Continue;
         }
-        if modes[self.active].captures_text_input() {
-            return modes[self.active].handle_mouse(mouse, left_viewport, right_viewport);
-        }
-        // A left-click on a tab label in the top-left panel title switches
-        // to that mode, matching keyboard `[`/`]`. The strip sits on the
-        // left column's top border row, one column in from its left edge.
-        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && mouse.row == self.left_rect.y
-            && let Some(index) = (TabStrip {
-                active: self.active,
-            })
-            .hit_test(mouse.column, self.left_rect.x.saturating_add(1))
-        {
-            self.select_mode(index);
-            return AppCommand::Continue;
+        if mode.captures_text_input() {
+            return mode.handle_mouse(mouse, left_viewport, right_viewport);
         }
         match mouse.kind {
             MouseEventKind::Up(MouseButton::Left) => {
@@ -841,14 +726,14 @@ impl Shell {
             }
             _ => {}
         }
-        modes[self.active].handle_mouse(mouse, left_viewport, right_viewport)
+        mode.handle_mouse(mouse, left_viewport, right_viewport)
     }
 
     /// Apply a whole burst of input events, stopping early on `Quit`.
     /// Sidebar-resize keys (`<`/`>`) are coalesced to one step per burst.
     fn apply_events(
         &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
+        mode: &mut Box<dyn Mode>,
         events: impl IntoIterator<Item = Event>,
         vp: ReloadViewport,
         _theme: &Theme,
@@ -868,7 +753,7 @@ impl Shell {
             if is_resize_key(&event) && std::mem::replace(&mut resized, true) {
                 continue;
             }
-            let cmd = self.dispatch(modes, event, vp);
+            let cmd = self.dispatch(mode, event, vp);
             if cmd == AppCommand::Quit {
                 return Ok(cmd);
             }
@@ -879,10 +764,10 @@ impl Shell {
         Ok(command)
     }
 
-    /// Dispatch one input event to the global handlers / active mode.
+    /// Dispatch one input event to the global handlers / the mode.
     fn dispatch(
         &mut self,
-        modes: &mut [Box<dyn Mode>; MODE_COUNT],
+        mode: &mut Box<dyn Mode>,
         event: Event,
         vp: ReloadViewport,
     ) -> AppCommand {
@@ -903,27 +788,20 @@ impl Shell {
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.resume();
-                self.handle_key(modes, key.code, vp.left_viewport, vp.right_viewport)
+                self.handle_key(mode, key.code, vp.left_viewport, vp.right_viewport)
             }
             Event::Mouse(mouse) => {
                 self.resume();
-                self.handle_mouse(modes, mouse, vp.left_viewport, vp.right_viewport)
+                self.handle_mouse(mode, mouse, vp.left_viewport, vp.right_viewport)
             }
             _ => AppCommand::Continue,
         }
     }
 }
 
-/// Render the loading frame for a not-yet-built active mode: the tab
-/// strip in the top-left panel (so the toggle is visible) plus a centered
-/// `Loading…` message in both columns.
-fn draw_loading(
-    frame: &mut ratatui::Frame<'_>,
-    left: Rect,
-    right: Rect,
-    tabs: TabStrip,
-    theme: &Theme,
-) {
+/// Render the loading frame shown before the mode is built: the sidebar
+/// title plus a centered `Loading…` message in both columns.
+fn draw_loading(frame: &mut ratatui::Frame<'_>, left: Rect, right: Rect, theme: &Theme) {
     let border = rgb_to_color(theme.border);
     let muted = Style::default().fg(rgb_to_color(theme.muted));
     let loading = |block| {
@@ -933,24 +811,14 @@ fn draw_loading(
             .block(block)
     };
     frame.render_widget(
-        loading(pane_block_with_tabs(
-            tabs.title_line(border, theme),
+        loading(pane_block_with_title_line(
+            files::sidebar_title(border, theme),
             border,
             None,
         )),
         left,
     );
     frame.render_widget(loading(pane_block("─Diff─", border)), right);
-}
-
-/// Build a mode for real on first activation. Each mode folds its own
-/// build failure into a renderable state (Files shows an error message;
-/// Traces degrades to empty) so a toggle never aborts the session.
-fn build_mode(index: usize, theme: &Theme, diff_width: usize) -> Box<dyn Mode> {
-    match index {
-        FILES_MODE => Box::new(FilesMode::build(theme, diff_width)),
-        _ => Box::new(TracesMode::build().unwrap_or_else(|_| TracesMode::empty())),
-    }
 }
 
 /// Toggle the diff change-layout: `Grouped ⇆ interleaved`. Interleaved uses

@@ -1,7 +1,7 @@
-//! Shell tests: global key handling, mode toggle, routing to the active
-//! mode, divider drag, sidebar resize, and lazy reload on toggle. Driven
-//! against the [`Mode`] interface via a recording mock, so they describe
-//! shell behaviour independent of either concrete mode.
+//! Shell tests: global key handling, routing to the mode, divider drag,
+//! sidebar resize, and reload timing. Driven against the [`Mode`]
+//! interface via a recording mock, so they describe shell behaviour
+//! independent of `FilesMode`.
 
 use crate::cli::browse::watch::ChangeReceiver;
 use std::cell::RefCell;
@@ -54,7 +54,6 @@ impl Mode for RecordingMode {
         _frame: &mut ratatui::Frame<'_>,
         _left: Rect,
         _right: Rect,
-        _tabs: TabStrip,
         _layout: deltoids::ChangeLayout,
         _theme: &Theme,
         _budget: DrawBudget,
@@ -124,23 +123,16 @@ mod focus;
 
 type Rec = Rc<RefCell<Recorder>>;
 
-fn two_modes() -> ([Box<dyn Mode>; MODE_COUNT], Rec, Rec) {
-    let (files, files_rec) = RecordingMode::new();
-    let (traces, traces_rec) = RecordingMode::new();
-    let modes: [Box<dyn Mode>; MODE_COUNT] = [Box::new(files), Box::new(traces)];
-    (modes, files_rec, traces_rec)
+fn one_mode() -> (Box<dyn Mode>, Rec) {
+    let (mode, rec) = RecordingMode::new();
+    (Box::new(mode), rec)
 }
 
 fn shell() -> Shell {
-    let mut s = Shell::new(
-        FILES_MODE,
-        Preference::seeded(200),
-        200,
-        "TokyoNight".to_string(),
-    );
-    // Mock modes are already real; mark them built so a cycle never
-    // replaces them with a concrete FilesMode/TracesMode.
-    s.built = [true, true];
+    let mut s = Shell::new(Preference::seeded(200), 200, "TokyoNight".to_string());
+    // The mock mode is already real; mark it built so the shell never
+    // replaces it with a concrete FilesMode.
+    s.built = true;
     s
 }
 
@@ -159,12 +151,12 @@ fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
 
 #[test]
 fn completed_action_refreshes_the_active_mode_immediately() {
-    let (mut modes, files, _) = two_modes();
+    let (mut mode, files) = one_mode();
     let mut s = shell();
     files.borrow_mut().refresh_requested = true;
     let start = Instant::now();
-    s.poll_background(&mut modes);
-    s.reload_active_if_due(&mut modes, ReloadViewport::default(), &Theme::default())
+    s.poll_background(&mut mode);
+    s.reload_if_due(&mut mode, ReloadViewport::default(), &Theme::default())
         .unwrap();
     assert_eq!(
         files.borrow().reloads,
@@ -177,7 +169,7 @@ fn completed_action_refreshes_the_active_mode_immediately() {
 
 #[test]
 fn reserved_mode_actions_beat_custom_commands() {
-    let (mut modes, files, _) = two_modes();
+    let (mut mode, files) = one_mode();
     let mut s = shell();
     s.commands = vec![
         custom_command('a', "touch unwanted", false),
@@ -186,7 +178,7 @@ fn reserved_mode_actions_beat_custom_commands() {
     files.borrow_mut().reserve_actions = true;
     for key in ['a', 'd'] {
         assert_eq!(
-            s.handle_key(&mut modes, KeyCode::Char(key), 20, 20),
+            s.handle_key(&mut mode, KeyCode::Char(key), 20, 20),
             AppCommand::Continue
         );
     }
@@ -197,39 +189,14 @@ fn reserved_mode_actions_beat_custom_commands() {
 }
 
 #[test]
-fn completed_mutation_refreshes_without_notifications_and_survives_mode_switch() {
-    let (mut modes, files, traces) = two_modes();
+fn modal_input_blocks_divider_drags() {
     let mut s = shell();
-    s.active = TRACES_MODE;
-    files.borrow_mut().refresh_requested = true;
-    s.poll_background(&mut modes);
-    assert!(s.dirty_since[FILES_MODE].is_some());
-    s.select_mode(FILES_MODE);
-    s.reload_active_if_due(&mut modes, ReloadViewport::default(), &Theme::default())
-        .unwrap();
-    assert_eq!(files.borrow().reloads, 1);
-    assert_eq!(traces.borrow().reloads, 0);
-    s.poll_background(&mut modes);
-    assert!(s.dirty_since[FILES_MODE].is_none());
-}
-
-#[test]
-fn modal_input_blocks_tab_clicks_and_divider_drags() {
-    let (mut modes, _, _) = two_modes();
-    let mut s = shell();
-    let (mut mode, _) = RecordingMode::new();
-    mode.capturing = true;
-    modes[FILES_MODE] = Box::new(mode);
+    let (mut capturing, _) = RecordingMode::new();
+    capturing.capturing = true;
+    let mut mode: Box<dyn Mode> = Box::new(capturing);
     s.left_rect = Rect::new(0, 0, 50, 20);
     s.handle_mouse(
-        &mut modes,
-        mouse(MouseEventKind::Down(MouseButton::Left), 17, 0),
-        20,
-        20,
-    );
-    assert_eq!(s.active, FILES_MODE);
-    s.handle_mouse(
-        &mut modes,
+        &mut mode,
         mouse(MouseEventKind::Down(MouseButton::Left), 49, 3),
         20,
         20,
@@ -239,15 +206,15 @@ fn modal_input_blocks_tab_clicks_and_divider_drags() {
 
 #[test]
 fn q_quits_and_esc_routes_to_the_active_mode() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     assert_eq!(
-        s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
+        s.handle_key(&mut mode, KeyCode::Char('q'), 4, 4),
         AppCommand::Quit
     );
     // Esc is not a quit key outside the help popup: it reaches the mode.
     assert_eq!(
-        s.handle_key(&mut modes, KeyCode::Esc, 4, 4),
+        s.handle_key(&mut mode, KeyCode::Esc, 4, 4),
         AppCommand::Continue
     );
     assert_eq!(files_rec.borrow().keys, vec![KeyCode::Esc]);
@@ -273,14 +240,14 @@ fn draw_budget_follows_input_idle() {
 
 #[test]
 fn question_mark_toggles_help_and_help_swallows_keys() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
-    s.handle_key(&mut modes, KeyCode::Char('?'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('?'), 4, 4);
     assert!(s.help_visible);
 
     // While help is up, Esc closes the popup and does not reach the
     // active mode.
-    let cmd = s.handle_key(&mut modes, KeyCode::Esc, 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Esc, 4, 4);
     assert_eq!(cmd, AppCommand::Continue);
     assert!(!s.help_visible);
     assert!(files_rec.borrow().keys.is_empty());
@@ -288,20 +255,20 @@ fn question_mark_toggles_help_and_help_swallows_keys() {
 
 #[test]
 fn t_opens_theme_picker_and_picking_applies_and_closes() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     // `t` opens the modal picker; the key does not reach the active mode.
-    s.handle_key(&mut modes, KeyCode::Char('t'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('t'), 4, 4);
     assert!(s.theme_picker.is_some());
     assert!(files_rec.borrow().keys.is_empty());
 
     // Navigation is swallowed by the modal picker.
-    let cmd = s.handle_key(&mut modes, KeyCode::Char('j'), 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Char('j'), 4, 4);
     assert_eq!(cmd, AppCommand::Continue);
     assert!(files_rec.borrow().keys.is_empty());
 
     // Enter applies the cursor theme, bubbles SetSyntaxTheme, and closes.
-    let cmd = s.handle_key(&mut modes, KeyCode::Enter, 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Enter, 4, 4);
     match cmd {
         AppCommand::SetSyntaxTheme(name) => {
             assert_eq!(name, s.syntax_theme);
@@ -313,12 +280,12 @@ fn t_opens_theme_picker_and_picking_applies_and_closes() {
 
 #[test]
 fn esc_closes_theme_picker_without_applying() {
-    let (mut modes, _, _) = two_modes();
+    let (mut mode, _) = one_mode();
     let mut s = shell();
-    s.handle_key(&mut modes, KeyCode::Char('t'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('t'), 4, 4);
     assert!(s.theme_picker.is_some());
     let before = s.syntax_theme.clone();
-    let cmd = s.handle_key(&mut modes, KeyCode::Esc, 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Esc, 4, 4);
     assert_eq!(cmd, AppCommand::Continue);
     assert!(s.theme_picker.is_none());
     assert_eq!(s.syntax_theme, before, "Esc must not change the theme");
@@ -326,56 +293,36 @@ fn esc_closes_theme_picker_without_applying() {
 
 #[test]
 fn q_quits_even_with_the_help_popup_open() {
-    let (mut modes, _, _) = two_modes();
+    let (mut mode, _) = one_mode();
     let mut s = shell();
-    s.handle_key(&mut modes, KeyCode::Char('?'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('?'), 4, 4);
     assert!(s.help_visible);
     assert_eq!(
-        s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
+        s.handle_key(&mut mode, KeyCode::Char('q'), 4, 4),
         AppCommand::Quit
     );
 }
 
 #[test]
-fn bracket_cycles_active_mode() {
-    let (mut modes, _, _) = two_modes();
+fn brackets_route_to_the_mode() {
+    let (mut mode, rec) = one_mode();
     let mut s = shell();
-    assert_eq!(s.active, FILES_MODE);
-    // `]` cycles Files -> Traces -> Files.
-    s.handle_key(&mut modes, KeyCode::Char(']'), 4, 4);
-    assert_eq!(s.active, TRACES_MODE);
-    s.handle_key(&mut modes, KeyCode::Char(']'), 4, 4);
-    assert_eq!(s.active, FILES_MODE);
-    // `[` cycles the other way: Files -> Traces -> Files.
-    s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
-    assert_eq!(s.active, TRACES_MODE);
-    s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
-    assert_eq!(s.active, FILES_MODE);
+    s.handle_key(&mut mode, KeyCode::Char(']'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('['), 4, 4);
+    assert_eq!(
+        rec.borrow().keys,
+        vec![KeyCode::Char(']'), KeyCode::Char('[')]
+    );
 }
 
 #[test]
-fn nav_keys_route_to_active_mode_only() {
-    let (mut modes, files_rec, traces_rec) = two_modes();
-    let mut s = shell();
-    s.handle_key(&mut modes, KeyCode::Char('j'), 4, 4);
-    assert_eq!(files_rec.borrow().keys, vec![KeyCode::Char('j')]);
-    assert!(traces_rec.borrow().keys.is_empty());
-
-    s.cycle(true);
-    s.handle_key(&mut modes, KeyCode::Char('k'), 4, 4);
-    assert_eq!(traces_rec.borrow().keys, vec![KeyCode::Char('k')]);
-    // Files mode never saw the second key.
-    assert_eq!(files_rec.borrow().keys, vec![KeyCode::Char('j')]);
-}
-
-#[test]
-fn resize_keys_change_shared_sidebar_width() {
-    let (mut modes, _, _) = two_modes();
+fn resize_keys_change_sidebar_width() {
+    let (mut mode, _) = one_mode();
     let mut s = shell();
     let initial = s.sidebar_pref.effective(200);
-    s.handle_key(&mut modes, KeyCode::Char('>'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('>'), 4, 4);
     assert!(s.sidebar_pref.effective(200) > initial);
-    s.handle_key(&mut modes, KeyCode::Char('<'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('<'), 4, 4);
     assert_eq!(s.sidebar_pref.effective(200), initial);
 }
 
@@ -386,12 +333,12 @@ fn backslash_toggles_grouped_and_interleaved() {
     let interleaved = ChangeLayout::Interleaved {
         group: NonZeroUsize::new(1).unwrap(),
     };
-    let (mut modes, _, _) = two_modes();
+    let (mut mode, _) = one_mode();
     let mut s = shell();
     // Starts grouped, toggles to interleaved, and back.
     assert_eq!(s.change_layout, ChangeLayout::Grouped);
     for expected in [interleaved, ChangeLayout::Grouped] {
-        s.handle_key(&mut modes, KeyCode::Char('\\'), 4, 4);
+        s.handle_key(&mut mode, KeyCode::Char('\\'), 4, 4);
         assert_eq!(s.change_layout, expected);
     }
 }
@@ -400,12 +347,12 @@ fn backslash_toggles_grouped_and_interleaved() {
 fn backslash_forces_a_full_frame_so_scroll_survives() {
     // A layout toggle clears the diff cache; the next frame must be Full
     // (not a Fast placeholder that would clamp the saved scroll to the top).
-    let (mut modes, _, _) = two_modes();
+    let (mut mode, _) = one_mode();
     let mut s = shell();
     // Simulate a streaming frame: input just arrived, so the budget would
     // otherwise be Fast.
     s.note_input(false);
-    s.handle_key(&mut modes, KeyCode::Char('\\'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('\\'), 4, 4);
     assert_eq!(s.take_draw_budget(), DrawBudget::Full);
     // The flag is one-shot: the following frame falls back to the streaming
     // heuristic (still Fast until input settles).
@@ -414,7 +361,7 @@ fn backslash_forces_a_full_frame_so_scroll_survives() {
 
 #[test]
 fn divider_drag_resizes_and_release_ends() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     s.left_rect = Rect::new(0, 0, 38, 20); // divider at cols 37 / 38
     assert!(s.is_on_divider(37));
@@ -422,7 +369,7 @@ fn divider_drag_resizes_and_release_ends() {
     assert!(!s.is_on_divider(5));
 
     s.handle_mouse(
-        &mut modes,
+        &mut mode,
         mouse(MouseEventKind::Down(MouseButton::Left), 37, 5),
         18,
         18,
@@ -432,7 +379,7 @@ fn divider_drag_resizes_and_release_ends() {
     assert_eq!(files_rec.borrow().mouse, 0);
 
     s.handle_mouse(
-        &mut modes,
+        &mut mode,
         mouse(MouseEventKind::Drag(MouseButton::Left), 50, 5),
         18,
         18,
@@ -440,7 +387,7 @@ fn divider_drag_resizes_and_release_ends() {
     assert_eq!(s.sidebar_pref.effective(200), 51);
 
     s.handle_mouse(
-        &mut modes,
+        &mut mode,
         mouse(MouseEventKind::Up(MouseButton::Left), 50, 5),
         18,
         18,
@@ -449,110 +396,17 @@ fn divider_drag_resizes_and_release_ends() {
 }
 
 #[test]
-fn click_on_tab_switches_mode() {
-    let (mut modes, files_rec, _) = two_modes();
-    let mut s = shell();
-    // Wide left column at the origin so the whole strip renders; its top
-    // border row is y = 0, strip starts at x = 1.
-    s.left_rect = Rect::new(0, 0, 40, 20);
-    // With title_start_x = 1, the Traces label sits at cols 14..20.
-    s.handle_mouse(
-        &mut modes,
-        mouse(MouseEventKind::Down(MouseButton::Left), 15, 0),
-        18,
-        18,
-    );
-    assert_eq!(s.active, TRACES_MODE);
-    // The click was swallowed; the active mode never saw it.
-    assert_eq!(files_rec.borrow().mouse, 0);
-}
-
-#[test]
-fn click_off_tabs_routes_to_active_mode() {
-    let (mut modes, files_rec, _) = two_modes();
-    let mut s = shell();
-    s.left_rect = Rect::new(0, 0, 40, 20);
-    // Top row but on the prefix (col 2, inside `[1]`): not a label, so it
-    // routes to the active mode and does not switch.
-    s.handle_mouse(
-        &mut modes,
-        mouse(MouseEventKind::Down(MouseButton::Left), 2, 0),
-        18,
-        18,
-    );
-    assert_eq!(s.active, FILES_MODE);
-    assert_eq!(files_rec.borrow().mouse, 1);
-}
-
-#[test]
-fn click_below_top_row_is_not_a_tab_click() {
-    let (mut modes, files_rec, _) = two_modes();
-    let mut s = shell();
-    s.left_rect = Rect::new(0, 0, 40, 20);
-    // Same column as the Traces label but a row below the strip: routes to
-    // the mode, no switch.
-    s.handle_mouse(
-        &mut modes,
-        mouse(MouseEventKind::Down(MouseButton::Left), 15, 5),
-        18,
-        18,
-    );
-    assert_eq!(s.active, FILES_MODE);
-    assert_eq!(files_rec.borrow().mouse, 1);
-}
-
-#[test]
-fn click_on_active_tab_is_a_noop() {
-    let (mut modes, files_rec, _) = two_modes();
-    let mut s = shell();
-    s.left_rect = Rect::new(0, 0, 40, 20);
-    // Files label sits at cols 6..11; Files is already active.
-    s.handle_mouse(
-        &mut modes,
-        mouse(MouseEventKind::Down(MouseButton::Left), 7, 0),
-        18,
-        18,
-    );
-    assert_eq!(s.active, FILES_MODE);
-    // Swallowed, and no spurious reload flag.
-    assert_eq!(files_rec.borrow().mouse, 0);
-    assert!(!s.toggle_pending);
-}
-
-#[test]
 fn non_divider_mouse_routes_to_active_mode() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     s.left_rect = Rect::new(0, 0, 38, 20);
-    s.handle_mouse(&mut modes, mouse(MouseEventKind::ScrollDown, 50, 5), 18, 18);
+    s.handle_mouse(&mut mode, mouse(MouseEventKind::ScrollDown, 50, 5), 18, 18);
     assert_eq!(files_rec.borrow().mouse, 1);
-}
-
-#[test]
-fn toggle_to_dirty_mode_reloads_it_lazily() {
-    let (mut modes, files_rec, traces_rec) = two_modes();
-    let mut s = shell();
-    let vp = ReloadViewport::default();
-    let theme = Theme::default();
-
-    // Traces (inactive) becomes dirty while Files is active.
-    s.dirty_since[TRACES_MODE] = Some(Instant::now());
-    // No eager reload of the inactive mode.
-    s.reload_active_if_due(&mut modes, vp, &theme).unwrap();
-    assert_eq!(traces_rec.borrow().reloads, 0);
-
-    // Cycling to Traces reloads it immediately.
-    s.cycle(true);
-    s.reload_active_if_due(&mut modes, vp, &theme).unwrap();
-    assert_eq!(traces_rec.borrow().reloads, 1);
-    assert!(s.dirty_since[TRACES_MODE].is_none());
-    // Files was never reloaded.
-    assert_eq!(files_rec.borrow().reloads, 0);
 }
 
 #[test]
 fn apply_events_coalesces_repeated_resize_keys() {
-    let (mut modes, _, _) = two_modes();
+    let (mut mode, _) = one_mode();
     let mut s = shell();
     let vp = ReloadViewport::default();
     let theme = Theme::default();
@@ -563,27 +417,13 @@ fn apply_events_coalesces_repeated_resize_keys() {
         Event::Key(key(KeyCode::Char('>'))),
         Event::Key(key(KeyCode::Char('>'))),
     ];
-    s.apply_events(&mut modes, burst, vp, &theme).unwrap();
+    s.apply_events(&mut mode, burst, vp, &theme).unwrap();
     // One step per burst, not one per repeat.
     assert_eq!(s.sidebar_pref.effective(200), initial + 4);
 }
 
 #[test]
-fn toggle_is_instant_and_defers_build() {
-    let (mut modes, _, _) = two_modes();
-    let mut s = shell();
-    // Pretend the Traces mode hasn't been built yet.
-    s.built = [true, false];
-    s.cycle(true);
-    assert_eq!(s.active, TRACES_MODE);
-    // The flip is instant; the build is deferred to build_active so the
-    // loop can draw a loading frame first.
-    assert!(!s.built[TRACES_MODE], "cycle must not build eagerly");
-    let _ = &mut modes;
-}
-
-#[test]
-fn loading_frame_shows_tab_strip_and_message() {
+fn loading_frame_shows_sidebar_title_and_message() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::{Constraint, Direction, Layout};
@@ -596,15 +436,7 @@ fn loading_frame_shows_tab_strip_and_message() {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(28), Constraint::Min(10)])
             .split(area);
-        draw_loading(
-            f,
-            cols[0],
-            cols[1],
-            TabStrip {
-                active: TRACES_MODE,
-            },
-            &theme,
-        );
+        draw_loading(f, cols[0], cols[1], &theme);
     })
     .unwrap();
     let text: String = term
@@ -618,11 +450,7 @@ fn loading_frame_shows_tab_strip_and_message() {
         text.contains("Loading"),
         "loading message missing: {text:?}"
     );
-    assert!(text.contains("Files"), "tab strip missing Files: {text:?}");
-    assert!(
-        text.contains("Traces"),
-        "tab strip missing Traces: {text:?}"
-    );
+    assert!(text.contains("Files"), "sidebar title missing: {text:?}");
 }
 
 fn custom_command(key: char, command: &str, subprocess: bool) -> CustomCommand {
@@ -636,19 +464,16 @@ fn custom_command(key: char, command: &str, subprocess: bool) -> CustomCommand {
 
 #[test]
 fn custom_key_with_selected_path_returns_run() {
-    let (mut modes, _, _) = two_modes();
-    // Give Files mode a selected file.
-    let (files, files_rec) = RecordingMode::new();
-    modes[FILES_MODE] = Box::new(RecordingMode {
+    let (_, files_rec) = RecordingMode::new();
+    let mut mode: Box<dyn Mode> = Box::new(RecordingMode {
         rec: files_rec.clone(),
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: false,
     });
-    let _ = files;
     let mut s = shell();
     s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
 
-    let cmd = s.handle_key(&mut modes, KeyCode::Char('e'), 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Char('e'), 4, 4);
     assert_eq!(
         cmd,
         AppCommand::Run(CustomRun {
@@ -662,9 +487,8 @@ fn custom_key_with_selected_path_returns_run() {
 
 #[test]
 fn custom_key_preserves_subprocess_flag() {
-    let (mut modes, _, _) = two_modes();
     let (_, files_rec) = RecordingMode::new();
-    modes[FILES_MODE] = Box::new(RecordingMode {
+    let mut mode: Box<dyn Mode> = Box::new(RecordingMode {
         rec: files_rec,
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: false,
@@ -672,7 +496,7 @@ fn custom_key_preserves_subprocess_flag() {
     let mut s = shell();
     s.commands = vec![custom_command('E', "nvim {{filename}}", true)];
 
-    let cmd = s.handle_key(&mut modes, KeyCode::Char('E'), 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Char('E'), 4, 4);
     assert_eq!(
         cmd,
         AppCommand::Run(CustomRun {
@@ -684,12 +508,12 @@ fn custom_key_preserves_subprocess_flag() {
 
 #[test]
 fn custom_key_with_no_selection_is_noop() {
-    // Default mock modes have no selected path.
-    let (mut modes, files_rec, _) = two_modes();
+    // The default mock mode has no selected path.
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
 
-    let cmd = s.handle_key(&mut modes, KeyCode::Char('e'), 4, 4);
+    let cmd = s.handle_key(&mut mode, KeyCode::Char('e'), 4, 4);
     assert_eq!(cmd, AppCommand::Continue);
     // Silent no-op: the key is consumed, not routed to the mode.
     assert!(files_rec.borrow().keys.is_empty());
@@ -697,43 +521,42 @@ fn custom_key_with_no_selection_is_noop() {
 
 #[test]
 fn unconfigured_key_routes_to_mode() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
-    s.handle_key(&mut modes, KeyCode::Char('x'), 4, 4);
+    s.handle_key(&mut mode, KeyCode::Char('x'), 4, 4);
     assert_eq!(files_rec.borrow().keys, vec![KeyCode::Char('x')]);
 }
 
 #[test]
 fn global_builtins_beat_colliding_custom_binding() {
-    let (mut modes, _, _) = two_modes();
     let (_, files_rec) = RecordingMode::new();
-    modes[FILES_MODE] = Box::new(RecordingMode {
+    let mut mode: Box<dyn Mode> = Box::new(RecordingMode {
         rec: files_rec,
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: false,
     });
     let mut s = shell();
-    // Bind the same keys as the `q` quit and `[` cycle globals.
+    // Bind the same keys as the `q` quit and `>` resize globals.
     s.commands = vec![
         custom_command('q', "echo q", false),
-        custom_command('[', "echo bracket", false),
+        custom_command('>', "echo widen", false),
     ];
     // `q` still quits.
     assert_eq!(
-        s.handle_key(&mut modes, KeyCode::Char('q'), 4, 4),
+        s.handle_key(&mut mode, KeyCode::Char('q'), 4, 4),
         AppCommand::Quit
     );
-    // `[` still cycles, does not run the custom command.
-    assert_eq!(s.active, FILES_MODE);
-    let cmd = s.handle_key(&mut modes, KeyCode::Char('['), 4, 4);
+    // `>` still widens the sidebar, does not run the custom command.
+    let initial = s.sidebar_pref.effective(200);
+    let cmd = s.handle_key(&mut mode, KeyCode::Char('>'), 4, 4);
     assert_eq!(cmd, AppCommand::Continue);
-    assert_eq!(s.active, TRACES_MODE);
+    assert!(s.sidebar_pref.effective(200) > initial);
 }
 
 #[test]
 fn apply_events_quit_short_circuits() {
-    let (mut modes, files_rec, _) = two_modes();
+    let (mut mode, files_rec) = one_mode();
     let mut s = shell();
     let vp = ReloadViewport::default();
     let theme = Theme::default();
@@ -743,7 +566,7 @@ fn apply_events_quit_short_circuits() {
         Event::Key(key(KeyCode::Char('j'))),
     ];
     assert_eq!(
-        s.apply_events(&mut modes, burst, vp, &theme).unwrap(),
+        s.apply_events(&mut mode, burst, vp, &theme).unwrap(),
         AppCommand::Quit
     );
     // Only the first j reached the mode.
@@ -752,8 +575,8 @@ fn apply_events_quit_short_circuits() {
 
 #[test]
 fn capturing_mode_receives_every_key_including_globals() {
-    let (mut modes, files_rec, _) = two_modes();
-    modes[FILES_MODE] = Box::new(RecordingMode {
+    let (_, files_rec) = RecordingMode::new();
+    let mut mode: Box<dyn Mode> = Box::new(RecordingMode {
         rec: files_rec.clone(),
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: true,
@@ -765,93 +588,77 @@ fn capturing_mode_receives_every_key_including_globals() {
     for code in [
         KeyCode::Char('q'),
         KeyCode::Char('?'),
-        KeyCode::Char('['),
-        KeyCode::Char(']'),
         KeyCode::Char('<'),
         KeyCode::Char('>'),
         KeyCode::Char('e'),
         KeyCode::Esc,
     ] {
         assert_eq!(
-            s.handle_key(&mut modes, code, 4, 4),
+            s.handle_key(&mut mode, code, 4, 4),
             AppCommand::Continue,
             "{code:?} must not act as a global while a mode captures input"
         );
     }
 
-    assert_eq!(files_rec.borrow().keys.len(), 8);
-    assert_eq!(s.active, FILES_MODE, "mode cycling stayed put");
+    assert_eq!(files_rec.borrow().keys.len(), 6);
     assert!(!s.help_visible, "the help popup never opened");
 }
 
 #[test]
-fn idle_modes_do_not_reload_and_rescan_work_is_consumed_once() {
-    let (mut modes, files, traces) = two_modes();
+fn idle_mode_does_not_reload_and_rescan_work_is_consumed_once() {
+    let (mut mode, files) = one_mode();
     let mut shell = shell();
-    shell.armed = [true, true];
+    shell.armed = true;
     let theme = Theme::default();
     let viewport = ReloadViewport::default();
     for _ in 0..1000 {
-        shell.drain_watchers(&mut modes);
-        shell
-            .reload_active_if_due(&mut modes, viewport, &theme)
-            .unwrap();
+        shell.drain_watchers(&mut mode);
+        shell.reload_if_due(&mut mode, viewport, &theme).unwrap();
     }
     assert_eq!(files.borrow().reloads, 0);
-    assert_eq!(traces.borrow().reloads, 0);
 
     let dir = tempfile::tempdir().unwrap();
     let watcher = watch::ChangeWatcher::new(&[dir.path()]).unwrap();
     let receiver = watcher.receiver();
     receiver.request_rescan();
-    shell.receivers[FILES_MODE] = Some(receiver);
-    shell.drain_watchers(&mut modes);
-    shell.dirty_since[FILES_MODE] = Some(Instant::now() - DEBOUNCE_DELAY);
-    shell
-        .reload_active_if_due(&mut modes, viewport, &theme)
-        .unwrap();
-    shell.drain_watchers(&mut modes);
-    shell
-        .reload_active_if_due(&mut modes, viewport, &theme)
-        .unwrap();
+    shell.receiver = Some(receiver);
+    shell.drain_watchers(&mut mode);
+    shell.dirty_since = Some(Instant::now() - DEBOUNCE_DELAY);
+    shell.reload_if_due(&mut mode, viewport, &theme).unwrap();
+    shell.drain_watchers(&mut mode);
+    shell.reload_if_due(&mut mode, viewport, &theme).unwrap();
     assert_eq!(files.borrow().reloads, 1);
 }
 
 #[test]
 fn transient_read_retries_without_another_event_and_stops_after_success() {
-    let (mut modes, files, _) = two_modes();
+    let (mut mode, files) = one_mode();
     files.borrow_mut().read_failures = 1;
     let mut shell = shell();
-    shell.dirty_since[FILES_MODE] = Some(Instant::now() - DEBOUNCE_DELAY);
+    shell.dirty_since = Some(Instant::now() - DEBOUNCE_DELAY);
     let theme = Theme::default();
     let viewport = ReloadViewport::default();
-    shell
-        .reload_active_if_due(&mut modes, viewport, &theme)
-        .unwrap();
-    assert!(shell.reload_errors[FILES_MODE].is_some());
-    shell.reload_retry_at[FILES_MODE] = Some(Instant::now());
-    shell
-        .reload_active_if_due(&mut modes, viewport, &theme)
-        .unwrap();
-    assert!(shell.reload_errors[FILES_MODE].is_none());
-    assert!(shell.reload_retry_at[FILES_MODE].is_none());
-    shell
-        .reload_active_if_due(&mut modes, viewport, &theme)
-        .unwrap();
+    shell.reload_if_due(&mut mode, viewport, &theme).unwrap();
+    assert!(shell.reload_error.is_some());
+    shell.reload_retry_at = Some(Instant::now());
+    shell.reload_if_due(&mut mode, viewport, &theme).unwrap();
+    assert!(shell.reload_error.is_none());
+    assert!(shell.reload_retry_at.is_none());
+    shell.reload_if_due(&mut mode, viewport, &theme).unwrap();
     assert_eq!(files.borrow().reloads, 2);
 }
 
 #[test]
 fn watcher_failure_is_visible_and_installation_retries_without_scanning() {
-    let (mut modes, files, _) = two_modes();
+    let (mut mode, files) = one_mode();
     files.borrow_mut().watch_failures = 1;
     let mut shell = shell();
-    shell.arm(&mut modes, FILES_MODE);
-    assert!(shell.watch_errors[FILES_MODE].is_some());
+    shell.arm(&mut mode);
+    assert!(shell.watch_error.is_some());
     assert!(!shell.poll_timeout().is_zero());
-    shell.watch_retry_at[FILES_MODE] = Some(Instant::now());
-    shell.drain_watchers(&mut modes);
-    assert!(shell.watch_errors[FILES_MODE].is_none());
-    assert!(shell.armed[FILES_MODE]);
+    shell.watch_retry_at = Some(Instant::now());
+    shell.drain_watchers(&mut mode);
+    assert!(shell.watch_error.is_none());
+    assert!(shell.armed);
     assert_eq!(files.borrow().reloads, 0);
 }

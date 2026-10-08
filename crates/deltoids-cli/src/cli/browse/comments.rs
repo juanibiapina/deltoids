@@ -1,4 +1,4 @@
-//! Session-only review comments on diff lines, shared by both TUI modes.
+//! Session-only review comments on working-tree diff lines.
 //!
 //! Comments are keyed by file line number rather than hunk index, because
 //! Files mode re-diffs the working tree and hunk indices shift on every
@@ -8,16 +8,6 @@
 use std::collections::HashMap;
 
 use deltoids::{Hunk, LineKind};
-
-/// Which diff a comment belongs to: the working tree, or one trace entry.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum CommentScope {
-    WorkingTree,
-    TraceEntry {
-        trace_id: String,
-        entry_index: usize,
-    },
-}
 
 /// The file version a line number counts against. Staged and unstaged
 /// diffs number lines against the git `Index`, between HEAD (`Old`) and
@@ -37,7 +27,7 @@ pub(super) struct Numbering {
 }
 
 impl Numbering {
-    /// HEAD → worktree, or a trace entry.
+    /// HEAD → worktree.
     pub(super) const PLAIN: Self = Self {
         old: LineSide::Old,
         new: LineSide::New,
@@ -57,7 +47,6 @@ impl Numbering {
 /// What a comment is attached to: one line of one file in one diff.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct CommentAnchor {
-    pub(super) scope: CommentScope,
     pub(super) path: String,
     pub(super) side: LineSide,
     pub(super) line: usize,
@@ -129,7 +118,6 @@ impl CommentStore {
 
 /// One diff on screen.
 pub(super) struct DiffSection<'a> {
-    pub(super) scope: CommentScope,
     pub(super) path: String,
     pub(super) hunks: &'a [Hunk],
     pub(super) numbering: Numbering,
@@ -161,7 +149,6 @@ pub(super) fn review_text(
     let mut ordered: Vec<(&CommentAnchor, &Comment)> = Vec::new();
     for section in sections {
         let anchors = section.lines().map(|line| CommentAnchor {
-            scope: section.scope.clone(),
             path: section.path.clone(),
             side: line.side,
             line: line.number,
@@ -217,8 +204,7 @@ fn comment_is_current(
     sections: &[DiffSection<'_>],
 ) -> bool {
     sections.iter().any(|section| {
-        section.scope == anchor.scope
-            && section.path == anchor.path
+        section.path == anchor.path
             && section.lines().any(|line| {
                 line.side == anchor.side
                     && line.number == anchor.line
@@ -237,7 +223,7 @@ pub(super) fn reanchor(store: &mut CommentStore, sections: &[DiffSection<'_>]) {
     for (anchor, comment) in &store.comments {
         let lines: Vec<HunkLine<'_>> = sections
             .iter()
-            .filter(|section| section.scope == anchor.scope && section.path == anchor.path)
+            .filter(|section| section.path == anchor.path)
             .flat_map(DiffSection::lines)
             .collect();
         if lines.is_empty()
@@ -318,10 +304,6 @@ pub(super) struct HunkLine<'a> {
     pub(super) content: &'a str,
 }
 
-pub(super) fn hunk_lines(hunk: &Hunk) -> impl Iterator<Item = HunkLine<'_>> {
-    numbered_lines(hunk, Numbering::PLAIN)
-}
-
 pub(super) fn numbered_lines(
     hunk: &Hunk,
     numbering: Numbering,
@@ -380,7 +362,6 @@ mod tests {
 
     fn anchor(path: &str, side: LineSide, line: usize) -> CommentAnchor {
         CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             side,
             line,
@@ -393,7 +374,6 @@ mod tests {
 
     fn section<'a>(path: &str, hunks: &'a [Hunk]) -> DiffSection<'a> {
         DiffSection {
-            scope: CommentScope::WorkingTree,
             path: path.to_string(),
             hunks,
             numbering: Numbering::PLAIN,
@@ -438,25 +418,9 @@ mod tests {
     }
 
     #[test]
-    fn the_same_line_in_different_scopes_holds_different_comments() {
-        let mut store = CommentStore::default();
-        let working = anchor("a.rs", LineSide::New, 10);
-        let mut traced = working.clone();
-        traced.scope = CommentScope::TraceEntry {
-            trace_id: "T1".to_string(),
-            entry_index: 0,
-        };
-        note_at(&mut store, working.clone(), "in the tree", "code");
-        note_at(&mut store, traced.clone(), "in the trace", "code");
-
-        assert_eq!(store.note(&working), Some("in the tree"));
-        assert_eq!(store.note(&traced), Some("in the trace"));
-    }
-
-    #[test]
     fn hunk_lines_number_each_side_independently() {
         let hunk = sample_hunk();
-        let lines: Vec<HunkLine<'_>> = hunk_lines(&hunk).collect();
+        let lines: Vec<HunkLine<'_>> = numbered_lines(&hunk, Numbering::PLAIN).collect();
 
         assert_eq!(lines[0].side, LineSide::New);
         assert_eq!(lines[0].number, 10);
@@ -483,7 +447,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines: Vec<HunkLine<'_>> = hunk_lines(&hunk).collect();
+        let lines: Vec<HunkLine<'_>> = numbered_lines(&hunk, Numbering::PLAIN).collect();
         assert_eq!((lines[0].side, lines[0].number), (LineSide::Old, 100));
         assert_eq!((lines[1].side, lines[1].number), (LineSide::New, 200));
     }

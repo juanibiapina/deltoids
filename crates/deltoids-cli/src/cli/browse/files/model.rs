@@ -9,9 +9,7 @@ use deltoids::content::SideContent;
 use deltoids::parse::{FileDiff, GitDiff};
 use deltoids::{Diff, LineKind, SymlinkView, content, git};
 
-use crate::cli::browse::comments::{
-    CommentAnchor, CommentScope, DiffSection, Numbering, numbered_lines,
-};
+use crate::cli::browse::comments::{CommentAnchor, DiffSection, Numbering, numbered_lines};
 use crate::sidebar::{ChangeKind, StageStatus, display_path};
 
 /// Describes whether and how the diff can be refreshed mid-session.
@@ -229,7 +227,6 @@ impl Model {
                     .into_iter()
                     .filter_map(move |view| match view.body {
                         FileBody::Diff(diff) => Some(DiffSection {
-                            scope: CommentScope::WorkingTree,
                             path: path.clone(),
                             hunks: diff.hunks(),
                             numbering: view.numbering,
@@ -968,7 +965,6 @@ mod tests {
 
         // The staged added line is index line 2, found through its anchor.
         let anchor = CommentAnchor {
-            scope: CommentScope::WorkingTree,
             path: "a.txt".to_string(),
             side: crate::cli::browse::comments::LineSide::Index,
             line: 2,

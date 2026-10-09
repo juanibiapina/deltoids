@@ -23,7 +23,6 @@ interface ReviewViewProps {
   syntaxTheme: string;
   hideViewed: boolean;
   onNavigate: () => void;
-  onProgress: (loaded: number, total: number) => void;
 }
 
 export function ReviewView({
@@ -31,10 +30,8 @@ export function ReviewView({
   syntaxTheme,
   hideViewed,
   onNavigate,
-  onProgress,
 }: ReviewViewProps) {
   const { ref, pr, files, engine, baseSha, headSha } = data;
-  const loaded = useRef(0);
   const { navigateTo } = useFileNavigation();
   const { isReviewed, toggle, count, clear } = useReviewed(ref, files);
 
@@ -107,11 +104,6 @@ export function ReviewView({
     [isReviewed, files],
   );
 
-  const handleLoaded = useCallback(() => {
-    loaded.current += 1;
-    onProgress(loaded.current, files.length);
-  }, [files.length, onProgress]);
-
   const handleFileSelect = useCallback(
     (index: number) => {
       onNavigate(); // close the mobile drawer
@@ -169,7 +161,6 @@ export function ReviewView({
               syntaxTheme={syntaxTheme}
               reviewed={isReviewed(file)}
               onToggleReviewed={() => toggle(file)}
-              onLoaded={handleLoaded}
             />
           ))}
         </div>

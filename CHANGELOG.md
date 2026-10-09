@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Remove agent traces: Traces mode in the TUI, the `edit`, `write`, and `serve` subcommands, and the pi and Claude Code plugins. Uninstall the plugins with `pi remove https://github.com/juanibiapina/deltoids` and `claude plugin uninstall deltoids@deltoids`. Recorded traces in `$XDG_DATA_HOME/edit/traces` (default `~/.local/share/edit/traces`) can be deleted.
 - TUI: `deltoids tui` no longer renders without a terminal.
+- review: remove the "Loaded N/M files" status line above the diff.
 
 ### Fixed
 

@@ -16,7 +16,6 @@ interface FileCardProps {
   syntaxTheme: string;
   reviewed: boolean;
   onToggleReviewed: () => void;
-  onLoaded: () => void;
 }
 
 type Body =
@@ -34,7 +33,6 @@ export function FileCard({
   syntaxTheme,
   reviewed,
   onToggleReviewed,
-  onLoaded,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLDivElement>(null);
@@ -85,8 +83,6 @@ export function FileCard({
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
         setBody({ kind: "notice", text: `Could not load: ${message}` });
-      } finally {
-        if (!cancelled) onLoaded();
       }
     };
 

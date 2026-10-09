@@ -170,7 +170,6 @@ describe("FileCard gap expansion", () => {
           syntaxTheme={syntaxTheme}
           reviewed={false}
           onToggleReviewed={() => {}}
-          onLoaded={() => {}}
         />
       </LazyObserverProvider>,
     );
@@ -215,7 +214,6 @@ describe("FileCard gap expansion", () => {
           syntaxTheme="GitHub"
           reviewed={false}
           onToggleReviewed={() => {}}
-          onLoaded={() => {}}
         />
       </LazyObserverProvider>,
     );

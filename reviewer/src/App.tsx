@@ -77,7 +77,7 @@ export function App() {
       ]);
       if (id !== requestId.current) return;
       setData({ ref, pr, files, engine, baseSha: pr.base.sha, headSha: pr.head.sha });
-      setStatus({ text: `${files.length} files. Scroll to load.`, isError: false });
+      setStatus({ text: "", isError: false });
     } catch (err) {
       if (id !== requestId.current) return;
       const e = err as Error & { detail?: string };
@@ -119,10 +119,6 @@ export function App() {
       text: next.trim() ? "Token saved." : "Token cleared.",
       isError: false,
     });
-  }, []);
-
-  const onProgress = useCallback((loaded: number, total: number) => {
-    setStatus({ text: `Loaded ${loaded}/${total} files.`, isError: false });
   }, []);
 
   return (
@@ -171,7 +167,6 @@ export function App() {
             syntaxTheme={prefs.syntaxTheme}
             hideViewed={prefs.hideViewed}
             onNavigate={closeDrawer}
-            onProgress={onProgress}
           />
         )}
       </main>

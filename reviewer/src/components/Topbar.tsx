@@ -15,7 +15,6 @@ interface TopbarProps {
   prefs: Prefs;
   onFilesToggle: () => void;
   drawerOpen: boolean;
-  onSettingsOpenChange?: (open: boolean) => void;
 }
 
 export function Topbar({
@@ -29,7 +28,6 @@ export function Topbar({
   prefs,
   onFilesToggle,
   drawerOpen,
-  onSettingsOpenChange,
 }: TopbarProps) {
   // Wide screens have room to show every control inline; narrow screens fold
   // them into the settings popover so the bar stays one row.
@@ -110,7 +108,6 @@ export function Topbar({
               prefs={prefs}
               hasToken={hasToken}
               onToken={onToken}
-              onOpenChange={onSettingsOpenChange}
             />
           )}
         </div>

@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: performance improvements
 - TUI: copied review comments contain only each comment's file, line, quoted code, and note, without agent instructions.
 - TUI: a selected file opens scrolled to its first hunk, with the first change on screen.
+- web: the header stays in place while you scroll, instead of sliding away and back as you move through a diff.
 
 ### Removed
 

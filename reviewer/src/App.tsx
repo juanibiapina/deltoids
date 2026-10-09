@@ -4,7 +4,6 @@ import { fetchPr, fetchFiles, token, setToken } from "./core/github";
 import { parsePrUrl } from "./core/lib";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
-import { useChromeCollapse } from "./hooks/useChromeCollapse";
 import { Topbar } from "./components/Topbar";
 import { ReviewView, type ReviewData } from "./components/ReviewView";
 
@@ -16,9 +15,6 @@ interface Status {
 export function App() {
   const topbarRef = useRef<HTMLElement>(null);
   useTopbarHeight(topbarRef);
-
-  const [menuOpen, setMenuOpen] = useState(false);
-  useChromeCollapse(topbarRef, menuOpen);
 
   const prefs = usePrefs();
 
@@ -134,7 +130,6 @@ export function App() {
         prefs={prefs}
         onFilesToggle={() => setDrawerOpen((v) => !v)}
         drawerOpen={drawerOpen}
-        onSettingsOpenChange={setMenuOpen}
       />
 
       <div

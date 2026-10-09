@@ -6,8 +6,6 @@ interface SettingsMenuProps {
   prefs: Prefs;
   hasToken: boolean;
   onToken: () => void;
-  // Reported so the collapse hook keeps the header shown while the menu is open.
-  onOpenChange?: (open: boolean) => void;
 }
 
 // Narrow-screen home for the display controls: one trigger opens a popover so
@@ -17,16 +15,11 @@ export function SettingsMenu({
   prefs,
   hasToken,
   onToken,
-  onOpenChange,
 }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
-
-  useEffect(() => {
-    onOpenChange?.(open);
-  }, [open, onOpenChange]);
 
   useEffect(() => {
     if (!open) return;

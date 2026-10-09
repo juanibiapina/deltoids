@@ -30,10 +30,6 @@
   /* Live topbar height; useTopbarHeight recomputes it from the real element on
      resize so sticky offsets and jump targets track the topbar's reflow. */
   --topbar-h: 96px;
-  /* Effective sticky offset for content chrome (file headers, sidebar). Equals
-     the topbar height while the topbar shows; useChromeCollapse drops it to 0
-     when the topbar slides away so those elements sit flush at the top. */
-  --sticky-top: var(--topbar-h);
 }
 
 /* Light palette — redeclares the same color variables the rest of the sheet
@@ -134,27 +130,6 @@ body {
   padding: max(env(safe-area-inset-top), 10px)
     max(var(--pad-x), env(safe-area-inset-right)) 10px
     max(var(--pad-x), env(safe-area-inset-left));
-  /* Quick-return header: slides out of view on scroll-down, back on scroll-up.
-     useChromeCollapse toggles `chrome-hidden` on <html>. The guard keeps the
-     bar in place whenever it holds focus (open input or settings popover). */
-  transition: transform 0.24s ease;
-  will-change: transform;
-}
-:root.chrome-hidden .topbar:not(:focus-within) {
-  transform: translateY(-100%);
-}
-/* When the bar is gone, content chrome sticks to the very top. If the bar
-   stays for focus, keep the offset so nothing hides behind it. */
-:root.chrome-hidden {
-  --sticky-top: 0px;
-}
-:root.chrome-hidden:has(.topbar:focus-within) {
-  --sticky-top: var(--topbar-h);
-}
-@media (prefers-reduced-motion: reduce) {
-  .topbar {
-    transition: none;
-  }
 }
 
 .topbar-inner {
@@ -695,12 +670,12 @@ body.drawer-open .scrim {
   overflow: clip;
   background: var(--bg-raised);
   /* Sidebar jumps land below the topbar, not under it. */
-  scroll-margin-top: calc(var(--sticky-top) + 8px);
+  scroll-margin-top: calc(var(--topbar-h) + 8px);
 }
 
 .file-head {
   position: sticky;
-  top: var(--sticky-top);
+  top: var(--topbar-h);
   z-index: 3;
   display: flex;
   align-items: center;
@@ -1085,10 +1060,10 @@ main.hide-viewed .file.reviewed {
   /* Sidebar becomes a normal, sticky in-flow column. */
   .sidebar {
     position: sticky;
-    top: var(--sticky-top);
+    top: var(--topbar-h);
     z-index: auto;
     width: auto;
-    max-height: calc(100vh - var(--sticky-top) - 16px);
+    max-height: calc(100vh - var(--topbar-h) - 16px);
     padding: 12px 0 0;
     background: none;
     border-right: none;

@@ -289,14 +289,12 @@ function openSettings() {
 }
 
 describe("Topbar controls — narrow (popover)", () => {
-  test("opens on click and reports open state", () => {
+  test("opens on click", () => {
     mockWidth(false);
-    const onSettingsOpenChange = vi.fn();
-    renderTopbar(makePrefs(), { onSettingsOpenChange });
+    renderTopbar(makePrefs());
     expect(screen.queryByRole("dialog")).toBeNull();
     openSettings();
     expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(onSettingsOpenChange).toHaveBeenCalledWith(true);
   });
 
   test("theme toggle inside the popover calls toggleTheme", () => {

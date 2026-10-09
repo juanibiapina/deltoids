@@ -6,7 +6,7 @@
 // previous value so the highlight does not flicker off.
 //
 // Kept DOM-free so it can be unit-tested without an IntersectionObserver
-// (jsdom has none), mirroring `decideShown` in useChromeCollapse.
+// (jsdom has none).
 export function pickActiveIndex(
   intersecting: Set<number>,
   prev: number | null,

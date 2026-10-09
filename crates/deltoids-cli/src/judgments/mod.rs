@@ -85,6 +85,7 @@ pub(crate) enum Role {
     Removal,
     Test,
     Docs,
+    Agents,
     Comments,
     Imports,
 }
@@ -101,6 +102,7 @@ impl Role {
             Self::Removal => "removal",
             Self::Test => "test",
             Self::Docs => "docs",
+            Self::Agents => "agents",
             Self::Comments => "comments",
             Self::Imports => "imports",
         }
@@ -117,6 +119,7 @@ impl Role {
             "removal" => Self::Removal,
             "test" => Self::Test,
             "docs" => Self::Docs,
+            "agents" => Self::Agents,
             "comments" => Self::Comments,
             "imports" => Self::Imports,
             _ => return None,

@@ -1,0 +1,78 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 1a2b3c4..5d6e7f8 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -10,6 +10,8 @@ This is a Rust workspace for a diff toolkit.
+ ## Conventions
+ 
+ - Run `cargo fmt --all` before committing.
++- Never edit files under `vendor/`; they are synced from upstream.
++- Ask before adding a new dependency.
+ - Extract small, single-purpose helpers over generic utility modules.
+ - Add tests alongside refactors.
+ 
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 2b3c4d5..6e7f8a9 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,4 +1,5 @@
+ # Claude instructions
+ 
+ Read AGENTS.md first.
+-Prefer small commits.
++Prefer small commits, one logical change each.
++Run the full test suite before you report a task as done.
+diff --git a/.agents/skills/review/SKILL.md b/.agents/skills/review/SKILL.md
+new file mode 100644
+index 0000000..3c4d5e6
+--- /dev/null
++++ b/.agents/skills/review/SKILL.md
+@@ -0,0 +1,11 @@
++---
++name: review
++description: Reviews a pull request for correctness and style. Use when asked to review a PR or a diff.
++---
++
++# Review
++
++1. Read the PR description and the linked issue.
++2. Check out the branch and run the tests.
++3. Comment on each finding with the file and line.
++4. Approve only when every finding is resolved.
+diff --git a/.github/prompts/release.prompt.md b/.github/prompts/release.prompt.md
+index 4d5e6f7..7f8a9b0 100644
+--- a/.github/prompts/release.prompt.md
++++ b/.github/prompts/release.prompt.md
+@@ -3,5 +3,6 @@ mode: agent
+ ---
+ 
+ Bump the version in Cargo.toml and site/src/data/site.ts.
+-Write the changelog section.
++Cut a dated changelog section from [Unreleased].
++Push the tag only after CI is green on main.
+ Commit as `release: X.Y.Z`.
+diff --git a/.cursor/rules/style.mdc b/.cursor/rules/style.mdc
+index 5e6f7a8..8a9b0c1 100644
+--- a/.cursor/rules/style.mdc
++++ b/.cursor/rules/style.mdc
+@@ -1,6 +1,7 @@
+ ---
+ description: Rust style rules
+ globs: "**/*.rs"
+ ---
+ 
+-Use `anyhow` for errors.
++Return `Result<T, String>` from CLI functions; do not add `anyhow`.
++Do not write code comments.
+diff --git a/README.md b/README.md
+index 6f7a8b9..9b0c1d2 100644
+--- a/README.md
++++ b/README.md
+@@ -20,6 +20,7 @@ deltoids is a diff toolkit.
+ 
+ ## Install
+ 
++Install with Homebrew: `brew install juanibiapina/taps/deltoids`.
+ Install with the shell installer from the latest release.
+ 
+ ## Usage

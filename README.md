@@ -128,7 +128,8 @@ section.
 ### Review guidance
 
 `deltoids tui` tags each file in the sidebar, at the right edge, with
-what kind of change it holds (`core`, `refactor`, `test`, `docs`, …)
+what kind of change it holds (`core`, `refactor`, `test`, `docs`,
+`agents` for agent instructions, skills, and prompts, …)
 and a dot when it needs attention: orange for careful, red for
 critical; straightforward changes get no dot. A tag ends in `!`, as in conventional
 commits, when the change breaks code or users outside its package. A

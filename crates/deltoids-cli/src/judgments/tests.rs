@@ -394,7 +394,7 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/judgments/fixtu
 #[ignore = "calls the TypeSafe API"]
 fn record_jev_fixtures() {
     let key = jev::key_from_env().expect("TYPESAFE_API_KEY");
-    for name in ["79b6841", "914b576"] {
+    for name in ["79b6841", "914b576", "agent-files"] {
         let patch = std::fs::read_to_string(format!("{FIXTURES}/{name}.diff")).unwrap();
         let changes = change_from_patch(&patch);
         let requests = pending_requests(&changes, &Judgments::default());
@@ -447,7 +447,7 @@ fn jev_chooses_among_the_current_roles() {
         .keys()
         .collect();
 
-    for added in ["comments", "config", "deps", "removal", "ci"] {
+    for added in ["comments", "config", "deps", "removal", "ci", "agents"] {
         assert!(roles.iter().any(|role| *role == added), "{roles:?}");
     }
     for removed in ["support", "mechanical", "adapt", "changelog", "public-api"] {
@@ -472,6 +472,7 @@ fn file_notes_tag_each_file_by_its_best_judged_hunk() {
             file("ci.yml", vec![hunk(&["run: cargo test"])]),
             file("src/old.rs", vec![hunk(&["fn gone() {}"])]),
             file("web/app.min.js", vec![hunk(&["minified"])]),
+            file("AGENTS.md", vec![hunk(&["Run cargo fmt"])]),
         ],
     };
     let known = judged(&changes, |line| match line {
@@ -486,6 +487,7 @@ fn file_notes_tag_each_file_by_its_best_judged_hunk() {
         "retries = 5" => ("config", 1.2),
         "run: cargo test" => ("build", 0.3),
         "fn gone() {}" => ("removal", 0.3),
+        "Run cargo fmt" => ("agents", 0.6),
         _ => ("refactor", 0.7),
     });
     let notes = file_notes(&changes, &known);
@@ -510,6 +512,7 @@ fn file_notes_tag_each_file_by_its_best_judged_hunk() {
             (Some("build"), Some(Attention::Straightforward), false),
             (Some("removal"), Some(Attention::Straightforward), false),
             (None, None, false),
+            (Some("agents"), Some(Attention::Careful), false),
         ]
     );
 
@@ -613,6 +616,28 @@ fn recorded_answers_tag_the_stage_all_tests() {
             "crates/deltoids-cli/src/cli/browse/files/actions/tests.rs".into(),
             Some("test")
         )),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn recorded_answers_tag_agent_files_apart_from_docs() {
+    let notes = recorded_notes("agent-files");
+
+    for path in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".agents/skills/review/SKILL.md",
+        ".github/prompts/release.prompt.md",
+        ".cursor/rules/style.mdc",
+    ] {
+        assert!(
+            notes.contains(&(path.into(), Some("agents"))),
+            "{path}: {notes:?}"
+        );
+    }
+    assert!(
+        notes.contains(&("README.md".into(), Some("docs"))),
         "{notes:?}"
     );
 }

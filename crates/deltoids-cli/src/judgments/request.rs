@@ -27,7 +27,7 @@ pub(crate) const TOTAL_BUDGET_CHARS: usize = 144_000;
 /// Past this, each request lists only its own files and counts the rest.
 const OVERVIEW_BUDGET_CHARS: usize = 24_000;
 
-const ROLE_CRITERIA: [(&str, &str); 11] = [
+const ROLE_CRITERIA: [(&str, &str); 12] = [
     (
         "core",
         "implements or changes the behavior this change is about, including updates to the code that calls it",
@@ -58,7 +58,11 @@ const ROLE_CRITERIA: [(&str, &str); 11] = [
     ),
     (
         "docs",
-        "documentation people or agents read to use or work on the project: README, guides, agent instructions, changelogs, release notes, or user-facing help text",
+        "documentation people read to use or work on the project: README, guides, changelogs, release notes, or user-facing help text",
+    ),
+    (
+        "agents",
+        "instructions, skills, rules, or prompts written for AI coding agents or language models: AGENTS.md, CLAUDE.md, GEMINI.md, SKILL.md and skill folders, rules and prompt files under .agents, .claude, .cursor, or .github, *.prompt.md files, or prompt text inside source code",
     ),
     (
         "test",

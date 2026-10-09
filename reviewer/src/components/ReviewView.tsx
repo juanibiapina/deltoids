@@ -6,8 +6,10 @@ import {
   buildTree,
   displayOrder,
   selectionFiles,
+  stepSelection,
   type Selection,
 } from "../core/filetree";
+import { createWheelStepper } from "../core/wheel";
 import { useReviewed } from "../hooks/useReviewed";
 import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
@@ -72,6 +74,31 @@ export function ReviewView({
     [isReviewed, files],
   );
 
+  const collapsedRef = useRef(new Set<string>());
+  const handleExpandChange = useCallback((id: string, expanded: boolean) => {
+    if (expanded) collapsedRef.current.delete(id);
+    else collapsedRef.current.add(id);
+  }, []);
+
+  const paneRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const stepper = createWheelStepper();
+    const isHidden = hideViewed ? isReviewedByIndex : undefined;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.shiftKey) return;
+      e.preventDefault();
+      const step = stepper.push(e);
+      if (step === 0) return;
+      setSelection((prev) =>
+        stepSelection(tree, prev, step, { collapsed: collapsedRef.current, isHidden }),
+      );
+    };
+    pane.addEventListener("wheel", onWheel, { passive: false });
+    return () => pane.removeEventListener("wheel", onWheel);
+  }, [tree, hideViewed, isReviewedByIndex]);
+
   const handleSelect = useCallback(
     (next: Selection) => {
       onNavigate();
@@ -89,8 +116,9 @@ export function ReviewView({
           isReviewed={isReviewedByIndex}
           hideReviewed={hideViewed}
           selection={selection}
+          onExpandChange={handleExpandChange}
         />
-        <div className="pane">
+        <div className="pane" ref={paneRef}>
           <div className="pane-scroll" ref={scrollerRef}>
             <div ref={contentRef}>
               {order.map((i) => (

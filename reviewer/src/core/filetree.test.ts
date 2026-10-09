@@ -5,6 +5,7 @@ import {
   displayOrder,
   pruneReviewed,
   selectionFiles,
+  stepSelection,
   ROOT_ID,
   type TreeNode,
 } from "./filetree";
@@ -169,3 +170,50 @@ describe("selection", () => {
   });
 });
 
+describe("stepSelection", () => {
+  // Rows: a/ (dir) · a/b/ (dir) · c.ts (2) · d/ (dir) · e.ts (3) · f.ts (4) · ab/ (dir) · x.ts (1) · z.md (0)
+  const nodes = buildTree(
+    files(["z.md"], ["ab/x.ts"], ["a/b/c.ts"], ["a/b/d/e.ts"], ["a/f.ts"]),
+  );
+  const open = { collapsed: new Set<string>() };
+  const walk = (start: Parameters<typeof stepSelection>[1], direction: 1 | -1, opts = open) => {
+    const out = [];
+    let sel = start;
+    for (;;) {
+      const next = stepSelection(nodes, sel, direction, opts);
+      if (next === sel) return out;
+      out.push(next.kind === "file" ? next.index : next.id);
+      sel = next;
+    }
+  };
+
+  test("steps through directories and files in tree order", () => {
+    expect(walk({ kind: "dir", id: "a" }, 1)).toEqual(["a/b", 2, "a/b/d", 3, 4, "ab", 1, 0]);
+    expect(walk({ kind: "file", index: 0 }, -1)).toEqual([1, "ab", 4, 3, "a/b/d", 2, "a/b", "a"]);
+  });
+
+  test("returns the same selection at either end", () => {
+    const first = { kind: "dir", id: "a" } as const;
+    const last = { kind: "file", index: 0 } as const;
+    expect(stepSelection(nodes, first, -1, open)).toBe(first);
+    expect(stepSelection(nodes, last, 1, open)).toBe(last);
+  });
+
+  test("skips the rows inside a collapsed directory", () => {
+    const opts = { collapsed: new Set(["a/b"]) };
+    expect(walk({ kind: "dir", id: "a" }, 1, opts)).toEqual(["a/b", 4, "ab", 1, 0]);
+  });
+
+  test("skips hidden files and the directories they empty", () => {
+    const opts = { collapsed: new Set<string>(), isHidden: (i: number) => i === 1 || i === 3 };
+    expect(walk({ kind: "dir", id: "a" }, 1, opts)).toEqual(["a/b", 2, 4, 0]);
+  });
+
+  test("moves on from a selection that is not shown", () => {
+    const hidden = { collapsed: new Set(["a"]) };
+    expect(stepSelection(nodes, { kind: "file", index: 3 }, 1, hidden)).toEqual({ kind: "dir", id: "ab" });
+    expect(stepSelection(nodes, { kind: "file", index: 3 }, -1, hidden)).toEqual({ kind: "dir", id: "a" });
+    const pruned = { collapsed: new Set<string>(), isHidden: (i: number) => i === 1 };
+    expect(stepSelection(nodes, { kind: "file", index: 1 }, 1, pruned)).toEqual({ kind: "file", index: 0 });
+  });
+});

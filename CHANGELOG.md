@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: file headers show the file's language, or mark files whose language has no scope context.
 - review: the diff scrollbar marks where the added and removed lines are.
 - review: the file tree shows each file's added and removed line counts after its name.
+- review: hold Ctrl or Shift and scroll over the diff to step through the files in the sidebar, like the TUI.
 - TUI: the Files sidebar tags each file with its kind of change and an attention dot and mutes tests, comment-only changes, import-only changes, and lockfiles. Press `f` to hide low-value files. Tags end in `!` for changes that break callers. With `TYPESAFE_API_KEY` set, TypeSafe's Jev model judges every hunk, and hunk headers show its tag.
 - TUI: tag changes to agent instructions, skills, and prompt files as `agents`.
 

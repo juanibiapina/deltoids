@@ -1,6 +1,6 @@
 import { createRef } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FileTree } from "./FileTree";
 import { Topbar } from "./Topbar";
 import { FileCard } from "./FileCard";
@@ -311,6 +311,41 @@ describe("ReviewView selection", () => {
     fireEvent.click(screen.getByText("b.ts"));
     expect(shownCards()).toEqual(["file-1"]);
     fireEvent.click(screen.getByText("src"));
+    expect(shownCards()).toEqual(["file-0", "file-1"]);
+  });
+
+  function wheelPane(init: WheelEventInit) {
+    const event = new WheelEvent("wheel", { cancelable: true, ...init });
+    act(() => {
+      document.querySelector(".pane")!.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  test("ctrl+wheel over the diff steps through the sidebar rows", () => {
+    renderReview();
+    expect(shownCards()).toEqual(["file-2"]);
+    const event = wheelPane({ deltaY: 100, ctrlKey: true });
+    expect(event.defaultPrevented).toBe(true);
+    expect(shownCards()).toEqual(["file-0", "file-1"]);
+    wheelPane({ deltaY: -100, ctrlKey: true });
+    expect(shownCards()).toEqual(["file-2"]);
+  });
+
+  test("shift+horizontal wheel steps too, and plain wheel does not", () => {
+    renderReview();
+    expect(wheelPane({ deltaY: 100 }).defaultPrevented).toBe(false);
+    expect(shownCards()).toEqual(["file-2"]);
+    wheelPane({ deltaX: 100, shiftKey: true });
+    expect(shownCards()).toEqual(["file-0", "file-1"]);
+  });
+
+  test("the wheel skips rows inside a folded directory", () => {
+    renderReview();
+    fireEvent.click(screen.getByTitle("Collapse"));
+    wheelPane({ deltaY: 100, ctrlKey: true });
+    expect(shownCards()).toEqual(["file-0", "file-1"]);
+    wheelPane({ deltaY: 100, ctrlKey: true });
     expect(shownCards()).toEqual(["file-0", "file-1"]);
   });
 });

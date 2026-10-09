@@ -41,8 +41,10 @@ reviewer/
       lib.ts                #   pure helpers (parsePrUrl, looksBinary)
       lib.test.ts           #   Vitest unit tests for lib.ts
       filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror),
-                            #     display order, selection membership
+                            #     display order, selection membership, row stepping
       filetree.test.ts      #   grouping tests ported from tree.rs + selection
+      wheel.ts              #   Ctrl/Shift wheel events -> sidebar steps (scroll.rs mirror)
+      wheel.test.ts         #   tick, trackpad stream, kind, direction, deltaMode tests
       overview.ts           #   scrollbar geometry: change cells, thumb, drag
       overview.test.ts      #   tests ported from the TUI diff_scrollbar.rs
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
@@ -154,6 +156,16 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   switching, and `display: none` keeps them out of the lazy loader. Every
   selection change scrolls the window to the top. A single selected file gets
   `solo`, which keeps it on screen when marked viewed under hide-viewed.
+- Ctrl+wheel or Shift+wheel over the diff pane steps the selection one
+  sidebar row at a time, like the TUI. `ReviewView` listens on `.pane` with
+  a non-passive `wheel` listener so `preventDefault` blocks page zoom and
+  sideways scroll (a trackpad pinch arrives as Ctrl+wheel, so it steps too).
+  `core/wheel.ts` turns events into steps; `filetree.ts::stepSelection`
+  picks the next shown row, skipping pruned files and folded directories.
+  Fold state stays inside the tree library; `FileTree` reports each change
+  through `onExpandChange` and `ReviewView` mirrors it in a ref. The
+  library's controlled `expandedIds` was rejected: collapsing a directory
+  also folds its descendants internally, out of sync with the prop.
 - Content fetching and wasm rendering run in one module worker
   (`core/review.worker.ts`, RPC through Comlink), so a render never blocks
   input or paint. The page keeps `fetchPr`/`fetchFiles` (the tree needs

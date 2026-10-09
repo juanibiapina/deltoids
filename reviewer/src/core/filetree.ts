@@ -176,6 +176,54 @@ export function selectionFiles(nodes: TreeNode[], selection: Selection): number[
   return fileIndices(nodes, (n) => n.id.startsWith(prefix));
 }
 
+export interface StepOptions {
+  collapsed: ReadonlySet<string>;
+  isHidden?: (fileIndex: number) => boolean;
+}
+
+function asSelection(node: TreeNode): Selection {
+  return node.metadata.isDir
+    ? { kind: "dir", id: node.id }
+    : { kind: "file", index: node.metadata.fileIndex! };
+}
+
+function selectionId(nodes: TreeNode[], selection: Selection): string | undefined {
+  if (selection.kind === "dir") return selection.id;
+  return nodes.find((n) => !n.metadata.isDir && n.metadata.fileIndex === selection.index)?.id;
+}
+
+// The sidebar row after (direction 1) or before (-1) the selection, among the
+// rows the sidebar shows: hidden files and their emptied directories are
+// pruned, and children of collapsed directories are skipped. The selection
+// itself may be hidden; it is placed by its position in the full tree. At
+// either end the selection is returned unchanged.
+export function stepSelection(
+  nodes: TreeNode[],
+  selection: Selection,
+  direction: 1 | -1,
+  { collapsed, isHidden }: StepOptions,
+): Selection {
+  const position = new Map(nodes.map((n, i) => [n.id, i]));
+  const current = selectionId(nodes, selection);
+  if (current === undefined) return selection;
+  const from = position.get(current) ?? -1;
+
+  const shown = isHidden ? pruneReviewed(nodes, isHidden) : nodes;
+  const open = new Set<string>([ROOT_ID]);
+  const rows: TreeNode[] = [];
+  for (const n of shown) {
+    if (n.id === ROOT_ID || n.parent === null || !open.has(n.parent)) continue;
+    rows.push(n);
+    if (n.metadata.isDir && !collapsed.has(n.id)) open.add(n.id);
+  }
+
+  const next =
+    direction === 1
+      ? rows.find((n) => position.get(n.id)! > from)
+      : [...rows].reverse().find((n) => position.get(n.id)! < from);
+  return next ? asSelection(next) : selection;
+}
+
 // Drop reviewed file leaves (and any directory that becomes empty as a result)
 // from an already-built tree. Used to keep the sidebar aligned with the global
 // "Hide viewed" toggle: a hidden file card should not leave a dead row behind.

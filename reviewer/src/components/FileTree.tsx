@@ -19,6 +19,9 @@ interface FileTreeProps {
   // "Hide viewed" toggle) instead of shown dimmed.
   hideReviewed?: boolean;
   selection?: Selection;
+  // Reports each directory the tree folds or opens, including the initial
+  // all-open state and the reset after a remount.
+  onExpandChange?: (id: string, expanded: boolean) => void;
 }
 
 // A per-file-type brand logo, or the generic file glyph when unmapped.
@@ -111,6 +114,7 @@ export function FileTree({
   isReviewed,
   hideReviewed,
   selection,
+  onExpandChange,
 }: FileTreeProps) {
   const fullData = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -163,6 +167,9 @@ export function FileTree({
         className="filetree"
         aria-label="Changed files"
         defaultExpandedIds={expandedIds}
+        onExpand={({ element, isExpanded }) =>
+          onExpandChange?.(String(element.id), isExpanded)
+        }
         onSelect={({ element, isBranch, isSelected }) => {
           // onSelect also fires for the node being deselected; only act on the
           // newly-selected one, else clicking B scrolls to the old A.

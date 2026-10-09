@@ -85,6 +85,22 @@ describe("FileTree", () => {
     expect(other?.classList.contains("reviewed")).toBe(false);
   });
 
+  test("file rows lead with the change letter and end with line counts", () => {
+    render(
+      <FileTree
+        files={[
+          { filename: "src/a.ts", status: "modified", additions: 12, deletions: 3 },
+          { filename: "src/b.ts", status: "added", additions: 5, deletions: 0 },
+        ]}
+        onSelect={() => {}}
+      />,
+    );
+    const a = screen.getByText("a.ts").closest(".tree-file");
+    expect(a?.textContent).toBe("Ma.ts+12-3");
+    const b = screen.getByText("b.ts").closest(".tree-file");
+    expect(b?.textContent).toBe("Ab.ts+5");
+  });
+
   test("the selected file row is highlighted, others are not", () => {
     render(
       <FileTree files={files} onSelect={() => {}} selection={{ kind: "file", index: 1 }} />,

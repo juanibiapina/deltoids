@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: press `z` on a diff line to expand its hunk one scope level (the enclosing function, class, section, or the whole file), and `x` to shrink it back. From the Files sidebar, `z` and `x` act on every hunk of the selected file or directory.
 - TUI: file headers show the file's language, or mark files whose language has no scope context.
 - review: the diff scrollbar marks where the added and removed lines are.
+- review: the file tree shows each file's added and removed line counts after its name.
 - TUI: the Files sidebar tags each file with its kind of change and an attention dot and mutes tests, comment-only changes, import-only changes, and lockfiles. Press `f` to hide low-value files. Tags end in `!` for changes that break callers. With `TYPESAFE_API_KEY` set, TypeSafe's Jev model judges every hunk, and hunk headers show its tag.
 - TUI: tag changes to agent instructions, skills, and prompt files as `agents`.
 
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: copied review comments contain only each comment's file, line, quoted code, and note, without agent instructions.
 - TUI: a selected file opens scrolled to its first hunk, with the first change on screen.
 - review: show one file at a time, or every file in a directory when you click it in the sidebar, in a pane that scrolls on its own. A directory's arrow folds it.
+- review: the file tree shows each file's change letter on the left, coloured like the TUI.
 - web: the header stays in place while you scroll, instead of sliding away and back as you move through a diff.
 - review: files open instantly after a pull request loads, because the reviewer fetches and draws every file in the background, starting with the files you select. The engine starts downloading as soon as the page opens. Without a GitHub token, background fetching stops early to keep requests available for files you open.
 

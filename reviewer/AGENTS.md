@@ -127,7 +127,7 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   semantics at file granularity. A reviewed card keeps a per-file `Viewed`
   checkbox in its header, gets the `reviewed` class, and CSS collapses the diff
   and slims/mutes the header (`.file.reviewed`); the sidebar row dims and its
-  A/M/D/R letter becomes a check. A
+  change letter becomes a check. A
   toolbar toggle (`usePrefs.hideViewed`, key `deltoids.review.hide-viewed`,
   **on by default**; only an explicit `"0"` shows them) adds `hide-viewed` to
   `<main>` so `main.hide-viewed .file.reviewed { display: none }` removes
@@ -136,8 +136,10 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   `react-accessible-treeview`. Grouping/sort/collapse mirror the CLI's
   `crates/deltoids-cli/src/sidebar/tree.rs`, which stays the canonical
   cross-check for `filetree.ts`. No virtualization yet (deferred; the tree is
-  fully expanded by default). File rows show per-type brand icons (`fileIcons.ts`,
-  tree-shaken from `simple-icons`) and a trailing A/M/D/R status letter.
+  fully expanded by default). File rows mirror the TUI sidebar row: an A/M/D/R letter in the chevron
+  column (coloured like the TUI), a per-type brand icon (`fileIcons.ts`,
+  tree-shaken from `simple-icons`), the name, then `+N -M` from GitHub's
+  `additions`/`deletions` (zero counts left out).
 - The diff column shows one selection at a time, like the TUI diff pane:
   one file, or every file under a directory row the user clicks (a dir's
   chevron only folds it). `Selection` lives in `ReviewView` state (not the

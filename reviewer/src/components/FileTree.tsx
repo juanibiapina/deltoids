@@ -40,7 +40,7 @@ function TypeIcon({ name }: { name: string }) {
   );
 }
 
-// Single-letter change badge (A/M/D/R) shown at the right of a file row.
+// Single-letter change badge (A/M/D/R) in the file row's chevron column.
 function statusBadge(status: string | undefined) {
   const map: Record<string, [string, string]> = {
     added: ["A", "added"],
@@ -49,7 +49,19 @@ function statusBadge(status: string | undefined) {
     modified: ["M", "modified"],
   };
   const entry = map[status ?? "modified"] ?? map.modified;
-  return <span className={`tree-badge ${entry[1]}`}>{entry[0]}</span>;
+  return <span className={`tree-twist tree-badge ${entry[1]}`}>{entry[0]}</span>;
+}
+
+// Added and removed line counts after the filename; zero counts are left out.
+function lineCounts(file: PrFile | undefined) {
+  const added = file?.additions ?? 0;
+  const removed = file?.deletions ?? 0;
+  return (
+    <>
+      {added > 0 && <span className="tree-delta added">+{added}</span>}
+      {removed > 0 && <span className="tree-delta removed">-{removed}</span>}
+    </>
+  );
 }
 
 function ChevronIcon({ open }: { open: boolean }) {
@@ -207,16 +219,16 @@ export function FileTree({
               title={meta?.path ?? element.name}
             >
               {guides(level)}
-              <span className="tree-twist" />
-              <TypeIcon name={element.name} />
-              <span className="tree-name">{element.name}</span>
               {reviewed ? (
-                <span className="tree-badge reviewed" title="Reviewed">
+                <span className="tree-twist tree-badge reviewed" title="Reviewed">
                   ✓
                 </span>
               ) : (
                 statusBadge(meta?.status)
               )}
+              <TypeIcon name={element.name} />
+              <span className="tree-name">{element.name}</span>
+              {lineCounts(meta?.fileIndex !== undefined ? files[meta.fileIndex] : undefined)}
             </div>
           );
         }}

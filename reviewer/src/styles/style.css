@@ -641,7 +641,7 @@ body.drawer-open .sidebar {
 }
 
 .tree-name {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -650,27 +650,37 @@ body.drawer-open .sidebar {
   font-weight: 600;
 }
 
-/* Trailing change badge (A/M/D/R). */
+/* Change letter (A/M/D/R) in the file row's chevron column, coloured like
+   the TUI sidebar. */
 .tree-badge {
-  flex: none;
-  margin-left: 8px;
-  width: 14px;
-  text-align: center;
   font-size: 11px;
   font-weight: 700;
-  opacity: 0.9;
 }
 .tree-badge.added {
   color: var(--added-gutter);
 }
-.tree-badge.removed {
+.tree-badge.removed,
+.tree-badge.modified {
   color: var(--removed-gutter);
 }
 .tree-badge.renamed {
   color: var(--accent);
 }
-.tree-badge.modified {
-  color: var(--muted);
+
+/* Added / removed line counts after the filename. */
+.tree-delta {
+  flex: none;
+  margin-left: 6px;
+  font-size: 11px;
+}
+.tree-delta + .tree-delta {
+  margin-left: 4px;
+}
+.tree-delta.added {
+  color: var(--added-gutter);
+}
+.tree-delta.removed {
+  color: var(--removed-gutter);
 }
 
 @media (min-width: 1024px) {

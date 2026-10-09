@@ -9,12 +9,22 @@ import { LazyObserverProvider } from "./LazyObserver";
 import * as github from "../core/github";
 import type { Engine } from "../core/engine";
 import type { Prefs } from "../hooks/usePrefs";
-import type { PrFile } from "../core/github";
+import type { PrFile, Sides } from "../core/github";
+import type { SidesLoader } from "../core/sidesLoader";
 
 vi.mock("../core/github", async (orig) => {
   const actual = await orig<typeof import("../core/github")>();
-  return { ...actual, loadSides: vi.fn(), renderSides: vi.fn() };
+  return { ...actual, renderSides: vi.fn() };
 });
+
+function fakeLoader(result: Promise<Sides | null>): SidesLoader {
+  return {
+    load: vi.fn(() => result),
+    whenFetched: vi.fn(() => result),
+    prioritize: vi.fn(),
+    dispose: vi.fn(),
+  };
+}
 
 const files: PrFile[] = [
   { filename: "src/a.ts", status: "modified" },
@@ -160,13 +170,11 @@ describe("FileCard gap expansion", () => {
     };
   }
 
+  const loader = fakeLoader(
+    Promise.resolve({ kind: "full", before: "", after: AFTER, path: "x.rs" }),
+  );
+
   function renderCard(engine: Engine, syntaxTheme = "TokyoNight") {
-    (github.loadSides as Mock).mockResolvedValue({
-      kind: "full",
-      before: "",
-      after: AFTER,
-      path: "x.rs",
-    });
     // The real engine inlines theme colours, so its HTML differs per theme;
     // tag the output so a theme switch changes the string and React rebuilds
     // the `.gap` nodes (identical strings would skip the innerHTML reset).
@@ -180,9 +188,7 @@ describe("FileCard gap expansion", () => {
           index={0}
           file={{ filename: "x.rs", status: "modified" }}
           engine={engine}
-          repoRef={{ owner: "o", repo: "r", number: 1 }}
-          baseSha="base"
-          headSha="head"
+          loader={loader}
           syntaxTheme={syntaxTheme}
           reviewed={false}
           onToggleReviewed={() => {}}
@@ -224,9 +230,7 @@ describe("FileCard gap expansion", () => {
           index={0}
           file={{ filename: "x.rs", status: "modified" }}
           engine={engine}
-          repoRef={{ owner: "o", repo: "r", number: 1 }}
-          baseSha="base"
-          headSha="head"
+          loader={loader}
           syntaxTheme="GitHub"
           reviewed={false}
           onToggleReviewed={() => {}}
@@ -243,16 +247,53 @@ describe("FileCard gap expansion", () => {
   });
 });
 
+describe("FileCard theme switch while hidden", () => {
+  const sides: Sides = { kind: "full", before: "", after: "x", path: "x.rs" };
+
+  function card(syntaxTheme: string, hidden: boolean, loader: SidesLoader) {
+    return (
+      <LazyObserverProvider>
+        <FileCard
+          index={0}
+          file={{ filename: "x.rs", status: "modified" }}
+          engine={{} as Engine}
+          loader={loader}
+          syntaxTheme={syntaxTheme}
+          reviewed={false}
+          onToggleReviewed={() => {}}
+          hidden={hidden}
+        />
+      </LazyObserverProvider>
+    );
+  }
+
+  test("re-renders in an idle slot, or at once when shown", async () => {
+    (github.renderSides as Mock).mockImplementation(
+      (_e: Engine, _s: unknown, theme: string) => `<div class="row">${theme}</div>`,
+    );
+    const loader = fakeLoader(Promise.resolve(sides));
+    const { rerender } = render(card("TokyoNight", true, loader));
+    await screen.findByText("TokyoNight");
+    (github.renderSides as Mock).mockClear();
+
+    rerender(card("GitHub", true, loader));
+    expect(github.renderSides).not.toHaveBeenCalled();
+    await screen.findByText("GitHub");
+
+    rerender(card("Nord", true, loader));
+    rerender(card("Nord", false, loader));
+    expect(github.renderSides).toHaveBeenLastCalledWith(expect.anything(), sides, "Nord");
+  });
+});
+
 describe("ReviewView selection", () => {
   function renderReview() {
-    (github.loadSides as Mock).mockReturnValue(new Promise(() => {}));
     const data = {
       ref: { owner: "o", repo: "r", number: 1 },
       pr: { number: 1, title: "t", additions: 1, deletions: 1 },
       files,
       engine: {} as Engine,
-      baseSha: "base",
-      headSha: "head",
+      loader: fakeLoader(new Promise(() => {})),
     } as unknown as ReviewData;
     return render(
       <ReviewView data={data} syntaxTheme="TokyoNight" hideViewed onNavigate={() => {}} />,

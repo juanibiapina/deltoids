@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Engine } from "../core/engine";
 import type { Pr, PrFile } from "../core/github";
 import type { PrRef } from "../core/lib";
+import type { SidesLoader } from "../core/sidesLoader";
 import {
   buildTree,
   displayOrder,
@@ -19,8 +20,7 @@ export interface ReviewData {
   pr: Pr;
   files: PrFile[];
   engine: Engine;
-  baseSha: string;
-  headSha: string;
+  loader: SidesLoader;
 }
 
 interface ReviewViewProps {
@@ -40,7 +40,7 @@ export function ReviewView({
   hideViewed,
   onNavigate,
 }: ReviewViewProps) {
-  const { ref, files, engine, baseSha, headSha } = data;
+  const { ref, files, engine, loader } = data;
   const { isReviewed, toggle } = useReviewed(ref, files);
 
   const tree = useMemo(
@@ -54,7 +54,12 @@ export function ReviewView({
       order.find((i) => !(hideViewed && isReviewed(files[i]))) ?? order[0] ?? 0;
     return { kind: "file", index: first };
   });
-  const shown = useMemo(() => new Set(selectionFiles(tree, selection)), [tree, selection]);
+  const shownOrder = useMemo(() => selectionFiles(tree, selection), [tree, selection]);
+  const shown = useMemo(() => new Set(shownOrder), [shownOrder]);
+
+  useEffect(() => {
+    loader.prioritize(shownOrder);
+  }, [loader, shownOrder]);
   const key = selectionKey(selection);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -96,9 +101,7 @@ export function ReviewView({
                   index={i}
                   file={files[i]}
                   engine={engine}
-                  repoRef={ref}
-                  baseSha={baseSha}
-                  headSha={headSha}
+                  loader={loader}
                   syntaxTheme={syntaxTheme}
                   reviewed={isReviewed(files[i])}
                   onToggleReviewed={() => toggle(files[i])}

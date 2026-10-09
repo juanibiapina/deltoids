@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { loadSides, renderSides, type PrFile, type Sides } from "../core/github";
+import { renderSides, type PrFile, type Sides } from "../core/github";
 import type { Engine } from "../core/engine";
-import type { PrRef } from "../core/lib";
+import type { SidesLoader } from "../core/sidesLoader";
+import { whenIdle } from "../core/idle";
 import { useLazy } from "./LazyObserver";
 
 interface FileCardProps {
   index: number;
   file: PrFile;
   engine: Engine;
-  repoRef: PrRef;
-  baseSha: string;
-  headSha: string;
+  loader: SidesLoader;
   syntaxTheme: string;
   reviewed: boolean;
   onToggleReviewed: () => void;
@@ -27,9 +26,7 @@ export function FileCard({
   index,
   file,
   engine,
-  repoRef,
-  baseSha,
-  headSha,
+  loader,
   syntaxTheme,
   reviewed,
   onToggleReviewed,
@@ -45,9 +42,9 @@ export function FileCard({
   // replaces the injected HTML.
   const [expandedGaps, setExpandedGaps] = useState<Set<number>>(new Set());
   const loadedOnce = useRef(false);
-  // Cached fetched content: `undefined` until loaded, `null` for a binary
-  // file, otherwise the sides to render. Re-rendering on a theme switch reads
-  // this instead of re-fetching from GitHub.
+  const renderedTheme = useRef<string | null>(null);
+  // The loader's resolved sides, held so a theme switch or gap expansion can
+  // render synchronously: `undefined` until loaded, `null` for a binary file.
   const sidesRef = useRef<Sides | null | undefined>(undefined);
   // Latest theme, read by both the initial load and the theme-change effect so
   // whichever fires renders with the current selection.
@@ -60,6 +57,7 @@ export function FileCard({
       setBody({ kind: "notice", text: "Binary file not shown." });
       return;
     }
+    renderedTheme.current = themeRef.current;
     const html = renderSides(engine, sides, themeRef.current);
     setBody(
       html
@@ -73,14 +71,23 @@ export function FileCard({
     if (!el) return;
 
     let cancelled = false;
+    const show = (sides: Sides | null) => {
+      if (cancelled || sidesRef.current !== undefined) return;
+      sidesRef.current = sides;
+      renderInto(sides);
+    };
+
+    let cancelIdle = () => {};
+    void loader.whenFetched(index).then((sides) => {
+      if (cancelled || sidesRef.current !== undefined) return;
+      cancelIdle = whenIdle(() => show(sides));
+    });
+
     const load = async () => {
       if (loadedOnce.current) return;
       loadedOnce.current = true;
       try {
-        const sides = await loadSides(repoRef, file, baseSha, headSha);
-        if (cancelled) return;
-        sidesRef.current = sides;
-        renderInto(sides);
+        show(await loader.load(index));
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -91,19 +98,25 @@ export function FileCard({
     lazy.observe(el, load);
     return () => {
       cancelled = true;
+      cancelIdle();
       lazy.unobserve(el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Re-render from cached sides when the syntax theme changes — no re-fetch.
-  // Skips files not loaded yet (their first render already uses the current
-  // theme) and binary files (nothing to recolor).
+  // A shown card re-renders at once; a hidden one waits for an idle slot, or
+  // renders at once if it is shown first.
   useEffect(() => {
-    if (sidesRef.current === undefined || sidesRef.current === null) return;
-    renderInto(sidesRef.current);
+    const sides = sidesRef.current;
+    if (!sides || renderedTheme.current === syntaxTheme) return;
+    if (!hidden) {
+      renderInto(sides);
+      return;
+    }
+    return whenIdle(() => renderInto(sides));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syntaxTheme]);
+  }, [syntaxTheme, hidden]);
 
   // Record a clicked gap divider so the expansion effect reveals it.
   const onDiffClick = (event: React.MouseEvent<HTMLDivElement>) => {

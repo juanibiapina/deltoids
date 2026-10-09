@@ -29,13 +29,37 @@ interface GhError extends Error {
   detail?: string;
 }
 
-async function gh<T>(url: string): Promise<{ data: T; remaining: string | null }> {
+export class RateLimitError extends Error {}
+
+let lastRemaining: number | null = null;
+
+export function rateRemaining(): number | null {
+  return lastRemaining;
+}
+
+async function ghFetch(url: string): Promise<Response> {
   const res = await fetch(url, { headers: ghHeaders() });
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  if (remaining !== null && Number.isFinite(Number(remaining))) {
+    lastRemaining = Number(remaining);
+  }
+  return res;
+}
+
+function isRateLimited(res: Response): boolean {
+  return (
+    res.status === 429 ||
+    (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0")
+  );
+}
+
+async function gh<T>(url: string): Promise<{ data: T; remaining: string | null }> {
+  const res = await ghFetch(url);
   const remaining = res.headers.get("x-ratelimit-remaining");
   if (!res.ok) {
     const body = await res.text();
     let message = `${res.status} ${res.statusText}`;
-    if (res.status === 403 && remaining === "0") {
+    if (isRateLimited(res)) {
       message = token()
         ? "GitHub rate limit reached for this token."
         : "GitHub rate limit reached (60/hr). Add a token with 🔑 for 5000/hr.";
@@ -99,8 +123,9 @@ async function fetchContent(
   const url = `https://api.github.com/repos/${repoRef.owner}/${repoRef.repo}/contents/${encodeURIComponent(
     path,
   ).replace(/%2F/g, "/")}?ref=${encodeURIComponent(ref)}`;
-  const res = await fetch(url, { headers: ghHeaders() });
+  const res = await ghFetch(url);
   if (res.status === 404) return "";
+  if (isRateLimited(res)) throw new RateLimitError(`rate limited loading ${path}`);
   if (!res.ok) throw new Error(`content ${res.status} for ${path}`);
   const data = (await res.json()) as { encoding?: string; content?: string };
   if (data.encoding !== "base64" || typeof data.content !== "string") {
@@ -146,6 +171,18 @@ export async function loadSides(
   );
   if (looksBinary(before) || looksBinary(after)) return null;
   return { kind: "full", before, after, path };
+}
+
+export function githubSidesSource(
+  repoRef: PrRef,
+  files: PrFile[],
+  baseSha: string,
+  headSha: string,
+): { fetch(index: number): Promise<Sides | null>; remaining(): number | null } {
+  return {
+    fetch: (index) => loadSides(repoRef, files[index], baseSha, headSha),
+    remaining: rateRemaining,
+  };
 }
 
 // Render already-fetched `sides` to HTML with the given syntax `theme` (a

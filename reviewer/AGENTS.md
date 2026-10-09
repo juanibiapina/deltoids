@@ -29,6 +29,10 @@ reviewer/
       engine.ts             #   wasm loader + renderFile/renderFromPatch (theme arg)
       github.ts             #   GitHub REST client + loadSides / renderSides
       github.test.ts        #   renderSides theme + re-render-from-cache tests
+      sidesLoader.ts        #   per-review sides cache + background prefetch queue
+      sidesLoader.test.ts   #   queue order, priority, rate budget, failure tests
+      idle.ts               #   shared one-task-per-idle-slot queue (whenIdle)
+      idle.test.ts          #   ordering + cancel tests
       themes.ts             #   curated registry theme names + mode defaults
       lib.ts                #   pure helpers (parsePrUrl, base64, badgeClass)
       lib.test.ts           #   Vitest unit tests for lib.ts
@@ -100,10 +104,10 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   (dark → Tokyo Night, light → GitHub via `core/themes.ts`); an explicit choice
   from the toolbar `<select>` (grouped Dark/Light, "Auto" clears it) wins and
   persists. The name is passed to the wasm engine as the trailing `theme` arg.
-  Switching must not re-hit GitHub: `github.ts` splits `loadSides` (fetch once,
-  cached per `FileCard` in a ref) from the pure `renderSides(engine, sides,
+  Switching must not re-hit GitHub: fetching (`loadSides`, cached by the
+  review's `SidesLoader`) is split from the pure `renderSides(engine, sides,
   theme)`; a `FileCard` `useEffect` keyed on the theme re-runs only
-  `renderSides` from the cached `Sides`. Curated names in `themes.ts` must stay
+  `renderSides` from the `Sides` it already received. Curated names in `themes.ts` must stay
   valid registry names (`deltoids::theme_names`, i.e. two-face's `as_name()`
   strings plus `TokyoNight`).
 - Row line numbers are a `usePrefs` pref persisted under
@@ -144,6 +148,26 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   switching, and `display: none` keeps them out of the lazy loader. Every
   selection change scrolls the window to the top. A single selected file gets
   `solo`, which keeps it on screen when marked viewed under hide-viewed.
+- File content is prefetched; rendering stays lazy. `App.tsx` creates one
+  `core/sidesLoader.ts::createSidesLoader` per review as soon as the PR and
+  file list arrive (before the engine resolves), seeded with tree display
+  order. It fetches in the background through `p-queue` (concurrency 4),
+  caches one promise per file, and `ReviewView` moves the current selection
+  to the front with `prioritize`. `FileCard` calls `loader.load(index)`
+  from the lazy observer, which starts an unstarted file at once. Background
+  work stops when `github.ts::rateRemaining()` (last seen
+  `x-ratelimit-remaining`) is at or below 10 or a content request throws
+  `RateLimitError`; on-demand loads always run. A failed background fetch
+  is retried by the next `load`. Each `FileCard` also waits on
+  `loader.whenFetched(index)` (which never starts a fetch) and renders in a
+  `core/idle.ts::whenIdle` slot, one file per slot, so hidden cards are
+  ready before they are selected. A render is one synchronous wasm call, so a
+  click that lands during one waits for it; moving the engine to a Web
+  Worker would remove that. On a theme switch, shown cards re-render at once
+  and hidden ones in idle slots (or at once when they are shown first). The engine download starts on page
+  load: `App` calls `loadEngine()` on mount and `index.html` preloads
+  `/deltoids_wasm.wasm` (`as="fetch"` + `crossorigin`, which
+  `instantiateStreaming` reuses; keep them matched or it downloads twice).
 - While a review is open the page does not scroll: `App.tsx` adds
   `reviewing` to `<html>`, the app fills the window, and the diff column is a
   bordered `.pane` whose `.pane-scroll` child scrolls (native scrollbar

@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadEngine } from "./core/engine";
-import { fetchPr, fetchFiles, token, setToken } from "./core/github";
+import {
+  fetchPr,
+  fetchFiles,
+  githubSidesSource,
+  token,
+  setToken,
+} from "./core/github";
 import { parsePrUrl } from "./core/lib";
+import { buildTree, displayOrder } from "./core/filetree";
+import { createSidesLoader, type SidesLoader } from "./core/sidesLoader";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
 import { Topbar } from "./components/Topbar";
@@ -27,6 +35,11 @@ export function App() {
 
   // Guards against overlapping reviews: only the latest request may write state.
   const requestId = useRef(0);
+  const loaderRef = useRef<SidesLoader | null>(null);
+
+  useEffect(() => {
+    void loadEngine().catch(() => {});
+  }, []);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
@@ -64,19 +77,28 @@ export function App() {
     }
 
     const id = ++requestId.current;
+    loaderRef.current?.dispose();
+    loaderRef.current = null;
     setStarted(true);
     setData(null);
     setDrawerOpen(false);
     setStatus({ text: "Loading engine and PR…", isError: false });
 
     try {
-      const [engine, pr, files] = await Promise.all([
-        loadEngine(),
-        fetchPr(ref),
-        fetchFiles(ref),
-      ]);
+      const enginePromise = loadEngine();
+      const [pr, files] = await Promise.all([fetchPr(ref), fetchFiles(ref)]);
       if (id !== requestId.current) return;
-      setData({ ref, pr, files, engine, baseSha: pr.base.sha, headSha: pr.head.sha });
+      const order = displayOrder(
+        buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
+      );
+      const loader = createSidesLoader(
+        githubSidesSource(ref, files, pr.base.sha, pr.head.sha),
+        order,
+      );
+      loaderRef.current = loader;
+      const engine = await enginePromise;
+      if (id !== requestId.current) return;
+      setData({ ref, pr, files, engine, loader });
       setStatus({ text: "", isError: false });
     } catch (err) {
       if (id !== requestId.current) return;

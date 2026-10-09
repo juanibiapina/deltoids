@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: a selected file opens scrolled to its first hunk, with the first change on screen.
 - review: show one file at a time, or every file in a directory when you click it in the sidebar, in a pane that scrolls on its own. A directory's arrow folds it.
 - web: the header stays in place while you scroll, instead of sliding away and back as you move through a diff.
+- review: files open instantly after a pull request loads, because the reviewer fetches and draws every file in the background, starting with the files you select. The engine starts downloading as soon as the page opens. Without a GitHub token, background fetching stops early to keep requests available for files you open.
 
 ### Removed
 

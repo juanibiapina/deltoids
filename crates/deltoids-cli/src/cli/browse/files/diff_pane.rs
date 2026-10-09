@@ -913,7 +913,7 @@ impl DiffPane {
             let block = pane_block_with_title_line(
                 heading(self.title, theme),
                 color,
-                status.map(|message| format!(" {message} ")),
+                status.map(|message| Line::from(format!(" {message} "))),
             );
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -993,7 +993,8 @@ impl DiffPane {
 
         let footer = status
             .map(|status| format!(" {status} "))
-            .or_else(|| self.footer());
+            .or_else(|| self.footer())
+            .map(Line::from);
         let block = pane_block_with_title_line(heading(self.title, theme), color, footer);
         frame.render_widget(block, area);
         frame.render_widget(Paragraph::new(visible), inner);
@@ -1745,7 +1746,7 @@ mod tests {
         // gamma/ (dir 2), gamma/c.rs (file 2). Initial selection is on
         // file 0 (alpha/a.rs at row 1). Step down to row 2 = beta/.
         state.sidebar.move_down(20);
-        assert!(state.sidebar.selected_is_dir());
+        assert!(state.sidebar.selected_directory_path().is_some());
 
         let visible_text: String = state
             .visible_diff_window(DrawBudget::Full)
@@ -1772,7 +1773,7 @@ mod tests {
 
         // Move to a file row; window narrows to that single file.
         state.sidebar.move_down(20); // file row inside beta/
-        assert!(!state.sidebar.selected_is_dir());
+        assert!(!state.sidebar.selected_directory_path().is_some());
         let file_text: String = state
             .visible_diff_window(DrawBudget::Full)
             .iter()
@@ -1820,7 +1821,7 @@ mod tests {
 
         // Move up onto the dir header above the first file.
         state.sidebar.top(20);
-        assert!(state.sidebar.selected_is_dir());
+        assert!(state.sidebar.selected_directory_path().is_some());
         let first_line = {
             let window = state.visible_diff_window(DrawBudget::Full);
             line_text(&window[0])

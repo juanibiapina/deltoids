@@ -1089,7 +1089,7 @@ pub fn pane_block(title: &'static str, color: Color) -> Block<'static> {
 pub fn pane_block_with_title_line(
     title: Line<'static>,
     color: Color,
-    footer: Option<String>,
+    footer: Option<Line<'static>>,
 ) -> Block<'static> {
     let mut block = Block::default()
         .title(title)
@@ -1097,7 +1097,7 @@ pub fn pane_block_with_title_line(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color));
     if let Some(footer) = footer {
-        block = block.title_bottom(Line::from(footer).right_aligned());
+        block = block.title_bottom(footer.right_aligned());
     }
     block
 }

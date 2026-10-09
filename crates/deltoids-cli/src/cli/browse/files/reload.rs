@@ -371,10 +371,7 @@ mod tests {
         );
         assert!(state.unstaged.rows().is_empty());
         assert_eq!(state.unstaged.window_rows(), 0);
-        assert_eq!(
-            sidebar_footer(&state.sidebar, &state.sidebar.display_order()),
-            None
-        );
+        assert_eq!(sidebar_footer(&state.sidebar, &theme()), None);
         assert_eq!(state.unstaged.footer(), None);
     }
 

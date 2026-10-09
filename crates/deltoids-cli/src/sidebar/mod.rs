@@ -331,12 +331,6 @@ impl Sidebar {
         self.scroll
     }
 
-    /// Whether the currently-selected row is a directory header.
-    pub fn selected_is_dir(&self) -> bool {
-        self.selected_row()
-            .is_some_and(|row| matches!(self.rows[row], Row::Dir { .. }))
-    }
-
     /// Workdir-relative identity of the selected directory, including collapsed chains.
     pub fn selected_directory_path(&self) -> Option<String> {
         self.dir_paths.get(self.selected_row()?)?.clone()
@@ -779,7 +773,7 @@ mod tests {
         // diff has something useful to snap to on startup.
         let first = sidebar.selected();
         assert!(
-            !sidebar.selected_is_dir(),
+            !sidebar.selected_directory_path().is_some(),
             "initial selection must be a file row"
         );
         // From the first file, moving up walks back into directory
@@ -787,13 +781,13 @@ mod tests {
         sidebar.move_up(20);
         assert_eq!(sidebar.selected(), first - 1);
         assert!(
-            sidebar.selected_is_dir(),
+            sidebar.selected_directory_path().is_some(),
             "move_up from a file should land on its parent dir row"
         );
         // Moving down again returns to the file.
         sidebar.move_down(20);
         assert_eq!(sidebar.selected(), first);
-        assert!(!sidebar.selected_is_dir());
+        assert!(!sidebar.selected_directory_path().is_some());
     }
 
     #[test]
@@ -858,11 +852,11 @@ mod tests {
         // Last row is the last file (c/z.rs file), since each dir is
         // followed by its single file leaf.
         assert_eq!(sidebar.selected(), sidebar.row_count() - 1);
-        assert!(!sidebar.selected_is_dir());
+        assert!(!sidebar.selected_directory_path().is_some());
         sidebar.top(20);
         // First row is the first directory header.
         assert_eq!(sidebar.selected(), 0);
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
     }
 
     #[test]
@@ -895,7 +889,7 @@ mod tests {
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         // Land on the src/ header.
         sidebar.top(20);
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
         // nearest_file_index points at src/a.rs (input index 0).
         assert_eq!(sidebar.nearest_file_index(), Some(0));
         // Move down to a.rs; nearest is itself.
@@ -920,7 +914,7 @@ mod tests {
         }];
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         sidebar.top(20);
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
         assert_eq!(sidebar.selected_file_index(), None);
         // nearest_file_index still finds the file under it.
         assert_eq!(sidebar.nearest_file_index(), Some(0));
@@ -937,7 +931,7 @@ mod tests {
             stage: None,
         }];
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
-        assert!(!sidebar.selected_is_dir());
+        assert!(!sidebar.selected_directory_path().is_some());
         // The file's display position is 0 — the only file.
         assert_eq!(sidebar.selection_display_range(), Some(0..1));
     }
@@ -976,12 +970,12 @@ mod tests {
         let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         // Land on src/.
         sidebar.top(20);
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
         assert_eq!(sidebar.selection_display_range(), Some(0..2));
 
         // Step onto a.rs — single-element range.
         sidebar.move_down(20);
-        assert!(!sidebar.selected_is_dir());
+        assert!(!sidebar.selected_directory_path().is_some());
         assert_eq!(sidebar.selection_display_range(), Some(0..1));
 
         // Step onto b.rs — single-element range with shifted start.
@@ -990,7 +984,7 @@ mod tests {
 
         // Land on util/ (dir 2 in row order, after src/, a.rs, b.rs).
         sidebar.move_down(20); // util/
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
         assert_eq!(sidebar.selection_display_range(), Some(2..3));
     }
 
@@ -1027,7 +1021,7 @@ mod tests {
 
         // Move to deltoids/ (depth 1). Subtree includes only lib.rs (file 0).
         sidebar.move_down(20);
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
         assert_eq!(sidebar.selection_display_range(), Some(0..1));
     }
 
@@ -1112,7 +1106,7 @@ mod tests {
         assert!(sidebar.toggle_selected_dir(20));
         assert_eq!(texts(&sidebar), ["▶ src/", "M z.rs"]);
         assert_eq!(sidebar.row_count(), 2);
-        assert!(sidebar.selected_is_dir());
+        assert!(sidebar.selected_directory_path().is_some());
 
         assert!(sidebar.toggle_selected_dir(20));
         assert_eq!(sidebar.row_count(), 4);
@@ -1180,7 +1174,7 @@ mod tests {
         rebuilt.apply_folds(sidebar.folds(), 20);
 
         assert_eq!(texts(&rebuilt), ["▶ src/", "M z.rs"]);
-        assert!(rebuilt.selected_is_dir());
+        assert!(rebuilt.selected_directory_path().is_some());
         assert_eq!(rebuilt.folds(), Folds(BTreeSet::from(["src/".to_string()])));
     }
 

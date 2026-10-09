@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: performance improvements
 - TUI: copied review comments contain only each comment's file, line, quoted code, and note, without agent instructions.
 - TUI: a selected file opens scrolled to its first hunk, with the first change on screen.
+- TUI: the Files sidebar footer shows only the total added and removed line counts, in green and red.
 - review: show one file at a time, or every file in a directory when you click it in the sidebar, in a pane that scrolls on its own. A directory's arrow folds it.
 - review: the file tree shows each file's change letter on the left, coloured like the TUI.
 - web: the header stays in place while you scroll, instead of sliding away and back as you move through a diff.

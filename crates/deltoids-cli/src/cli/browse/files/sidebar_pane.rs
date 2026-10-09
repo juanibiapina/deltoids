@@ -99,7 +99,7 @@ pub(super) fn draw_sidebar(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     sidebar: &Sidebar,
-    footer: Option<String>,
+    footer: Option<Line<'static>>,
     focused: bool,
     theme: &Theme,
 ) {
@@ -237,42 +237,33 @@ fn pad_selected_row(line: &mut Line<'static>, width: usize, theme: &Theme) {
     ));
 }
 
-/// Build the sidebar pane's bottom-right footer: file/dir position
-/// among all files plus the aggregate `+N -N` line counts.
+/// Build the sidebar pane's bottom-right footer: the aggregate `+N -N`
+/// line counts in the added and deleted colours, as on each row.
 ///
-/// Returns `None` when there are no files to display.
-pub(super) fn sidebar_footer(sidebar: &Sidebar, display_order: &[usize]) -> Option<String> {
-    let total = display_order.len();
-    if total == 0 {
+/// Returns `None` when no lines changed.
+pub(super) fn sidebar_footer(sidebar: &Sidebar, theme: &Theme) -> Option<Line<'static>> {
+    let totals = sidebar.totals();
+    if totals.added == 0 && totals.deleted == 0 {
         return None;
     }
-    let selected_input = sidebar.nearest_file_index()?;
-    let pos = display_order
-        .iter()
-        .position(|&i| i == selected_input)
-        .map(|p| p + 1)
-        .unwrap_or(0);
-    let label = if sidebar.selected_is_dir() {
-        "dir"
-    } else {
-        "file"
-    };
-    let totals = sidebar.totals();
-    let mut s = format!(" {label} {pos} of {total}");
-    if totals.added > 0 || totals.deleted > 0 {
-        s.push_str("  ");
-        if totals.added > 0 {
-            s.push_str(&format!("+{}", totals.added));
-            if totals.deleted > 0 {
-                s.push(' ');
-            }
-        }
-        if totals.deleted > 0 {
-            s.push_str(&format!("-{}", totals.deleted));
-        }
+    let mut spans = vec![Span::raw(" ")];
+    if totals.added > 0 {
+        spans.push(Span::styled(
+            format!("+{}", totals.added),
+            Style::default().fg(rgb_to_color(theme.status_added)),
+        ));
     }
-    s.push(' ');
-    Some(s)
+    if totals.added > 0 && totals.deleted > 0 {
+        spans.push(Span::raw(" "));
+    }
+    if totals.deleted > 0 {
+        spans.push(Span::styled(
+            format!("-{}", totals.deleted),
+            Style::default().fg(rgb_to_color(theme.status_deleted)),
+        ));
+    }
+    spans.push(Span::raw(" "));
+    Some(Line::from(spans))
 }
 
 #[cfg(test)]
@@ -348,6 +339,48 @@ mod tests {
         let rows = drawn_rows(&sidebar, 20);
 
         assert_eq!(rows[0], "M a_really_ core ●");
+    }
+
+    fn sidebar_with_counts(counts: &[(usize, usize)]) -> Sidebar {
+        let diffs: Vec<_> = (0..counts.len())
+            .map(|i| file_diff(&format!("f{i}.rs")))
+            .collect();
+        let files: Vec<_> = diffs
+            .iter()
+            .zip(counts)
+            .map(|(file, &(added, deleted))| SidebarFile {
+                file,
+                added,
+                deleted,
+                stage: None,
+            })
+            .collect();
+        Sidebar::build_with_icons(&files, &Theme::default(), crate::sidebar::IconMode::Off)
+    }
+
+    #[test]
+    fn footer_shows_total_line_counts_in_added_and_deleted_colours() {
+        let theme = Theme::default();
+        let sidebar = sidebar_with_counts(&[(3, 1), (2, 4)]);
+
+        let line = sidebar_footer(&sidebar, &theme).unwrap();
+
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, " +5 -5 ");
+        let added = line.spans.iter().find(|s| s.content == "+5").unwrap();
+        assert_eq!(added.style.fg, Some(rgb_to_color(theme.status_added)));
+        let deleted = line.spans.iter().find(|s| s.content == "-5").unwrap();
+        assert_eq!(deleted.style.fg, Some(rgb_to_color(theme.status_deleted)));
+    }
+
+    #[test]
+    fn footer_leaves_out_a_side_with_no_lines() {
+        let sidebar = sidebar_with_counts(&[(2, 0)]);
+
+        let line = sidebar_footer(&sidebar, &Theme::default()).unwrap();
+
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, " +2 ");
     }
 
     #[test]

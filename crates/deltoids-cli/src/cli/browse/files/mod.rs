@@ -379,10 +379,6 @@ impl FilesMode {
         true
     }
 
-    fn sidebar_footer(&self) -> Option<String> {
-        sidebar_pane::sidebar_footer(&self.sidebar, &self.display_order)
-    }
-
     /// Re-sort files into columns after the model or its staging changed.
     fn refresh_panes(&mut self) {
         self.display_order = self.sidebar.display_order();
@@ -1143,7 +1139,7 @@ impl Mode for FilesMode {
             frame,
             left,
             &self.sidebar,
-            self.sidebar_footer(),
+            sidebar_pane::sidebar_footer(&self.sidebar, theme),
             sidebar_focused,
             theme,
         );

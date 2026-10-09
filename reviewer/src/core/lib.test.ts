@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parsePrUrl, decodeBase64Utf8, looksBinary, badgeClass } from "./lib";
+import { parsePrUrl, decodeBase64Utf8, looksBinary } from "./lib";
 
 describe("parsePrUrl", () => {
   test("accepts a full PR URL", () => {
@@ -46,11 +46,4 @@ test("decodeBase64Utf8 decodes UTF-8 including newlines in the base64", () => {
 test("looksBinary detects a NUL byte", () => {
   expect(looksBinary("plain text")).toBe(false);
   expect(looksBinary("has\u0000nul")).toBe(true);
-});
-
-test("badgeClass maps statuses", () => {
-  expect(badgeClass("added")).toBe("added");
-  expect(badgeClass("removed")).toBe("removed");
-  expect(badgeClass("renamed")).toBe("renamed");
-  expect(badgeClass("modified")).toBe("");
 });

@@ -154,6 +154,28 @@ export function directoryIds(nodes: TreeNode[]): string[] {
     .map((n) => n.id);
 }
 
+export type Selection =
+  | { kind: "file"; index: number }
+  | { kind: "dir"; id: string };
+
+function fileIndices(nodes: TreeNode[], keep: (node: TreeNode) => boolean): number[] {
+  return nodes.flatMap((n) =>
+    !n.metadata.isDir && n.metadata.fileIndex !== undefined && keep(n)
+      ? [n.metadata.fileIndex]
+      : [],
+  );
+}
+
+export function displayOrder(nodes: TreeNode[]): number[] {
+  return fileIndices(nodes, () => true);
+}
+
+export function selectionFiles(nodes: TreeNode[], selection: Selection): number[] {
+  if (selection.kind === "file") return [selection.index];
+  const prefix = `${selection.id}/`;
+  return fileIndices(nodes, (n) => n.id.startsWith(prefix));
+}
+
 // Drop reviewed file leaves (and any directory that becomes empty as a result)
 // from an already-built tree. Used to keep the sidebar aligned with the global
 // "Hide viewed" toggle: a hidden file card should not leave a dead row behind.

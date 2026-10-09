@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Engine } from "../core/engine";
 import type { Pr, PrFile } from "../core/github";
 import type { PrRef } from "../core/lib";
-import { pickActiveIndex } from "../core/activeFile";
+import {
+  buildTree,
+  displayOrder,
+  selectionFiles,
+  type Selection,
+} from "../core/filetree";
 import { useReviewed } from "../hooks/useReviewed";
 import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
 import { FileCard } from "./FileCard";
-import { useFileNavigation } from "./useFileNavigation";
+import { DiffScrollbar } from "./DiffScrollbar";
 
 export interface ReviewData {
   ref: PrRef;
@@ -25,144 +30,89 @@ interface ReviewViewProps {
   onNavigate: () => void;
 }
 
+function selectionKey(selection: Selection): string {
+  return selection.kind === "file" ? `file:${selection.index}` : `dir:${selection.id}`;
+}
+
 export function ReviewView({
   data,
   syntaxTheme,
   hideViewed,
   onNavigate,
 }: ReviewViewProps) {
-  const { ref, pr, files, engine, baseSha, headSha } = data;
-  const { navigateTo } = useFileNavigation();
-  const { isReviewed, toggle, count, clear } = useReviewed(ref, files);
+  const { ref, files, engine, baseSha, headSha } = data;
+  const { isReviewed, toggle } = useReviewed(ref, files);
 
-  // Scrollspy: highlight the file currently at the top of the diff column in
-  // the tree. A continuous IntersectionObserver (separate from the one-shot
-  // lazy-load observer) watches every card against a thin band under the
-  // topbar; the topmost card crossing it is active. jsdom has no
-  // IntersectionObserver, so this stays inert in tests.
-  const columnRef = useRef<HTMLDivElement>(null);
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  const activeRef = useRef<number | null>(null);
-  activeRef.current = activeIndex;
+  const tree = useMemo(
+    () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
+    [files],
+  );
+  const order = useMemo(() => displayOrder(tree), [tree]);
+
+  const [selection, setSelection] = useState<Selection>(() => {
+    const first =
+      order.find((i) => !(hideViewed && isReviewed(files[i]))) ?? order[0] ?? 0;
+    return { kind: "file", index: first };
+  });
+  const shown = useMemo(() => new Set(selectionFiles(tree, selection)), [tree, selection]);
+  const key = selectionKey(selection);
+
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") return;
-    const column = columnRef.current;
-    if (!column) return;
+    if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
+  }, [key]);
 
-    const build = () => {
-      const intersecting = new Set<number>();
-      // Detection band: from just below the sticky topbar down through the
-      // upper third of the viewport. Starting at the topbar height (not 0) is
-      // essential — otherwise the band sits *behind* the topbar and tracks the
-      // card sliding up out of view instead of the one at the readable top,
-      // lagging the highlight by a file or two. The band's height only needs to
-      // be tall enough that some card edge always falls inside it; the topmost
-      // (smallest) intersecting index is the active file, so the tail does not
-      // make the pick eager.
-      const topbar =
-        parseInt(
-          getComputedStyle(document.documentElement).getPropertyValue("--topbar-h"),
-          10,
-        ) || 60;
-      const observer = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            const idx = Number((entry.target as HTMLElement).id.slice("file-".length));
-            if (!Number.isFinite(idx)) continue;
-            if (entry.isIntersecting) intersecting.add(idx);
-            else intersecting.delete(idx);
-          }
-          const next = pickActiveIndex(intersecting, activeRef.current);
-          if (next !== activeRef.current) setActiveIndex(next);
-        },
-        { rootMargin: `-${topbar}px 0px -70% 0px` },
-      );
-      column
-        .querySelectorAll<HTMLElement>('section.file[id^="file-"]')
-        .forEach((el) => observer.observe(el));
-      return observer;
-    };
-
-    let observer = build();
-    // The topbar height (baked into rootMargin) can change when the layout
-    // reflows at a breakpoint; rebuild so the band stays under the bar.
-    const onResize = () => {
-      observer.disconnect();
-      observer = build();
-    };
-    window.addEventListener("resize", onResize);
-    return () => {
-      window.removeEventListener("resize", onResize);
-      observer.disconnect();
-    };
-  }, [files]);
-
-  // Stable index-keyed lookup for the sidebar (both dimming and pruning).
   const isReviewedByIndex = useCallback(
     (index: number) => isReviewed(files[index]),
     [isReviewed, files],
   );
 
-  const handleFileSelect = useCallback(
-    (index: number) => {
-      onNavigate(); // close the mobile drawer
-      navigateTo(index);
+  const handleSelect = useCallback(
+    (next: Selection) => {
+      onNavigate();
+      setSelection(next);
     },
-    [onNavigate, navigateTo],
+    [onNavigate],
   );
 
-  const capped = files.length >= 3000 ? " (first 3000)" : "";
-
   return (
-    <LazyObserverProvider>
+    <LazyObserverProvider rootRef={scrollerRef}>
       <div className="layout">
         <FileTree
           files={files}
-          onFileSelect={handleFileSelect}
+          onSelect={handleSelect}
           isReviewed={isReviewedByIndex}
           hideReviewed={hideViewed}
-          activeIndex={activeIndex}
+          selection={selection}
         />
-        <div className="column" ref={columnRef}>
-          <div className="pr-meta">
-            <h1>
-              #{pr.number} · {pr.title}
-            </h1>
-            <div className="sub">
-              {ref.owner}/{ref.repo} · {files.length} files{capped} · +
-              {pr.additions} −{pr.deletions}
+        <div className="pane">
+          <div className="pane-scroll" ref={scrollerRef}>
+            <div ref={contentRef}>
+              {order.map((i) => (
+                <FileCard
+                  key={i}
+                  index={i}
+                  file={files[i]}
+                  engine={engine}
+                  repoRef={ref}
+                  baseSha={baseSha}
+                  headSha={headSha}
+                  syntaxTheme={syntaxTheme}
+                  reviewed={isReviewed(files[i])}
+                  onToggleReviewed={() => toggle(files[i])}
+                  hidden={!shown.has(i)}
+                  solo={selection.kind === "file"}
+                />
+              ))}
             </div>
-            {count > 0 && (
-              <div className="review-progress">
-                <span>
-                  {count} of {files.length} reviewed
-                </span>
-                <span className="review-bar" aria-hidden="true">
-                  <span
-                    style={{ width: `${(count / files.length) * 100}%` }}
-                  ></span>
-                </span>
-                <button type="button" className="review-clear" onClick={clear}>
-                  Clear
-                </button>
-              </div>
-            )}
           </div>
-          {files.map((file, i) => (
-            <FileCard
-              key={i}
-              index={i}
-              file={file}
-              engine={engine}
-              repoRef={ref}
-              baseSha={baseSha}
-              headSha={headSha}
-              syntaxTheme={syntaxTheme}
-              reviewed={isReviewed(file)}
-              onToggleReviewed={() => toggle(file)}
-            />
-          ))}
+          <DiffScrollbar
+            scrollerRef={scrollerRef}
+            contentRef={contentRef}
+            selectionKey={key}
+          />
         </div>
       </div>
     </LazyObserverProvider>

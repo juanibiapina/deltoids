@@ -28,11 +28,3 @@ export function decodeBase64Utf8(b64: string | null | undefined): string {
 export function looksBinary(text: string): boolean {
   return text.includes("\u0000");
 }
-
-// Map a GitHub file status to a badge CSS modifier.
-export function badgeClass(status: string): string {
-  if (status === "added") return "added";
-  if (status === "removed") return "removed";
-  if (status === "renamed") return "renamed";
-  return "";
-}

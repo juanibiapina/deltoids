@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: show staged and unstaged changes separately, and press `s` to switch between them when a file or directory has both.
 - TUI: press `z` on a diff line to expand its hunk one scope level (the enclosing function, class, section, or the whole file), and `x` to shrink it back. From the Files sidebar, `z` and `x` act on every hunk of the selected file or directory.
 - TUI: file headers show the file's language, or mark files whose language has no scope context.
+- review: the diff scrollbar marks where the added and removed lines are.
 - TUI: the Files sidebar tags each file with its kind of change and an attention dot and mutes tests, comment-only changes, import-only changes, and lockfiles. Press `f` to hide low-value files. Tags end in `!` for changes that break callers. With `TYPESAFE_API_KEY` set, TypeSafe's Jev model judges every hunk, and hunk headers show its tag.
 
 ### Changed
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: performance improvements
 - TUI: copied review comments contain only each comment's file, line, quoted code, and note, without agent instructions.
 - TUI: a selected file opens scrolled to its first hunk, with the first change on screen.
+- review: show one file at a time, or every file in a directory when you click it in the sidebar, in a pane that scrolls on its own. A directory's arrow folds it.
 - web: the header stays in place while you scroll, instead of sliding away and back as you move through a diff.
 
 ### Removed
@@ -30,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove agent traces: Traces mode in the TUI, the `edit`, `write`, and `serve` subcommands, and the pi and Claude Code plugins. Uninstall the plugins with `pi remove https://github.com/juanibiapina/deltoids` and `claude plugin uninstall deltoids@deltoids`. Recorded traces in `$XDG_DATA_HOME/edit/traces` (default `~/.local/share/edit/traces`) can be deleted.
 - TUI: `deltoids tui` no longer renders without a terminal.
 - review: remove the "Loaded N/M files" status line above the diff.
+- review: remove the PR title, file count, and reviewed progress above the diff.
+- review: remove the status badge and the sticky header bar from each file. The file path and a rename line now sit at the top of the diff and scroll with it, as in the TUI.
 
 ### Fixed
 

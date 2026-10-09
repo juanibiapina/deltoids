@@ -90,17 +90,77 @@ html {
   }
 }
 
-/* Scroll anchoring: when file cards load lazily above the viewport, the browser
-   keeps the clicked card in place — but only if its anchor node is real diff
-   content, not a pinned chrome element. Exclude every sticky/fixed element so
-   the anchor walk lands inside the content column. */
-.topbar,
-.toolbar,
-.status,
-.sidebar,
-.scrim,
-.file-head {
-  overflow-anchor: none;
+/* While a review is open the page does not scroll: the app fills the window
+   and the diff pane scrolls inside its own box, like the TUI diff pane. */
+html.reviewing,
+html.reviewing body {
+  height: 100%;
+  overflow: hidden;
+}
+html.reviewing #root {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+html.reviewing main {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+html.reviewing .layout {
+  height: 100%;
+}
+
+.pane {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-raised);
+}
+.pane-scroll {
+  height: 100%;
+  margin-right: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.pane-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.diff-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 14px;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  touch-action: none;
+  user-select: none;
+}
+.diff-scrollbar canvas {
+  display: block;
+  width: 7px;
+}
+.diff-scrollbar-thumb {
+  position: absolute;
+  right: 1px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--muted);
+  opacity: 0.6;
+}
+.diff-scrollbar-thumb[hidden] {
+  display: none;
+}
+.diff-scrollbar:hover .diff-scrollbar-thumb {
+  opacity: 0.9;
 }
 
 html,
@@ -644,70 +704,38 @@ body.drawer-open .scrim {
 }
 
 /* --------------------------------------------------------------------- */
-/* PR meta + file cards                                                   */
+/* File cards                                                            */
 /* --------------------------------------------------------------------- */
 
-.pr-meta {
-  padding: 16px 0 12px;
-  border-bottom: 1px solid var(--border);
-}
-.pr-meta h1 {
-  margin: 0 0 4px;
-  font-size: clamp(17px, 2.5vw, 20px);
-  letter-spacing: -0.01em;
-}
-.pr-meta .sub {
-  color: var(--muted);
-  font-size: 13px;
-}
-
 .file {
-  margin: 20px 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  /* `clip` rounds the corners without becoming a scroll container, so the
-     sticky header still tracks page scroll. */
+  border-bottom: 1px solid var(--border);
   overflow: clip;
   background: var(--bg-raised);
-  /* Sidebar jumps land below the topbar, not under it. */
-  scroll-margin-top: calc(var(--topbar-h) + 8px);
+}
+.file[hidden] {
+  display: none;
 }
 
+/* Mirrors the TUI file header: bold path, then a separator rule. */
 .file-head {
-  position: sticky;
-  top: var(--topbar-h);
-  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
-  background: var(--bg-raised);
+  padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 13px;
 }
 .file-head .path {
-  font-weight: 600;
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
-.file-head .badge {
-  flex: none;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+.file-rename {
+  padding: 4px 14px;
   color: var(--muted);
-  border: 1px solid var(--border);
-}
-.badge.added {
-  color: var(--added-gutter);
-}
-.badge.removed {
-  color: var(--removed-gutter);
-}
-.badge.renamed {
-  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 /* --------------------------------------------------------------------- */
@@ -720,6 +748,7 @@ body.drawer-open .scrim {
   line-height: 1.5;
   tab-size: 4;
 }
+
 
 /* Text-size cycle: app.js sets data-size on <main>. */
 main[data-size="s"] {
@@ -888,16 +917,15 @@ main.hide-ln .row .ln {
 }
 
 /* A reviewed card collapses its diff and shrinks to a slim, muted line so it
-   stops drawing the eye. It stays in the DOM, so sidebar jumps still land. */
+   stops drawing the eye. */
 .file.reviewed {
   opacity: 0.72;
 }
-.file.reviewed .diff {
+.file.reviewed .diff,
+.file.reviewed .file-rename {
   display: none;
 }
 .file.reviewed .file-head {
-  padding: 6px 14px;
-  background: var(--bg);
   color: var(--muted);
   border-bottom: none;
 }
@@ -905,16 +933,13 @@ main.hide-ln .row .ln {
   font-weight: 500;
   color: var(--muted);
 }
-.file.reviewed .file-head .badge {
-  opacity: 0.6;
-}
 .file.reviewed .review-toggle {
   color: var(--added-gutter);
 }
 
-/* Hide reviewed files entirely (toolbar "Viewed" toggle, on by default). The
-   sidebar still lists them (dimmed) so they remain reachable. */
-main.hide-viewed .file.reviewed {
+/* Hide reviewed files entirely (toolbar "Viewed" toggle, on by default). A
+   selected file stays, so marking it viewed never empties the column. */
+main.hide-viewed .file.reviewed:not(.solo) {
   display: none;
 }
 
@@ -926,13 +951,13 @@ main.hide-viewed .file.reviewed {
   color: var(--added-gutter);
 }
 
-/* The file currently at the top of the diff column: accent bar + tint so the
-   tree tracks where the reader is. Distinct from the plain-bg hover. */
-.tree-file.active {
+/* The selected file or directory: accent bar + tint. Distinct from the
+   plain-bg hover. */
+.tree-row.active {
   background: var(--focus-ring);
   box-shadow: inset 2px 0 0 var(--accent);
 }
-.tree-file.active .tree-name {
+.tree-row.active .tree-name {
   color: var(--text);
   font-weight: 600;
 }
@@ -940,41 +965,6 @@ main.hide-viewed .file.reviewed {
    highlight stays legible. */
 .tree-file.reviewed.active {
   opacity: 0.85;
-}
-
-/* Reviewed progress under the PR meta. */
-.review-progress {
-  margin-top: 10px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--muted);
-}
-.review-bar {
-  flex: 0 1 200px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--border);
-  overflow: hidden;
-}
-.review-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--added-gutter);
-}
-.review-clear {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--muted);
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-}
-.review-clear:hover {
-  color: var(--text);
 }
 
 .notice {
@@ -1068,6 +1058,13 @@ main.hide-viewed .file.reviewed {
     background: none;
     border-right: none;
     transform: none;
+  }
+  html.reviewing .layout {
+    align-items: stretch;
+  }
+  html.reviewing .sidebar {
+    height: 100%;
+    max-height: none;
   }
   .side-item {
     padding: 4px 8px;

@@ -5,12 +5,14 @@ import {
   useMemo,
   useRef,
   type ReactNode,
+  type RefObject,
 } from "react";
 
 // A single shared IntersectionObserver for all file cards, so a large PR does
 // not create thousands of observers. Cards register their element plus a
 // one-shot load callback; the observer fires it once the card nears the
-// viewport (600px rootMargin), then unobserves it.
+// scroll container (600px rootMargin), then unobserves it. The observer is
+// created on the first registration, after React has attached `rootRef`.
 
 interface LazyRegistry {
   observe(el: Element, cb: () => void): void;
@@ -19,45 +21,51 @@ interface LazyRegistry {
 
 const LazyContext = createContext<LazyRegistry | null>(null);
 
-export function LazyObserverProvider({ children }: { children: ReactNode }) {
+export function LazyObserverProvider({
+  rootRef,
+  children,
+}: {
+  rootRef?: RefObject<Element | null>;
+  children: ReactNode;
+}) {
   const callbacks = useRef(new Map<Element, () => void>());
+  const observer = useRef<IntersectionObserver | null>(null);
 
-  const observer = useMemo(() => {
-    if (typeof IntersectionObserver === "undefined") return null;
-    return new IntersectionObserver(
-      (entries, obs) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const cb = callbacks.current.get(entry.target);
-          obs.unobserve(entry.target);
-          callbacks.current.delete(entry.target);
-          if (cb) cb();
-        }
-      },
-      { rootMargin: "600px 0px" },
-    );
-  }, []);
+  useEffect(() => () => observer.current?.disconnect(), []);
 
-  useEffect(() => () => observer?.disconnect(), [observer]);
-
-  const registry = useMemo<LazyRegistry>(
-    () => ({
+  const registry = useMemo<LazyRegistry>(() => {
+    const ensure = (): IntersectionObserver | null => {
+      if (typeof IntersectionObserver === "undefined") return null;
+      observer.current ??= new IntersectionObserver(
+        (entries, obs) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const cb = callbacks.current.get(entry.target);
+            obs.unobserve(entry.target);
+            callbacks.current.delete(entry.target);
+            if (cb) cb();
+          }
+        },
+        { root: rootRef?.current ?? null, rootMargin: "600px 0px" },
+      );
+      return observer.current;
+    };
+    return {
       observe(el, cb) {
-        if (!observer) {
-          // No IntersectionObserver (e.g. jsdom): load eagerly.
+        const obs = ensure();
+        if (!obs) {
           cb();
           return;
         }
         callbacks.current.set(el, cb);
-        observer.observe(el);
+        obs.observe(el);
       },
       unobserve(el) {
         callbacks.current.delete(el);
-        observer?.unobserve(el);
+        observer.current?.unobserve(el);
       },
-    }),
-    [observer],
-  );
+    };
+  }, [rootRef]);
 
   return (
     <LazyContext.Provider value={registry}>{children}</LazyContext.Provider>

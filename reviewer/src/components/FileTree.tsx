@@ -4,6 +4,7 @@ import {
   buildTree,
   directoryIds,
   pruneReviewed,
+  type Selection,
   type TreeMeta,
 } from "../core/filetree";
 import { fileIcon } from "./fileIcons";
@@ -12,14 +13,12 @@ import type { PrFile } from "../core/github";
 
 interface FileTreeProps {
   files: PrFile[];
-  onFileSelect: (index: number) => void;
+  onSelect: (selection: Selection) => void;
   isReviewed?: (index: number) => boolean;
   // When set, reviewed files are dropped from the tree (mirrors the global
   // "Hide viewed" toggle) instead of shown dimmed.
   hideReviewed?: boolean;
-  // Index of the file currently at the top of the diff column; its row is
-  // highlighted so the tree tracks where the reader is.
-  activeIndex?: number | null;
+  selection?: Selection;
 }
 
 // A per-file-type brand logo, or the generic file glyph when unmapped.
@@ -91,15 +90,15 @@ function guides(level: number) {
   ));
 }
 
-// Grouped, collapsible file tree (phase 2). Directory rows toggle open; file
-// leaves select-to-scroll their `#file-{i}` card into view. Fully expanded by
-// default so every changed file is visible at once, like the old flat list.
+// Grouped, collapsible file tree. A row click selects the file or directory
+// the diff column shows; a directory's chevron folds it. Fully expanded by
+// default so every changed file is visible at once.
 export function FileTree({
   files,
-  onFileSelect,
+  onSelect,
   isReviewed,
   hideReviewed,
-  activeIndex,
+  selection,
 }: FileTreeProps) {
   const fullData = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -122,17 +121,17 @@ export function FileTree({
   // except when a file actually enters or leaves the tree.
   const treeKey = useMemo(() => data.map((n) => n.id).join("|"), [data]);
 
-  // Keep the highlighted row visible without moving the page. On wide screens
+  // Keep the selected row visible without moving the page. On wide screens
   // the sidebar is its own sticky scroll container, so nudge *its* scrollTop
   // (never `scrollIntoView`, which would also scroll the window). On the narrow
   // drawer the sidebar is off-canvas, so skip it entirely.
   const navRef = useRef<HTMLElement>(null);
   const wide = useMediaQuery("(min-width: 1024px)");
   useEffect(() => {
-    if (!wide || activeIndex === undefined || activeIndex === null) return;
+    if (!wide || !selection) return;
     const nav = navRef.current;
     if (!nav) return;
-    const row = nav.querySelector<HTMLElement>(".tree-file.active");
+    const row = nav.querySelector<HTMLElement>(".tree-row.active");
     if (!row) return;
     const navRect = nav.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
@@ -142,7 +141,7 @@ export function FileTree({
     } else if (rowRect.bottom > navRect.bottom - margin) {
       nav.scrollTop += rowRect.bottom - (navRect.bottom - margin);
     }
-  }, [wide, activeIndex]);
+  }, [wide, selection]);
 
   return (
     <nav className="sidebar" ref={navRef}>
@@ -159,16 +158,29 @@ export function FileTree({
           const meta = element.metadata as TreeMeta | undefined;
           const index = meta?.fileIndex;
           if (index === undefined) return;
-          onFileSelect(index);
+          onSelect({ kind: "file", index });
         }}
         nodeRenderer={({ element, getNodeProps, level, isBranch, isExpanded, handleExpand }) => {
           const meta = element.metadata as TreeMeta | undefined;
 
           if (isBranch) {
+            const id = String(element.id);
+            const active = selection?.kind === "dir" && selection.id === id;
             return (
-              <div {...getNodeProps({ onClick: handleExpand })} className="tree-row tree-dir">
+              <div
+                {...getNodeProps({ onClick: () => onSelect({ kind: "dir", id }) })}
+                className={`tree-row tree-dir${active ? " active" : ""}`}
+                aria-current={active ? "true" : undefined}
+              >
                 {guides(level)}
-                <span className="tree-twist">
+                <span
+                  className="tree-twist"
+                  title={isExpanded ? "Collapse" : "Expand"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleExpand(event);
+                  }}
+                >
                   <ChevronIcon open={isExpanded} />
                 </span>
                 <span className="tree-ico tree-ico-dir">
@@ -183,7 +195,9 @@ export function FileTree({
             meta?.fileIndex !== undefined &&
             (isReviewed?.(meta.fileIndex) ?? false);
           const active =
-            meta?.fileIndex !== undefined && meta.fileIndex === activeIndex;
+            selection?.kind === "file" &&
+            meta?.fileIndex !== undefined &&
+            meta.fileIndex === selection.index;
 
           return (
             <div

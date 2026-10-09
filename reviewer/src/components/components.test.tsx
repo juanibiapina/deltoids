@@ -4,6 +4,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { FileTree } from "./FileTree";
 import { Topbar } from "./Topbar";
 import { FileCard } from "./FileCard";
+import { ReviewView, type ReviewData } from "./ReviewView";
 import { LazyObserverProvider } from "./LazyObserver";
 import * as github from "../core/github";
 import type { Engine } from "../core/engine";
@@ -23,7 +24,7 @@ const files: PrFile[] = [
 
 describe("FileTree", () => {
   test("renders directory headers and file leaves, expanded by default", () => {
-    render(<FileTree files={files} onFileSelect={() => {}} />);
+    render(<FileTree files={files} onSelect={() => {}} />);
     // Grouped directory header.
     expect(screen.getByText("src")).toBeTruthy();
     // Leaves show basenames (visible because dirs default-expanded).
@@ -34,27 +35,35 @@ describe("FileTree", () => {
     expect(screen.getByRole("tree")).toBeTruthy();
   });
 
-  test("selecting a file leaf reports its index", () => {
-    const onFileSelect = vi.fn();
-    render(<FileTree files={files} onFileSelect={onFileSelect} />);
+  test("selecting a file leaf reports a file selection", () => {
+    const onSelect = vi.fn();
+    render(<FileTree files={files} onSelect={onSelect} />);
     fireEvent.click(screen.getByText("a.ts"));
-    expect(onFileSelect).toHaveBeenCalledWith(0);
+    expect(onSelect).toHaveBeenCalledWith({ kind: "file", index: 0 });
   });
 
-  test("collapsing a directory hides its files", () => {
-    render(<FileTree files={files} onFileSelect={() => {}} />);
-    expect(screen.getByText("a.ts")).toBeTruthy();
+  test("clicking a directory row selects it and keeps it open", () => {
+    const onSelect = vi.fn();
+    render(<FileTree files={files} onSelect={onSelect} />);
     fireEvent.click(screen.getByText("src"));
+    expect(onSelect).toHaveBeenCalledWith({ kind: "dir", id: "src" });
+    expect(screen.getByText("a.ts")).toBeTruthy();
+  });
+
+  test("the chevron folds a directory without selecting it", () => {
+    const onSelect = vi.fn();
+    render(<FileTree files={files} onSelect={onSelect} />);
+    fireEvent.click(screen.getByTitle("Collapse"));
     expect(screen.queryByText("a.ts")).toBeNull();
-    // A top-level file stays visible.
     expect(screen.getByText("README.md")).toBeTruthy();
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   test("a reviewed file row is dimmed and shows a check", () => {
     render(
       <FileTree
         files={files}
-        onFileSelect={() => {}}
+        onSelect={() => {}}
         isReviewed={(index) => index === 0}
       />,
     );
@@ -66,26 +75,33 @@ describe("FileTree", () => {
     expect(other?.classList.contains("reviewed")).toBe(false);
   });
 
-  test("the active file row is highlighted, others are not", () => {
+  test("the selected file row is highlighted, others are not", () => {
     render(
-      <FileTree files={files} onFileSelect={() => {}} activeIndex={1} />,
+      <FileTree files={files} onSelect={() => {}} selection={{ kind: "file", index: 1 }} />,
     );
+    expect(document.querySelectorAll(".tree-row.active")).toHaveLength(1);
     const active = screen.getByText("b.ts").closest(".tree-file");
     expect(active?.classList.contains("active")).toBe(true);
-    const other = screen.getByText("a.ts").closest(".tree-file");
-    expect(other?.classList.contains("active")).toBe(false);
   });
 
-  test("no row is highlighted when activeIndex is undefined", () => {
-    render(<FileTree files={files} onFileSelect={() => {}} />);
-    expect(document.querySelectorAll(".tree-file.active").length).toBe(0);
+  test("the selected directory row is highlighted", () => {
+    render(
+      <FileTree files={files} onSelect={() => {}} selection={{ kind: "dir", id: "src" }} />,
+    );
+    expect(document.querySelectorAll(".tree-row.active")).toHaveLength(1);
+    expect(screen.getByText("src").closest(".tree-dir")?.classList.contains("active")).toBe(true);
+  });
+
+  test("no row is highlighted without a selection", () => {
+    render(<FileTree files={files} onSelect={() => {}} />);
+    expect(document.querySelectorAll(".tree-row.active").length).toBe(0);
   });
 
   test("hideReviewed drops reviewed files from the tree", () => {
     render(
       <FileTree
         files={files}
-        onFileSelect={() => {}}
+        onSelect={() => {}}
         isReviewed={(index) => index === 0}
         hideReviewed
       />,
@@ -99,7 +115,7 @@ describe("FileTree", () => {
     const { rerender } = render(
       <FileTree
         files={files}
-        onFileSelect={() => {}}
+        onSelect={() => {}}
         isReviewed={() => false}
         hideReviewed
       />,
@@ -111,7 +127,7 @@ describe("FileTree", () => {
     rerender(
       <FileTree
         files={files}
-        onFileSelect={() => {}}
+        onSelect={() => {}}
         isReviewed={(index) => index === 0}
         hideReviewed
       />,
@@ -224,6 +240,41 @@ describe("FileCard gap expansion", () => {
       3,
       "GitHub",
     );
+  });
+});
+
+describe("ReviewView selection", () => {
+  function renderReview() {
+    (github.loadSides as Mock).mockReturnValue(new Promise(() => {}));
+    const data = {
+      ref: { owner: "o", repo: "r", number: 1 },
+      pr: { number: 1, title: "t", additions: 1, deletions: 1 },
+      files,
+      engine: {} as Engine,
+      baseSha: "base",
+      headSha: "head",
+    } as unknown as ReviewData;
+    return render(
+      <ReviewView data={data} syntaxTheme="TokyoNight" hideViewed onNavigate={() => {}} />,
+    );
+  }
+
+  const shownCards = () =>
+    Array.from(document.querySelectorAll<HTMLElement>("section.file"))
+      .filter((el) => !el.hidden)
+      .map((el) => el.id);
+
+  test("opens on the first file in tree order, alone", () => {
+    renderReview();
+    expect(shownCards()).toEqual(["file-2"]);
+  });
+
+  test("a file click shows only that file, a directory click shows its files", () => {
+    renderReview();
+    fireEvent.click(screen.getByText("b.ts"));
+    expect(shownCards()).toEqual(["file-1"]);
+    fireEvent.click(screen.getByText("src"));
+    expect(shownCards()).toEqual(["file-0", "file-1"]);
   });
 });
 

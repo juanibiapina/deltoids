@@ -32,19 +32,18 @@ reviewer/
       themes.ts             #   curated registry theme names + mode defaults
       lib.ts                #   pure helpers (parsePrUrl, base64, badgeClass)
       lib.test.ts           #   Vitest unit tests for lib.ts
-      filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror)
-      filetree.test.ts      #   grouping tests ported from tree.rs
-      activeFile.ts         #   pure scrollspy picker (topmost intersecting file)
-      activeFile.test.ts    #   pickActiveIndex tests
-      cardHeight.ts         #   estimate a card's height from changed-line counts
-      cardHeight.test.ts    #   estimate tests
+      filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror),
+                            #     display order, selection membership
+      filetree.test.ts      #   grouping tests ported from tree.rs + selection
+      overview.ts           #   scrollbar geometry: change cells, thumb, drag
+      overview.test.ts      #   tests ported from the TUI diff_scrollbar.rs
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
       Topbar.tsx            #   brand, PR form, token button, toolbar
       FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
       fileIcons.ts          #   filename -> per-type brand icon (simple-icons)
-      useFileNavigation.ts  #   pin a clicked file under the topbar through lazy loads
-      ReviewView.tsx        #   PR meta + lazy file cards
+      ReviewView.tsx        #   selection + diff pane of lazy file cards
+      DiffScrollbar.tsx     #   the diff pane's scrollbar with added/removed marks
       FileCard.tsx          #   one lazily-rendered file diff
       LazyObserver.tsx      #   shared IntersectionObserver for lazy cards
       components.test.tsx   #   component tests
@@ -124,8 +123,7 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   semantics at file granularity. A reviewed card keeps a per-file `Viewed`
   checkbox in its header, gets the `reviewed` class, and CSS collapses the diff
   and slims/mutes the header (`.file.reviewed`); the sidebar row dims and its
-  A/M/D/R letter becomes a check. The card stays mounted so sidebar jumps still
-  land. `.pr-meta` shows an "N of M reviewed" line with a Clear button. A
+  A/M/D/R letter becomes a check. A
   toolbar toggle (`usePrefs.hideViewed`, key `deltoids.review.hide-viewed`,
   **on by default**; only an explicit `"0"` shows them) adds `hide-viewed` to
   `<main>` so `main.hide-viewed .file.reviewed { display: none }` removes
@@ -136,27 +134,26 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   cross-check for `filetree.ts`. No virtualization yet (deferred; the tree is
   fully expanded by default). File rows show per-type brand icons (`fileIcons.ts`,
   tree-shaken from `simple-icons`) and a trailing A/M/D/R status letter.
-- The tree highlights the file currently at the top of the diff column (a
-  `.tree-file.active` row with an accent bar). A scrollspy in `ReviewView` owns
-  a *second*, continuous `IntersectionObserver` (distinct from the one-shot
-  lazy-load one in `LazyObserver.tsx`) over every `#file-{i}` section; the pure
-  `core/activeFile.ts::pickActiveIndex` picks the topmost intersecting index and
-  holds its previous value when nothing intersects (no flicker in the gaps). Its
-  `rootMargin` band **must start at the topbar height** (read from `--topbar-h`,
-  rebuilt on resize) — starting at `0` puts the band behind the sticky topbar
-  and lags the highlight by a file or two. The index flows `ReviewView` →
-  `FileTree` as `activeIndex` and is rendered as a plain class, not the library's
-  controlled `selectedIds` (which would fight the prune-remount `key` and focus).
-  `FileTree` keeps the active row visible by nudging the sidebar's own
-  `scrollTop` (never `scrollIntoView`, which would also scroll the page), on wide
-  screens only. jsdom has no `IntersectionObserver`, so the scrollspy is inert in
-  tests; only `pickActiveIndex` and the active-class rendering are unit-tested.
-- Clicking a file must land it under the sticky topbar and keep it there while
-  cards render lazily. Two things cooperate: skeletons reserve an estimated
-  height (`cardHeight.ts`) so the layout barely shifts, and sticky chrome sets
-  `overflow-anchor: none` so the browser's native scroll anchoring anchors to
-  diff content. That is not enough on its own (the boundary card straddling the
-  topbar defeats anchoring, and large diffs finish rendering seconds later), so
-  `useFileNavigation` pins the clicked file with a per-frame `requestAnimationFrame`
-  loop that re-aligns it until the user scrolls (detected via a `scroll` listener
-  that ignores the loop's own scrolls).
+- The diff column shows one selection at a time, like the TUI diff pane:
+  one file, or every file under a directory row the user clicks (a dir's
+  chevron only folds it). `Selection` lives in `ReviewView` state (not the
+  tree library's `selectedIds`, which would fight the prune-remount `key`)
+  and starts on the first file in tree order. Cards render in tree display
+  order (`filetree.ts::displayOrder`) and all stay mounted; unselected ones get
+  `hidden`, so the fetched sides, theme re-render, and expanded gaps survive
+  switching, and `display: none` keeps them out of the lazy loader. Every
+  selection change scrolls the window to the top. A single selected file gets
+  `solo`, which keeps it on screen when marked viewed under hide-viewed.
+- While a review is open the page does not scroll: `App.tsx` adds
+  `reviewing` to `<html>`, the app fills the window, and the diff column is a
+  bordered `.pane` whose `.pane-scroll` child scrolls (native scrollbar
+  hidden), like the TUI diff pane. File headers scroll with the diff and
+  mirror the TUI's: bold path, a separator rule, and a muted `renamed:` line.
+  `LazyObserverProvider` takes the pane as its IntersectionObserver `root`,
+  created on the first registration so the ref is already attached.
+  `DiffScrollbar` sits inside the pane's right edge and maps the pane's
+  scroll. It measures the shown `.row.added`/`.row.removed` boxes when the
+  pane or its content resizes or the theme changes, and paints
+  `core/overview.ts::changeCells` to a canvas; scroll only moves the thumb.
+  Track click and thumb drag set the pane's `scrollTop`. jsdom has no layout,
+  so only `overview.ts` is unit-tested.

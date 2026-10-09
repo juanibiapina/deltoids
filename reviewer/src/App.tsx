@@ -35,6 +35,10 @@ export function App() {
     document.body.classList.toggle("drawer-open", drawerOpen);
   }, [drawerOpen]);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle("reviewing", data !== null);
+  }, [data]);
+
   // Reflect the theme choice on <html> so the CSS palette switches.
   useEffect(() => {
     document.documentElement.dataset.theme = prefs.theme;

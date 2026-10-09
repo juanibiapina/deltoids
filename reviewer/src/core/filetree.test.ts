@@ -2,7 +2,9 @@ import { describe, expect, test } from "vitest";
 import {
   buildTree,
   directoryIds,
+  displayOrder,
   pruneReviewed,
+  selectionFiles,
   ROOT_ID,
   type TreeNode,
 } from "./filetree";
@@ -137,3 +139,33 @@ describe("pruneReviewed", () => {
     ]);
   });
 });
+
+describe("selection", () => {
+  const nodes = buildTree(
+    files(["z.md"], ["ab/x.ts"], ["a/b/c.ts"], ["a/b/d/e.ts"], ["a/f.ts"]),
+  );
+
+  test("display order follows the tree, not the input", () => {
+    expect(displayOrder(nodes)).toEqual([2, 3, 4, 1, 0]);
+  });
+
+  test("a file selection shows just that file", () => {
+    expect(selectionFiles(nodes, { kind: "file", index: 4 })).toEqual([4]);
+  });
+
+  test("a directory shows its subtree in display order", () => {
+    expect(selectionFiles(nodes, { kind: "dir", id: "a" })).toEqual([2, 3, 4]);
+    expect(selectionFiles(nodes, { kind: "dir", id: "a/b/d" })).toEqual([3]);
+  });
+
+  test("a sibling sharing a name prefix stays out", () => {
+    expect(selectionFiles(nodes, { kind: "dir", id: "ab" })).toEqual([1]);
+  });
+
+  test("a collapsed directory chain selects by its joined id", () => {
+    const chain = buildTree(files(["x/y/z/1.ts"], ["x/y/z/2.ts"], ["w.ts"]));
+    expect(directoryIds(chain)).toEqual(["x/y/z"]);
+    expect(selectionFiles(chain, { kind: "dir", id: "x/y/z" })).toEqual([0, 1]);
+  });
+});
+

@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { badgeClass } from "../core/lib";
-import { estimateCardHeight } from "../core/cardHeight";
 import { loadSides, renderSides, type PrFile, type Sides } from "../core/github";
 import type { Engine } from "../core/engine";
 import type { PrRef } from "../core/lib";
@@ -16,6 +14,8 @@ interface FileCardProps {
   syntaxTheme: string;
   reviewed: boolean;
   onToggleReviewed: () => void;
+  hidden?: boolean;
+  solo?: boolean;
 }
 
 type Body =
@@ -33,6 +33,8 @@ export function FileCard({
   syntaxTheme,
   reviewed,
   onToggleReviewed,
+  hidden = false,
+  solo = false,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLDivElement>(null);
@@ -153,29 +155,14 @@ export function FileCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [body, expandedGaps]);
 
-  const badge = badgeClass(file.status);
-  const label =
-    file.status === "renamed"
-      ? `${file.previous_filename} → ${file.filename}`
-      : file.filename;
-
-  // While pending, reserve the estimated height so cards loading above this one
-  // barely shift the page (keeps jump-to-file accurate).
-  const reserve =
-    body.kind === "pending" && !reviewed
-      ? { minHeight: estimateCardHeight(file.additions, file.deletions) }
-      : undefined;
+  const className = ["file", reviewed && "reviewed", solo && "solo"]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <section
-      className={reviewed ? "file reviewed" : "file"}
-      id={`file-${index}`}
-      ref={ref}
-      style={reserve}
-    >
+    <section className={className} id={`file-${index}`} ref={ref} hidden={hidden}>
       <div className="file-head">
-        <span className={`badge ${badge}`}>{file.status}</span>
-        <span className="path">{label}</span>
+        <span className="path">{file.filename}</span>
         <label className="review-toggle">
           <input
             type="checkbox"
@@ -185,6 +172,11 @@ export function FileCard({
           Viewed
         </label>
       </div>
+      {file.status === "renamed" && file.previous_filename && (
+        <div className="file-rename">
+          renamed: {file.previous_filename} ⟶ {file.filename}
+        </div>
+      )}
       {body.kind === "html" ? (
         <div
           className="diff"

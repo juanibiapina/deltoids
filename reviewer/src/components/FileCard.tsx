@@ -1,15 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { renderSides, type PrFile, type Sides } from "../core/github";
-import type { Engine } from "../core/engine";
-import type { SidesLoader } from "../core/sidesLoader";
+import type { PrFile } from "../core/github";
+import type { RenderSession, Rendered } from "../core/renderSession";
 import { whenIdle } from "../core/idle";
 import { useLazy } from "./LazyObserver";
 
 interface FileCardProps {
   index: number;
   file: PrFile;
-  engine: Engine;
-  loader: SidesLoader;
+  session: RenderSession;
   syntaxTheme: string;
   reviewed: boolean;
   onToggleReviewed: () => void;
@@ -19,14 +17,24 @@ interface FileCardProps {
 
 type Body =
   | { kind: "pending" }
-  | { kind: "html"; html: string }
-  | { kind: "notice"; text: string };
+  | { kind: "html"; html: string; theme: string }
+  | { kind: "notice"; text: string; theme?: string };
+
+function bodyFor(rendered: Rendered, theme: string): Body {
+  switch (rendered.kind) {
+    case "html":
+      return { kind: "html", html: rendered.html, theme };
+    case "binary":
+      return { kind: "notice", text: "Binary file not shown.", theme };
+    case "empty":
+      return { kind: "notice", text: "No textual changes.", theme };
+  }
+}
 
 export function FileCard({
   index,
   file,
-  engine,
-  loader,
+  session,
   syntaxTheme,
   reviewed,
   onToggleReviewed,
@@ -41,82 +49,55 @@ export function FileCard({
   // state (not the DOM) so an expansion survives a theme re-render, which
   // replaces the injected HTML.
   const [expandedGaps, setExpandedGaps] = useState<Set<number>>(new Set());
-  const loadedOnce = useRef(false);
-  const renderedTheme = useRef<string | null>(null);
-  // The loader's resolved sides, held so a theme switch or gap expansion can
-  // render synchronously: `undefined` until loaded, `null` for a binary file.
-  const sidesRef = useRef<Sides | null | undefined>(undefined);
-  // Latest theme, read by both the initial load and the theme-change effect so
-  // whichever fires renders with the current selection.
-  const themeRef = useRef(syntaxTheme);
-  themeRef.current = syntaxTheme;
-
-  // Render cached sides (or a notice) into the body with the current theme.
-  const renderInto = (sides: Sides | null) => {
-    if (sides === null) {
-      setBody({ kind: "notice", text: "Binary file not shown." });
-      return;
-    }
-    renderedTheme.current = themeRef.current;
-    const html = renderSides(engine, sides, themeRef.current);
-    setBody(
-      html
-        ? { kind: "html", html }
-        : { kind: "notice", text: "No textual changes." },
-    );
-  };
+  // Set once the card nears the viewport; from then on a shown card renders
+  // urgently instead of in the background.
+  const [seen, setSeen] = useState(false);
+  const shownTheme = useRef<string | null>(null);
+  // Gap nodes with a context render in flight, so a re-run of the expansion
+  // effect does not request them twice.
+  const pendingGaps = useRef(new WeakSet<Element>());
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-
-    let cancelled = false;
-    const show = (sides: Sides | null) => {
-      if (cancelled || sidesRef.current !== undefined) return;
-      sidesRef.current = sides;
-      renderInto(sides);
-    };
-
-    let cancelIdle = () => {};
-    void loader.whenFetched(index).then((sides) => {
-      if (cancelled || sidesRef.current !== undefined) return;
-      cancelIdle = whenIdle(() => show(sides));
-    });
-
-    const load = async () => {
-      if (loadedOnce.current) return;
-      loadedOnce.current = true;
-      try {
-        show(await loader.load(index));
-      } catch (err) {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
-        setBody({ kind: "notice", text: `Could not load: ${message}` });
-      }
-    };
-
-    lazy.observe(el, load);
-    return () => {
-      cancelled = true;
-      cancelIdle();
-      lazy.unobserve(el);
-    };
+    lazy.observe(el, () => setSeen(true));
+    return () => lazy.unobserve(el);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-render from cached sides when the syntax theme changes — no re-fetch.
-  // A shown card re-renders at once; a hidden one waits for an idle slot, or
-  // renders at once if it is shown first.
+  // Render the current theme. A seen, shown card asks the worker for an urgent
+  // render and paints the result at once. Otherwise the render runs in the
+  // background and its HTML lands in an idle slot, so hidden cards are ready
+  // before they are selected. A result for a theme that is no longer current
+  // is dropped by the cleanup.
   useEffect(() => {
-    const sides = sidesRef.current;
-    if (!sides || renderedTheme.current === syntaxTheme) return;
-    if (!hidden) {
-      renderInto(sides);
-      return;
-    }
-    return whenIdle(() => renderInto(sides));
+    if (shownTheme.current === syntaxTheme) return;
+    const urgent = seen && !hidden;
+    let cancelled = false;
+    let cancelIdle = () => {};
+    const apply = (next: Body) => {
+      shownTheme.current = syntaxTheme;
+      setBody(next);
+    };
+    session.render(index, syntaxTheme, urgent ? "now" : "background").then(
+      (rendered) => {
+        if (cancelled) return;
+        const next = bodyFor(rendered, syntaxTheme);
+        if (urgent) apply(next);
+        else cancelIdle = whenIdle(() => apply(next));
+      },
+      (err) => {
+        if (cancelled || !urgent) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setBody({ kind: "notice", text: `Could not load: ${message}` });
+      },
+    );
+    return () => {
+      cancelled = true;
+      cancelIdle();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syntaxTheme, hidden]);
+  }, [syntaxTheme, hidden, seen]);
 
   // Record a clicked gap divider so the expansion effect reveals it.
   const onDiffClick = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -137,33 +118,31 @@ export function FileCard({
   // After each diff render (or expansion change), reveal every expanded gap by
   // rendering its new-file range as context rows and injecting them where the
   // divider stood. A theme re-render replaces the HTML and rebuilds the `.gap`
-  // nodes, so this runs again and re-applies with the current theme.
+  // nodes, so this runs again and re-applies with the current theme; rows for
+  // a replaced node are dropped.
   useEffect(() => {
     const root = diffRef.current;
-    const sides = sidesRef.current;
-    if (!root || body.kind !== "html" || !sides) return;
+    if (!root || body.kind !== "html") return;
     root.querySelectorAll<HTMLElement>(".gap").forEach((gap) => {
       const start = Number(gap.dataset.gapNewStart);
       const end = Number(gap.dataset.gapNewEnd);
       if (!expandedGaps.has(start) || !Number.isFinite(end)) return;
-      // The hunk right after the gap now continues directly from the revealed
-      // lines, so its header (breadcrumb / line number) and top seam become
-      // redundant — mark it "joined" to fold them away.
-      const nextHunk = gap.nextElementSibling;
-      const rows = engine.renderContext(
-        sides.after,
-        sides.path,
-        start,
-        end,
-        themeRef.current,
-      );
-      const template = document.createElement("template");
-      template.innerHTML = rows;
-      gap.after(template.content);
-      gap.remove();
-      if (nextHunk?.classList.contains("hunk")) {
-        nextHunk.classList.add("joined");
-      }
+      if (pendingGaps.current.has(gap)) return;
+      pendingGaps.current.add(gap);
+      void session.renderContext(index, start, end, body.theme).then((rows) => {
+        if (!gap.isConnected) return;
+        // The hunk right after the gap now continues directly from the
+        // revealed lines, so its header (breadcrumb / line number) and top
+        // seam become redundant — mark it "joined" to fold them away.
+        const nextHunk = gap.nextElementSibling;
+        const template = document.createElement("template");
+        template.innerHTML = rows;
+        gap.after(template.content);
+        gap.remove();
+        if (nextHunk?.classList.contains("hunk")) {
+          nextHunk.classList.add("joined");
+        }
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [body, expandedGaps]);

@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { loadEngine } from "./core/engine";
-import {
-  fetchPr,
-  fetchFiles,
-  githubSidesSource,
-  token,
-  setToken,
-} from "./core/github";
+import { fetchPr, fetchFiles, token, setToken } from "./core/github";
 import { parsePrUrl } from "./core/lib";
 import { buildTree, displayOrder } from "./core/filetree";
-import { createSidesLoader, type SidesLoader } from "./core/sidesLoader";
+import {
+  openReview,
+  startReviewWorker,
+  type ReviewSession,
+} from "./core/reviewClient";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
 import { Topbar } from "./components/Topbar";
@@ -35,10 +32,10 @@ export function App() {
 
   // Guards against overlapping reviews: only the latest request may write state.
   const requestId = useRef(0);
-  const loaderRef = useRef<SidesLoader | null>(null);
+  const sessionRef = useRef<ReviewSession | null>(null);
 
   useEffect(() => {
-    void loadEngine().catch(() => {});
+    startReviewWorker();
   }, []);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
@@ -77,28 +74,36 @@ export function App() {
     }
 
     const id = ++requestId.current;
-    loaderRef.current?.dispose();
-    loaderRef.current = null;
+    sessionRef.current?.dispose();
+    sessionRef.current = null;
     setStarted(true);
     setData(null);
     setDrawerOpen(false);
     setStatus({ text: "Loading engine and PR…", isError: false });
 
     try {
-      const enginePromise = loadEngine();
+      const { ready } = startReviewWorker();
       const [pr, files] = await Promise.all([fetchPr(ref), fetchFiles(ref)]);
       if (id !== requestId.current) return;
       const order = displayOrder(
         buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
       );
-      const loader = createSidesLoader(
-        githubSidesSource(ref, files, pr.base.sha, pr.head.sha),
+      const session = await openReview({
+        ref,
+        files,
+        baseSha: pr.base.sha,
+        headSha: pr.head.sha,
         order,
-      );
-      loaderRef.current = loader;
-      const engine = await enginePromise;
+        token: token(),
+      });
+      if (id !== requestId.current) {
+        session.dispose();
+        return;
+      }
+      sessionRef.current = session;
+      await ready;
       if (id !== requestId.current) return;
-      setData({ ref, pr, files, engine, loader });
+      setData({ ref, pr, files, session });
       setStatus({ text: "", isError: false });
     } catch (err) {
       if (id !== requestId.current) return;
@@ -136,6 +141,7 @@ export function App() {
     );
     if (next === null) return;
     setToken(next);
+    sessionRef.current?.setToken(next.trim());
     setHasToken(Boolean(next.trim()));
     setStatus({
       text: next.trim() ? "Token saved." : "Token cleared.",

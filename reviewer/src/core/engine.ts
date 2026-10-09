@@ -42,15 +42,50 @@ interface EngineExports {
   render_context(...args: number[]): bigint;
 }
 
-// Lazily instantiated deltoids wasm module wrapped in a `renderFile` helper.
-let enginePromise: Promise<Engine> | null = null;
+// Compile the wasm module once. `fetch` reuses the `index.html` preload, so
+// this runs on the main thread and the compiled module is posted to the
+// review worker, which instantiates it.
+let modulePromise: Promise<WebAssembly.Module> | null = null;
 
-export function loadEngine(): Promise<Engine> {
-  if (!enginePromise) enginePromise = instantiateEngine();
-  return enginePromise;
+export function compileEngine(): Promise<WebAssembly.Module> {
+  if (!modulePromise) modulePromise = compileModule();
+  return modulePromise;
 }
 
-async function instantiateEngine(): Promise<Engine> {
+async function compileModule(): Promise<WebAssembly.Module> {
+  try {
+    return await WebAssembly.compileStreaming(fetch("/deltoids_wasm.wasm"));
+  } catch {
+    // Fall back when the server does not send application/wasm.
+    const bytes = await (await fetch("/deltoids_wasm.wasm")).arrayBuffer();
+    return WebAssembly.compile(bytes);
+  }
+}
+
+// Instantiate the engine in the review worker. A Rust panic aborts as a wasm
+// trap and can leave the instance's memory inconsistent, so a trap replaces
+// the instance before the error is rethrown: only the call that trapped fails.
+export async function instantiateEngine(
+  module: WebAssembly.Module,
+): Promise<Engine> {
+  let current = bind(module);
+  const call = <T>(work: (engine: Engine) => T): T => {
+    try {
+      return work(current);
+    } catch (err) {
+      if (!(err instanceof WebAssembly.RuntimeError)) throw err;
+      current = bind(module);
+      throw new Error(`diff engine crashed (${err.message})`);
+    }
+  };
+  return {
+    renderFile: (...args) => call((engine) => engine.renderFile(...args)),
+    renderFromPatch: (...args) => call((engine) => engine.renderFromPatch(...args)),
+    renderContext: (...args) => call((engine) => engine.renderContext(...args)),
+  };
+}
+
+function bind(module: WebAssembly.Module): Engine {
   const wasi = new WASI(
     [],
     [],
@@ -64,19 +99,7 @@ async function instantiateEngine(): Promise<Engine> {
     wasi_snapshot_preview1: wasi.wasiImport,
   } as unknown as WebAssembly.Imports;
 
-  let instance: WebAssembly.Instance;
-  try {
-    const source = await WebAssembly.instantiateStreaming(
-      fetch("/deltoids_wasm.wasm"),
-      importObject,
-    );
-    instance = source.instance;
-  } catch {
-    // Fall back when the server does not send application/wasm.
-    const bytes = await (await fetch("/deltoids_wasm.wasm")).arrayBuffer();
-    const source = await WebAssembly.instantiate(bytes, importObject);
-    instance = source.instance;
-  }
+  const instance = new WebAssembly.Instance(module, importObject);
   wasi.initialize(instance);
 
   const { memory, alloc, dealloc, render_file, render_from_patch, render_context } =

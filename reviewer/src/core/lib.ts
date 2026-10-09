@@ -16,14 +16,6 @@ export function parsePrUrl(input: string | null | undefined): PrRef | null {
   return { owner: m[1], repo: m[2], number: Number(m[3]) };
 }
 
-// Decode a base64 string (GitHub contents API `content`) into UTF-8 text.
-export function decodeBase64Utf8(b64: string | null | undefined): string {
-  const binary = atob((b64 || "").replace(/\n/g, ""));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
-}
-
 // Heuristic: treat content with a NUL byte as binary.
 export function looksBinary(text: string): boolean {
   return text.includes("\u0000");

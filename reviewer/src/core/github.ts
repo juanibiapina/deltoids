@@ -1,4 +1,4 @@
-import { decodeBase64Utf8, looksBinary, type PrRef } from "./lib";
+import { looksBinary, type PrRef } from "./lib";
 import type { Engine } from "./engine";
 
 // ---------------------------------------------------------------------------
@@ -16,12 +16,17 @@ export function setToken(value: string): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-function ghHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-  };
-  const t = token();
-  if (t) headers.Authorization = `Bearer ${t}`;
+const JSON_MEDIA = "application/vnd.github+json";
+// The raw media type returns the file body directly and works up to 100 MB;
+// the JSON form leaves `content` empty for files over 1 MB. GitHub gives both
+// forms the same ETag, so a browser cache holding the JSON form revalidates
+// it with a 304 and serves the JSON body for a raw request (seen in
+// Firefox). Raw requests therefore bypass the HTTP cache.
+const RAW_MEDIA = "application/vnd.github.raw+json";
+
+function ghHeaders(auth: string, accept: string): Record<string, string> {
+  const headers: Record<string, string> = { Accept: accept };
+  if (auth) headers.Authorization = `Bearer ${auth}`;
   return headers;
 }
 
@@ -37,8 +42,15 @@ export function rateRemaining(): number | null {
   return lastRemaining;
 }
 
-async function ghFetch(url: string): Promise<Response> {
-  const res = await fetch(url, { headers: ghHeaders() });
+async function ghFetch(
+  url: string,
+  auth: string,
+  accept = JSON_MEDIA,
+): Promise<Response> {
+  const res = await fetch(url, {
+    headers: ghHeaders(auth, accept),
+    cache: accept === RAW_MEDIA ? "no-store" : "default",
+  });
   const remaining = res.headers.get("x-ratelimit-remaining");
   if (remaining !== null && Number.isFinite(Number(remaining))) {
     lastRemaining = Number(remaining);
@@ -54,7 +66,7 @@ function isRateLimited(res: Response): boolean {
 }
 
 async function gh<T>(url: string): Promise<{ data: T; remaining: string | null }> {
-  const res = await ghFetch(url);
+  const res = await ghFetch(url, token());
   const remaining = res.headers.get("x-ratelimit-remaining");
   if (!res.ok) {
     const body = await res.text();
@@ -119,19 +131,16 @@ async function fetchContent(
   repoRef: PrRef,
   path: string,
   ref: string,
+  auth: string,
 ): Promise<string> {
   const url = `https://api.github.com/repos/${repoRef.owner}/${repoRef.repo}/contents/${encodeURIComponent(
     path,
   ).replace(/%2F/g, "/")}?ref=${encodeURIComponent(ref)}`;
-  const res = await ghFetch(url);
+  const res = await ghFetch(url, auth, RAW_MEDIA);
   if (res.status === 404) return "";
   if (isRateLimited(res)) throw new RateLimitError(`rate limited loading ${path}`);
   if (!res.ok) throw new Error(`content ${res.status} for ${path}`);
-  const data = (await res.json()) as { encoding?: string; content?: string };
-  if (data.encoding !== "base64" || typeof data.content !== "string") {
-    throw new Error(`unexpected content encoding for ${path}`);
-  }
-  return decodeBase64Utf8(data.content);
+  return res.text();
 }
 
 // The fetched content a file's diff renders from. `patch` reconstructs the
@@ -146,11 +155,14 @@ export type Sides =
 // the head-side content and let the engine reconstruct the before side (one
 // request instead of two). Otherwise resolve both sides. This is the network
 // half of rendering; cache the result and re-run `renderSides` on theme change.
+// `auth` is the GitHub token ("" for anonymous), passed in because the review
+// worker cannot read `localStorage`.
 export async function loadSides(
   repoRef: PrRef,
   file: PrFile,
   baseSha: string,
   headSha: string,
+  auth: string,
 ): Promise<Sides | null> {
   const canPatch =
     (file.status === "modified" || file.status === "renamed") &&
@@ -158,7 +170,7 @@ export async function loadSides(
     file.patch.length > 0;
 
   if (canPatch) {
-    const after = await fetchContent(repoRef, file.filename, headSha);
+    const after = await fetchContent(repoRef, file.filename, headSha, auth);
     if (looksBinary(after)) return null;
     return { kind: "patch", after, patch: file.patch as string, path: file.filename };
   }
@@ -168,6 +180,7 @@ export async function loadSides(
     file,
     baseSha,
     headSha,
+    auth,
   );
   if (looksBinary(before) || looksBinary(after)) return null;
   return { kind: "full", before, after, path };
@@ -178,9 +191,10 @@ export function githubSidesSource(
   files: PrFile[],
   baseSha: string,
   headSha: string,
+  auth: () => string,
 ): { fetch(index: number): Promise<Sides | null>; remaining(): number | null } {
   return {
-    fetch: (index) => loadSides(repoRef, files[index], baseSha, headSha),
+    fetch: (index) => loadSides(repoRef, files[index], baseSha, headSha, auth()),
     remaining: rateRemaining,
   };
 }
@@ -200,6 +214,7 @@ async function resolveSides(
   file: PrFile,
   baseSha: string,
   headSha: string,
+  auth: string,
 ): Promise<{ before: string; after: string; path: string }> {
   const newPath = file.filename;
   const oldPath = file.previous_filename || file.filename;
@@ -207,19 +222,19 @@ async function resolveSides(
     case "added":
       return {
         before: "",
-        after: await fetchContent(repoRef, newPath, headSha),
+        after: await fetchContent(repoRef, newPath, headSha, auth),
         path: newPath,
       };
     case "removed":
       return {
-        before: await fetchContent(repoRef, oldPath, baseSha),
+        before: await fetchContent(repoRef, oldPath, baseSha, auth),
         after: "",
         path: oldPath,
       };
     default: {
       const [before, after] = await Promise.all([
-        fetchContent(repoRef, oldPath, baseSha),
-        fetchContent(repoRef, newPath, headSha),
+        fetchContent(repoRef, oldPath, baseSha, auth),
+        fetchContent(repoRef, newPath, headSha, auth),
       ]);
       return { before, after, path: newPath };
     }

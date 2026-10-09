@@ -1,28 +1,24 @@
 import { createRef } from "react";
-import { afterEach, describe, expect, test, vi, type Mock } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FileTree } from "./FileTree";
 import { Topbar } from "./Topbar";
 import { FileCard } from "./FileCard";
 import { ReviewView, type ReviewData } from "./ReviewView";
 import { LazyObserverProvider } from "./LazyObserver";
-import * as github from "../core/github";
-import type { Engine } from "../core/engine";
 import type { Prefs } from "../hooks/usePrefs";
-import type { PrFile, Sides } from "../core/github";
-import type { SidesLoader } from "../core/sidesLoader";
+import type { PrFile } from "../core/github";
+import type { RenderSession, Rendered } from "../core/renderSession";
 
-vi.mock("../core/github", async (orig) => {
-  const actual = await orig<typeof import("../core/github")>();
-  return { ...actual, renderSides: vi.fn() };
-});
-
-function fakeLoader(result: Promise<Sides | null>): SidesLoader {
+function fakeSession(overrides: Partial<RenderSession> = {}): RenderSession {
   return {
-    load: vi.fn(() => result),
-    whenFetched: vi.fn(() => result),
+    render: vi.fn((_index: number, theme: string) =>
+      Promise.resolve<Rendered>({ kind: "html", html: `<div class="row">${theme}</div>` }),
+    ),
+    renderContext: vi.fn(() => Promise.resolve("")),
     prioritize: vi.fn(),
     dispose: vi.fn(),
+    ...overrides,
   };
 }
 
@@ -164,116 +160,77 @@ describe("FileTree", () => {
 });
 
 describe("FileCard gap expansion", () => {
-  const AFTER = "l1\nl2\nl3\nl4\nl5\n";
   const GAP_HTML =
     '<div class="hunk"><div class="lineno">1</div></div>' +
     '<div class="gap" data-gap-lines="2" data-gap-new-start="2" ' +
     'data-gap-new-end="3"><span class="gap-label">2 unmodified lines</span></div>' +
     '<div class="hunk"><div class="lineno">4</div></div>';
+  const ROWS =
+    '<div class="row context"><span class="ln">2</span>' +
+    '<span class="code">l2</span></div>' +
+    '<div class="row context"><span class="ln">3</span>' +
+    '<span class="code">l3</span></div>';
 
-  function mockEngine(): Engine {
-    return {
-      renderFile: vi.fn(),
-      renderFromPatch: vi.fn(),
-      renderContext: vi
-        .fn()
-        .mockReturnValue(
-          '<div class="row context"><span class="ln">2</span>' +
-            '<span class="code">l2</span></div>' +
-            '<div class="row context"><span class="ln">3</span>' +
-            '<span class="code">l3</span></div>',
-        ),
-    };
-  }
+  // The real engine inlines theme colours, so its HTML differs per theme; tag
+  // the output so a theme switch changes the string and React rebuilds the
+  // `.gap` nodes (identical strings would skip the innerHTML reset).
+  const gapSession = () =>
+    fakeSession({
+      render: vi.fn((_index: number, theme: string) =>
+        Promise.resolve<Rendered>({ kind: "html", html: `${GAP_HTML}<!--${theme}-->` }),
+      ),
+      renderContext: vi.fn(() => Promise.resolve(ROWS)),
+    });
 
-  const loader = fakeLoader(
-    Promise.resolve({ kind: "full", before: "", after: AFTER, path: "x.rs" }),
-  );
-
-  function renderCard(engine: Engine, syntaxTheme = "TokyoNight") {
-    // The real engine inlines theme colours, so its HTML differs per theme;
-    // tag the output so a theme switch changes the string and React rebuilds
-    // the `.gap` nodes (identical strings would skip the innerHTML reset).
-    (github.renderSides as Mock).mockImplementation(
-      (_engine: Engine, _sides: unknown, theme: string) =>
-        `${GAP_HTML}<!--${theme}-->`,
-    );
-    return render(
+  function card(session: RenderSession, syntaxTheme = "TokyoNight") {
+    return (
       <LazyObserverProvider>
         <FileCard
           index={0}
           file={{ filename: "x.rs", status: "modified" }}
-          engine={engine}
-          loader={loader}
+          session={session}
           syntaxTheme={syntaxTheme}
           reviewed={false}
           onToggleReviewed={() => {}}
         />
-      </LazyObserverProvider>,
+      </LazyObserverProvider>
     );
   }
 
   test("clicking a gap reveals its lines via renderContext", async () => {
-    const engine = mockEngine();
-    renderCard(engine);
-    const gap = await screen.findByText("2 unmodified lines");
-    fireEvent.click(gap);
-    expect(engine.renderContext).toHaveBeenCalledWith(
-      AFTER,
-      "x.rs",
-      2,
-      3,
-      "TokyoNight",
-    );
+    const session = gapSession();
+    render(card(session));
+    fireEvent.click(await screen.findByText("2 unmodified lines"));
     // The revealed context rows are injected and the divider is gone.
-    expect(screen.getByText("l2")).toBeTruthy();
+    expect(await screen.findByText("l2")).toBeTruthy();
     expect(screen.getByText("l3")).toBeTruthy();
+    expect(session.renderContext).toHaveBeenCalledWith(0, 2, 3, "TokyoNight");
     expect(screen.queryByText("2 unmodified lines")).toBeNull();
     // The hunk that followed the gap is joined, folding its header away.
     expect(document.querySelectorAll(".hunk.joined").length).toBe(1);
   });
 
   test("a theme change re-applies the expansion with the new theme", async () => {
-    const engine = mockEngine();
-    const { rerender } = renderCard(engine);
+    const session = gapSession();
+    const { rerender } = render(card(session));
     fireEvent.click(await screen.findByText("2 unmodified lines"));
-    (engine.renderContext as Mock).mockClear();
-    // Re-render with a different syntax theme; the card re-renders the diff
-    // (new `.gap` nodes) and must re-expand with the new theme.
-    rerender(
-      <LazyObserverProvider>
-        <FileCard
-          index={0}
-          file={{ filename: "x.rs", status: "modified" }}
-          engine={engine}
-          loader={loader}
-          syntaxTheme="GitHub"
-          reviewed={false}
-          onToggleReviewed={() => {}}
-        />
-      </LazyObserverProvider>,
+    await screen.findByText("l2");
+    rerender(card(session, "GitHub"));
+    await waitFor(() =>
+      expect(session.renderContext).toHaveBeenCalledWith(0, 2, 3, "GitHub"),
     );
-    expect(engine.renderContext).toHaveBeenCalledWith(
-      AFTER,
-      "x.rs",
-      2,
-      3,
-      "GitHub",
-    );
+    expect(await screen.findByText("l2")).toBeTruthy();
   });
 });
 
-describe("FileCard theme switch while hidden", () => {
-  const sides: Sides = { kind: "full", before: "", after: "x", path: "x.rs" };
-
-  function card(syntaxTheme: string, hidden: boolean, loader: SidesLoader) {
+describe("FileCard rendering", () => {
+  function card(session: RenderSession, syntaxTheme: string, hidden: boolean) {
     return (
       <LazyObserverProvider>
         <FileCard
           index={0}
           file={{ filename: "x.rs", status: "modified" }}
-          engine={{} as Engine}
-          loader={loader}
+          session={session}
           syntaxTheme={syntaxTheme}
           reviewed={false}
           onToggleReviewed={() => {}}
@@ -283,22 +240,46 @@ describe("FileCard theme switch while hidden", () => {
     );
   }
 
-  test("re-renders in an idle slot, or at once when shown", async () => {
-    (github.renderSides as Mock).mockImplementation(
-      (_e: Engine, _s: unknown, theme: string) => `<div class="row">${theme}</div>`,
-    );
-    const loader = fakeLoader(Promise.resolve(sides));
-    const { rerender } = render(card("TokyoNight", true, loader));
+  test("a hidden card renders in the background, a shown one urgently", async () => {
+    const session = fakeSession();
+    const { rerender } = render(card(session, "TokyoNight", true));
     await screen.findByText("TokyoNight");
-    (github.renderSides as Mock).mockClear();
+    expect(session.render).toHaveBeenLastCalledWith(0, "TokyoNight", "background");
 
-    rerender(card("GitHub", true, loader));
-    expect(github.renderSides).not.toHaveBeenCalled();
+    rerender(card(session, "GitHub", true));
     await screen.findByText("GitHub");
+    expect(session.render).toHaveBeenLastCalledWith(0, "GitHub", "background");
 
-    rerender(card("Nord", true, loader));
-    rerender(card("Nord", false, loader));
-    expect(github.renderSides).toHaveBeenLastCalledWith(expect.anything(), sides, "Nord");
+    rerender(card(session, "Nord", false));
+    await screen.findByText("Nord");
+    expect(session.render).toHaveBeenLastCalledWith(0, "Nord", "now");
+  });
+
+  test("a result for a theme no longer selected is dropped", async () => {
+    let finishOld: (r: Rendered) => void = () => {};
+    const session = fakeSession({
+      render: vi.fn((_index: number, theme: string) =>
+        theme === "TokyoNight"
+          ? new Promise<Rendered>((resolve) => (finishOld = resolve))
+          : Promise.resolve<Rendered>({ kind: "html", html: `<div class="row">${theme}</div>` }),
+      ),
+    });
+    const { rerender } = render(card(session, "TokyoNight", false));
+    rerender(card(session, "GitHub", false));
+    await screen.findByText("GitHub");
+    finishOld({ kind: "html", html: '<div class="row">TokyoNight</div>' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText("TokyoNight")).toBeNull();
+  });
+
+  test("binary files and load failures show a notice", async () => {
+    const binary = fakeSession({ render: vi.fn(() => Promise.resolve<Rendered>({ kind: "binary" })) });
+    render(card(binary, "TokyoNight", false));
+    expect(await screen.findByText("Binary file not shown.")).toBeTruthy();
+
+    const failing = fakeSession({ render: vi.fn(() => Promise.reject(new Error("boom"))) });
+    render(card(failing, "TokyoNight", false));
+    expect(await screen.findByText("Could not load: boom")).toBeTruthy();
   });
 });
 
@@ -308,8 +289,7 @@ describe("ReviewView selection", () => {
       ref: { owner: "o", repo: "r", number: 1 },
       pr: { number: 1, title: "t", additions: 1, deletions: 1 },
       files,
-      engine: {} as Engine,
-      loader: fakeLoader(new Promise(() => {})),
+      session: fakeSession({ render: vi.fn(() => new Promise<Rendered>(() => {})) }),
     } as unknown as ReviewData;
     return render(
       <ReviewView data={data} syntaxTheme="TokyoNight" hideViewed onNavigate={() => {}} />,

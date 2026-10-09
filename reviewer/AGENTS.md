@@ -26,7 +26,11 @@ reviewer/
     main.tsx                # React root + imports the stylesheet
     App.tsx                 # app shell: review flow, deep-link, token, prefs
     core/                   # framework-neutral, DOM-free logic
-      engine.ts             #   wasm loader + renderFile/renderFromPatch (theme arg)
+      engine.ts             #   wasm compile (main) + instantiate/marshal (worker)
+      review.worker.ts      #   module worker: engine + Comlink-exposed sessions
+      reviewClient.ts       #   main-thread side: starts the worker, openReview
+      renderSession.ts      #   per-review fetch + render queue + theme cache
+      renderSession.test.ts #   urgency, mid-render priority, cache, context tests
       github.ts             #   GitHub REST client + loadSides / renderSides
       github.test.ts        #   renderSides theme + re-render-from-cache tests
       sidesLoader.ts        #   per-review sides cache + background prefetch queue
@@ -34,7 +38,7 @@ reviewer/
       idle.ts               #   shared one-task-per-idle-slot queue (whenIdle)
       idle.test.ts          #   ordering + cancel tests
       themes.ts             #   curated registry theme names + mode defaults
-      lib.ts                #   pure helpers (parsePrUrl, base64, badgeClass)
+      lib.ts                #   pure helpers (parsePrUrl, looksBinary)
       lib.test.ts           #   Vitest unit tests for lib.ts
       filetree.ts           #   flat PR file list -> grouped tree (tree.rs mirror),
                             #     display order, selection membership
@@ -106,8 +110,8 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   persists. The name is passed to the wasm engine as the trailing `theme` arg.
   Switching must not re-hit GitHub: fetching (`loadSides`, cached by the
   review's `SidesLoader`) is split from the pure `renderSides(engine, sides,
-  theme)`; a `FileCard` `useEffect` keyed on the theme re-runs only
-  `renderSides` from the `Sides` it already received. Curated names in `themes.ts` must stay
+  theme)`, and the worker's `RenderSession` re-renders from the `Sides` it
+  already holds. Curated names in `themes.ts` must stay
   valid registry names (`deltoids::theme_names`, i.e. two-face's `as_name()`
   strings plus `TokyoNight`).
 - Row line numbers are a `usePrefs` pref persisted under
@@ -150,26 +154,36 @@ custom domain `review.deltoids.dev` is attached to the Pages project (DNS
   switching, and `display: none` keeps them out of the lazy loader. Every
   selection change scrolls the window to the top. A single selected file gets
   `solo`, which keeps it on screen when marked viewed under hide-viewed.
-- File content is prefetched; rendering stays lazy. `App.tsx` creates one
-  `core/sidesLoader.ts::createSidesLoader` per review as soon as the PR and
-  file list arrive (before the engine resolves), seeded with tree display
-  order. It fetches in the background through `p-queue` (concurrency 4),
-  caches one promise per file, and `ReviewView` moves the current selection
-  to the front with `prioritize`. `FileCard` calls `loader.load(index)`
-  from the lazy observer, which starts an unstarted file at once. Background
-  work stops when `github.ts::rateRemaining()` (last seen
+- Content fetching and wasm rendering run in one module worker
+  (`core/review.worker.ts`, RPC through Comlink), so a render never blocks
+  input or paint. The page keeps `fetchPr`/`fetchFiles` (the tree needs
+  them) and passes the file list, shas, tree display order, and token to
+  `reviewClient.ts::openReview`, which returns that review's
+  `RenderSession` (`core/renderSession.ts`). Workers cannot read
+  `localStorage`, so the token crosses at `openReview` and on
+  `setToken`. The session wraps `core/sidesLoader.ts::createSidesLoader`:
+  background fetches in tree order through `p-queue` (concurrency 4), one
+  cached promise per file, and `ReviewView` moves the current selection to
+  the front with `prioritize`. Background fetching stops when
+  `github.ts::rateRemaining()` (the worker's last seen
   `x-ratelimit-remaining`) is at or below 10 or a content request throws
-  `RateLimitError`; on-demand loads always run. A failed background fetch
-  is retried by the next `load`. Each `FileCard` also waits on
-  `loader.whenFetched(index)` (which never starts a fetch) and renders in a
-  `core/idle.ts::whenIdle` slot, one file per slot, so hidden cards are
-  ready before they are selected. A render is one synchronous wasm call, so a
-  click that lands during one waits for it; moving the engine to a Web
-  Worker would remove that. On a theme switch, shown cards re-render at once
-  and hidden ones in idle slots (or at once when they are shown first). The engine download starts on page
-  load: `App` calls `loadEngine()` on mount and `index.html` preloads
-  `/deltoids_wasm.wasm` (`as="fetch"` + `crossorigin`, which
-  `instantiateStreaming` reuses; keep them matched or it downloads twice).
+  `RateLimitError`; urgent loads always run, and a failed background fetch
+  is retried by the next urgent one. Renders run one at a time, urgent
+  (`"now"`, from a shown card the lazy observer has seen) ahead of
+  background, with gap context rows above both. A wasm call cannot be
+  interrupted, so the session yields a macrotask after each one; without the
+  yield, queued background renders would run before a click's request is
+  even read. A click still waits for the render in flight. Each file
+  keeps HTML for one theme; a request for another theme supersedes it.
+  `FileCard` drops results for a theme that is no longer current, paints
+  urgent results at once, and applies background results in a
+  `core/idle.ts::whenIdle` slot (the `innerHTML` cost stays on the main
+  thread), so hidden cards are ready before they are selected. The engine
+  download starts on page load: `App` calls `startReviewWorker()` on mount,
+  which runs `compileStreaming` on the main thread against the
+  `index.html` preload of `/deltoids_wasm.wasm` (`as="fetch"` +
+  `crossorigin`; keep them matched or it downloads twice) and posts the
+  compiled module to the worker to instantiate.
 - While a review is open the page does not scroll: `App.tsx` adds
   `reviewing` to `<html>`, the app fills the window, and the diff column is a
   bordered `.pane` whose `.pane-scroll` child scrolls (native scrollbar

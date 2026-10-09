@@ -79,6 +79,7 @@ WASI_SDK=/path/to/wasi-sdk-34.0-<arch>-<os> ./build-wasm.sh
 
 `reviewer/` is the standalone React reviewer (Vite + TypeScript). Its
 framework-neutral core lives in `reviewer/src/core/` (`engine.ts` wasm loader,
+`review.worker.ts` running the engine in a Web Worker,
 `github.ts` REST client, `lib.ts` DOM-free helpers with `lib.test.ts`, and the
 vendored `browser_wasi_shim.js`); the UI is in `reviewer/src/components/`. See
 `reviewer/AGENTS.md`. It:
@@ -110,6 +111,6 @@ languages would save under a megabyte and is not worth doing — syntect also
 highlights any language a PR touches independently of the ~19 tree-sitter
 grammars, so trimming would drop that highlighting. The bytes users download are
 already small: Cloudflare Pages serves the `.wasm` Brotli-compressed (~2.2 MB),
-which `WebAssembly.instantiateStreaming` decodes transparently. Cutting the
+which `WebAssembly.compileStreaming` decodes transparently. Cutting the
 uncompressed size further means dropping grammars, which loses scope context for
 those languages.

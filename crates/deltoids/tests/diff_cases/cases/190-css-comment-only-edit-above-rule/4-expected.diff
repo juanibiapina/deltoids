@@ -1,4 +1,4 @@
-@@ -5,4 +5,4 @@ [rule_set ]
+@@ -5,4 +5,4 @@ [rule_set .bar]
 -/* Old docs */
 +/* New docs */
  .bar {

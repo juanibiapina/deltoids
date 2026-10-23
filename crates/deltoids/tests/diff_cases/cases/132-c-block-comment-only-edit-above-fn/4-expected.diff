@@ -1,4 +1,4 @@
-@@ -5,4 +5,4 @@ [function_definition int]
+@@ -5,4 +5,4 @@ [function_definition bar]
 -/* Old docs */
 +/* New docs */
  int bar(void) {

@@ -16,7 +16,7 @@ use std::ops::Range;
 use tree_sitter::{Node, Parser, Point, Tree};
 
 use crate::Language;
-use crate::language::TreeSitterConfig;
+use crate::language::{NameRule, TreeSitterConfig};
 use crate::scope::ScopeNode;
 
 /// A parsed source file: its syntax tree, the source it came from, and the
@@ -212,15 +212,7 @@ impl ParsedFile {
     fn scope_node_from(&self, n: Node) -> ScopeNode {
         let start_line = leading_adjusted_start(n, self.config.leading_comment_kinds) + 1;
         let end_line = node_end_line(n);
-        let kind_is_call_promoted = self.config.call_promoted_kinds.contains(&n.kind());
-        let kind_is_positional = self.config.positional_name_kinds.contains(&n.kind());
-        let kind_is_object_reference = self.config.object_reference_name_kinds.contains(&n.kind());
-        let name = self.scope_name(
-            n,
-            kind_is_call_promoted,
-            kind_is_positional,
-            kind_is_object_reference,
-        );
+        let name = self.scope_name(n);
         let text = self.source_line(n.start_position().row).unwrap_or_default();
         ScopeNode {
             kind: n.kind().to_string(),
@@ -387,35 +379,132 @@ impl ParsedFile {
 
     /// Resolve the breadcrumb name for a scope node. Call-promoted nodes
     /// (e.g. `call_expression` in JS/TS) build their name from the callee
-    /// plus the first string-literal argument. Positional-name nodes
-    /// (HCL `block`) build their name from concatenated `identifier` /
-    /// `string_lit` children. Object-reference nodes (SQL DDL) build their
-    /// name from a nested `object_reference` child. Everything else looks
-    /// up the conventional `name` / `property` / `type` / `key` field.
-    fn scope_name(
-        &self,
-        node: Node,
-        is_call_promoted: bool,
-        is_positional: bool,
-        is_object_reference: bool,
-    ) -> String {
-        if is_call_promoted {
+    /// plus the first string-literal argument. Kinds with a [`NameRule`]
+    /// follow it. Everything else looks up the conventional `name` /
+    /// `property` / `type` / `key` field.
+    fn scope_name(&self, node: Node) -> String {
+        if self.config.call_promoted_kinds.contains(&node.kind()) {
             return self.call_expression_name(node);
         }
-        if is_positional {
-            return self.positional_name(node);
+        match self.config.name_rule(node.kind()) {
+            Some(NameRule::Positional) => self.positional_name(node),
+            Some(NameRule::ObjectReference) => self.object_reference_name(node),
+            Some(NameRule::Declarator) => self.declarator_name(node),
+            Some(NameRule::ImplHeader) => self.impl_name(node),
+            Some(NameRule::Receiver) => self.receiver_name(node),
+            Some(NameRule::SingletonMethod) => self.singleton_method_name(node),
+            Some(NameRule::Specs) => self.specs_name(node),
+            Some(NameRule::Header) => self.header_name(node),
+            Some(NameRule::TableKey) => self.table_key_name(node),
+            Some(NameRule::HeadingText) => self.field_text(node, "heading_content"),
+            // `property` covers JS `field_definition`'s name field.
+            None => ["name", "property", "type", "key"]
+                .into_iter()
+                .find_map(|field| node.child_by_field_name(field))
+                .map(|name| self.collapsed_text(name))
+                .unwrap_or_default(),
         }
-        if is_object_reference {
-            return self.object_reference_name(node);
+    }
+
+    /// `node`'s source with every run of whitespace collapsed to one
+    /// space, so names written across lines read as one line.
+    fn collapsed_text(&self, node: Node) -> String {
+        collapse_whitespace(node.utf8_text(self.source.as_bytes()).unwrap_or(""))
+    }
+
+    /// The collapsed text of `node`'s `field` child; empty without one.
+    fn field_text(&self, node: Node, field: &str) -> String {
+        node.child_by_field_name(field)
+            .map(|child| self.collapsed_text(child))
+            .unwrap_or_default()
+    }
+
+    /// The name a C or C++ function declares: down the `declarator` chain
+    /// (function, pointer, reference, and parenthesized declarators) to
+    /// the first node that is not itself a declarator, read as written.
+    /// `char *name(void)` is `name`; `int& Foo::ref()` is `Foo::ref`;
+    /// `void (*handler(int))(int)` is `handler`.
+    fn declarator_name(&self, node: Node) -> String {
+        let mut current = node.child_by_field_name("declarator");
+        while let Some(declarator) = current {
+            if !declarator.kind().ends_with("declarator") {
+                return self.collapsed_text(declarator);
+            }
+            // Reference and parenthesized declarators hold the inner
+            // declarator as a plain named child, not a field.
+            current = declarator
+                .child_by_field_name("declarator")
+                .or_else(|| declarator.named_child(0));
         }
-        // `property` covers JS `field_definition`'s name field.
-        node.child_by_field_name("name")
-            .or_else(|| node.child_by_field_name("property"))
-            .or_else(|| node.child_by_field_name("type"))
-            .or_else(|| node.child_by_field_name("key"))
-            .and_then(|name_node| name_node.utf8_text(self.source.as_bytes()).ok())
-            .unwrap_or("")
-            .to_string()
+        String::new()
+    }
+
+    /// A Rust impl block: `Trait for Type`, or `Type` for an inherent
+    /// impl. Type arguments stay: `From<T> for Wrapper<T>`.
+    fn impl_name(&self, node: Node) -> String {
+        let ty = self.field_text(node, "type");
+        match node.child_by_field_name("trait") {
+            Some(tr) => format!("{} for {ty}", self.collapsed_text(tr)),
+            None => ty,
+        }
+    }
+
+    /// A Go method: `Type.Method`, the receiver type without its pointer
+    /// or type arguments, so `func (l *List[T]) Push` is `List.Push`.
+    fn receiver_name(&self, node: Node) -> String {
+        let name = self.field_text(node, "name");
+        let receiver = node
+            .child_by_field_name("receiver")
+            .and_then(|list| list.named_child(0))
+            .and_then(|parameter| parameter.child_by_field_name("type"))
+            .map(|ty| self.collapsed_text(ty));
+        let Some(receiver) = receiver else {
+            return name;
+        };
+        let ty = receiver.trim_start_matches(['*', ' ']);
+        let ty = ty.split('[').next().unwrap_or(ty).trim();
+        format!("{ty}.{name}")
+    }
+
+    /// A Ruby singleton method: `receiver.name`, so `def self.build` is
+    /// `self.build`.
+    fn singleton_method_name(&self, node: Node) -> String {
+        format!(
+            "{}.{}",
+            self.field_text(node, "object"),
+            self.field_text(node, "name")
+        )
+    }
+
+    /// A Go `type` declaration: the names of the types it declares, in
+    /// order, joined with `, `.
+    fn specs_name(&self, node: Node) -> String {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .filter(|child| matches!(child.kind(), "type_spec" | "type_alias"))
+            .map(|spec| self.field_text(spec, "name"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The text before the node's `block` child: a CSS rule's selectors
+    /// or an at-rule's header. The whole node when it has no block.
+    fn header_name(&self, node: Node) -> String {
+        let mut cursor = node.walk();
+        let end = node
+            .children(&mut cursor)
+            .find(|child| child.kind() == "block")
+            .map_or(node.end_byte(), |block| block.start_byte());
+        collapse_whitespace(&self.source[node.start_byte()..end])
+    }
+
+    /// A TOML table's key as written: bare, dotted, or quoted.
+    fn table_key_name(&self, node: Node) -> String {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find(|child| child.kind().ends_with("key"))
+            .map(|key| self.collapsed_text(key))
+            .unwrap_or_default()
     }
 
     /// Build a breadcrumb name from a node's leading positional children.
@@ -634,6 +723,12 @@ impl ParsedFile {
     fn source_line(&self, line: usize) -> Option<&str> {
         self.lines.get(line).map(|span| &self.source[span.clone()])
     }
+}
+
+/// `text` with every run of whitespace collapsed to one space and the
+/// ends trimmed.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// 1-indexed last source line covered by `node`.
@@ -1269,5 +1364,240 @@ CREATE TABLE users (
                 "failed to parse {path}"
             );
         }
+    }
+
+    /// Breadcrumb names at the first line of `source` that contains
+    /// `needle`, outermost first.
+    fn names_at(path: &str, source: &str, needle: &str) -> Vec<String> {
+        let line = source
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("no line with {needle:?}"));
+        ParsedFile::parse(path, source)
+            .expect("parse")
+            .breadcrumb_scopes(line)
+            .into_iter()
+            .map(|scope| scope.name)
+            .collect()
+    }
+
+    #[test]
+    fn rust_impl_blocks_are_named_by_trait_and_type() {
+        let source = "\
+impl S {
+    fn new() -> Self {
+        S // inherent
+    }
+}
+
+impl std::fmt::Display for S {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, \"s\") // trait
+    }
+}
+
+impl<T: Clone> From<T> for Wrapper<T> {
+    fn from(t: T) -> Self {
+        Wrapper(t) // generic
+    }
+}
+";
+        assert_eq!(names_at("a.rs", source, "inherent"), ["S", "new"]);
+        assert_eq!(
+            names_at("a.rs", source, "// trait"),
+            ["std::fmt::Display for S", "fmt"]
+        );
+        assert_eq!(
+            names_at("a.rs", source, "generic"),
+            ["From<T> for Wrapper<T>", "from"]
+        );
+    }
+
+    #[test]
+    fn go_methods_are_named_by_receiver_type() {
+        let source = "\
+package p
+
+func (s *Server) Start() {
+	s.n = 1 // pointer
+}
+
+func (c Client) Start() {
+	c.n = 1 // value
+}
+
+func (l *List[T]) Push(v T) {
+	l.n = 1 // generic
+}
+";
+        assert_eq!(names_at("a.go", source, "pointer"), ["Server.Start"]);
+        assert_eq!(names_at("a.go", source, "value"), ["Client.Start"]);
+        assert_eq!(names_at("a.go", source, "generic"), ["List.Push"]);
+    }
+
+    #[test]
+    fn go_type_declarations_are_named_by_the_types_they_declare() {
+        let source = "\
+package p
+
+type Server struct {
+	a int // single
+}
+
+type (
+	A struct {
+		x int // grouped
+	}
+	B = int
+)
+";
+        assert_eq!(names_at("a.go", source, "single"), ["Server"]);
+        assert_eq!(names_at("a.go", source, "grouped"), ["A, B"]);
+    }
+
+    #[test]
+    fn ruby_singleton_methods_carry_their_receiver() {
+        let source = "\
+class C
+  def self.build
+    x = 1 # singleton
+  end
+
+  def build
+    x = 1 # instance
+  end
+end
+";
+        assert_eq!(names_at("a.rb", source, "singleton"), ["C", "self.build"]);
+        assert_eq!(names_at("a.rb", source, "instance"), ["C", "build"]);
+    }
+
+    #[test]
+    fn c_functions_are_named_from_their_declarator() {
+        let source = "\
+int top(void) {
+    return 1; /* plain */
+}
+
+char *name(void) {
+    return 0; /* pointer */
+}
+
+static const char **names(int n) {
+    return 0; /* double */
+}
+
+void (*handler(int sig))(int) {
+    return 0; /* returns a function pointer */
+}
+";
+        assert_eq!(names_at("a.c", source, "plain"), ["top"]);
+        assert_eq!(names_at("a.c", source, "/* pointer"), ["name"]);
+        assert_eq!(names_at("a.c", source, "double"), ["names"]);
+        assert_eq!(names_at("a.c", source, "function pointer"), ["handler"]);
+    }
+
+    #[test]
+    fn cpp_functions_are_named_from_their_declarator() {
+        let source = "\
+class Foo {
+ public:
+  int bar() {
+    return 1; // inline
+  }
+};
+
+int Foo::baz() {
+  return 1; // qualified
+}
+
+Foo::~Foo() {
+  x = 1; // destructor
+}
+
+bool Foo::operator==(const Foo& o) const {
+  return true; // operator
+}
+
+int& Foo::ref() {
+  return x; // reference
+}
+
+template <typename T>
+T twice(T v) {
+  return v; // template
+}
+";
+        assert_eq!(names_at("a.cpp", source, "inline"), ["Foo", "bar"]);
+        assert_eq!(names_at("a.cpp", source, "qualified"), ["Foo::baz"]);
+        assert_eq!(names_at("a.cpp", source, "destructor"), ["Foo::~Foo"]);
+        assert_eq!(
+            names_at("a.cpp", source, "// operator"),
+            ["Foo::operator=="]
+        );
+        assert_eq!(names_at("a.cpp", source, "reference"), ["Foo::ref"]);
+        assert_eq!(names_at("a.cpp", source, "// template"), ["twice"]);
+    }
+
+    #[test]
+    fn css_rules_are_named_by_selectors_and_at_rules_by_their_header() {
+        let source = "\
+.a, .b > p {
+  color: red; /* rule */
+}
+
+@media (max-width: 600px) {
+  .c {
+    color: red; /* nested */
+  }
+}
+";
+        assert_eq!(names_at("a.css", source, "rule"), [".a, .b > p"]);
+        assert_eq!(
+            names_at("a.css", source, "nested"),
+            ["@media (max-width: 600px)", ".c"]
+        );
+    }
+
+    #[test]
+    fn toml_tables_are_named_by_their_key() {
+        let source = "\
+[package]
+name = \"x\" # bare
+
+[dependencies.serde]
+version = \"1\" # dotted
+
+[[bin]]
+name = \"a\" # array
+
+[\"quoted key\"]
+a = 1 # quoted
+";
+        assert_eq!(names_at("a.toml", source, "bare"), ["package"]);
+        assert_eq!(names_at("a.toml", source, "dotted"), ["dependencies.serde"]);
+        assert_eq!(names_at("a.toml", source, "# array"), ["bin"]);
+        assert_eq!(names_at("a.toml", source, "# quoted"), ["\"quoted key\""]);
+    }
+
+    #[test]
+    fn markdown_headings_are_named_by_their_text() {
+        let source = "\
+# Title
+
+Intro.
+
+## Panels and tabs
+
+Body.
+
+Setext heading
+==============
+";
+        assert_eq!(names_at("a.md", source, "## Panels"), ["Panels and tabs"]);
+        assert_eq!(
+            names_at("a.md", source, "Setext heading"),
+            ["Setext heading"]
+        );
     }
 }

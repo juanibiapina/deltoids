@@ -12,9 +12,9 @@ literal so the binding line and the surrounding entries stay visible.
 `.tf` files are detected as HCL with `structure_kinds: ["block"]`, but
 tree-sitter-hcl's `block` has no `name` field — its identity sits in
 positional `identifier` / `string_lit` children. Without a positional
-naming path the breadcrumb came out as `[block ]`. A per-language
-`positional_name_kinds` knob (set to `["block"]` for HCL) routes those
-kinds through a `positional_name` helper that joins leading
+naming path the breadcrumb came out as `[block ]`. HCL's name rule
+(`NameRule::Positional` for `block`) routes those kinds through a
+`positional_name` helper that joins leading
 `identifier` / `string_lit` named children with spaces, stopping at the
 first other kind so the body doesn't leak into the name.
 

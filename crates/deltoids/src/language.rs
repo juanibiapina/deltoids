@@ -36,6 +36,36 @@ pub enum Language {
     Yaml,
 }
 
+/// How a scope kind is named when its node has no plain name field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameRule {
+    /// Leading `identifier` / `string_lit` children joined with spaces:
+    /// HCL blocks, `resource "aws_s3_bucket" "logs"`.
+    Positional,
+    /// The nested `object_reference`: SQL DDL, `users`, `public.users`.
+    ObjectReference,
+    /// The name at the end of the declarator chain, as written: C and C++
+    /// functions, `top`, `Foo::baz`, `Foo::~Foo`, `Foo::operator==`.
+    Declarator,
+    /// `Trait for Type`, or `Type` for an inherent impl: Rust impl blocks.
+    ImplHeader,
+    /// `Type.Method`, the receiver type without pointer or type
+    /// arguments: Go methods, `Server.Start`.
+    Receiver,
+    /// `receiver.name`: Ruby singleton methods, `self.build`.
+    SingletonMethod,
+    /// The names of the types it declares, joined with `, `: Go `type`
+    /// declarations.
+    Specs,
+    /// The text before the node's `block`: CSS rules, `.a, .b > p`, and
+    /// at-rules, `@media (max-width: 600px)`.
+    Header,
+    /// The table's key as written: TOML, `dependencies.serde`.
+    TableKey,
+    /// The heading's text: Markdown headings.
+    HeadingText,
+}
+
 /// Per-language tree-sitter configuration.
 pub(crate) struct TreeSitterConfig {
     pub(crate) language: LanguageFn,
@@ -62,19 +92,10 @@ pub(crate) struct TreeSitterConfig {
     /// arg) even when the inner arrow function is too large to size the
     /// hunk.
     pub(crate) call_promoted_kinds: &'static [&'static str],
-    /// Node kinds whose breadcrumb name is built from concatenated
-    /// positional `identifier` / `string_lit` children rather than from
-    /// a `name` field. Use for HCL `block`, where the syntax is
-    /// `identifier (string_lit | identifier)* { body }` with no fields,
-    /// so the breadcrumb reads e.g. `resource "aws_s3_bucket" "logs"`.
-    pub(crate) positional_name_kinds: &'static [&'static str],
-    /// Node kinds whose breadcrumb name is the text of their descendant
-    /// `object_reference` child rather than a `name` field. Use for SQL
-    /// DDL statements (`create_table`, `create_function`, `alter_table`,
-    /// …), where the object name lives on a nested `object_reference`
-    /// (`users`, `public.users`, `add`) and the statement node itself
-    /// exposes no `name` field.
-    pub(crate) object_reference_name_kinds: &'static [&'static str],
+    /// How kinds whose name is not in a `name`, `property`, `type`, or
+    /// `key` field are named; see [`NameRule`]. Kinds not listed read
+    /// those fields, in that order.
+    pub(crate) name_rules: &'static [(&'static str, NameRule)],
     /// Node kinds that, when they appear as siblings above a structure,
     /// attach to that structure for scope queries. Typically `comment`
     /// plus the language's attribute kinds (Rust `attribute_item`).
@@ -90,6 +111,16 @@ pub(crate) struct TreeSitterConfig {
     /// fall back to 3-line default context until a Markdown-specific
     /// section model exists.
     pub(crate) transparent_expansion: bool,
+}
+
+impl TreeSitterConfig {
+    /// How `kind` is named, when it has a rule.
+    pub(crate) fn name_rule(&self, kind: &str) -> Option<NameRule> {
+        self.name_rules
+            .iter()
+            .find(|(rule_kind, _)| *rule_kind == kind)
+            .map(|(_, rule)| *rule)
+    }
 }
 
 impl Language {
@@ -210,8 +241,7 @@ impl Language {
                 function_body_kinds: &["function_item", "closure_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[("impl_item", NameRule::ImplHeader)],
                 leading_comment_kinds: &["line_comment", "block_comment", "attribute_item"],
                 transparent_expansion: true,
             },
@@ -222,8 +252,7 @@ impl Language {
                 function_body_kinds: &["function_definition", "lambda"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -265,8 +294,7 @@ impl Language {
                 // the breadcrumb with a real name (callee + first
                 // string-literal arg).
                 call_promoted_kinds: &["call_expression"],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -298,8 +326,7 @@ impl Language {
                     "generator_function",
                 ],
                 call_promoted_kinds: &["call_expression"],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -329,8 +356,7 @@ impl Language {
                     "generator_function",
                 ],
                 call_promoted_kinds: &["call_expression"],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -353,8 +379,10 @@ impl Language {
                 // identity sits on the surrounding call.
                 anchor_only_kinds: &["func_literal"],
                 call_promoted_kinds: &["call_expression"],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[
+                    ("method_declaration", NameRule::Receiver),
+                    ("type_declaration", NameRule::Specs),
+                ],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -369,8 +397,7 @@ impl Language {
                 // `get "/…" do … end`, Rails `routes.draw do … end`).
                 anchor_only_kinds: &["block", "do_block", "lambda"],
                 call_promoted_kinds: &["call"],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[("singleton_method", NameRule::SingletonMethod)],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -385,8 +412,7 @@ impl Language {
                 function_body_kinds: &["function_declaration", "lambda_literal"],
                 anchor_only_kinds: &["lambda_literal"],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
             },
@@ -406,8 +432,7 @@ impl Language {
                 ],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
             },
@@ -418,8 +443,7 @@ impl Language {
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[("function_definition", NameRule::Declarator)],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -434,8 +458,7 @@ impl Language {
                 function_body_kinds: &["function_definition", "lambda_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[("function_definition", NameRule::Declarator)],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -446,8 +469,7 @@ impl Language {
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -463,8 +485,7 @@ impl Language {
                 // `vim.keymap.set(“…”, function() … end)`).
                 anchor_only_kinds: &["function_definition"],
                 call_promoted_kinds: &["function_call"],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -475,8 +496,10 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[
+                    ("rule_set", NameRule::Header),
+                    ("media_statement", NameRule::Header),
+                ],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -487,13 +510,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                // Terraform / HCL blocks carry their identity in the
-                // opening tokens — the block type plus zero or more
-                // string labels (`resource "aws_s3_bucket" "logs"`,
-                // `variable "region"`, `module "vpc"`). Build the
-                // breadcrumb name from those positional children.
-                positional_name_kinds: &["block"],
-                object_reference_name_kinds: &[],
+                name_rules: &[("block", NameRule::Positional)],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -504,8 +521,10 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[
+                    ("atx_heading", NameRule::HeadingText),
+                    ("setext_heading", NameRule::HeadingText),
+                ],
                 leading_comment_kinds: &[],
                 // Prose: body changes have no structure ancestor, and the
                 // outermost transparent ancestor is a whole heading-
@@ -537,21 +556,17 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                // Every DDL structure carries its object name on a nested
-                // `object_reference` (`users`, `public.users`, `add`),
-                // not a `name` field.
-                object_reference_name_kinds: &[
-                    "create_table",
-                    "create_view",
-                    "create_materialized_view",
-                    "create_function",
-                    "create_index",
-                    "create_trigger",
-                    "create_type",
-                    "create_schema",
-                    "create_sequence",
-                    "alter_table",
+                name_rules: &[
+                    ("create_table", NameRule::ObjectReference),
+                    ("create_view", NameRule::ObjectReference),
+                    ("create_materialized_view", NameRule::ObjectReference),
+                    ("create_function", NameRule::ObjectReference),
+                    ("create_index", NameRule::ObjectReference),
+                    ("create_trigger", NameRule::ObjectReference),
+                    ("create_type", NameRule::ObjectReference),
+                    ("create_schema", NameRule::ObjectReference),
+                    ("create_sequence", NameRule::ObjectReference),
+                    ("alter_table", NameRule::ObjectReference),
                 ],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
@@ -563,8 +578,10 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[
+                    ("table", NameRule::TableKey),
+                    ("table_array_element", NameRule::TableKey),
+                ],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -575,8 +592,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
             },
@@ -587,8 +603,7 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                positional_name_kinds: &[],
-                object_reference_name_kinds: &[],
+                name_rules: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
             },

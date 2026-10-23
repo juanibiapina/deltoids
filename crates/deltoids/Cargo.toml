@@ -37,6 +37,7 @@ tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+rustc-hash = "2"
 
 # Native (non-wasm): oniguruma regex, bat-bundled syntax/theme assets, terminal
 # theme detection, and platform config/cache directories.

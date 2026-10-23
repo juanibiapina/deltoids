@@ -2,6 +2,7 @@ mod change_layout;
 pub mod config;
 #[cfg(feature = "blob-resolve")]
 pub mod content;
+pub mod definitions;
 mod engine;
 #[cfg(feature = "blob-resolve")]
 pub mod git;
@@ -26,6 +27,9 @@ pub use change_layout::{ChangeLayout, arrange_change};
 pub use config::{
     ColorMode, SyntaxAssets, TOKYO_NIGHT_THEME_NAME, Theme, theme_by_name, theme_name_key,
     theme_names,
+};
+pub use definitions::{
+    Aspects, DefinitionChange, DefinitionDiff, DefinitionKind, Place, Status, TopLevelChange,
 };
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 pub use language::Language;

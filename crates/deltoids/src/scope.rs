@@ -9,9 +9,10 @@
 //! by one scope level on request, and [`Diff::shrink`] undoes that.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::Language;
+use crate::definitions::DefinitionDiff;
 use crate::engine::{DiffOp, Snapshot};
 use crate::syntax::ParsedFile;
 use expansion::Expansion;
@@ -128,6 +129,9 @@ pub struct Diff {
     updated: Arc<str>,
     /// Old-line ranges the reader asked to see through [`Diff::expand`].
     widened: Vec<Range<usize>>,
+    /// [`Diff::definitions`], computed on first use. Expanding or
+    /// shrinking hunks keeps it: it does not depend on hunk context.
+    definitions: OnceLock<Option<Arc<DefinitionDiff>>>,
 }
 
 impl Diff {
@@ -153,6 +157,7 @@ impl Diff {
             original: Arc::from(original),
             updated: Arc::from(updated),
             widened: Vec::new(),
+            definitions: OnceLock::new(),
         }
     }
 
@@ -185,6 +190,7 @@ impl Diff {
             original: Arc::from(text),
             updated: Arc::from(text),
             widened: Vec::new(),
+            definitions: OnceLock::new(),
         }
     }
 
@@ -343,6 +349,7 @@ impl Diff {
             original: Arc::clone(&self.original),
             updated: Arc::clone(&self.updated),
             widened,
+            definitions: self.definitions.clone(),
         }
     }
 
@@ -364,6 +371,20 @@ impl Diff {
     /// Returns the detected language used for tree-sitter scope expansion.
     pub fn language(&self) -> Option<Language> {
         self.language
+    }
+
+    /// What the change did to the file's definitions: which functions,
+    /// types, constants, sections, and keys were added, removed, modified,
+    /// renamed, or moved. Computed on first call and kept; `None` when the
+    /// language has no tree-sitter support.
+    pub fn definitions(&self) -> Option<&DefinitionDiff> {
+        self.definitions
+            .get_or_init(|| {
+                let language = self.language?;
+                DefinitionDiff::of(language, &self.original, &self.updated, self.snapshot.ops())
+                    .map(Arc::new)
+            })
+            .as_deref()
     }
 
     /// Returns the detected syntect syntax name used as the highlight key.

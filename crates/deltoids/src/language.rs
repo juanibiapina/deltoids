@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use tree_sitter_language::LanguageFn;
 
+use crate::definitions::DefinitionKind;
+
 /// Programming languages supported by deltoids' tree-sitter scope engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {
@@ -60,11 +62,451 @@ pub(crate) enum NameRule {
     /// The text before the node's `block`: CSS rules, `.a, .b > p`, and
     /// at-rules, `@media (max-width: 600px)`.
     Header,
-    /// The table's key as written: TOML, `dependencies.serde`.
+    /// The first child key as written: TOML tables and pairs,
+    /// `dependencies.serde`.
     TableKey,
     /// The heading's text: Markdown headings.
     HeadingText,
+    /// The text of the heading that opens it: Markdown sections.
+    SectionHeading,
+    /// The declared variable's name: Kotlin properties.
+    Property,
+    /// The text of the first child of this kind: Lua `variable_list`,
+    /// HCL attribute `identifier`.
+    ChildKind(&'static str),
+    /// The `key` field without its quotes: JSON and YAML keys.
+    QuotedKey,
+    /// The text of this field: the `left` side of a Python or Ruby
+    /// assignment.
+    Field(&'static str),
 }
+
+/// A kind of definition that is not a scope: a constant, a type alias, a
+/// field, a key. Scope kinds are definitions through
+/// [`TreeSitterConfig::definition_kinds`] and the breadcrumb rules.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LeafDefinition {
+    pub(crate) kind: &'static str,
+    pub(crate) category: DefinitionKind,
+    /// Node kinds allowed between the definition and its container: the
+    /// nearest enclosing definition, or the file root. A JS `const` may sit
+    /// in a `lexical_declaration` behind an `export`; one inside an `if`
+    /// block is a statement, not a definition.
+    pub(crate) through: &'static [&'static str],
+    pub(crate) require: Require,
+    /// How many enclosing definitions of this same kind it may have:
+    /// JSON and YAML list keys two levels deep. `None` for any.
+    pub(crate) levels: Option<usize>,
+}
+
+/// What a node needs, besides its kind, to be a [`LeafDefinition`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Require {
+    Nothing,
+    /// A `function_declarator` in its declarator chain: C and C++
+    /// prototypes and method declarations.
+    FunctionDeclarator,
+    /// A `body` field: a C `enum` or `struct` that defines its members.
+    Body,
+    /// A `left` field of one of these kinds: Python and Ruby assignments.
+    Left(&'static [&'static str]),
+    /// A function as its value: Lua `M.f = function() … end`.
+    FunctionValue,
+}
+
+const fn leaf(
+    kind: &'static str,
+    category: DefinitionKind,
+    through: &'static [&'static str],
+) -> LeafDefinition {
+    LeafDefinition {
+        kind,
+        category,
+        through,
+        require: Require::Nothing,
+        levels: None,
+    }
+}
+
+const fn leaf_if(
+    kind: &'static str,
+    category: DefinitionKind,
+    through: &'static [&'static str],
+    require: Require,
+) -> LeafDefinition {
+    LeafDefinition {
+        kind,
+        category,
+        through,
+        require,
+        levels: None,
+    }
+}
+
+const fn key(kind: &'static str, through: &'static [&'static str]) -> LeafDefinition {
+    LeafDefinition {
+        kind,
+        category: DefinitionKind::Key,
+        through,
+        require: Require::Nothing,
+        levels: Some(1),
+    }
+}
+
+/// Preprocessor conditionals a C or C++ definition may sit in (include
+/// guards wrap a whole header).
+const C_PREPROCESSOR: &[&str] = &[
+    "preproc_ifdef",
+    "preproc_if",
+    "preproc_else",
+    "preproc_elif",
+    "preproc_elifdef",
+];
+
+const RUST_LEAVES: &[LeafDefinition] = &[
+    leaf(
+        "function_signature_item",
+        DefinitionKind::Function,
+        &["declaration_list"],
+    ),
+    leaf(
+        "const_item",
+        DefinitionKind::Constant,
+        &["declaration_list"],
+    ),
+    leaf(
+        "static_item",
+        DefinitionKind::Constant,
+        &["declaration_list"],
+    ),
+    leaf(
+        "type_item",
+        DefinitionKind::TypeAlias,
+        &["declaration_list"],
+    ),
+    leaf("union_item", DefinitionKind::Union, &["declaration_list"]),
+    leaf(
+        "macro_definition",
+        DefinitionKind::Macro,
+        &["declaration_list"],
+    ),
+];
+
+const PYTHON_LEAVES: &[LeafDefinition] = &[leaf_if(
+    "assignment",
+    DefinitionKind::Variable,
+    &["expression_statement", "block"],
+    Require::Left(&["identifier"]),
+)];
+
+const JAVASCRIPT_LEAVES: &[LeafDefinition] = &[
+    leaf(
+        "generator_function_declaration",
+        DefinitionKind::Function,
+        &["export_statement"],
+    ),
+    leaf(
+        "variable_declarator",
+        DefinitionKind::Variable,
+        &[
+            "lexical_declaration",
+            "variable_declaration",
+            "export_statement",
+        ],
+    ),
+    leaf(
+        "field_definition",
+        DefinitionKind::Variable,
+        &["class_body"],
+    ),
+];
+
+const TYPESCRIPT_LEAVES: &[LeafDefinition] = &[
+    leaf(
+        "generator_function_declaration",
+        DefinitionKind::Function,
+        &["export_statement"],
+    ),
+    leaf(
+        "variable_declarator",
+        DefinitionKind::Variable,
+        &[
+            "lexical_declaration",
+            "variable_declaration",
+            "export_statement",
+        ],
+    ),
+    leaf(
+        "public_field_definition",
+        DefinitionKind::Variable,
+        &["class_body"],
+    ),
+    leaf(
+        "enum_declaration",
+        DefinitionKind::Enum,
+        &["export_statement"],
+    ),
+    leaf(
+        "abstract_class_declaration",
+        DefinitionKind::Class,
+        &["export_statement"],
+    ),
+    leaf(
+        "internal_module",
+        DefinitionKind::Namespace,
+        &["expression_statement", "export_statement"],
+    ),
+    leaf(
+        "function_signature",
+        DefinitionKind::Function,
+        &["export_statement"],
+    ),
+    leaf(
+        "method_signature",
+        DefinitionKind::Method,
+        &["interface_body", "object_type"],
+    ),
+    leaf(
+        "abstract_method_signature",
+        DefinitionKind::Method,
+        &["class_body"],
+    ),
+];
+
+const GO_LEAVES: &[LeafDefinition] = &[
+    leaf(
+        "const_spec",
+        DefinitionKind::Constant,
+        &["const_declaration"],
+    ),
+    leaf("var_spec", DefinitionKind::Variable, &["var_declaration"]),
+];
+
+const RUBY_LEAVES: &[LeafDefinition] = &[leaf_if(
+    "assignment",
+    DefinitionKind::Constant,
+    &["body_statement"],
+    Require::Left(&["constant"]),
+)];
+
+const KOTLIN_LEAVES: &[LeafDefinition] = &[
+    leaf(
+        "property_declaration",
+        DefinitionKind::Variable,
+        &["class_body"],
+    ),
+    leaf("type_alias", DefinitionKind::TypeAlias, &[]),
+    leaf("companion_object", DefinitionKind::Object, &["class_body"]),
+];
+
+const JAVA_LEAVES: &[LeafDefinition] = &[
+    leaf(
+        "enum_declaration",
+        DefinitionKind::Enum,
+        &["class_body", "interface_body"],
+    ),
+    leaf(
+        "record_declaration",
+        DefinitionKind::Class,
+        &["class_body", "interface_body"],
+    ),
+    leaf(
+        "annotation_type_declaration",
+        DefinitionKind::Interface,
+        &["class_body", "interface_body"],
+    ),
+    leaf(
+        "field_declaration",
+        DefinitionKind::Variable,
+        &["class_body"],
+    ),
+];
+
+const C_LEAVES: &[LeafDefinition] = &[
+    leaf_if(
+        "declaration",
+        DefinitionKind::Function,
+        &[
+            "linkage_specification",
+            "declaration_list",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::FunctionDeclarator,
+    ),
+    leaf("type_definition", DefinitionKind::TypeAlias, C_PREPROCESSOR),
+    leaf_if(
+        "enum_specifier",
+        DefinitionKind::Enum,
+        &[
+            "declaration",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::Body,
+    ),
+    leaf_if(
+        "union_specifier",
+        DefinitionKind::Union,
+        &[
+            "declaration",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::Body,
+    ),
+    leaf("preproc_def", DefinitionKind::Macro, C_PREPROCESSOR),
+    leaf(
+        "preproc_function_def",
+        DefinitionKind::Macro,
+        C_PREPROCESSOR,
+    ),
+];
+
+const CPP_LEAVES: &[LeafDefinition] = &[
+    leaf_if(
+        "declaration",
+        DefinitionKind::Function,
+        &[
+            "declaration_list",
+            "linkage_specification",
+            "template_declaration",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::FunctionDeclarator,
+    ),
+    leaf_if(
+        "field_declaration",
+        DefinitionKind::Method,
+        &[
+            "field_declaration_list",
+            "template_declaration",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::FunctionDeclarator,
+    ),
+    leaf(
+        "alias_declaration",
+        DefinitionKind::TypeAlias,
+        &[
+            "declaration_list",
+            "field_declaration_list",
+            "template_declaration",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+    ),
+    leaf(
+        "type_definition",
+        DefinitionKind::TypeAlias,
+        &[
+            "declaration_list",
+            "field_declaration_list",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+    ),
+    leaf_if(
+        "struct_specifier",
+        DefinitionKind::Struct,
+        &[
+            "declaration",
+            "declaration_list",
+            "field_declaration_list",
+            "template_declaration",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::Body,
+    ),
+    leaf_if(
+        "enum_specifier",
+        DefinitionKind::Enum,
+        &[
+            "declaration",
+            "declaration_list",
+            "field_declaration_list",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::Body,
+    ),
+    leaf_if(
+        "union_specifier",
+        DefinitionKind::Union,
+        &[
+            "declaration",
+            "declaration_list",
+            "field_declaration_list",
+            "preproc_ifdef",
+            "preproc_if",
+            "preproc_else",
+            "preproc_elif",
+            "preproc_elifdef",
+        ],
+        Require::Body,
+    ),
+    leaf("preproc_def", DefinitionKind::Macro, C_PREPROCESSOR),
+    leaf(
+        "preproc_function_def",
+        DefinitionKind::Macro,
+        C_PREPROCESSOR,
+    ),
+];
+
+const LUA_LEAVES: &[LeafDefinition] = &[leaf_if(
+    "assignment_statement",
+    DefinitionKind::Function,
+    &["variable_declaration"],
+    Require::FunctionValue,
+)];
+
+const CSS_LEAVES: &[LeafDefinition] = &[
+    leaf("keyframes_statement", DefinitionKind::Block, &[]),
+    leaf("supports_statement", DefinitionKind::Block, &[]),
+];
+
+const HCL_LEAVES: &[LeafDefinition] = &[leaf("attribute", DefinitionKind::Variable, &["body"])];
+
+const MARKDOWN_LEAVES: &[LeafDefinition] = &[leaf("section", DefinitionKind::Section, &[])];
+
+const TOML_LEAVES: &[LeafDefinition] = &[leaf("pair", DefinitionKind::Key, &[])];
+
+const JSON_LEAVES: &[LeafDefinition] = &[key("pair", &["object"])];
+
+const YAML_LEAVES: &[LeafDefinition] = &[key(
+    "block_mapping_pair",
+    &["document", "block_node", "block_mapping"],
+)];
 
 /// Per-language tree-sitter configuration.
 pub(crate) struct TreeSitterConfig {
@@ -96,6 +538,17 @@ pub(crate) struct TreeSitterConfig {
     /// `key` field are named; see [`NameRule`]. Kinds not listed read
     /// those fields, in that order.
     pub(crate) name_rules: &'static [(&'static str, NameRule)],
+    /// The category of each scope kind that is a definition. Scope kinds
+    /// missing here (anonymous callbacks, Markdown headings) are never
+    /// definitions.
+    pub(crate) definition_kinds: &'static [(&'static str, DefinitionKind)],
+    /// Definitions that are not scopes.
+    pub(crate) leaf_definitions: &'static [LeafDefinition],
+    /// Child kinds a definition's body starts at when it has no `body`
+    /// field: Kotlin `function_body`, CSS `block`, TOML values.
+    pub(crate) body_kinds: &'static [&'static str],
+    /// Kinds that import other code: `use`, `import`, `#include`.
+    pub(crate) import_kinds: &'static [&'static str],
     /// Node kinds that, when they appear as siblings above a structure,
     /// attach to that structure for scope queries. Typically `comment`
     /// plus the language's attribute kinds (Rust `attribute_item`).
@@ -242,6 +695,17 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 name_rules: &[("impl_item", NameRule::ImplHeader)],
+                definition_kinds: &[
+                    ("function_item", DefinitionKind::Function),
+                    ("impl_item", DefinitionKind::Impl),
+                    ("struct_item", DefinitionKind::Struct),
+                    ("enum_item", DefinitionKind::Enum),
+                    ("trait_item", DefinitionKind::Trait),
+                    ("mod_item", DefinitionKind::Module),
+                ],
+                leaf_definitions: RUST_LEAVES,
+                body_kinds: &["macro_rule"],
+                import_kinds: &["use_declaration", "extern_crate_declaration"],
                 leading_comment_kinds: &["line_comment", "block_comment", "attribute_item"],
                 transparent_expansion: true,
             },
@@ -252,7 +716,18 @@ impl Language {
                 function_body_kinds: &["function_definition", "lambda"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[],
+                name_rules: &[("assignment", NameRule::Field("left"))],
+                definition_kinds: &[
+                    ("function_definition", DefinitionKind::Function),
+                    ("class_definition", DefinitionKind::Class),
+                ],
+                leaf_definitions: PYTHON_LEAVES,
+                body_kinds: &[],
+                import_kinds: &[
+                    "import_statement",
+                    "import_from_statement",
+                    "future_import_statement",
+                ],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -295,6 +770,17 @@ impl Language {
                 // string-literal arg).
                 call_promoted_kinds: &["call_expression"],
                 name_rules: &[],
+                definition_kinds: &[
+                    ("function_declaration", DefinitionKind::Function),
+                    ("class_declaration", DefinitionKind::Class),
+                    ("method_definition", DefinitionKind::Method),
+                    ("field_definition", DefinitionKind::Method),
+                    ("variable_declarator", DefinitionKind::Function),
+                    ("call_expression", DefinitionKind::Test),
+                ],
+                leaf_definitions: JAVASCRIPT_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -327,6 +813,19 @@ impl Language {
                 ],
                 call_promoted_kinds: &["call_expression"],
                 name_rules: &[],
+                definition_kinds: &[
+                    ("function_declaration", DefinitionKind::Function),
+                    ("class_declaration", DefinitionKind::Class),
+                    ("method_definition", DefinitionKind::Method),
+                    ("interface_declaration", DefinitionKind::Interface),
+                    ("type_alias_declaration", DefinitionKind::TypeAlias),
+                    ("public_field_definition", DefinitionKind::Method),
+                    ("variable_declarator", DefinitionKind::Function),
+                    ("call_expression", DefinitionKind::Test),
+                ],
+                leaf_definitions: TYPESCRIPT_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -357,6 +856,19 @@ impl Language {
                 ],
                 call_promoted_kinds: &["call_expression"],
                 name_rules: &[],
+                definition_kinds: &[
+                    ("function_declaration", DefinitionKind::Function),
+                    ("class_declaration", DefinitionKind::Class),
+                    ("method_definition", DefinitionKind::Method),
+                    ("interface_declaration", DefinitionKind::Interface),
+                    ("type_alias_declaration", DefinitionKind::TypeAlias),
+                    ("public_field_definition", DefinitionKind::Method),
+                    ("variable_declarator", DefinitionKind::Function),
+                    ("call_expression", DefinitionKind::Test),
+                ],
+                leaf_definitions: TYPESCRIPT_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -383,6 +895,15 @@ impl Language {
                     ("method_declaration", NameRule::Receiver),
                     ("type_declaration", NameRule::Specs),
                 ],
+                definition_kinds: &[
+                    ("function_declaration", DefinitionKind::Function),
+                    ("method_declaration", DefinitionKind::Method),
+                    ("type_declaration", DefinitionKind::Type),
+                    ("call_expression", DefinitionKind::Test),
+                ],
+                leaf_definitions: GO_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["import_declaration"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -397,7 +918,20 @@ impl Language {
                 // `get "/…" do … end`, Rails `routes.draw do … end`).
                 anchor_only_kinds: &["block", "do_block", "lambda"],
                 call_promoted_kinds: &["call"],
-                name_rules: &[("singleton_method", NameRule::SingletonMethod)],
+                name_rules: &[
+                    ("singleton_method", NameRule::SingletonMethod),
+                    ("assignment", NameRule::Field("left")),
+                ],
+                definition_kinds: &[
+                    ("method", DefinitionKind::Method),
+                    ("singleton_method", DefinitionKind::Method),
+                    ("class", DefinitionKind::Class),
+                    ("module", DefinitionKind::Module),
+                    ("call", DefinitionKind::Test),
+                ],
+                leaf_definitions: RUBY_LEAVES,
+                body_kinds: &[],
+                import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -412,7 +946,15 @@ impl Language {
                 function_body_kinds: &["function_declaration", "lambda_literal"],
                 anchor_only_kinds: &["lambda_literal"],
                 call_promoted_kinds: &[],
-                name_rules: &[],
+                name_rules: &[("property_declaration", NameRule::Property)],
+                definition_kinds: &[
+                    ("class_declaration", DefinitionKind::Class),
+                    ("function_declaration", DefinitionKind::Function),
+                    ("object_declaration", DefinitionKind::Object),
+                ],
+                leaf_definitions: KOTLIN_LEAVES,
+                body_kinds: &["class_body", "function_body", "enum_class_body"],
+                import_kinds: &["import", "import_header", "import_list"],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
             },
@@ -432,7 +974,16 @@ impl Language {
                 ],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[],
+                name_rules: &[("field_declaration", NameRule::Declarator)],
+                definition_kinds: &[
+                    ("class_declaration", DefinitionKind::Class),
+                    ("interface_declaration", DefinitionKind::Interface),
+                    ("method_declaration", DefinitionKind::Method),
+                    ("constructor_declaration", DefinitionKind::Constructor),
+                ],
+                leaf_definitions: JAVA_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["import_declaration"],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
             },
@@ -443,7 +994,18 @@ impl Language {
                 function_body_kinds: &["function_definition"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[("function_definition", NameRule::Declarator)],
+                name_rules: &[
+                    ("function_definition", NameRule::Declarator),
+                    ("declaration", NameRule::Declarator),
+                    ("type_definition", NameRule::Declarator),
+                ],
+                definition_kinds: &[
+                    ("function_definition", DefinitionKind::Function),
+                    ("struct_specifier", DefinitionKind::Struct),
+                ],
+                leaf_definitions: C_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["preproc_include"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -458,7 +1020,20 @@ impl Language {
                 function_body_kinds: &["function_definition", "lambda_expression"],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[("function_definition", NameRule::Declarator)],
+                name_rules: &[
+                    ("function_definition", NameRule::Declarator),
+                    ("declaration", NameRule::Declarator),
+                    ("field_declaration", NameRule::Declarator),
+                    ("type_definition", NameRule::Declarator),
+                ],
+                definition_kinds: &[
+                    ("function_definition", DefinitionKind::Function),
+                    ("class_specifier", DefinitionKind::Class),
+                    ("namespace_definition", DefinitionKind::Namespace),
+                ],
+                leaf_definitions: CPP_LEAVES,
+                body_kinds: &[],
+                import_kinds: &["preproc_include", "using_declaration"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -470,6 +1045,10 @@ impl Language {
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
                 name_rules: &[],
+                definition_kinds: &[("function_definition", DefinitionKind::Function)],
+                leaf_definitions: &[],
+                body_kinds: &[],
+                import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -485,7 +1064,14 @@ impl Language {
                 // `vim.keymap.set(“…”, function() … end)`).
                 anchor_only_kinds: &["function_definition"],
                 call_promoted_kinds: &["function_call"],
-                name_rules: &[],
+                name_rules: &[("assignment_statement", NameRule::ChildKind("variable_list"))],
+                definition_kinds: &[
+                    ("function_declaration", DefinitionKind::Function),
+                    ("function_call", DefinitionKind::Test),
+                ],
+                leaf_definitions: LUA_LEAVES,
+                body_kinds: &[],
+                import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -499,7 +1085,16 @@ impl Language {
                 name_rules: &[
                     ("rule_set", NameRule::Header),
                     ("media_statement", NameRule::Header),
+                    ("keyframes_statement", NameRule::Header),
+                    ("supports_statement", NameRule::Header),
                 ],
+                definition_kinds: &[
+                    ("rule_set", DefinitionKind::Rule),
+                    ("media_statement", DefinitionKind::Block),
+                ],
+                leaf_definitions: CSS_LEAVES,
+                body_kinds: &["block", "keyframe_block_list"],
+                import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -510,7 +1105,14 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[("block", NameRule::Positional)],
+                name_rules: &[
+                    ("block", NameRule::Positional),
+                    ("attribute", NameRule::ChildKind("identifier")),
+                ],
+                definition_kinds: &[("block", DefinitionKind::Block)],
+                leaf_definitions: HCL_LEAVES,
+                body_kinds: &["body", "expression"],
+                import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -524,7 +1126,12 @@ impl Language {
                 name_rules: &[
                     ("atx_heading", NameRule::HeadingText),
                     ("setext_heading", NameRule::HeadingText),
+                    ("section", NameRule::SectionHeading),
                 ],
+                definition_kinds: &[],
+                leaf_definitions: MARKDOWN_LEAVES,
+                body_kinds: &[],
+                import_kinds: &[],
                 leading_comment_kinds: &[],
                 // Prose: body changes have no structure ancestor, and the
                 // outermost transparent ancestor is a whole heading-
@@ -568,6 +1175,21 @@ impl Language {
                     ("create_sequence", NameRule::ObjectReference),
                     ("alter_table", NameRule::ObjectReference),
                 ],
+                definition_kinds: &[
+                    ("create_table", DefinitionKind::Statement),
+                    ("create_view", DefinitionKind::Statement),
+                    ("create_materialized_view", DefinitionKind::Statement),
+                    ("create_function", DefinitionKind::Statement),
+                    ("create_index", DefinitionKind::Statement),
+                    ("create_trigger", DefinitionKind::Statement),
+                    ("create_type", DefinitionKind::Statement),
+                    ("create_schema", DefinitionKind::Statement),
+                    ("create_sequence", DefinitionKind::Statement),
+                    ("alter_table", DefinitionKind::Statement),
+                ],
+                leaf_definitions: &[],
+                body_kinds: &["column_definitions"],
+                import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -581,7 +1203,27 @@ impl Language {
                 name_rules: &[
                     ("table", NameRule::TableKey),
                     ("table_array_element", NameRule::TableKey),
+                    ("pair", NameRule::TableKey),
                 ],
+                definition_kinds: &[
+                    ("table", DefinitionKind::Table),
+                    ("table_array_element", DefinitionKind::Table),
+                ],
+                leaf_definitions: TOML_LEAVES,
+                body_kinds: &[
+                    "pair",
+                    "string",
+                    "integer",
+                    "float",
+                    "boolean",
+                    "offset_date_time",
+                    "local_date_time",
+                    "local_date",
+                    "local_time",
+                    "array",
+                    "inline_table",
+                ],
+                import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
             },
@@ -592,7 +1234,11 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[],
+                name_rules: &[("pair", NameRule::QuotedKey)],
+                definition_kinds: &[],
+                leaf_definitions: JSON_LEAVES,
+                body_kinds: &[],
+                import_kinds: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
             },
@@ -603,7 +1249,11 @@ impl Language {
                 function_body_kinds: &[],
                 anchor_only_kinds: &[],
                 call_promoted_kinds: &[],
-                name_rules: &[],
+                name_rules: &[("block_mapping_pair", NameRule::QuotedKey)],
+                definition_kinds: &[],
+                leaf_definitions: YAML_LEAVES,
+                body_kinds: &[],
+                import_kinds: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
             },

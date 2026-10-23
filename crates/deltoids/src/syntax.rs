@@ -17,12 +17,70 @@ use tree_sitter::{Node, Parser, Point, Tree};
 
 use crate::Language;
 use crate::language::{NameRule, TreeSitterConfig};
+
+mod outline;
+
 use crate::scope::ScopeNode;
+pub(crate) use outline::{Definition, Outline};
+
+/// The grammar fields scope queries read.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Field {
+    Name,
+    Property,
+    Type,
+    Key,
+    Body,
+    Value,
+    Right,
+    Left,
+    Declarator,
+    Block,
+    Arguments,
+    Receiver,
+    Trait,
+    Method,
+    Function,
+    Object,
+    HeadingContent,
+}
+
+const FIELD_NAMES: [&str; 17] = [
+    "name",
+    "property",
+    "type",
+    "key",
+    "body",
+    "value",
+    "right",
+    "left",
+    "declarator",
+    "block",
+    "arguments",
+    "receiver",
+    "trait",
+    "method",
+    "function",
+    "object",
+    "heading_content",
+];
+
+/// Each [`Field`]'s id in one grammar, if the grammar has it.
+struct FieldIds([Option<std::num::NonZeroU16>; 17]);
+
+impl FieldIds {
+    fn of(language: &tree_sitter::Language) -> Self {
+        FieldIds(FIELD_NAMES.map(|name| language.field_id_for_name(name)))
+    }
+}
 
 /// A parsed source file: its syntax tree, the source it came from, and the
 /// language taxonomy needed to interpret nodes.
 pub(crate) struct ParsedFile {
     tree: Tree,
+    /// Field ids of the grammar, looked up once: tree-sitter finds a field
+    /// by name with a scan.
+    fields: FieldIds,
     source: String,
     /// Byte span of each source line, as split by `str::lines`.
     lines: Vec<Range<usize>>,
@@ -49,11 +107,18 @@ impl ParsedFile {
             })
             .collect();
         Some(ParsedFile {
+            fields: FieldIds::of(&tree.language()),
             tree,
             source: source.to_string(),
             lines,
             config,
         })
+    }
+
+    /// `node`'s child in `field`.
+    pub(crate) fn child<'a>(&self, node: Node<'a>, field: Field) -> Option<Node<'a>> {
+        let id = self.fields.0[field as usize]?;
+        node.child_by_field_id(id.get())
     }
 
     /// Return all enclosing *boundary* scope nodes at the given 0-indexed
@@ -149,27 +214,9 @@ impl ParsedFile {
         let mut ancestors = Vec::new();
         let mut current = Some(node);
         while let Some(n) = current {
-            let kind_is_structure = self.config.structure_kinds.contains(&n.kind());
-            let kind_is_promoted = self.config.promoted_kinds.contains(&n.kind());
-            let kind_is_anchor_only = self.config.anchor_only_kinds.contains(&n.kind());
-            let kind_is_call_promoted = self.config.call_promoted_kinds.contains(&n.kind());
-            let include = kind_is_structure
-                || kind_is_anchor_only
-                || (kind_is_promoted && self.has_function_value(&n))
-                || (kind_is_call_promoted && self.has_function_argument(n));
-            // Demote structures, promoted, anchor-only, and call-promoted
-            // scopes when they live inside another function body. Anchor-only
-            // function bodies (`arrow_function`) don't demote: a labeled
-            // callback inside another labeled callback (e.g. `it(…)` inside
-            // `describe(…)`) is a sibling unit, not a local helper.
-            // Data scopes (objects/arrays) are unaffected.
-            let include = include
-                && !((kind_is_structure
-                    || kind_is_promoted
-                    || kind_is_anchor_only
-                    || kind_is_call_promoted)
-                    && self.is_nested_in_function(n));
-            if include {
+            // Scopes inside another function body are local helpers, not
+            // scopes of their own (see [`Self::is_nested_in_function`]).
+            if self.is_scope_kind(n) && !self.is_nested_in_function(n) {
                 ancestors.push(n);
             }
             current = n.parent();
@@ -177,6 +224,25 @@ impl ParsedFile {
 
         ancestors.reverse();
         ancestors
+    }
+
+    /// Whether `node` is a scope by its kind: a structure, an anonymous
+    /// callback, a wrapper whose value is a function, or a call with a
+    /// function argument. [`Self::is_nested_in_function`] then demotes the
+    /// ones inside another function body.
+    fn is_scope_kind(&self, n: Node) -> bool {
+        let kind = n.kind();
+        self.config.structure_kinds.contains(&kind)
+            || self.config.anchor_only_kinds.contains(&kind)
+            || (self.config.promoted_kinds.contains(&kind) && self.has_function_value(&n))
+            || (self.config.call_promoted_kinds.contains(&kind) && self.has_function_argument(n))
+    }
+
+    /// Whether a scope shows in breadcrumbs: anonymous callbacks and calls
+    /// whose only argument is their callback do not (see
+    /// [`Self::breadcrumb_scopes`]).
+    fn shows_in_breadcrumb(&self, n: Node) -> bool {
+        !self.config.anchor_only_kinds.contains(&n.kind()) && !self.is_block_only_call(n)
     }
 
     /// Enclosing scopes filtered down to breadcrumb boundaries at `line`,
@@ -199,9 +265,7 @@ impl ParsedFile {
     pub fn breadcrumb_scopes(&self, line: usize) -> Vec<ScopeNode> {
         self.enclosing_scope_nodes(line)
             .into_iter()
-            .filter(|n| {
-                !self.config.anchor_only_kinds.contains(&n.kind()) && !self.is_block_only_call(*n)
-            })
+            .filter(|n| self.shows_in_breadcrumb(*n))
             .map(|n| self.scope_node_from(n))
             .collect()
     }
@@ -371,7 +435,7 @@ impl ParsedFile {
     /// listed in `function_body_kinds`). Gates promotion of wrapper kinds
     /// (class fields, variable declarators) to structures.
     fn has_function_value(&self, node: &Node) -> bool {
-        let Some(value) = node.child_by_field_name("value") else {
+        let Some(value) = self.child(*node, Field::Value) else {
             return false;
         };
         self.config.function_body_kinds.contains(&value.kind())
@@ -396,11 +460,29 @@ impl ParsedFile {
             Some(NameRule::Specs) => self.specs_name(node),
             Some(NameRule::Header) => self.header_name(node),
             Some(NameRule::TableKey) => self.table_key_name(node),
-            Some(NameRule::HeadingText) => self.field_text(node, "heading_content"),
+            Some(NameRule::HeadingText) => self.field_text(node, Field::HeadingContent),
+            Some(NameRule::SectionHeading) => self.section_name(node),
+            Some(NameRule::Property) => self.property_name(node),
+            Some(NameRule::ChildKind(kind)) => self
+                .child_of_kind(node, kind)
+                .map(|child| self.collapsed_text(child))
+                .unwrap_or_default(),
+            Some(NameRule::Field(field)) => node
+                .child_by_field_name(field)
+                .map(|child| self.collapsed_text(child))
+                .unwrap_or_default(),
+            Some(NameRule::QuotedKey) => {
+                let key = self.field_text(node, Field::Key);
+                let unquoted = key
+                    .strip_prefix('"')
+                    .and_then(|k| k.strip_suffix('"'))
+                    .or_else(|| key.strip_prefix('\'').and_then(|k| k.strip_suffix('\'')));
+                unquoted.map_or(key.clone(), str::to_string)
+            }
             // `property` covers JS `field_definition`'s name field.
-            None => ["name", "property", "type", "key"]
+            None => [Field::Name, Field::Property, Field::Type, Field::Key]
                 .into_iter()
-                .find_map(|field| node.child_by_field_name(field))
+                .find_map(|field| self.child(node, field))
                 .map(|name| self.collapsed_text(name))
                 .unwrap_or_default(),
         }
@@ -413,8 +495,8 @@ impl ParsedFile {
     }
 
     /// The collapsed text of `node`'s `field` child; empty without one.
-    fn field_text(&self, node: Node, field: &str) -> String {
-        node.child_by_field_name(field)
+    fn field_text(&self, node: Node, field: Field) -> String {
+        self.child(node, field)
             .map(|child| self.collapsed_text(child))
             .unwrap_or_default()
     }
@@ -425,15 +507,15 @@ impl ParsedFile {
     /// `char *name(void)` is `name`; `int& Foo::ref()` is `Foo::ref`;
     /// `void (*handler(int))(int)` is `handler`.
     fn declarator_name(&self, node: Node) -> String {
-        let mut current = node.child_by_field_name("declarator");
+        let mut current = self.child(node, Field::Declarator);
         while let Some(declarator) = current {
             if !declarator.kind().ends_with("declarator") {
                 return self.collapsed_text(declarator);
             }
             // Reference and parenthesized declarators hold the inner
             // declarator as a plain named child, not a field.
-            current = declarator
-                .child_by_field_name("declarator")
+            current = self
+                .child(declarator, Field::Declarator)
                 .or_else(|| declarator.named_child(0));
         }
         String::new()
@@ -442,8 +524,8 @@ impl ParsedFile {
     /// A Rust impl block: `Trait for Type`, or `Type` for an inherent
     /// impl. Type arguments stay: `From<T> for Wrapper<T>`.
     fn impl_name(&self, node: Node) -> String {
-        let ty = self.field_text(node, "type");
-        match node.child_by_field_name("trait") {
+        let ty = self.field_text(node, Field::Type);
+        match self.child(node, Field::Trait) {
             Some(tr) => format!("{} for {ty}", self.collapsed_text(tr)),
             None => ty,
         }
@@ -452,11 +534,11 @@ impl ParsedFile {
     /// A Go method: `Type.Method`, the receiver type without its pointer
     /// or type arguments, so `func (l *List[T]) Push` is `List.Push`.
     fn receiver_name(&self, node: Node) -> String {
-        let name = self.field_text(node, "name");
-        let receiver = node
-            .child_by_field_name("receiver")
+        let name = self.field_text(node, Field::Name);
+        let receiver = self
+            .child(node, Field::Receiver)
             .and_then(|list| list.named_child(0))
-            .and_then(|parameter| parameter.child_by_field_name("type"))
+            .and_then(|parameter| self.child(parameter, Field::Type))
             .map(|ty| self.collapsed_text(ty));
         let Some(receiver) = receiver else {
             return name;
@@ -471,8 +553,8 @@ impl ParsedFile {
     fn singleton_method_name(&self, node: Node) -> String {
         format!(
             "{}.{}",
-            self.field_text(node, "object"),
-            self.field_text(node, "name")
+            self.field_text(node, Field::Object),
+            self.field_text(node, Field::Name)
         )
     }
 
@@ -482,20 +564,45 @@ impl ParsedFile {
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
             .filter(|child| matches!(child.kind(), "type_spec" | "type_alias"))
-            .map(|spec| self.field_text(spec, "name"))
+            .map(|spec| self.field_text(spec, Field::Name))
             .collect::<Vec<_>>()
             .join(", ")
     }
 
-    /// The text before the node's `block` child: a CSS rule's selectors
-    /// or an at-rule's header. The whole node when it has no block.
+    /// The text before the node's body: a CSS rule's selectors or an
+    /// at-rule's header. The whole node when it has no body.
     fn header_name(&self, node: Node) -> String {
         let mut cursor = node.walk();
         let end = node
             .children(&mut cursor)
-            .find(|child| child.kind() == "block")
-            .map_or(node.end_byte(), |block| block.start_byte());
+            .find(|child| self.config.body_kinds.contains(&child.kind()))
+            .map_or(node.end_byte(), |body| body.start_byte());
         collapse_whitespace(&self.source[node.start_byte()..end])
+    }
+
+    /// A Markdown section: the text of the heading that opens it. Empty
+    /// for the text before the first heading.
+    fn section_name(&self, node: Node) -> String {
+        node.named_child(0)
+            .filter(|heading| heading.kind().ends_with("_heading"))
+            .map(|heading| self.field_text(heading, Field::HeadingContent))
+            .unwrap_or_default()
+    }
+
+    /// A Kotlin property: the name of the variable it declares, without
+    /// its type.
+    fn property_name(&self, node: Node) -> String {
+        self.child_of_kind(node, "variable_declaration")
+            .and_then(|declaration| declaration.named_child(0))
+            .map(|name| self.collapsed_text(name))
+            .unwrap_or_default()
+    }
+
+    /// The first named child of `kind`.
+    fn child_of_kind<'a>(&self, node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find(|child| child.kind() == kind)
     }
 
     /// A TOML table's key as written: bare, dotted, or quoted.
@@ -550,16 +657,16 @@ impl ParsedFile {
     /// callback like `it("…", () => {})` or `it "…" do … end` is
     /// promoted; a plain `xs.length` / `1.to_s` call is not.
     fn has_function_argument(&self, node: Node) -> bool {
-        self.field_contains_function_body(node, "arguments")
-            || self.field_contains_function_body(node, "block")
+        self.field_contains_function_body(node, Field::Arguments)
+            || self.field_contains_function_body(node, Field::Block)
     }
 
     /// True when `field` on `node` either *is* a function-body kind, or
     /// wraps one as a direct named child. Handles both shapes:
     /// JS/Go/Lua put the function inside an `argument_list`/`arguments`
     /// wrapper; Ruby's `block` field is the function body itself.
-    fn field_contains_function_body(&self, node: Node, field: &str) -> bool {
-        let Some(target) = node.child_by_field_name(field) else {
+    fn field_contains_function_body(&self, node: Node, field: Field) -> bool {
+        let Some(target) = self.child(node, field) else {
             return false;
         };
         if self.config.function_body_kinds.contains(&target.kind()) {
@@ -588,23 +695,23 @@ impl ParsedFile {
 
     fn call_callee_text(&self, node: Node) -> String {
         // Ruby: optional `receiver` plus required `method`.
-        if let Some(method) = node.child_by_field_name("method") {
+        if let Some(method) = self.child(node, Field::Method) {
             let method_text = method.utf8_text(self.source.as_bytes()).unwrap_or("");
-            if let Some(receiver) = node.child_by_field_name("receiver") {
+            if let Some(receiver) = self.child(node, Field::Receiver) {
                 let receiver_text = receiver.utf8_text(self.source.as_bytes()).unwrap_or("");
                 return format!("{receiver_text}.{method_text}");
             }
             return method_text.to_string();
         }
         // JS / TS / Go.
-        if let Some(func) = node.child_by_field_name("function") {
+        if let Some(func) = self.child(node, Field::Function) {
             return func
                 .utf8_text(self.source.as_bytes())
                 .unwrap_or("")
                 .to_string();
         }
         // Lua.
-        if let Some(name) = node.child_by_field_name("name") {
+        if let Some(name) = self.child(node, Field::Name) {
             return name
                 .utf8_text(self.source.as_bytes())
                 .unwrap_or("")
@@ -614,7 +721,7 @@ impl ParsedFile {
     }
 
     fn call_first_string_label(&self, node: Node) -> Option<String> {
-        let args = node.child_by_field_name("arguments")?;
+        let args = self.child(node, Field::Arguments)?;
         let mut cursor = args.walk();
         let first = args.named_children(&mut cursor).next()?;
         if is_string_literal_kind(first.kind()) {
@@ -643,27 +750,37 @@ impl ParsedFile {
         }
         let mut cur = node.parent();
         while let Some(p) = cur {
-            // Anchor-only function bodies (`arrow_function`, Lua
-            // `function_definition`, Ruby `do_block`/`block`/`lambda`)
-            // do not demote anything: nested labeled callbacks are
-            // siblings, not local helpers.
-            let pkind = p.kind();
-            let parent_is_function_body = self.config.function_body_kinds.contains(&pkind);
-            let parent_is_anchor_only = self.config.anchor_only_kinds.contains(&pkind);
-            if parent_is_function_body && !parent_is_anchor_only {
-                return true;
-            }
-            // A labeled call-promoted ancestor shields anything inside
-            // it from being demoted by a *further-out* named function
-            // (e.g. `t.Run(…, func() {…})` inside
-            // `func TestX(t *testing.T) {…}` — the inner func_literal
-            // and its descendants are not helpers of `TestX`).
-            if self.is_labeled_call_promoted(p) {
-                return false;
+            if let Some(nested) = self.function_scope(p) {
+                return nested;
             }
             cur = p.parent();
         }
         false
+    }
+
+    /// What `node` says about whether what it holds sits in a function
+    /// body: `Some(true)` for a named function body, `Some(false)` for a
+    /// labeled call, `None` when it says nothing and its own ancestors
+    /// decide.
+    ///
+    /// Anonymous function bodies (`arrow_function`, Lua
+    /// `function_definition`, Ruby `do_block`/`block`/`lambda`) say
+    /// nothing: nested labeled callbacks are siblings, not local helpers.
+    /// A labeled call shields what it holds from a *further-out* named
+    /// function (e.g. `t.Run(…, func() {…})` inside
+    /// `func TestX(t *testing.T) {…}` — the inner func_literal and its
+    /// descendants are not helpers of `TestX`).
+    fn function_scope(&self, node: Node) -> Option<bool> {
+        let kind = node.kind();
+        if self.config.function_body_kinds.contains(&kind)
+            && !self.config.anchor_only_kinds.contains(&kind)
+        {
+            return Some(true);
+        }
+        if self.is_labeled_call_promoted(node) {
+            return Some(false);
+        }
+        None
     }
 
     /// True when `node` is a call kind that has been promoted to a
@@ -689,7 +806,7 @@ impl ParsedFile {
     /// `arguments` list whose only named child is the arrow — a function
     /// body — so this is also false.
     fn call_has_identifying_argument(&self, node: Node) -> bool {
-        let Some(args) = node.child_by_field_name("arguments") else {
+        let Some(args) = self.child(node, Field::Arguments) else {
             return false;
         };
         let mut cursor = args.walk();

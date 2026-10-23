@@ -677,6 +677,19 @@ fn syntax_diff_line(
 // Syntax highlighting → ratatui spans
 // ---------------------------------------------------------------------------
 
+/// `code` on one line, highlighted as `highlight` (a syntect syntax name,
+/// as [`crate::Diff::highlight`] gives) in the theme's syntax colors; plain
+/// for an unknown syntax.
+pub fn render_code_line(code: &str, highlight: Option<&str>, theme: &Theme) -> Vec<Span<'static>> {
+    let syntax_theme = crate::theme_by_name(Some(&theme.syntax_theme_name));
+    crate::highlight::highlight_line(code, highlight, syntax_theme)
+        .into_iter()
+        .map(|(style, text)| {
+            Span::styled(text.to_string(), to_ratatui_style(Style::default(), style))
+        })
+        .collect()
+}
+
 /// Convert syntect foreground color to ratatui Color.
 ///
 /// The "ansi" theme encodes ANSI color indices specially:
@@ -2267,5 +2280,18 @@ mod tests {
             !colors.contains(&active),
             "inactive scrollbar must not use the active border color"
         );
+    }
+
+    #[test]
+    fn a_code_line_is_highlighted_in_the_syntax_colors() {
+        let theme = Theme::default();
+        let spans = render_code_line("pub fn total(items: &[u32]) -> u32", Some("Rust"), &theme);
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "pub fn total(items: &[u32]) -> u32");
+        let colors: std::collections::HashSet<_> = spans.iter().map(|span| span.style.fg).collect();
+        assert!(colors.len() > 2, "{spans:?}");
+        let plain = render_code_line("anything at all", Some("No Such Syntax"), &theme);
+        let text: String = plain.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "anything at all");
     }
 }

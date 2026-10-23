@@ -86,6 +86,19 @@ impl HunkHighlighter {
     }
 }
 
+/// Highlight `line` on its own, from the grammar's initial state: code
+/// shown outside its file, such as a definition's signature.
+#[cfg(feature = "ratatui")]
+pub(crate) fn highlight_line<'a>(
+    line: &'a str,
+    highlight: Option<&str>,
+    syntax_theme: &'static SyntectTheme,
+) -> Vec<(Style, &'a str)> {
+    let assets = SyntaxAssets::load();
+    let mut state = HighlightLines::new(assets.syntax_for_name(highlight), syntax_theme);
+    highlight_or_plain(&mut state, line, assets.syntax_set)
+}
+
 /// Highlight one line through `state`, falling back to a single default-styled
 /// range covering the whole line when syntect errors. The fallback mirrors the
 /// renderers' previous plain-text behavior.

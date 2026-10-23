@@ -50,7 +50,7 @@ mod test_support;
 mod tree;
 
 pub use icons::{IconMode, file_icon, filter_icon, symlink_icon};
-pub use render::render_note;
+pub use render::{render_note, status_color};
 pub use status::{
     ChangeKind, DirStage, FileMetadata, FileMode, FileStatus, ModeChange, SidebarFile, StageStatus,
     display_path, file_metadata, file_status, is_binary_marker,

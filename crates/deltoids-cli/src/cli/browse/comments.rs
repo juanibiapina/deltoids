@@ -114,6 +114,14 @@ impl CommentStore {
     pub(super) fn is_empty(&self) -> bool {
         self.comments.is_empty()
     }
+
+    /// How many comments sit on lines of `path`, on either side.
+    pub(super) fn count(&self, path: &str) -> usize {
+        self.comments
+            .keys()
+            .filter(|anchor| anchor.path == path)
+            .count()
+    }
 }
 
 /// One diff on screen.

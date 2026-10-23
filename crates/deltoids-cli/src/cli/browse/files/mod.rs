@@ -66,6 +66,7 @@ mod model;
 mod navigate;
 #[cfg(test)]
 mod navigation_tests;
+mod overview;
 #[cfg(test)]
 mod performance_tests;
 mod reload;
@@ -256,44 +257,35 @@ impl FilesMode {
         focused: bool,
     ) {
         self.diff_rect = right;
-        self.sync_header();
+        let width = super::diff_scrollbar::body_area(right).width as usize;
+        self.assemble_shown(width, layout, theme, budget);
         let spec = self.panes.view(self.selection(), self.column);
         let shown_files: Vec<usize> = spec
             .range
             .clone()
             .map(|range| spec.order[range].to_vec())
             .unwrap_or_default();
+        let title = spec.title;
         let pane = match spec.column {
             Column::Staged => &mut self.staged,
             Column::Unstaged => &mut self.unstaged,
         };
-        let width = super::diff_scrollbar::body_area(right).width as usize;
-        let column = spec.column;
-        let (model, review) = (&self.model, &self.review);
-        let lookup = |file: usize, hunk: usize| review.hunk_label(model, column, file, hunk);
-        pane.assemble_window(
-            &spec,
-            &self.model,
-            width,
-            layout,
-            theme,
-            budget,
-            &self.comments,
-            &HunkLabels {
-                revision: self.review.revision(),
-                lookup: &lookup,
-                hide_low: self.hide_low_hunks,
-            },
-        );
         pane.settle(right);
         let current = pane.current_file(&self.model, right);
         let status = navigate::footer(&self.nav).or(self.status.clone());
-        let title = spec.title;
-        let heading = current.map(|index| {
-            let budget = (right.width as usize)
-                .saturating_sub(navigate::border_badge_width(self, index, theme));
-            diff_pane::file_heading(&self.model, index, title, budget, theme)
-        });
+        let heading = match self.overview_directory() {
+            Some(directory) => Some(diff_pane::directory_heading(
+                &directory,
+                title,
+                right.width as usize,
+                theme,
+            )),
+            None => current.map(|index| {
+                let budget = (right.width as usize)
+                    .saturating_sub(navigate::border_badge_width(self, index, theme));
+                diff_pane::file_heading(&self.model, index, title, budget, theme)
+            }),
+        };
         let pane = match spec.column {
             Column::Staged => &mut self.staged,
             Column::Unstaged => &mut self.unstaged,
@@ -487,6 +479,82 @@ impl FilesMode {
         self.unstaged.set_header(header);
     }
 
+    /// The directory the diff pane summarizes instead of showing its
+    /// files' diffs: the selected directory row, unless the whole
+    /// snapshot shows.
+    fn overview_directory(&self) -> Option<String> {
+        if self.whole {
+            return None;
+        }
+        self.sidebar.selected_directory_path()
+    }
+
+    /// Assemble the shown pane for this frame: the selected directory's
+    /// overview, or the selection's diffs.
+    fn assemble_shown(
+        &mut self,
+        width: usize,
+        layout: ChangeLayout,
+        theme: &Theme,
+        budget: DrawBudget,
+    ) {
+        self.sync_header();
+        let directory = self.overview_directory();
+        let spec = self.panes.view(self.selection(), self.column);
+        let pane = match spec.column {
+            Column::Staged => &mut self.staged,
+            Column::Unstaged => &mut self.unstaged,
+        };
+        let column = spec.column;
+        let (model, review) = (&self.model, &self.review);
+        let lookup = |file: usize, hunk: usize| review.hunk_label(model, column, file, hunk);
+        let labels = HunkLabels {
+            revision: self.review.revision(),
+            lookup: &lookup,
+            hide_low: self.hide_low_hunks,
+        };
+        match directory {
+            Some(directory) => {
+                let files: Vec<usize> = spec
+                    .range
+                    .clone()
+                    .map(|range| spec.order[range].to_vec())
+                    .unwrap_or_default();
+                let selection = overview::Selection {
+                    directory: &directory,
+                    column,
+                    files: &files,
+                    notes: &self.guidance.rows,
+                    comments: &self.comments,
+                };
+                pane.assemble_overview(&spec, model, &selection, width, layout, theme, &labels);
+            }
+            None => pane.assemble_window(
+                &spec,
+                model,
+                width,
+                layout,
+                theme,
+                budget,
+                &self.comments,
+                &labels,
+            ),
+        }
+    }
+
+    /// Select file `index` in the sidebar, which shows its diff, with the
+    /// cursor on `at` when given.
+    fn open_file(&mut self, index: usize, at: Option<CommentAnchor>, height: usize) {
+        if !self.sidebar.select_file_index(index, height) {
+            return;
+        }
+        self.snap_diff_to_selected_file();
+        if let Some(anchor) = at {
+            let column = self.shown();
+            self.pane_mut(column).jump_to(anchor, height);
+        }
+    }
+
     /// The display-order files the diff shows.
     fn selection(&self) -> Option<std::ops::Range<usize>> {
         if self.whole {
@@ -602,32 +670,10 @@ impl FilesMode {
         theme: &Theme,
         budget: DrawBudget,
     ) {
-        self.sync_header();
-        let spec = self.panes.view(self.selection(), self.column);
-        if spec.column != column {
+        if self.shown() != column {
             return;
         }
-        let pane = match column {
-            Column::Staged => &mut self.staged,
-            Column::Unstaged => &mut self.unstaged,
-        };
-        let column = spec.column;
-        let (model, review) = (&self.model, &self.review);
-        let lookup = |file: usize, hunk: usize| review.hunk_label(model, column, file, hunk);
-        pane.assemble_window(
-            &spec,
-            &self.model,
-            width,
-            layout,
-            theme,
-            budget,
-            &self.comments,
-            &HunkLabels {
-                revision: self.review.revision(),
-                lookup: &lookup,
-                hide_low: self.hide_low_hunks,
-            },
-        );
+        self.assemble_shown(width, layout, theme, budget);
     }
 
     /// Assemble the unstaged (or only) diff window.
@@ -1256,14 +1302,27 @@ fn handle_mouse(state: &mut FilesMode, mouse: MouseEvent, height: usize) -> AppC
                         state.snap_diff_to_selected_file();
                     }
                 }
-                // Clicking a diff line moves the cursor there; clicks on
-                // headers, spacers, wrapped continuations, and comment
-                // rows only focus the pane.
-                Focus::Diff => navigate::left_click(state, &mouse),
+                Focus::Diff => left_click_diff(state, &mouse, height),
             }
             AppCommand::Continue
         }
         _ => AppCommand::Continue,
+    }
+}
+
+/// A left click on the diff pane. On an overview row it opens that file,
+/// at the row's hunk when it lists one. On a diff line it moves the
+/// cursor there; clicks on headers, spacers, wrapped continuations, and
+/// comment rows only focus the pane.
+fn left_click_diff(state: &mut FilesMode, mouse: &MouseEvent, height: usize) {
+    let pane = state.pane(state.shown());
+    let content_y = mouse
+        .row
+        .saturating_sub(state.diff_rect.y)
+        .saturating_sub(1) as usize;
+    match pane.open_at(pane.cursor.scroll + content_y).cloned() {
+        Some(open) => state.open_file(open.file, open.at, height),
+        None => navigate::left_click(state, mouse),
     }
 }
 
@@ -1664,9 +1723,9 @@ mod tests {
     }
 
     #[test]
-    fn directory_reload_keeps_the_cursor_when_another_file_finishes_first() {
+    fn a_reload_of_several_files_keeps_the_cursor_when_another_file_finishes_first() {
         let mut state = make_state(&[edited("src/a.rs"), large_file("src/b.rs")]);
-        state.sidebar.set_selected(0, 18);
+        state.show_whole(true);
         state.visible_diff_window(DrawBudget::Full);
         let last = state
             .unstaged
@@ -1703,7 +1762,7 @@ mod tests {
             })
             .collect();
         let mut state = make_state(&files);
-        state.sidebar.set_selected(0, 18);
+        state.show_whole(true);
         let start = Instant::now();
         state.visible_diff_window(DrawBudget::Fast);
         let pending = start.elapsed();
@@ -1726,13 +1785,25 @@ mod tests {
         let retained_start = Instant::now();
         assemble(&mut state);
         println!(
-            "directory: pending={pending:?}, complete={ready:?}, assembly={assembly:?}, retained={:?}, rows={}",
+            "every file: pending={pending:?}, complete={ready:?}, assembly={assembly:?}, retained={:?}, rows={}",
             retained_start.elapsed(),
             state.unstaged.window_rows()
         );
         assert!(
             assembly < Duration::from_millis(33),
-            "directory assembly exceeded frame target: {assembly:?}"
+            "assembly of every file exceeded frame target: {assembly:?}"
+        );
+
+        state.show_whole(false);
+        state.sidebar.set_selected(0, 18);
+        state.unstaged.snap_to_top();
+        let overview_start = Instant::now();
+        assemble(&mut state);
+        let overview = overview_start.elapsed();
+        println!("directory overview: assembly={overview:?}");
+        assert!(
+            overview < Duration::from_millis(33),
+            "directory overview exceeded frame target: {overview:?}"
         );
     }
 
@@ -1974,9 +2045,8 @@ mod tests {
 
     #[test]
     fn the_cursor_walks_diff_lines_across_the_files_in_the_window() {
-        // Selecting the `src/` directory row puts both files in one window.
         let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
-        state.sidebar.set_selected(0, 18);
+        state.show_whole(true);
         rebuild_window(&mut state);
 
         let mut visited = Vec::new();
@@ -2095,8 +2165,8 @@ mod tests {
         // Rebuilding for a comment would re-run syntax highlighting and
         // flash the "Rendering…" placeholder on the next frame.
         let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
-        // Selecting `src/` warms both files' blocks.
-        state.sidebar.set_selected(0, 18);
+        // Showing every file warms both files' blocks.
+        state.show_whole(true);
         rebuild_window(&mut state);
         assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
         assert!(state.unstaged.cache.contains(grouped_epoch(80), 1));
@@ -2166,7 +2236,7 @@ mod tests {
     #[test]
     fn shift_d_clears_every_comment_and_leaves_the_cache_untouched() {
         let mut state = diff_state(&[edited("src/a.txt"), edited("src/b.txt")]);
-        state.sidebar.set_selected(0, 18);
+        state.show_whole(true);
         rebuild_window(&mut state);
 
         // Nothing to clear yet.

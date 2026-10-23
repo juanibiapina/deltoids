@@ -36,7 +36,7 @@ selects.
 | --- | --- |
 | Files | The changed files in the working tree. The tab hides when the tree has no changes and no review is open, and comes back as the current tab when changes appear. |
 | Local branches | Your branches and their commits. See [Commits and branches](/docs/tui/history/). |
-| Main view | The diff of the selected file, the log of a branch, or a commit. |
+| Main view | The diff of the selected file, a summary of the selected directory, the log of a branch, or a commit. |
 
 | Key | Action |
 | --- | --- |
@@ -48,6 +48,11 @@ selects.
 | `PgDn` / `PgUp` | Page in the current pane |
 | `g` / `G`, `Home` / `End` | Go to the top or bottom of the current pane |
 | `q` | Quit |
+
+Select a directory to see a summary of its files: each file's status,
+added and removed lines, review tag, and comment count, then one line
+per hunk naming the function, type, or section it changes. Click a file
+to open its diff, or a hunk to open the file at that hunk.
 
 The diff refreshes when files change on disk. The diff keeps its scroll
 position when a refresh only changes other files.
@@ -101,6 +106,7 @@ or drag the divider. To set a default theme, see
 | Click a file | Select it |
 | Click `▶` / `▼` | Fold or unfold a directory |
 | Click a diff line | Move the cursor there |
+| Click a file or hunk in a directory summary | Open the file there |
 | Double-click a branch or commit | Open it, as `Enter` does |
 | Wheel | Scroll the pane under the pointer |
 | `Shift` or `Ctrl` + wheel | Step through files |

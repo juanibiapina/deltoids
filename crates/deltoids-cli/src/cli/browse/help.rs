@@ -102,6 +102,7 @@ pub(super) const MOUSE_SECTION: HelpSection = HelpSection {
         ("Click a file", "select it"),
         ("Click ▶ / ▼", "fold / unfold a directory"),
         ("Click a diff line", "move the cursor there"),
+        ("Click a file or hunk in a summary", "open the file there"),
         ("Click a symbol", "pick it"),
         ("Double-click a symbol", "go to its definition"),
         ("Right-click a symbol", "list where it is used"),

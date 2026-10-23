@@ -724,6 +724,31 @@ fn select_file(mode: &mut FilesMode, path: &str) {
 }
 
 #[test]
+fn a_directory_overview_counts_the_shown_column_and_s_switches_it() {
+    let (dir, repo) = fixture(&["src/a.txt", "src/b.txt"]);
+    fs::write(dir.path().join("src/a.txt"), "staged\n").unwrap();
+    stage_all(&repo);
+    fs::write(dir.path().join("src/a.txt"), "staged\nunstaged\n").unwrap();
+    fs::write(dir.path().join("src/b.txt"), "changed\n").unwrap();
+    let mut mode = live(dir.path());
+    assert!(mode.sidebar.select_directory_path("src/", 20));
+    mode.snap_diff_to_selected_file();
+
+    let rows = settle(&mut mode);
+    assert!(
+        rows[0].contains("─src/ · Staged - Unstaged "),
+        "{}",
+        rows[0]
+    );
+    let body = rows.join("\n");
+    assert!(body.contains("2 files changed  +2 -1"), "{body}");
+
+    Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
+    let body = settle(&mut mode).join("\n");
+    assert!(body.contains("1 file changed  +1 -1"), "{body}");
+}
+
+#[test]
 fn a_file_with_both_columns_shows_one_and_s_switches_to_the_other() {
     let (dir, _repo) = dual_fixture();
     let mut mode = live(dir.path());
@@ -1071,23 +1096,16 @@ fn sidebar_z_on_a_directory_expands_every_file_under_it() {
     mode.snap_diff_to_selected_file();
 
     Mode::handle_key(&mut mode, KeyCode::Char('z'), 20);
-    assert_eq!(
-        window_text(&mut mode)
-            .matches("Counter { value: 0 }")
-            .count(),
-        2
-    );
+    for path in ["src/a.rs", "src/b.rs"] {
+        select_file(&mut mode, path);
+        assert!(
+            window_text(&mut mode).contains("Counter { value: 0 }"),
+            "{path} expanded"
+        );
+    }
 
-    mode.sidebar.top(20);
-    mode.snap_diff_to_selected_file();
+    select_file(&mut mode, "other.rs");
     assert!(!window_text(&mut mode).contains("Counter { value: 0 }"));
-    let files: Vec<String> = mode
-        .unstaged
-        .rows()
-        .iter()
-        .filter_map(|row| row.anchor.as_ref().map(|anchor| anchor.path.clone()))
-        .collect();
-    assert!(files.iter().all(|path| path == "other.rs") && !files.is_empty());
 }
 
 #[test]

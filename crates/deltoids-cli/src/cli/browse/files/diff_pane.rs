@@ -38,6 +38,7 @@ use crate::sidebar::{
 };
 
 use super::model::{Column, FileBody, Model};
+use super::overview;
 use super::render::DiffCache;
 use super::stage_panes::{PaneSpec, PaneTitle};
 
@@ -533,6 +534,21 @@ pub(super) fn file_heading(
     budget: usize,
     theme: &Theme,
 ) -> Line<'static> {
+    named_heading(&file_label(model, index), title, budget, theme)
+}
+
+/// The pane's title over a directory's overview: `─src/cli/ ─`, shaped
+/// like [`file_heading`].
+pub(super) fn directory_heading(
+    directory: &str,
+    title: PaneTitle,
+    budget: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    named_heading(directory, title, budget, theme)
+}
+
+fn named_heading(label: &str, title: PaneTitle, budget: usize, theme: &Theme) -> Line<'static> {
     let tabs = match title {
         PaneTitle::Both(shown) => Some(shown),
         _ => None,
@@ -542,7 +558,7 @@ pub(super) fn file_heading(
     let mut spans = vec![
         Span::raw("─"),
         Span::styled(
-            shorten_left(&file_label(model, index), room),
+            shorten_left(label, room),
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ];
@@ -556,7 +572,7 @@ pub(super) fn file_heading(
 
 /// `text` cut to `width` columns from the left, with `…` in front when
 /// it was cut.
-fn shorten_left(text: &str, width: usize) -> String {
+pub(super) fn shorten_left(text: &str, width: usize) -> String {
     if display_width(text) <= width {
         return text.to_string();
     }
@@ -624,6 +640,8 @@ struct WindowKey {
     comments: u64,
     labels: u64,
     hide_low: bool,
+    /// The directory an overview summarizes; `None` for diffs.
+    overview: Option<String>,
 }
 
 /// `revision` changes whenever `lookup` may answer differently. With
@@ -672,6 +690,8 @@ pub(super) struct DiffPane {
     window: Vec<DiffRow>,
     window_key: Option<WindowKey>,
     file_starts: Vec<(usize, usize)>,
+    /// For an overview, where a click on each window row goes.
+    opens: Vec<Option<overview::Open>>,
     /// Set by a reload: the next render scrolls the restored cursor back
     /// into view. Ordinary scrolling deliberately leaves the cursor
     /// behind, so this is only armed when the window was rebuilt under
@@ -713,6 +733,7 @@ impl DiffPane {
             window: Vec::new(),
             window_key: None,
             file_starts: Vec::new(),
+            opens: Vec::new(),
             reveal_cursor: false,
             reload_top: None,
             landing: true,
@@ -866,11 +887,12 @@ impl DiffPane {
             comments: comments.revision(),
             labels: labels.revision,
             hide_low: labels.hide_low,
+            overview: None,
         };
         let same_selection = self
             .window_key
             .as_ref()
-            .is_some_and(|old| old.files == key.files);
+            .is_some_and(|old| old.files == key.files && old.overview.is_none());
         let reload_top = self.reload_top.take();
         let old_top = if same_selection {
             self.top_file()
@@ -945,7 +967,55 @@ impl DiffPane {
         self.window_key = Some(key);
     }
 
-    /// The window's rows: the commit header, then \`files\`' blocks, each
+    /// Assemble the overview of the selected directory in place of its
+    /// diffs (see [`overview::build`]). Renders no file blocks, so a large
+    /// directory costs no highlighting.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn assemble_overview(
+        &mut self,
+        spec: &PaneSpec<'_>,
+        model: &Model,
+        selection: &overview::Selection<'_>,
+        width: usize,
+        layout: ChangeLayout,
+        theme: &Theme,
+        labels: &HunkLabels<'_>,
+    ) {
+        self.adopt_spec(spec, width, layout, labels.hide_low);
+        let key = WindowKey {
+            files: Some(selection.files.to_vec()),
+            header: self.header.iter().map(|commit| commit.id.clone()).collect(),
+            epoch: CacheEpoch {
+                width,
+                layout,
+                syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
+            },
+            blocks: 0,
+            comments: selection.comments.revision(),
+            labels: labels.revision,
+            hide_low: labels.hide_low,
+            overview: Some(selection.directory.to_string()),
+        };
+        self.cache
+            .request(key.epoch, model, self.column, spec.order, None, None, theme);
+        if self.window_key.as_ref() == Some(&key) {
+            return;
+        }
+        let overview = overview::build(model, selection, width, theme);
+        self.window_complete = false;
+        self.file_starts.clear();
+        self.set_window(overview.rows, false);
+        self.opens = overview.opens;
+        self.window_key = Some(key);
+    }
+
+    /// Where a click on window row `row` goes: an overview row's file,
+    /// and hunk when the row lists one.
+    pub(super) fn open_at(&self, row: usize) -> Option<&overview::Open> {
+        self.opens.get(row)?.as_ref()
+    }
+
+    /// The window's rows: the commit header, then `files`' blocks, each
     /// after a divider naming it when the window holds more than one file
     /// (or a commit header). Also where each file starts.
     fn build_window(
@@ -1025,6 +1095,7 @@ impl DiffPane {
     /// row when that line is gone.
     fn set_window(&mut self, window: Vec<DiffRow>, cursor_ready: bool) {
         self.window = window;
+        self.opens.clear();
         self.cursor_ready = cursor_ready;
         if cursor_ready && self.window.iter().any(DiffRow::is_selectable) {
             restore_cursor(&self.window, &mut self.cursor);
@@ -1039,6 +1110,7 @@ impl DiffPane {
     /// Drop the assembled window (a reload invalidates every row).
     pub(super) fn reset_window(&mut self) {
         self.window.clear();
+        self.opens.clear();
         self.file_starts.clear();
         self.window_key = None;
     }
@@ -2072,106 +2144,6 @@ mod tests {
         assert_eq!(state.focus, Focus::Sidebar);
         handle_key(&mut state, KeyCode::Char('J'), 4);
         assert_eq!(state.unstaged.cursor.scroll, SCROLL_STEP_LARGE);
-    }
-
-    #[test]
-    fn dir_filter_excludes_files_outside_subtree() {
-        // Three files under three different dirs. Each file's diff has a
-        // unique marker line so we can assert exactly which files are
-        // visible at any time.
-        let resolved = vec![
-            ResolvedFile {
-                file: file_diff("alpha/a.rs"),
-                before: "old_alpha\n".to_string(),
-                after: "new_alpha\n".to_string(),
-            },
-            ResolvedFile {
-                file: file_diff("beta/b.rs"),
-                before: "old_beta\n".to_string(),
-                after: "new_beta\n".to_string(),
-            },
-            ResolvedFile {
-                file: file_diff("gamma/c.rs"),
-                before: "old_gamma\n".to_string(),
-                after: "new_gamma\n".to_string(),
-            },
-        ];
-        let mut state = make_state(&resolved);
-        // Walk to the `beta/` dir header. Tree order: alpha/ (dir 0),
-        // alpha/a.rs (file 0), beta/ (dir 1), beta/b.rs (file 1),
-        // gamma/ (dir 2), gamma/c.rs (file 2). Initial selection is on
-        // file 0 (alpha/a.rs at row 1). Step down to row 2 = beta/.
-        state.sidebar.move_down(20);
-        assert!(state.sidebar.selected_directory_path().is_some());
-
-        let visible_text: String = state
-            .visible_diff_window(DrawBudget::Full)
-            .iter()
-            .map(line_text)
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Only beta/b.rs's content must be inside the window.
-        assert!(
-            visible_text.contains("old_beta") && visible_text.contains("new_beta"),
-            "beta content missing from filtered window: {visible_text:?}"
-        );
-        assert!(
-            !visible_text.contains("old_alpha"),
-            "alpha leaked into beta filter: {visible_text:?}"
-        );
-        assert!(
-            !visible_text.contains("old_gamma"),
-            "gamma leaked into beta filter: {visible_text:?}"
-        );
-
-        // Move to a file row; window narrows to that single file.
-        state.sidebar.move_down(20); // file row inside beta/
-        assert!(!state.sidebar.selected_directory_path().is_some());
-        let file_text: String = state
-            .visible_diff_window(DrawBudget::Full)
-            .iter()
-            .map(line_text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            file_text.contains("new_beta"),
-            "beta file content missing from filtered window: {file_text:?}"
-        );
-        assert_eq!(
-            window_files(&state),
-            ["beta/b.rs"],
-            "siblings leaked: {file_text:?}"
-        );
-    }
-
-    #[test]
-    fn window_narrows_to_subtree_on_dir_selection() {
-        // Two files in different dirs: src/a.txt and other/b.txt. Selecting a
-        // dir restricts the window to that dir's file.
-        let resolved = vec![
-            ResolvedFile {
-                file: file_diff("src/a.txt"),
-                before: "a1\n".to_string(),
-                after: "a2\n".to_string(),
-            },
-            ResolvedFile {
-                file: file_diff("other/b.txt"),
-                before: "b1\n".to_string(),
-                after: "b2\n".to_string(),
-            },
-        ];
-        let mut state = make_state(&resolved);
-
-        // Initial selection is on a file: window is exactly that file.
-        state.visible_diff_window(DrawBudget::Full);
-        assert_eq!(window_files(&state).len(), 1);
-
-        // Move up onto the dir row above the first file: its one file.
-        state.sidebar.top(20);
-        assert!(state.sidebar.selected_directory_path().is_some());
-        state.visible_diff_window(DrawBudget::Full);
-        assert_eq!(window_files(&state).len(), 1);
     }
 
     /// The files whose lines the unstaged window draws, in order.

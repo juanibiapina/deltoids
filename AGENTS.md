@@ -124,6 +124,7 @@ crates/
         mod.rs               #     FilesMode impl of Mode
         model.rs             #     parse/resolve/diff
         diff_pane.rs         #     diff pane slice
+        overview.rs          #     directory summary: files and their hunks' scopes
         stage_panes.rs       #     which staging column the diff shows, with which files
         sidebar_pane.rs      #     sidebar pane slice
         reload.rs            #     working-tree watcher + rebuild

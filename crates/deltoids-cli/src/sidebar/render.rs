@@ -422,7 +422,7 @@ fn stage_tint(has_staged: bool, has_unstaged: bool, theme: &Theme) -> Option<Col
 // worktree column is red: a modified or deleted file shows a red letter, an
 // added file green. deltoids has no staged/unstaged axis, so it collapses
 // lazygit's two porcelain columns into this single change-type letter.
-fn status_color(status: FileStatus, theme: &Theme) -> Color {
+pub fn status_color(status: FileStatus, theme: &Theme) -> Color {
     let rgb = match status {
         FileStatus::Added => theme.status_added,
         FileStatus::Deleted => theme.status_deleted,

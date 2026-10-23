@@ -37,6 +37,25 @@ pub(super) struct LinePlace {
     pub(super) index: usize,
 }
 
+impl LinePlace {
+    /// The `index`th row of `file` in a summary: a file's header or one
+    /// of its changed definitions, which the cursor stops on too.
+    pub(super) fn summary(file: &str, index: usize) -> Self {
+        LinePlace {
+            file: file.to_string(),
+            hunk: usize::MAX,
+            index,
+        }
+    }
+}
+
+/// Where a summary row leads: file `path`, at line `at` when given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Opens {
+    pub(super) path: String,
+    pub(super) at: Option<CommentAnchor>,
+}
+
 /// One rendered row of a diff pane plus what it points at.
 #[derive(Debug, Clone)]
 pub(super) struct DiffRow {
@@ -52,6 +71,8 @@ pub(super) struct DiffRow {
     pub(super) ends_line: bool,
     /// Set on the first row of a hunk (its line-number box).
     pub(super) hunk_start: bool,
+    /// Set on a summary row: where opening it goes.
+    pub(super) opens: Option<Opens>,
 }
 
 impl DiffRow {
@@ -64,6 +85,17 @@ impl DiffRow {
             place: None,
             ends_line: false,
             hunk_start: false,
+            opens: None,
+        }
+    }
+
+    /// A summary row that leads to `opens`; the cursor stops on it at
+    /// `place`.
+    pub(super) fn summary(line: Line<'static>, place: LinePlace, opens: Opens) -> Self {
+        Self {
+            place: Some(place),
+            opens: Some(opens),
+            ..Self::plain(line)
         }
     }
 
@@ -84,6 +116,7 @@ impl DiffRow {
             place,
             ends_line,
             hunk_start: false,
+            opens: None,
         }
     }
 

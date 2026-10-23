@@ -51,11 +51,16 @@ crates/
     src/intraline.rs          # Within-line diff algorithm
     src/reverse.rs            # Diff reversal
     src/language.rs           # Language detection and config
-    src/syntax.rs             # Tree-sitter parsing and scopes
+    src/syntax.rs             # Tree-sitter parsing, scopes, and scope names
+    src/syntax/outline.rs     # A parsed file's definitions, with hashes of each one's text
+    src/definitions.rs        # Definition changes between two versions (DefinitionDiff)
+    src/definitions/matching.rs # Pair old and new definitions: by name, rename, move
+    src/definitions/classify.rs # What changed in each pair, as a tree in file order
     src/symbols.rs            # Symbols: identifiers on a line (what go-to-definition asks about)
     tests/diff_cases.rs       # Diff-case suite + exact-cover random-edit sweep
     tests/diff_cases/         # Diff-case harness, exact-cover check, and cases
     tests/diff_compute.rs     # Diff::compute property tests
+    tests/definitions.rs      # DefinitionDiff reports per language and kind of change
       cases/<NNN-slug>/       # One case per directory
 
   deltoids-cli/
@@ -124,7 +129,9 @@ crates/
         mod.rs               #     FilesMode impl of Mode
         model.rs             #     parse/resolve/diff
         diff_pane.rs         #     diff pane slice
-        overview.rs          #     directory summary: files and their hunks' scopes
+        overview.rs          #     summary of a directory or commit: file headers + blocks
+        definitions_view.rs  #     one file's changed definitions (or hunks), drawn in the background
+        definitions_tests.rs #     definitions view and summaries through keys and mouse
         stage_panes.rs       #     which staging column the diff shows, with which files
         sidebar_pane.rs      #     sidebar pane slice
         reload.rs            #     working-tree watcher + rebuild

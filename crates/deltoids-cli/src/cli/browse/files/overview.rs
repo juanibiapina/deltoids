@@ -1,44 +1,28 @@
-//! The directory overview: what the diff pane shows while the sidebar
-//! selects a directory. Each file of the shown column gets a header (its
-//! status, path inside the directory, review note, comment count, and
-//! line counts), then one line per hunk naming the scope the hunk sits
-//! in, with its own counts. A click on a header opens the file; a click on
-//! a hunk opens the file at that hunk.
+//! Summaries: what the diff pane shows for a directory, or for a whole
+//! commit when its root row is selected. A line of totals, then each file
+//! of the shown column: a header (its status, path, review note, comment
+//! count, and line counts) and its block of changed definitions (see
+//! [`super::definitions_view`]). Blocks come from the pane's definitions
+//! cache, drawn in the background; a file whose block is not ready shows
+//! one placeholder row. Opening a header shows the file's diff.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use deltoids::Theme;
 use deltoids::render_tui::rgb_to_color;
-use deltoids::{Hunk, LineKind, ScopeNode, Theme};
 
-use crate::cli::browse::comments::{CommentAnchor, CommentStore, Numbering, numbered_lines};
-use crate::cli::browse::diff_cursor::DiffRow;
-use crate::cli::browse::text::display_width;
+use crate::cli::browse::comments::CommentStore;
+use crate::cli::browse::diff_cursor::{DiffRow, LinePlace, Opens};
+use crate::cli::browse::text::{display_width, shorten_right};
 use crate::sidebar::{FileStatus, RowNote, display_path, file_status, render_note, status_color};
 
-use super::model::{Column, FileBody, Model, body_deltas};
+use super::model::{Column, Model, body_deltas};
 
-const HUNK_INDENT: &str = "  ";
-
-/// The overview's rows and what a click on each opens.
-pub(super) struct Overview {
-    pub(super) rows: Vec<DiffRow>,
-    /// Indexed like `rows`; `None` for the totals and spacer rows.
-    pub(super) opens: Vec<Option<Open>>,
-}
-
-/// Where a click on an overview row goes: file `file` (a model index),
-/// with the cursor on `at`, a hunk's first changed line, when set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Open {
-    pub(super) file: usize,
-    pub(super) at: Option<CommentAnchor>,
-}
-
-/// What the overview needs besides the model: the selected directory
-/// (`src/cli/`, as the sidebar names it), the shown column's files in
-/// sidebar order, each file's review note by model index, and the
-/// session's comments.
+/// What a summary covers: files of the shown column in sidebar order,
+/// shown with paths inside `directory` (`src/cli/`, or empty for a whole
+/// commit), each file's review note by model index, and the session's
+/// comments.
 pub(super) struct Selection<'a> {
     pub(super) directory: &'a str,
     pub(super) column: Column,
@@ -47,85 +31,55 @@ pub(super) struct Selection<'a> {
     pub(super) comments: &'a CommentStore,
 }
 
-/// Lay out the overview of `selection` for a pane `width` columns wide.
-pub(super) fn build(
+/// The summary's rows for a pane `width` columns wide. `blocks[i]` is the
+/// rendered block of `selection.files[i]`, when it is ready.
+pub(super) fn rows(
     model: &Model,
     selection: &Selection<'_>,
+    blocks: &[Option<&[DiffRow]>],
     width: usize,
     theme: &Theme,
-) -> Overview {
+) -> Vec<DiffRow> {
     let entries: Vec<Entry> = selection
         .files
         .iter()
         .map(|&index| Entry::of(model, selection, index))
         .collect();
-    let counts = Counts::fit(&entries);
-    let mut overview = Overview {
-        rows: Vec::new(),
-        opens: Vec::new(),
-    };
-    overview.push(totals(&entries, theme), None);
-    for entry in &entries {
-        overview.push(Line::default(), None);
-        let open = Open {
-            file: entry.index,
-            at: None,
-        };
-        overview.push(entry.header(&counts, width, theme), Some(open));
-        match &entry.body {
-            Body::Hunks(hunks) => {
-                for hunk in hunks {
-                    let open = Open {
-                        file: entry.index,
-                        at: hunk.at.clone(),
-                    };
-                    overview.push(hunk.line(&counts, width, theme), Some(open));
-                }
-            }
-            Body::Note(note) => {
-                let open = Open {
-                    file: entry.index,
-                    at: None,
-                };
-                overview.push(muted_line(note, width, theme), Some(open));
-            }
+    let mut rows = vec![DiffRow::plain(totals(&entries, theme))];
+    for (entry, block) in entries.iter().zip(blocks) {
+        rows.push(DiffRow::plain(Line::default()));
+        rows.push(entry.header(width, theme));
+        match block {
+            Some(block) => rows.extend(block.iter().cloned()),
+            None => rows.push(placeholder(theme)),
         }
     }
-    overview
+    rows
 }
 
-impl Overview {
-    fn push(&mut self, line: Line<'static>, opens: Option<Open>) {
-        self.rows.push(DiffRow::plain(line));
-        self.opens.push(opens);
-    }
+/// The row a block shows until it is drawn.
+pub(super) fn placeholder(theme: &Theme) -> DiffRow {
+    DiffRow::plain(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "Reading definitions\u{2026}",
+            Style::default().fg(rgb_to_color(theme.muted)),
+        ),
+    ]))
 }
 
 /// One file's facts, gathered before layout.
 struct Entry {
-    index: usize,
+    /// The file's path, the cursor's and the diff's name for it.
+    file: String,
     /// `None` for a file opened by a jump.
     status: Option<FileStatus>,
-    path: String,
+    /// What the header shows: the path inside the directory.
+    label: String,
     added: usize,
     removed: usize,
     note: Option<RowNote>,
     comments: usize,
-    body: Body,
-}
-
-/// What goes under a file's header.
-enum Body {
-    Hunks(Vec<HunkEntry>),
-    /// One muted line for a file without hunks to list.
-    Note(String),
-}
-
-struct HunkEntry {
-    scope: String,
-    added: usize,
-    removed: usize,
-    at: Option<CommentAnchor>,
 }
 
 impl Entry {
@@ -138,7 +92,7 @@ impl Entry {
                 .unwrap_or(path)
                 .to_string()
         };
-        let path = match &file.rename_from {
+        let label = match &file.rename_from {
             Some(old) => format!("{} \u{2192} {}", inside(old), inside(&file.new_path)),
             None => inside(display_path(file)),
         };
@@ -147,25 +101,19 @@ impl Entry {
         } else {
             body_deltas(view.body)
         };
-        let body = if visited {
-            Body::Note("visited".to_string())
-        } else {
-            body_of(view.body, display_path(file), view.numbering)
-        };
         Self {
-            index,
+            file: display_path(file).to_string(),
             status: (!visited).then(|| file_status(file)),
-            path,
+            label,
             added,
             removed,
             note: selection.notes.get(index).copied().flatten(),
             comments: selection.comments.count(display_path(file)),
-            body,
         }
     }
 
     /// `M files/mod.rs  refactor ●  2 comments ······ +126 -63`
-    fn header(&self, counts: &Counts, width: usize, theme: &Theme) -> Line<'static> {
+    fn header(&self, width: usize, theme: &Theme) -> DiffRow {
         let badge = match self.status {
             Some(status) => Span::styled(
                 status.badge().to_string(),
@@ -186,186 +134,51 @@ impl Entry {
                 Style::default().fg(rgb_to_color(theme.muted)),
             ));
         }
-        let tail_width: usize = tail.iter().map(|span| display_width(&span.content)).sum();
-        let room = width.saturating_sub(2 + tail_width + 2 + counts.width());
-        let path = shorten_right(&self.path, room);
-        let used = 2 + display_width(&path) + tail_width;
+        let counts = counts(self.added, self.removed, theme);
+        let width_of = |spans: &[Span]| -> usize {
+            spans.iter().map(|span| display_width(&span.content)).sum()
+        };
+        let (tail_width, counts_width) = (width_of(&tail), width_of(&counts));
+        let room = width.saturating_sub(2 + tail_width + 2 + counts_width);
+        let label = shorten_right(&self.label, room);
+        let used = 2 + display_width(&label) + tail_width;
         let mut spans = vec![
             badge,
             Span::raw(" "),
-            Span::styled(path, Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
         ];
         spans.extend(tail);
         spans.push(Span::raw(
-            " ".repeat(width.saturating_sub(used + counts.width())),
+            " ".repeat(width.saturating_sub(used + counts_width)),
         ));
-        spans.extend(counts.spans(self.added, self.removed, theme));
-        Line::from(spans)
-    }
-}
-
-impl HunkEntry {
-    /// `  impl DiffPane › fn new ······ +1`
-    fn line(&self, counts: &Counts, width: usize, theme: &Theme) -> Line<'static> {
-        let room = width.saturating_sub(HUNK_INDENT.len() + 2 + counts.width());
-        let scope = shorten_right(&self.scope, room);
-        let used = HUNK_INDENT.len() + display_width(&scope);
-        let mut spans = vec![Span::raw(HUNK_INDENT), Span::raw(scope)];
-        spans.push(Span::raw(
-            " ".repeat(width.saturating_sub(used + counts.width())),
-        ));
-        spans.extend(counts.spans(self.added, self.removed, theme));
-        Line::from(spans)
-    }
-}
-
-/// The hunks of a file's body, or a note for a body without any.
-fn body_of(body: &FileBody, path: &str, numbering: Numbering) -> Body {
-    match body {
-        FileBody::Diff(diff) if diff.hunks().is_empty() => {
-            Body::Note("no text changes".to_string())
-        }
-        FileBody::Diff(diff) => Body::Hunks(
-            diff.hunks()
-                .iter()
-                .map(|hunk| HunkEntry::of(hunk, path, numbering))
-                .collect(),
-        ),
-        FileBody::Symlink(_) => Body::Note("symlink".to_string()),
-        FileBody::Binary => Body::Note("binary".to_string()),
-        FileBody::StatusOnly => Body::Note("staged and unstaged changes cancel out".to_string()),
-        FileBody::Submodule { .. } => Body::Note("submodule".to_string()),
-    }
-}
-
-impl HunkEntry {
-    fn of(hunk: &Hunk, path: &str, numbering: Numbering) -> Self {
-        let kinds = || hunk.lines.iter().map(|line| &line.kind);
-        let at = numbered_lines(hunk, numbering)
-            .find(|line| *line.kind != LineKind::Context)
-            .map(|line| CommentAnchor {
-                path: path.to_string(),
-                side: line.side,
-                line: line.number,
-            });
-        Self {
-            scope: scope_label(hunk),
-            added: kinds().filter(|kind| **kind == LineKind::Added).count(),
-            removed: kinds().filter(|kind| **kind == LineKind::Removed).count(),
-            at,
-        }
-    }
-}
-
-/// The hunk's two innermost scopes as their source reads them
-/// (`impl DiffPane › fn new`), or the lines it covers when it sits in
-/// no scope.
-fn scope_label(hunk: &Hunk) -> String {
-    let start = hunk.ancestors.len().saturating_sub(2);
-    let scopes: Vec<String> = hunk.ancestors[start..]
-        .iter()
-        .map(scope_text)
-        .filter(|text| !text.is_empty())
-        .collect();
-    if !scopes.is_empty() {
-        return scopes.join(" \u{203a} ");
-    }
-    let lines = hunk
-        .lines
-        .iter()
-        .filter(|line| line.kind != LineKind::Removed)
-        .count();
-    match lines {
-        0 | 1 => format!("line {}", hunk.new_start),
-        _ => format!(
-            "lines {}\u{2013}{}",
-            hunk.new_start,
-            hunk.new_start + lines - 1
-        ),
-    }
-}
-
-/// A scope's first source line, short: up to and including its name, so
-/// `fn render(&self) -> Line {` reads `fn render`, without a leading
-/// `pub` or `export`. A scope without a name keeps its line, minus an
-/// opening `{`.
-fn scope_text(scope: &ScopeNode) -> String {
-    let text = scope.text.trim();
-    let text = match (!scope.name.is_empty())
-        .then(|| text.find(scope.name.as_str()))
-        .flatten()
-    {
-        Some(at) => &text[..at + scope.name.len()],
-        None => text.trim_end_matches('{').trim_end(),
-    };
-    strip_visibility(text).to_string()
-}
-
-fn strip_visibility(text: &str) -> &str {
-    let mut text = text;
-    loop {
-        let rest = if let Some(rest) = text.strip_prefix("pub(") {
-            rest.find(") ").map(|end| &rest[end + 2..])
-        } else {
-            ["pub ", "export default ", "export "]
-                .iter()
-                .find_map(|prefix| text.strip_prefix(prefix))
+        spans.extend(counts);
+        let opens = Opens {
+            path: self.file.clone(),
+            at: None,
         };
-        match rest {
-            Some(rest) => text = rest,
-            None => return text,
-        }
+        DiffRow::summary(Line::from(spans), LinePlace::summary(&self.file, 0), opens)
     }
 }
 
-/// The `+added -removed` column, right-aligned at the pane's edge and
-/// shared by every header and hunk line so the numbers line up.
-struct Counts {
-    added: usize,
-    removed: usize,
-}
-
-impl Counts {
-    fn fit(entries: &[Entry]) -> Self {
-        let digits = |lines: usize| {
-            if lines == 0 {
-                0
-            } else {
-                lines.to_string().len() + 1
-            }
-        };
-        Self {
-            added: entries
-                .iter()
-                .map(|entry| digits(entry.added))
-                .max()
-                .unwrap_or(0),
-            removed: entries
-                .iter()
-                .map(|entry| digits(entry.removed))
-                .max()
-                .unwrap_or(0),
-        }
-    }
-
-    fn width(&self) -> usize {
-        self.added + usize::from(self.added > 0 && self.removed > 0) + self.removed
-    }
-
-    fn spans(&self, added: usize, removed: usize, theme: &Theme) -> Vec<Span<'static>> {
-        let mut spans = vec![Span::styled(
-            format!("{:>width$}", count("+", added), width = self.added),
+/// `+a -r`, leaving out a zero side.
+fn counts(added: usize, removed: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if added > 0 {
+        spans.push(Span::styled(
+            format!("+{added}"),
             Style::default().fg(rgb_to_color(theme.status_added)),
-        )];
-        if self.added > 0 && self.removed > 0 {
+        ));
+    }
+    if removed > 0 {
+        if added > 0 {
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled(
-            format!("{:>width$}", count("-", removed), width = self.removed),
+            format!("-{removed}"),
             Style::default().fg(rgb_to_color(theme.status_deleted)),
         ));
-        spans
     }
+    spans
 }
 
 /// `3 files changed  +12 -4`, leaving out files opened by a jump.
@@ -393,50 +206,12 @@ fn totals(entries: &[Entry], theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn muted_line(text: &str, width: usize, theme: &Theme) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(HUNK_INDENT),
-        Span::styled(
-            shorten_right(text, width.saturating_sub(HUNK_INDENT.len())),
-            Style::default().fg(rgb_to_color(theme.muted)),
-        ),
-    ])
-}
-
-fn count(sign: &str, lines: usize) -> String {
-    if lines == 0 {
-        String::new()
-    } else {
-        format!("{sign}{lines}")
-    }
-}
-
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
     } else {
         format!("{count} {noun}s")
     }
-}
-
-/// `text` cut to `width` columns from the right, with `…` at the end
-/// when it was cut.
-fn shorten_right(text: &str, width: usize) -> String {
-    if display_width(text) <= width {
-        return text.to_string();
-    }
-    let mut kept = String::new();
-    let mut used = 1;
-    for ch in text.chars() {
-        let w = display_width(&ch.to_string());
-        if used + w > width {
-            break;
-        }
-        used += w;
-        kept.push(ch);
-    }
-    kept.push('\u{2026}');
-    kept
 }
 
 #[cfg(test)]
@@ -513,12 +288,10 @@ mod tests {
         assert!(rows[a + 1].contains("fn alpha"), "{}", rows[a + 1]);
         let (b, b_row) = row_with(&rows, "M b.rs");
         assert!(b_row.contains("+1"), "{b_row}");
-        assert!(
-            rows[b + 1].contains("impl Beta › fn run"),
-            "{}",
-            rows[b + 1]
-        );
-        assert!(rows[b + 1].contains("+1"), "{}", rows[b + 1]);
+        assert!(rows[b + 1].contains("impl Beta"), "{}", rows[b + 1]);
+        assert!(rows[b + 2].contains("~ fn run(&self)"), "{}", rows[b + 2]);
+        assert!(rows[b + 2].contains("body"), "{}", rows[b + 2]);
+        assert!(rows[b + 2].contains("+1"), "{}", rows[b + 2]);
         assert!(!text.contains("other.rs"), "{text}");
         assert!(!text.contains("let x"), "no diff lines: {text}");
     }

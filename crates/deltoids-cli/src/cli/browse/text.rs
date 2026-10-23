@@ -16,6 +16,26 @@ pub(in crate::cli::browse) fn display_width(text: &str) -> usize {
         .sum()
 }
 
+/// `text` cut to `width` columns from the right, with `…` at the end
+/// when it was cut.
+pub(in crate::cli::browse) fn shorten_right(text: &str, width: usize) -> String {
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    let mut kept = String::new();
+    let mut used = 1;
+    for ch in text.chars() {
+        let w = display_width(&ch.to_string());
+        if used + w > width {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    kept.push('\u{2026}');
+    kept
+}
+
 fn split_word_to_width(word: &str, max_width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut chunk = String::new();

@@ -27,7 +27,7 @@ use jiff::tz::TimeZone;
 use crate::cli::browse::comment_view::{highlight_row, with_comments};
 use crate::cli::browse::comments::{CommentAnchor, CommentStore, Numbering, numbered_lines};
 use crate::cli::browse::diff_cursor::{
-    Cursor, DiffRow, LinePlace, Step, keep_visible, restore_cursor, select_row, step_cursor,
+    Cursor, DiffRow, LinePlace, Opens, Step, keep_visible, restore_cursor, select_row, step_cursor,
 };
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{DrawBudget, layout_label};
@@ -39,7 +39,7 @@ use crate::sidebar::{
 
 use super::model::{Column, FileBody, Model};
 use super::overview;
-use super::render::DiffCache;
+use super::render::{BlockKind, DiffCache};
 use super::stage_panes::{PaneSpec, PaneTitle};
 
 pub(super) const SCROLL_STEP_SMALL: usize = 1;
@@ -537,6 +537,19 @@ pub(super) fn file_heading(
     named_heading(&file_label(model, index), title, budget, theme)
 }
 
+/// The pane's title over file `index`'s changed definitions:
+/// `─src/a.rs · definitions ─`, shaped like [`file_heading`].
+pub(super) fn definitions_heading(
+    model: &Model,
+    index: usize,
+    title: PaneTitle,
+    budget: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let label = format!("{} \u{b7} definitions", file_label(model, index));
+    named_heading(&label, title, budget, theme)
+}
+
 /// The pane's title over a directory's overview: `─src/cli/ ─`, shaped
 /// like [`file_heading`].
 pub(super) fn directory_heading(
@@ -640,8 +653,17 @@ struct WindowKey {
     comments: u64,
     labels: u64,
     hide_low: bool,
-    /// The directory an overview summarizes; `None` for diffs.
-    overview: Option<String>,
+    view: WindowView,
+}
+
+/// What a window shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WindowView {
+    Diffs,
+    /// The summary of the files in this directory (empty for a commit).
+    Summary(String),
+    /// One file's changed definitions.
+    Definitions,
 }
 
 /// `revision` changes whenever `lookup` may answer differently. With
@@ -690,8 +712,9 @@ pub(super) struct DiffPane {
     window: Vec<DiffRow>,
     window_key: Option<WindowKey>,
     file_starts: Vec<(usize, usize)>,
-    /// For an overview, where a click on each window row goes.
-    opens: Vec<Option<overview::Open>>,
+    /// Retained definitions blocks: what each file's change did to its
+    /// definitions, for summaries and the definitions view.
+    pub(super) definitions: DiffCache,
     /// Set by a reload: the next render scrolls the restored cursor back
     /// into view. Ordinary scrolling deliberately leaves the cursor
     /// behind, so this is only armed when the window was rebuilt under
@@ -733,7 +756,7 @@ impl DiffPane {
             window: Vec::new(),
             window_key: None,
             file_starts: Vec::new(),
-            opens: Vec::new(),
+            definitions: DiffCache::of(BlockKind::Definitions),
             reveal_cursor: false,
             reload_top: None,
             landing: true,
@@ -887,12 +910,12 @@ impl DiffPane {
             comments: comments.revision(),
             labels: labels.revision,
             hide_low: labels.hide_low,
-            overview: None,
+            view: WindowView::Diffs,
         };
         let same_selection = self
             .window_key
             .as_ref()
-            .is_some_and(|old| old.files == key.files && old.overview.is_none());
+            .is_some_and(|old| old.files == key.files && old.view == WindowView::Diffs);
         let reload_top = self.reload_top.take();
         let old_top = if same_selection {
             self.top_file()
@@ -967,52 +990,108 @@ impl DiffPane {
         self.window_key = Some(key);
     }
 
-    /// Assemble the overview of the selected directory in place of its
-    /// diffs (see [`overview::build`]). Renders no file blocks, so a large
-    /// directory costs no highlighting.
+    /// Assemble what `selection`'s change did to its definitions in place
+    /// of diffs: a summary (totals, then each file's header and block,
+    /// under the commit header for a whole commit), or for one file, its
+    /// block alone. Blocks come from the definitions cache, drawn in the
+    /// background.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn assemble_overview(
+    pub(super) fn assemble_definitions(
         &mut self,
         spec: &PaneSpec<'_>,
         model: &Model,
         selection: &overview::Selection<'_>,
+        summary: bool,
         width: usize,
         layout: ChangeLayout,
         theme: &Theme,
         labels: &HunkLabels<'_>,
     ) {
         self.adopt_spec(spec, width, layout, labels.hide_low);
+        let epoch = CacheEpoch {
+            width,
+            layout,
+            syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
+        };
+        self.cache
+            .request(epoch, model, self.column, spec.order, None, None, theme);
+        self.definitions.request(
+            epoch,
+            model,
+            self.column,
+            spec.order,
+            spec.range.clone(),
+            None,
+            theme,
+        );
         let key = WindowKey {
             files: Some(selection.files.to_vec()),
             header: self.header.iter().map(|commit| commit.id.clone()).collect(),
-            epoch: CacheEpoch {
-                width,
-                layout,
-                syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
-            },
-            blocks: 0,
+            epoch,
+            blocks: self.definitions.revision,
             comments: selection.comments.revision(),
             labels: labels.revision,
             hide_low: labels.hide_low,
-            overview: Some(selection.directory.to_string()),
+            view: if summary {
+                WindowView::Summary(selection.directory.to_string())
+            } else {
+                WindowView::Definitions
+            },
         };
-        self.cache
-            .request(key.epoch, model, self.column, spec.order, None, None, theme);
         if self.window_key.as_ref() == Some(&key) {
             return;
         }
-        let overview = overview::build(model, selection, width, theme);
+        let blocks: Vec<Option<&[DiffRow]>> = selection
+            .files
+            .iter()
+            .map(|&file| self.definitions.get(epoch, file))
+            .collect();
+        let rows = if summary {
+            let mut rows = self.header_rows(width, theme);
+            rows.extend(overview::rows(model, selection, &blocks, width, theme));
+            rows
+        } else {
+            blocks
+                .first()
+                .copied()
+                .flatten()
+                .map_or_else(|| vec![overview::placeholder(theme)], <[DiffRow]>::to_vec)
+        };
         self.window_complete = false;
         self.file_starts.clear();
-        self.set_window(overview.rows, false);
-        self.opens = overview.opens;
+        self.set_window(rows, true);
         self.window_key = Some(key);
     }
 
-    /// Where a click on window row `row` goes: an overview row's file,
-    /// and hunk when the row lists one.
-    pub(super) fn open_at(&self, row: usize) -> Option<&overview::Open> {
-        self.opens.get(row)?.as_ref()
+    /// Where opening window row `row` goes, for a summary or definitions
+    /// row.
+    pub(super) fn opens_at(&self, row: usize) -> Option<&Opens> {
+        self.window.get(row)?.opens.as_ref()
+    }
+
+    /// Where opening the cursor's row goes.
+    pub(super) fn cursor_opens(&self) -> Option<&Opens> {
+        self.cursor_ready
+            .then(|| self.opens_at(self.cursor.row))
+            .flatten()
+    }
+
+    /// Adopt finished background renders; whether any shows on screen.
+    pub(super) fn collect(&mut self) -> bool {
+        let diffs = self.cache.collect();
+        let definitions = self.definitions.collect();
+        diffs || definitions
+    }
+
+    /// Whether a background render is still running.
+    pub(super) fn pending(&self) -> bool {
+        self.cache.pending() || self.definitions.pending()
+    }
+
+    /// Stop background renders, keeping what is drawn.
+    pub(super) fn pause(&mut self) {
+        self.cache.pause();
+        self.definitions.pause();
     }
 
     /// The window's rows: the commit header, then `files`' blocks, each
@@ -1095,7 +1174,6 @@ impl DiffPane {
     /// row when that line is gone.
     fn set_window(&mut self, window: Vec<DiffRow>, cursor_ready: bool) {
         self.window = window;
-        self.opens.clear();
         self.cursor_ready = cursor_ready;
         if cursor_ready && self.window.iter().any(DiffRow::is_selectable) {
             restore_cursor(&self.window, &mut self.cursor);
@@ -1110,7 +1188,6 @@ impl DiffPane {
     /// Drop the assembled window (a reload invalidates every row).
     pub(super) fn reset_window(&mut self) {
         self.window.clear();
-        self.opens.clear();
         self.file_starts.clear();
         self.window_key = None;
     }
@@ -1279,6 +1356,7 @@ impl DiffPane {
             self.reset_after_reload();
         }
         self.cache.carry_over(survivors);
+        self.definitions.carry_over(survivors);
         self.reset_window();
     }
 
@@ -1424,7 +1502,7 @@ impl DiffPane {
         }
         let pos = self.cursor.scroll.min(span.saturating_sub(1)) + 1;
         let layout = layout_label(self.current_layout);
-        let progress = if self.cache.visible_pending() {
+        let progress = if self.cache.visible_pending() || self.definitions.visible_pending() {
             "  ·  Rendering…"
         } else {
             ""

@@ -15,6 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use deltoids::Theme;
 use deltoids::parse::FileDiff;
 
+use super::definitions_view;
 use super::diff_pane::{CacheEpoch, render_file_block};
 use super::model::{Column, FileBody, Model};
 use crate::cli::browse::comments::Numbering;
@@ -30,7 +31,18 @@ struct Block {
     complete: bool,
 }
 
+/// What a cache's blocks show of a file.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockKind {
+    /// Its diff.
+    #[default]
+    Diff,
+    /// What its change did to its definitions.
+    Definitions,
+}
+
 struct Job {
+    kind: BlockKind,
     key: usize,
     token: u64,
     wanted: Arc<AtomicBool>,
@@ -154,16 +166,27 @@ fn run_worker(
                 job.wanted.store(false, Ordering::Relaxed);
             }
         };
-        if let Some(rows) = render_file_block(
-            &job.file,
-            &job.body,
-            job.numbering,
-            job.epoch.width,
-            job.epoch.layout,
-            &job.theme,
-            &keep_going,
-            &mut publish,
-        ) && keep_going()
+        let rows = match job.kind {
+            BlockKind::Diff => render_file_block(
+                &job.file,
+                &job.body,
+                job.numbering,
+                job.epoch.width,
+                job.epoch.layout,
+                &job.theme,
+                &keep_going,
+                &mut publish,
+            ),
+            BlockKind::Definitions => Some(definitions_view::render_block(
+                &job.file,
+                &job.body,
+                job.numbering,
+                job.epoch.width,
+                &job.theme,
+            )),
+        };
+        if let Some(rows) = rows
+            && keep_going()
             && sender
                 .send(Completion {
                     key: job.key,
@@ -180,6 +203,7 @@ fn run_worker(
 
 #[derive(Default)]
 pub(super) struct DiffCache {
+    kind: BlockKind,
     epoch: CacheEpoch,
     rows: HashMap<usize, Block>,
     pub(super) revision: u64,
@@ -202,6 +226,14 @@ impl Default for Budget {
 }
 
 impl DiffCache {
+    /// A cache of `kind` blocks.
+    pub(super) fn of(kind: BlockKind) -> Self {
+        Self {
+            kind,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn get(&self, epoch: CacheEpoch, key: usize) -> Option<&[DiffRow]> {
         if self.epoch != epoch {
             return None;
@@ -432,6 +464,7 @@ impl DiffCache {
             self.scheduled.insert(key);
             let view = model.view(key, column);
             jobs.push_back(Job {
+                kind: self.kind,
                 key,
                 token,
                 wanted,

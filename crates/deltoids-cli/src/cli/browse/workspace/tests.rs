@@ -893,7 +893,7 @@ fn a_reload_picks_up_new_commits_and_branches() {
 }
 
 #[test]
-fn a_commit_review_shows_the_header_alone_then_follows_its_file_tree() {
+fn a_commit_review_shows_the_header_and_a_summary_then_follows_its_file_tree() {
     let dir = fixture();
     let mut workspace = workspace(dir.path());
     show(&mut workspace, '2');
@@ -903,7 +903,8 @@ fn a_commit_review_shows_the_header_alone_then_follows_its_file_tree() {
     press(&mut workspace, &[KeyCode::Enter]);
     let header = right_text(&mut workspace);
     assert!(header.contains("Author: Ada Lovelace"), "{header}");
-    assert!(!header.contains("fn feature()"), "{header}");
+    assert!(header.contains("1 file changed"), "{header}");
+    assert!(header.contains("+ fn feature()"), "{header}");
 
     press(&mut workspace, &[KeyCode::Char('j')]);
     let diff = right_text(&mut workspace);

@@ -55,8 +55,8 @@ pub(super) fn assemble_unstaged(
 
 pub(super) fn wait_for_render(diff: &mut DiffPane) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while diff.cache.pending() {
-        diff.cache.collect();
+    while diff.pending() {
+        diff.collect();
         assert!(
             std::time::Instant::now() < deadline,
             "render did not finish"
@@ -150,6 +150,8 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         read_only: false,
         commits: Vec::new(),
         whole: false,
+        file_definitions: false,
+        summary_diffs: false,
         nav: super::navigate::Navigation::new(None, None),
     };
     state.start_review();

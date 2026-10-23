@@ -19,7 +19,9 @@ asserts the result matches the recorded expectation. Every case, and a
 seeded sweep of random edits over the case inputs, must also pass the
 exact-cover check in [`exact_cover.rs`](./exact_cover.rs): each changed
 line appears in exactly one hunk, hunks are ordered and disjoint, and
-no hunk is context only.
+no hunk is context only. Their definition changes
+(`DefinitionDiff::compute`) must be empty for a file compared with itself,
+inverse for the reverse change, and cover every changed line with content.
 
 ## Why this exists
 

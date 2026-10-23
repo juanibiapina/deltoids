@@ -53,12 +53,16 @@ use crate::sidebar::{Root, Sidebar, display_path};
 
 use super::comment_view::render_comment_editor;
 use super::comments::{CommentAnchor, CommentStore, reanchor, review_text};
+use super::diff_cursor::Opens;
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
 use super::panel;
 use super::vcs::{PendingDiscard, Vcs};
 use deltoids::render_tui::pane_border_color;
 
 mod action_menu;
+#[cfg(test)]
+mod definitions_tests;
+mod definitions_view;
 mod diff_pane;
 #[cfg(test)]
 mod interaction_tests;
@@ -101,6 +105,17 @@ enum ActionOutcome {
     Applied(String),
     /// A discard read its selection and waits for the user's choice.
     Choose(PendingDiscard),
+}
+
+/// What the diff pane shows for the selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Shown {
+    /// The selection's diffs.
+    Diffs,
+    /// A directory's summary (a commit's, for an empty path).
+    Summary(String),
+    /// A file's changed definitions.
+    Definitions,
 }
 
 /// Whether the diff pane is being browsed or a comment is being typed.
@@ -197,6 +212,12 @@ pub(super) struct FilesMode {
     /// Show the whole snapshot: the commits' header and every file,
     /// whatever the sidebar selects.
     whole: bool,
+    /// A selected file shows what its change did to its definitions
+    /// instead of its diff (`o`).
+    file_definitions: bool,
+    /// A selected directory or commit shows its files' diffs instead of
+    /// their summary (`o`).
+    summary_diffs: bool,
     /// Go to definition, callers, jumps, and visited files.
     nav: navigate::Navigation,
 }
@@ -273,14 +294,24 @@ impl FilesMode {
         pane.settle(right);
         let current = pane.current_file(&self.model, right);
         let status = navigate::footer(&self.nav).or(self.status.clone());
-        let heading = match self.overview_directory() {
-            Some(directory) => Some(diff_pane::directory_heading(
+        let heading = match self.shown_view() {
+            Shown::Summary(directory) if directory.is_empty() => None,
+            Shown::Summary(directory) => Some(diff_pane::directory_heading(
                 &directory,
                 title,
                 right.width as usize,
                 theme,
             )),
-            None => current.map(|index| {
+            Shown::Definitions => self.sidebar.selected_file_index().map(|index| {
+                diff_pane::definitions_heading(
+                    &self.model,
+                    index,
+                    title,
+                    right.width as usize,
+                    theme,
+                )
+            }),
+            Shown::Diffs => current.map(|index| {
                 let budget = (right.width as usize)
                     .saturating_sub(navigate::border_badge_width(self, index, theme));
                 diff_pane::file_heading(&self.model, index, title, budget, theme)
@@ -413,6 +444,8 @@ impl FilesMode {
             read_only: false,
             commits: Vec::new(),
             whole: false,
+            file_definitions: false,
+            summary_diffs: false,
             nav: navigate::Navigation::new(None, None),
         };
         mode.start_review();
@@ -479,18 +512,50 @@ impl FilesMode {
         self.unstaged.set_header(header);
     }
 
-    /// The directory the diff pane summarizes instead of showing its
-    /// files' diffs: the selected directory row, unless the whole
-    /// snapshot shows.
-    fn overview_directory(&self) -> Option<String> {
+    /// What the diff pane shows for the selection: a directory's or a
+    /// commit's summary, a file's definitions, or diffs.
+    fn shown_view(&self) -> Shown {
         if self.whole {
-            return None;
+            return Shown::Diffs;
         }
-        self.sidebar.selected_directory_path()
+        let summary = if self.sidebar.root_selected() {
+            Some(String::new())
+        } else {
+            self.sidebar.selected_directory_path()
+        };
+        match summary {
+            Some(_) if self.summary_diffs => Shown::Diffs,
+            Some(directory) => Shown::Summary(directory),
+            None if self.file_definitions => Shown::Definitions,
+            None => Shown::Diffs,
+        }
     }
 
-    /// Assemble the shown pane for this frame: the selected directory's
-    /// overview, or the selection's diffs.
+    /// Switch what the pane shows for the selection: a file's diff and its
+    /// definitions, or a summary and its files' diffs.
+    fn toggle_view(&mut self) {
+        match self.shown_view() {
+            Shown::Summary(_) => self.summary_diffs = true,
+            Shown::Definitions => self.file_definitions = false,
+            Shown::Diffs if self.sidebar.selected_file_index().is_some() => {
+                self.file_definitions = true;
+            }
+            Shown::Diffs => self.summary_diffs = false,
+        }
+        self.snap_diff_to_selected_file();
+    }
+
+    /// Open a summary or definitions row: its file's diff, at its line.
+    fn open(&mut self, opens: Opens, height: usize) {
+        let Some(index) = self.model.index_of(&opens.path) else {
+            return;
+        };
+        self.file_definitions = false;
+        self.open_file(index, opens.at, height);
+    }
+
+    /// Assemble the shown pane for this frame: a summary, a file's
+    /// definitions, or the selection's diffs.
     fn assemble_shown(
         &mut self,
         width: usize,
@@ -499,7 +564,7 @@ impl FilesMode {
         budget: DrawBudget,
     ) {
         self.sync_header();
-        let directory = self.overview_directory();
+        let shown = self.shown_view();
         let spec = self.panes.view(self.selection(), self.column);
         let pane = match spec.column {
             Column::Staged => &mut self.staged,
@@ -513,23 +578,32 @@ impl FilesMode {
             lookup: &lookup,
             hide_low: self.hide_low_hunks,
         };
-        match directory {
-            Some(directory) => {
-                let files: Vec<usize> = spec
-                    .range
-                    .clone()
-                    .map(|range| spec.order[range].to_vec())
-                    .unwrap_or_default();
-                let selection = overview::Selection {
-                    directory: &directory,
-                    column,
-                    files: &files,
-                    notes: &self.guidance.rows,
-                    comments: &self.comments,
-                };
-                pane.assemble_overview(&spec, model, &selection, width, layout, theme, &labels);
+        let files: Vec<usize> = spec
+            .range
+            .clone()
+            .map(|range| spec.order[range].to_vec())
+            .unwrap_or_default();
+        let summary = |directory| overview::Selection {
+            directory,
+            column,
+            files: &files,
+            notes: &self.guidance.rows,
+            comments: &self.comments,
+        };
+        match &shown {
+            Shown::Summary(directory) => {
+                let selection = summary(directory);
+                pane.assemble_definitions(
+                    &spec, model, &selection, true, width, layout, theme, &labels,
+                );
             }
-            None => pane.assemble_window(
+            Shown::Definitions => {
+                let selection = summary("");
+                pane.assemble_definitions(
+                    &spec, model, &selection, false, width, layout, theme, &labels,
+                );
+            }
+            Shown::Diffs => pane.assemble_window(
                 &spec,
                 model,
                 width,
@@ -555,9 +629,10 @@ impl FilesMode {
         }
     }
 
-    /// The display-order files the diff shows.
+    /// The display-order files the diff shows: every file for the whole
+    /// snapshot or its root row.
     fn selection(&self) -> Option<std::ops::Range<usize>> {
-        if self.whole {
+        if self.whole || self.sidebar.root_selected() {
             return (!self.display_order.is_empty()).then_some(0..self.display_order.len());
         }
         self.sidebar.selection_display_range()
@@ -653,7 +728,7 @@ impl FilesMode {
                 budget,
             );
             let pane = self.pane_mut(column);
-            if budget != DrawBudget::Full || !pane.cache.pending() {
+            if budget != DrawBudget::Full || !pane.pending() {
                 return pane.rows().iter().map(|row| row.line.clone()).collect();
             }
             test_support::wait_for_render(pane);
@@ -921,6 +996,24 @@ fn handle_discard_key(state: &mut FilesMode, key: KeyCode) -> AppCommand {
     AppCommand::Continue
 }
 
+/// `o` switches what the diff pane shows (see [`FilesMode::toggle_view`]);
+/// `Enter` on a summary or definitions row opens it. Reports whether it
+/// took the key.
+fn handle_view_key(state: &mut FilesMode, key: KeyCode, height: usize) -> bool {
+    if key == KeyCode::Char('o') {
+        state.toggle_view();
+        return true;
+    }
+    let opens = (key == KeyCode::Enter && state.focus == Focus::Diff)
+        .then(|| state.pane(state.shown()).cursor_opens().cloned())
+        .flatten();
+    let Some(opens) = opens else {
+        return false;
+    };
+    state.open(opens, height);
+    true
+}
+
 /// Handle a mode-internal key (the shell strips global bindings first).
 fn handle_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand {
     match state.input {
@@ -931,7 +1024,7 @@ fn handle_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand 
     if state.action_job.is_none() {
         state.status = None;
     }
-    if navigate::handle_key(state, key) {
+    if handle_view_key(state, key, height) || navigate::handle_key(state, key) {
         return AppCommand::Continue;
     }
     if key == KeyCode::Char('f') {
@@ -1320,8 +1413,8 @@ fn left_click_diff(state: &mut FilesMode, mouse: &MouseEvent, height: usize) {
         .row
         .saturating_sub(state.diff_rect.y)
         .saturating_sub(1) as usize;
-    match pane.open_at(pane.cursor.scroll + content_y).cloned() {
-        Some(open) => state.open_file(open.file, open.at, height),
+    match pane.opens_at(pane.cursor.scroll + content_y).cloned() {
+        Some(opens) => state.open(opens, height),
         None => navigate::left_click(state, mouse),
     }
 }
@@ -1349,17 +1442,17 @@ impl Mode for FilesMode {
     fn background(&mut self, active: bool) -> BackgroundWork {
         let action_changed = collect_action(self) | self.collect_review();
         if !active {
-            self.staged.cache.pause();
-            self.unstaged.cache.pause();
+            self.staged.pause();
+            self.unstaged.pause();
             return BackgroundWork::default();
         }
-        let staged_changed = self.staged.cache.collect();
-        let unstaged_changed = self.unstaged.cache.collect();
+        let staged_changed = self.staged.collect();
+        let unstaged_changed = self.unstaged.collect();
         let (navigated, looking_up) = navigate::tick(self);
         BackgroundWork {
             changed: staged_changed || unstaged_changed || action_changed || navigated,
-            pending: self.staged.cache.pending()
-                || self.unstaged.cache.pending()
+            pending: self.staged.pending()
+                || self.unstaged.pending()
                 || self.action_job.is_some()
                 || self.review.pending()
                 || looking_up,
@@ -1371,7 +1464,7 @@ impl Mode for FilesMode {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        matches!(key, KeyCode::Char('f' | 'F'))
+        matches!(key, KeyCode::Char('f' | 'F' | 'o'))
             || self.focus == Focus::Diff
                 && matches!(key, KeyCode::Char('w' | 'b' | 'r') | KeyCode::Enter)
             || !self.read_only
@@ -1887,7 +1980,7 @@ mod tests {
     }
 
     #[test]
-    fn the_root_row_shows_the_commit_header_and_no_files() {
+    fn the_root_row_shows_the_commit_header_and_a_summary_of_its_files() {
         let mut state = commit_snapshot("fit the help row\n\nIt wrapped.\n");
 
         let header = assembled_text(&mut state);
@@ -1897,12 +1990,12 @@ mod tests {
             "{header:#?}"
         );
         assert!(
-            !header.iter().any(|row| row.contains("a.rs")),
+            header.iter().any(|row| row.contains("M a.rs")),
             "{header:#?}"
         );
         assert!(
-            !header.iter().any(|row| row.contains("const x")),
-            "{header:#?}"
+            !header.iter().any(|row| row.contains("const x = 2;")),
+            "no diff lines: {header:#?}"
         );
 
         handle_key(&mut state, KeyCode::Char('j'), 18);
@@ -1940,16 +2033,20 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_the_root_row_focuses_a_header_that_j_scrolls() {
-        let body: Vec<String> = (1..=40).map(|n| format!("note {n:02}")).collect();
-        let mut state = commit_snapshot(&format!("subject\n\n{}", body.join("\n")));
+    fn enter_on_the_root_row_focuses_a_summary_whose_files_enter_opens() {
+        let mut state = commit_snapshot("subject\n");
         assembled_text(&mut state);
 
         handle_key(&mut state, KeyCode::Enter, 18);
         assert_eq!(state.focus, Focus::Diff);
         handle_key(&mut state, KeyCode::Char('j'), 18);
+        let opens = state.unstaged.cursor_opens().cloned();
+        assert_eq!(opens.map(|opens| opens.path).as_deref(), Some("a.rs"));
 
-        assert_eq!(state.unstaged.cursor.scroll, 1);
+        handle_key(&mut state, KeyCode::Enter, 18);
+        assert_eq!(state.sidebar.selected_file_index(), Some(0));
+        let file = assembled_text(&mut state);
+        assert!(file.iter().any(|row| row.contains("const x")), "{file:#?}");
     }
 
     #[test]

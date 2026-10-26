@@ -1457,7 +1457,7 @@ impl Mode for FilesMode {
     fn reserves_key(&self, key: KeyCode) -> bool {
         matches!(key, KeyCode::Char('f' | 'F' | 'o'))
             || self.focus == Focus::Diff
-                && matches!(key, KeyCode::Char('w' | 'b' | 'r') | KeyCode::Enter)
+                && matches!(key, KeyCode::Char('h' | 'l' | 'r') | KeyCode::Enter)
             || !self.read_only
                 && self.focus == Focus::Sidebar
                 && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))

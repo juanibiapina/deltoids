@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- TUI: `h` and `l`, and the Left and Right arrows, pick the previous and next symbol in the diff, instead of `b` and `w`. They no longer switch side panels; use `Tab` or `Shift+Tab`.
+
 ### Removed
 
 - TUI: the `\` toggle for interleaved diff lines. Changed lines always show all removed lines, then all added lines.

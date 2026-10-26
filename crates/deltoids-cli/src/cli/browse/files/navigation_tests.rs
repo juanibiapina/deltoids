@@ -364,7 +364,7 @@ fn a_version_older_than_the_disk_navigates_through_lines_that_did_not_change() {
 }
 
 #[test]
-fn w_and_b_move_the_underline_along_the_line() {
+fn h_l_and_arrows_move_the_underline_along_the_line() {
     let Fixture {
         mut state,
         dir: _dir,
@@ -372,11 +372,15 @@ fn w_and_b_move_the_underline_along_the_line() {
     } = fixture(|uri| shop_server(uri));
     open(&mut state, "src/main.rs");
     cursor_to(&mut state, "src/main.rs", LineSide::New, 5);
-    press(&mut state, KeyCode::Char('b'));
+    press(&mut state, KeyCode::Char('h'));
     assert_eq!(underlined(&mut state), "cart");
-    press(&mut state, KeyCode::Char('b'));
+    press(&mut state, KeyCode::Char('h'));
     assert_eq!(underlined(&mut state), "println");
-    press(&mut state, KeyCode::Char('w'));
+    press(&mut state, KeyCode::Char('l'));
+    assert_eq!(underlined(&mut state), "cart");
+    press(&mut state, KeyCode::Left);
+    assert_eq!(underlined(&mut state), "println");
+    press(&mut state, KeyCode::Right);
     assert_eq!(underlined(&mut state), "cart");
 }
 

@@ -22,7 +22,7 @@
 //! reviewed row.
 //!
 //! Focus is on the current side panel or on the main view.
-//! `Tab`/`Shift+Tab`, `h`/`l`, the arrows, and a click on a tab's name
+//! `Tab`/`Shift+Tab` and a click on a tab's name
 //! switch side panels. `Enter` on a file focuses its diff, a click
 //! focuses the half under the pointer, and `Esc` leaves the main view.
 //! Every other key, `Tab` in the main view included, goes to the current
@@ -346,10 +346,10 @@ impl Mode for Workspace {
                 self.set_review(None);
                 self.focus(Side::Branches, false);
             }
-            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if !self.main_focused => {
+            KeyCode::Tab if !self.main_focused => {
                 self.focus(side.step(1), false);
             }
-            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left if !self.main_focused => {
+            KeyCode::BackTab if !self.main_focused => {
                 self.focus(side.step(-1), false);
             }
             _ => return self.forward_key(key, height),
@@ -358,10 +358,8 @@ impl Mode for Workspace {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        matches!(key, KeyCode::Char('h' | 'l'))
-            || self
-                .panel_ref(self.side)
-                .is_some_and(|panel| panel.reserves_key(key))
+        self.panel_ref(self.side)
+            .is_some_and(|panel| panel.reserves_key(key))
     }
 
     fn take_refresh_request(&mut self) -> bool {

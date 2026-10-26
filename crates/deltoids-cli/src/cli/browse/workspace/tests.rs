@@ -288,12 +288,7 @@ fn on_a_clean_tree_focus_stays_on_branches() {
     let dir = clean_fixture();
     let mut workspace = workspace(dir.path());
 
-    for key in [
-        KeyCode::Tab,
-        KeyCode::BackTab,
-        KeyCode::Char('h'),
-        KeyCode::Char('l'),
-    ] {
+    for key in [KeyCode::Tab, KeyCode::BackTab] {
         press(&mut workspace, &[key]);
         assert_eq!(focused_panel(&mut workspace), Some('2'), "{key:?}");
     }
@@ -484,18 +479,19 @@ fn tab_and_shift_tab_switch_between_the_side_panels() {
 }
 
 #[test]
-fn h_and_l_switch_between_the_side_panels() {
+fn h_l_and_arrows_do_not_switch_side_panels() {
     let dir = fixture();
     let mut workspace = workspace(dir.path());
 
-    press(&mut workspace, &[KeyCode::Char('l')]);
-    assert_eq!(focused_panel(&mut workspace), Some('2'));
-    press(&mut workspace, &[KeyCode::Right]);
-    assert_eq!(focused_panel(&mut workspace), Some('1'));
-    press(&mut workspace, &[KeyCode::Char('h')]);
-    assert_eq!(focused_panel(&mut workspace), Some('2'));
-    press(&mut workspace, &[KeyCode::Left]);
-    assert_eq!(focused_panel(&mut workspace), Some('1'));
+    for key in [
+        KeyCode::Char('l'),
+        KeyCode::Char('h'),
+        KeyCode::Right,
+        KeyCode::Left,
+    ] {
+        press(&mut workspace, &[key]);
+        assert_eq!(focused_panel(&mut workspace), Some('1'), "{key:?}");
+    }
 }
 
 #[test]
@@ -738,7 +734,7 @@ fn a_review_is_the_only_tab_until_esc_returns_to_the_reviewed_row() {
     assert!(!has_panel(&mut workspace, '2'));
     assert!(title(&mut workspace).starts_with(&format!("╭─Commit {short}──")));
 
-    for key in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Char('l')] {
+    for key in [KeyCode::Tab, KeyCode::BackTab] {
         press(&mut workspace, &[key]);
         assert_eq!(focused_panel(&mut workspace), Some('1'), "{key:?}");
     }
@@ -852,10 +848,15 @@ fn a_comment_editor_takes_digits_and_tab_as_text() {
 }
 
 #[test]
-fn panel_keys_are_reserved_over_custom_commands() {
+fn h_and_l_are_reserved_over_custom_commands_only_in_the_diff() {
     let dir = fixture();
-    let workspace = workspace(dir.path());
+    let mut workspace = workspace(dir.path());
 
+    for key in ['h', 'l'] {
+        assert!(!workspace.reserves_key(KeyCode::Char(key)), "{key}");
+    }
+    press(&mut workspace, &[KeyCode::Enter]);
+    assert!(right_focused(&mut workspace));
     for key in ['h', 'l'] {
         assert!(workspace.reserves_key(KeyCode::Char(key)), "{key}");
     }

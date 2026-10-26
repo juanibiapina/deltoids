@@ -37,7 +37,6 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         title: "Panels",
         rows: &[
             ("Tab / Shift+Tab", "next / previous side panel"),
-            ("h / l", "previous / next side panel"),
             ("Enter", "open a file's diff, a branch, or a commit"),
             ("Esc", "back out / close review"),
         ],
@@ -75,7 +74,10 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         rows: &[
             ("Tab", "switch staged / unstaged diff"),
             ("z / x", "expand / shrink hunk under the cursor"),
-            ("w / b", "pick the next / previous symbol on the line"),
+            (
+                "h / l, ← / →",
+                "pick the previous / next symbol on the line",
+            ),
             ("Enter", "open the summary row, or go to the definition"),
             ("r", "list where the picked symbol is used"),
             ("Ctrl+o", "go back to before the last jump"),

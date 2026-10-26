@@ -2,9 +2,9 @@
 //! language servers.
 //!
 //! This slice owns the symbol under the cursor (underlined, moved with
-//! `w`/`b` or a click), the pending lookup and its footer spinner, the
-//! callers list, jumps and the way back (`Ctrl+o`), and visited files:
-//! unchanged files a jump opens whole.
+//! `h`/`l`, the arrows, or a click), the pending lookup and its footer
+//! spinner, the callers list, jumps and the way back (`Ctrl+o`), and
+//! visited files: unchanged files a jump opens whole.
 //!
 //! One rule decides which lines can be asked about and landed on: the
 //! body drawing the line must show the same text as the file on disk,
@@ -317,7 +317,7 @@ impl Navigation {
 
 /// A key, before Files mode's own bindings. The open list takes every
 /// key; otherwise any key cancels a pending lookup, and in the focused
-/// diff `w`/`b` move the picked symbol, `Enter` asks for its
+/// diff `h`/`l` and Left/Right move the picked symbol, `Enter` asks for its
 /// definition and `r` for its callers. Reports whether it took the key.
 pub(super) fn handle_key(state: &mut FilesMode, key: KeyCode) -> bool {
     if state.nav.list.is_some() {
@@ -332,8 +332,8 @@ pub(super) fn handle_key(state: &mut FilesMode, key: KeyCode) -> bool {
         return false;
     }
     match key {
-        KeyCode::Char('w') => step_symbol(state, 1),
-        KeyCode::Char('b') => step_symbol(state, -1),
+        KeyCode::Char('l') | KeyCode::Right => step_symbol(state, 1),
+        KeyCode::Char('h') | KeyCode::Left => step_symbol(state, -1),
         KeyCode::Enter => ask(state, Query::Definition),
         KeyCode::Char('r') => ask(state, Query::Callers),
         _ => return false,

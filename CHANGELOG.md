@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
 ### Changed
 
 - TUI: file names in the Files panel use the default color. The status letters still show each file's change and staging state.

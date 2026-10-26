@@ -240,7 +240,7 @@ pub struct SyntaxAssets {
 }
 
 impl SyntaxAssets {
-    /// Load syntax assets from bat cache or binary fallback.
+    /// Load syntax assets from the syntaxes and themes bundled with bat.
     ///
     /// Uses `BAT_THEME` if set. Otherwise uses `[theme] mode` (or terminal
     /// detection when mode is `auto`) to choose appropriate defaults: Monokai
@@ -250,7 +250,7 @@ impl SyntaxAssets {
         let syntax_set = SYNTAX_SET.get_or_init(bundled_syntax_set);
 
         let syntax_theme = SYNTAX_THEME.get_or_init(|| {
-            let assets = load_highlighting_assets();
+            let assets = HighlightingAssets::from_binary();
             let theme_name = resolve_syntax_theme_name(&assets);
             assets.get_theme(&theme_name).clone()
         });
@@ -325,7 +325,7 @@ fn build_theme_registry() -> ThemeRegistry {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let assets = load_highlighting_assets();
+        let assets = HighlightingAssets::from_binary();
         for name in assets.themes() {
             let key: &'static str = Box::leak(name.to_string().into_boxed_str());
             themes.insert(key, assets.get_theme(name).clone());
@@ -396,7 +396,7 @@ pub fn theme_name_key(name: &str) -> &'static str {
 /// two-face's embedded syntect dumps.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn bundled_syntax_set() -> SyntaxSet {
-    load_highlighting_assets()
+    HighlightingAssets::from_binary()
         .get_syntax_set()
         .expect("bundled syntax assets should load")
         .clone()
@@ -405,33 +405,6 @@ pub(crate) fn bundled_syntax_set() -> SyntaxSet {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn bundled_syntax_set() -> SyntaxSet {
     two_face::syntax::extra_newlines()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn load_highlighting_assets() -> HighlightingAssets {
-    let cache_dir = bat_cache_dir().map(|d| d.join("bat"));
-    cache_dir
-        .and_then(|dir| HighlightingAssets::from_cache(&dir).ok())
-        .unwrap_or_else(HighlightingAssets::from_binary)
-}
-
-/// Get the cache directory following bat/delta conventions.
-/// On macOS, follows XDG spec (XDG_CACHE_HOME or ~/.cache) rather than native paths.
-/// On other platforms, uses the native cache directory.
-#[cfg(not(target_arch = "wasm32"))]
-fn bat_cache_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| dirs::home_dir().map(|d| d.join(".cache")))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        dirs::cache_dir()
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

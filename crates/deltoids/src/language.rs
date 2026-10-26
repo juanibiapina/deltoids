@@ -1,8 +1,7 @@
 //! Stable language detection and language-specific configuration.
 //!
-//! Detection uses the syntax definitions bundled in the binary, not user bat
-//! cache, so scope extraction is stable across machines. Rendering can still
-//! use user-loaded bat assets for themes and custom syntaxes.
+//! Detection uses the syntax definitions bundled in the binary, so scope
+//! extraction is stable across machines.
 
 use std::path::Path;
 use std::sync::OnceLock;

@@ -28,6 +28,7 @@ pub use config::{
 };
 pub use definitions::{
     Aspects, DefinitionChange, DefinitionDiff, DefinitionKind, Place, Status, TopLevelChange,
+    Visibility,
 };
 pub use intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 pub use language::Language;

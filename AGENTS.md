@@ -54,6 +54,7 @@ crates/
     src/language.rs           # Language detection and config
     src/syntax.rs             # Tree-sitter parsing, scopes, and scope names
     src/syntax/outline.rs     # A parsed file's definitions, with hashes of each one's text
+    src/syntax/visibility.rs  # Who can use a definition: per-language rules, capped by its container
     src/definitions.rs        # Definition changes between two versions (DefinitionDiff)
     src/definitions/matching.rs # Pair old and new definitions: by name, rename, move
     src/definitions/classify.rs # What changed in each pair, as a tree in file order

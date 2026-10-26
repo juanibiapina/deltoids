@@ -207,6 +207,59 @@ fn a_definition_that_shows_its_members_stands_apart_from_its_neighbours() {
 }
 
 #[test]
+fn definitions_group_by_visibility_public_first() {
+    let before = "\
+fn helper() {}
+
+pub(crate) fn shared() {}
+
+pub struct Cart {}
+
+impl Cart {
+    fn sum(&self) -> u32 {
+        1
+    }
+
+    pub fn total(&self) -> u32 {
+        2
+    }
+}
+";
+    let file = ResolvedFile {
+        file: file_diff("src/a.rs"),
+        before: before.to_string(),
+        after: before.replace("1\n", "3\n").replace("2\n", "4\n"),
+    };
+    let mut state = make_state(&[file]);
+    state.sidebar.select_file_index(0, 20);
+    state.snap_diff_to_selected_file();
+    press(&mut state, KeyCode::Char('o'));
+    let rows = pane(&mut state);
+    let shown: Vec<String> = rows[1..rows.len() - 1]
+        .iter()
+        .map(|row| row.replace('\u{2502}', "").trim().to_string())
+        .filter(|row| !row.is_empty())
+        .collect();
+    let expected = [
+        "public",
+        "pub struct Cart",
+        "impl Cart",
+        "public",
+        "~ pub fn total(&self) -> u32",
+        "private",
+        "~ fn sum(&self) -> u32",
+        "restricted",
+        "pub(crate) fn shared()",
+        "private",
+        "fn helper()",
+    ];
+    assert_eq!(shown.len(), expected.len(), "{shown:#?}");
+    for (row, start) in shown.iter().zip(expected) {
+        assert!(row.starts_with(start), "{start:?} in {shown:#?}");
+    }
+}
+
+#[test]
 fn a_change_outside_definitions_shows_where_it_is() {
     let before = "//! Old docs.\n\nfn first() {\n    1;\n}\n\nfn last() {}\n";
     let file = ResolvedFile {

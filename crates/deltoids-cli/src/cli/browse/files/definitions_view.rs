@@ -3,7 +3,9 @@
 //! highlighted signature. The definitions view also shows the unchanged
 //! definitions around the changes, as a diff shows context lines:
 //! all of a small level (the file, or a changed definition's members), and
-//! a few on each side of each change in a larger one. A file without
+//! a few on each side of each change in a larger one. A level with
+//! definitions of two or more visibilities lists them in groups under a
+//! heading, public first. A file without
 //! definitions (plain text, a language without tree-sitter support) gets
 //! one row per hunk naming the scope it changes; a file without a text
 //! diff, a note. The render cache draws these in the background (see
@@ -13,6 +15,8 @@
 //! at the row's first changed line, or where an unchanged definition
 //! starts.
 
+use std::collections::BTreeMap;
+
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -20,7 +24,7 @@ use deltoids::parse::FileDiff;
 use deltoids::render_tui::{render_code_line, rgb_to_color};
 use deltoids::{
     Aspects, DefinitionChange, DefinitionDiff, Diff, Hunk, LineKind, ScopeNode, Status, Theme,
-    TopLevelChange,
+    TopLevelChange, Visibility,
 };
 
 use crate::cli::browse::comments::{CommentAnchor, Numbering, numbered_lines};
@@ -112,11 +116,30 @@ impl Block<'_> {
         self.level(&items, 1);
     }
 
-    /// One level of definitions, `depth` deep: the changed ones, and in
+    /// One level of definitions, `depth` deep: in groups by visibility
+    /// under a heading each, public first, when [`groups`] makes some; in
+    /// file order otherwise.
+    fn level(&mut self, items: &[Item<'_>], depth: usize) {
+        let Some(groups) = groups(items, self.detail) else {
+            return self.run(items, depth);
+        };
+        for (index, (group, members)) in groups.into_iter().enumerate() {
+            if index > 0 {
+                self.space();
+            }
+            if let Some(label) = group.label() {
+                let line = self.muted(label, &INDENT.repeat(depth));
+                self.rows.push(DiffRow::plain(line));
+            }
+            self.run(&members, depth);
+        }
+    }
+
+    /// A run of a level's items, `depth` deep: the changed ones, and in
     /// an outline the unchanged ones around them, with the rest counted in
     /// `⋯ N more` rows. A definition that shows the ones inside it reads
     /// as a block: a blank row sets it apart from its neighbours.
-    fn level(&mut self, items: &[Item<'_>], depth: usize) {
+    fn run(&mut self, items: &[Item<'_>], depth: usize) {
         let shown = match self.detail {
             Detail::Changes => items.iter().map(|item| item.is_changed()).collect(),
             Detail::Outline => context(items),
@@ -455,6 +478,65 @@ impl Item<'_> {
             Item::TopLevel(_) => true,
         }
     }
+
+    fn group(self) -> Group {
+        match self {
+            Item::Definition(definition) => match definition.visibility {
+                Some(Visibility::Public) => Group::Public,
+                Some(Visibility::Restricted) => Group::Restricted,
+                Some(Visibility::Private) => Group::Private,
+                None => Group::Other,
+            },
+            Item::TopLevel(_) => Group::TopLevel,
+        }
+    }
+}
+
+/// A level's groups, in the order they show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Group {
+    Public,
+    Restricted,
+    Private,
+    /// Definitions without visibility: a test, an `impl` of a type from
+    /// another file.
+    Other,
+    /// Changes to the code outside every definition: their place among
+    /// the definitions is lost once those are grouped.
+    TopLevel,
+}
+
+impl Group {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            Group::Public => Some("public"),
+            Group::Restricted => Some("restricted"),
+            Group::Private => Some("private"),
+            Group::Other => Some("other"),
+            Group::TopLevel => None,
+        }
+    }
+
+    fn is_visibility(self) -> bool {
+        matches!(self, Group::Public | Group::Restricted | Group::Private)
+    }
+}
+
+/// A level's items in groups, in file order within each, when the ones
+/// it shows have two or more visibilities. A group with nothing to show
+/// (no change, in a summary) is left out.
+fn groups<'d>(items: &[Item<'d>], detail: Detail) -> Option<Vec<(Group, Vec<Item<'d>>)>> {
+    let mut groups: BTreeMap<Group, Vec<Item<'d>>> = BTreeMap::new();
+    for &item in items {
+        groups.entry(item.group()).or_default().push(item);
+    }
+    groups.retain(|_, members| {
+        members
+            .iter()
+            .any(|item| detail == Detail::Outline || item.is_changed())
+    });
+    let visibilities = groups.keys().filter(|group| group.is_visibility()).count();
+    (visibilities >= 2).then(|| groups.into_iter().collect())
 }
 
 /// The file's level: its definitions, with each change to the code

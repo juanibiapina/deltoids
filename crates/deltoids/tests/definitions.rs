@@ -2,7 +2,7 @@
 //! language: one line per changed definition, nested definitions indented
 //! under their parent.
 
-use deltoids::{DefinitionChange, DefinitionDiff, Status};
+use deltoids::{DefinitionChange, DefinitionDiff, Status, Visibility};
 
 /// The report as text: `status  kind  name  [aspects]  old A-B  new C-D
 /// +added -removed`, then the signature that was added, removed, or
@@ -576,5 +576,204 @@ fn last() {}
             ("[comments, imports]".to_string(), 1),
             ("[comments]".to_string(), line("// The very end.")),
         ]
+    );
+}
+
+/// Each definition of `source` with its visibility, nested definitions
+/// indented: `name public`, or `name -` when it has none.
+fn visibilities(path: &str, source: &str) -> Vec<String> {
+    fn walk(change: &DefinitionChange, depth: usize, out: &mut Vec<String>) {
+        let label = match change.visibility {
+            Some(Visibility::Public) => "public",
+            Some(Visibility::Restricted) => "restricted",
+            Some(Visibility::Private) => "private",
+            None => "-",
+        };
+        out.push(format!("{}{} {label}", "  ".repeat(depth), change.name));
+        for child in &change.children {
+            walk(child, depth + 1, out);
+        }
+    }
+    let diff = DefinitionDiff::compute("", source, path).expect("a supported language");
+    let mut out = Vec::new();
+    for change in &diff.definitions {
+        walk(change, 0, &mut out);
+    }
+    out
+}
+
+#[test]
+fn rust_visibility_follows_pub_capped_by_the_container() {
+    let source = "\
+pub struct Cart {}
+pub(crate) fn helper() {}
+fn private() {}
+const LIMIT: u8 = 1;
+pub trait Shape {
+    fn area(&self) -> f64;
+}
+impl Cart {
+    pub fn total(&self) {}
+    fn sum(&self) {}
+}
+impl Shape for Cart {
+    fn area(&self) -> f64 { 0.0 }
+}
+impl std::fmt::Display for Foreign {
+    fn fmt(&self) {}
+}
+struct Hidden;
+impl Hidden {
+    pub fn open(&self) {}
+}
+mod tests {
+    pub fn check() {}
+}
+#[macro_export]
+macro_rules! shout { () => {} }
+macro_rules! whisper { () => {} }
+";
+    assert_eq!(
+        visibilities("a.rs", source),
+        [
+            "Cart public",
+            "helper restricted",
+            "private private",
+            "LIMIT private",
+            "Shape public",
+            "  area public",
+            "Cart public",
+            "  total public",
+            "  sum private",
+            "Shape for Cart public",
+            "  area public",
+            "std::fmt::Display for Foreign -",
+            "  fmt public",
+            "Hidden private",
+            "Hidden private",
+            "  open private",
+            "tests private",
+            "  check private",
+            "shout public",
+            "whisper private",
+        ]
+    );
+}
+
+#[test]
+fn typescript_visibility_follows_exports_and_member_modifiers() {
+    let source = "\
+export function run() {}
+function helper() {}
+export const LIMIT = 1, OTHER = 2;
+export class Cart {
+  total() {}
+  private sum() {}
+  protected base() {}
+  #secret() {}
+  count = 1;
+}
+class Local {
+  open() {}
+}
+export interface Shape {
+  area(): number;
+}
+namespace N {
+  export function inside() {}
+  function hidden() {}
+}
+describe(\"suite\", () => {});
+export default function main() {}
+";
+    assert_eq!(
+        visibilities("a.ts", source),
+        [
+            "run public",
+            "helper private",
+            "LIMIT public",
+            "OTHER public",
+            "Cart public",
+            "  total public",
+            "  sum private",
+            "  base restricted",
+            "  #secret private",
+            "  count public",
+            "Local private",
+            "  open private",
+            "Shape public",
+            "  area public",
+            "N private",
+            "  inside private",
+            "  hidden private",
+            "describe(\"suite\") -",
+            "main public",
+        ]
+    );
+}
+
+#[test]
+fn a_script_without_exports_has_no_visibility() {
+    let source = "function helper() {}\nconst x = 1;\nmodule.exports = { helper };\n";
+    assert_eq!(visibilities("a.js", source), ["helper -", "x -"]);
+}
+
+#[test]
+fn go_exports_capitalized_names() {
+    let source = "\
+package p
+
+func Run() {}
+func helper() {}
+type Server struct{}
+func (s *Server) Start() {}
+func (s *Server) stop() {}
+const Limit = 1
+";
+    assert_eq!(
+        visibilities("a.go", source),
+        [
+            "Run public",
+            "helper private",
+            "Server public",
+            "Server.Start public",
+            "Server.stop private",
+            "Limit public",
+        ]
+    );
+}
+
+#[test]
+fn python_hides_underscored_names_but_not_dunders() {
+    let source = "\
+def run(): pass
+def _helper(): pass
+class Cart:
+    def __init__(self): pass
+    def _sum(self): pass
+class _Hidden:
+    def open(self): pass
+LIMIT = 1
+";
+    assert_eq!(
+        visibilities("a.py", source),
+        [
+            "run public",
+            "_helper private",
+            "Cart public",
+            "  __init__ public",
+            "  _sum private",
+            "_Hidden private",
+            "  open private",
+            "LIMIT public",
+        ]
+    );
+}
+
+#[test]
+fn languages_without_visibility_report_none() {
+    assert_eq!(
+        visibilities("a.md", "# Title\n\n## Sub\n"),
+        ["Title -", "  Sub -"]
     );
 }

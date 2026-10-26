@@ -386,6 +386,7 @@ impl Builder<'_> {
                 })
                 .collect(),
             uncertain: definition.error,
+            visibility: definition.visibility,
         }
     }
 
@@ -406,6 +407,7 @@ impl Builder<'_> {
                 .map(|&child| self.removed(child))
                 .collect(),
             uncertain: definition.error,
+            visibility: definition.visibility,
         }
     }
 
@@ -454,6 +456,7 @@ impl Builder<'_> {
             lines: (self.new.stats[n].changed, self.old.stats[o].changed),
             children,
             uncertain: before.error || after.error,
+            visibility: after.visibility,
         }
     }
 }

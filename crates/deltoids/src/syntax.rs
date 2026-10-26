@@ -19,6 +19,7 @@ use crate::Language;
 use crate::language::{NameRule, TreeSitterConfig};
 
 mod outline;
+mod visibility;
 
 use crate::scope::ScopeNode;
 pub(crate) use outline::{Definition, Outline, TopStream};

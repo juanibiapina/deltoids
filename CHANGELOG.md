@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - TUI: rest the pointer on a symbol in the diff, or press `i` on the picked one, to see its type and docs from the language server.
+- TUI: a file's definitions list its public interface first, then restricted and private definitions, each under a heading, for Rust, Go, Python, JavaScript, and TypeScript.
 
 ### Changed
 

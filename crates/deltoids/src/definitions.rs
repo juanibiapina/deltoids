@@ -129,6 +129,21 @@ impl DefinitionKind {
     }
 }
 
+/// Who can use a definition, as its file says: its own syntax, capped by
+/// the definition that holds it. Ordered from least to most visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Visibility {
+    /// Only where it is defined: Rust without `pub`, `#field`, `_name`, a
+    /// module's unexported code.
+    Private,
+    /// Part of the program: Rust `pub(crate)` and `pub(super)`, TypeScript
+    /// `protected`.
+    Restricted,
+    /// The file's public interface: `pub`, `export`, a capitalized Go
+    /// name, a Python name without `_`.
+    Public,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Family {
     Callable,
@@ -205,6 +220,10 @@ pub struct DefinitionChange {
     pub lines: (usize, usize),
     /// The definitions nested inside it; empty when it is unchanged.
     pub children: Vec<DefinitionChange>,
+    /// `None` when its language, or its kind (a test, an `impl` of a type
+    /// from another file), has no visibility. In the new file, or the old
+    /// one when removed.
+    pub visibility: Option<Visibility>,
     /// Its text, or its counterpart's, has a syntax error.
     pub uncertain: bool,
 }

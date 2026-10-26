@@ -14,8 +14,9 @@ use std::ops::Range;
 use rustc_hash::FxHasher;
 use tree_sitter::Node;
 
+use super::visibility::{self, Declared};
 use super::{Field, ParsedFile, collapse_whitespace, is_inner_doc_comment, node_end_line};
-use crate::definitions::DefinitionKind;
+use crate::definitions::{DefinitionKind, Visibility};
 use crate::language::{LeafDefinition, Require};
 
 /// The definitions of one version of a file.
@@ -62,6 +63,8 @@ pub(crate) struct Definition {
     pub(crate) content: Content,
     /// It holds a syntax error.
     pub(crate) error: bool,
+    /// Who can use it; see `syntax::visibility`.
+    pub(crate) visibility: Option<Visibility>,
     /// Where its own syntax starts: after the comments and attributes
     /// above it, at any wrapper that starts on its line.
     head: usize,
@@ -100,6 +103,7 @@ impl ParsedFile {
             parsed: self,
             roles: Roles::new(&self.config),
             definitions: Vec::new(),
+            declared: Vec::new(),
             last_child: vec![None],
         };
         let tokens = builder.find_definitions();
@@ -109,6 +113,7 @@ impl ParsedFile {
             definition.content = streams.finish();
         }
         raw_hashes(&self.source, &mut definitions);
+        visibility::resolve(&mut definitions, &builder.declared, self.exports());
         Outline {
             definitions,
             top,
@@ -121,6 +126,8 @@ struct Builder<'a> {
     parsed: &'a ParsedFile,
     roles: Roles,
     definitions: Vec<Definition>,
+    /// What each definition's syntax says about who can use it.
+    declared: Vec<Declared>,
     /// The last definition found in each definition, by index, and in the
     /// file (the last slot, kept one past the definitions).
     last_child: Vec<Option<usize>>,
@@ -403,6 +410,7 @@ impl Builder<'_> {
             signature,
             content: Content::default(),
             error: false,
+            visibility: None,
             head,
             #[cfg(test)]
             node_start: node.start_byte(),
@@ -410,6 +418,16 @@ impl Builder<'_> {
             body,
             name_bytes: parsed.name_node(node).map(|name| name.byte_range()),
         });
+        let ancestors: Vec<Node> = frames
+            .iter()
+            .rev()
+            .take_while(|frame| frame.container == container)
+            .map(|frame| frame.node)
+            .collect();
+        let container_kind = container.map(|index| self.definitions[index].kind);
+        let name = &self.definitions[self.definitions.len() - 1].name;
+        let declared = parsed.declared_visibility(node, kind, name, container_kind, &ancestors);
+        self.declared.push(declared);
         let index = self.definitions.len() - 1;
         let root = self.last_child.len() - 1;
         self.last_child[container.unwrap_or(root)] = Some(index);

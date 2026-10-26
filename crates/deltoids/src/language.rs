@@ -507,6 +507,23 @@ const YAML_LEAVES: &[LeafDefinition] = &[key(
     &["document", "block_node", "block_mapping"],
 )];
 
+/// How a language says who can use a definition; see
+/// `crate::syntax::visibility`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisibilityRule {
+    /// The language has no visibility.
+    None,
+    /// `pub`, `pub(crate)`, or nothing; `#[macro_export]` for macros.
+    Rust,
+    /// `export` at the top of a module; `private`, `protected`, `#name`
+    /// on class members: JavaScript and TypeScript.
+    Exported,
+    /// A capitalized name is exported: Go.
+    Capitalized,
+    /// A name starting with `_` is private, a dunder is not: Python.
+    Underscore,
+}
+
 /// Per-language tree-sitter configuration.
 pub(crate) struct TreeSitterConfig {
     pub(crate) language: LanguageFn,
@@ -565,6 +582,8 @@ pub(crate) struct TreeSitterConfig {
     /// fall back to 3-line default context until a Markdown-specific
     /// section model exists.
     pub(crate) transparent_expansion: bool,
+    /// How the language says who can use a definition.
+    pub(crate) visibility: VisibilityRule,
 }
 
 impl TreeSitterConfig {
@@ -709,6 +728,7 @@ impl Language {
                 import_kinds: &["use_declaration", "extern_crate_declaration"],
                 leading_comment_kinds: &["line_comment", "block_comment", "attribute_item"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::Rust,
             },
             Language::Python => TreeSitterConfig {
                 language: tree_sitter_python::LANGUAGE,
@@ -731,6 +751,7 @@ impl Language {
                 ],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::Underscore,
             },
             Language::JavaScript => TreeSitterConfig {
                 language: tree_sitter_javascript::LANGUAGE,
@@ -784,6 +805,7 @@ impl Language {
                 import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::Exported,
             },
             Language::TypeScript => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -829,6 +851,7 @@ impl Language {
                 import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::Exported,
             },
             Language::Tsx => TreeSitterConfig {
                 language: tree_sitter_typescript::LANGUAGE_TSX,
@@ -872,6 +895,7 @@ impl Language {
                 import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::Exported,
             },
             Language::Go => TreeSitterConfig {
                 language: tree_sitter_go::LANGUAGE,
@@ -907,6 +931,7 @@ impl Language {
                 import_kinds: &["import_declaration"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::Capitalized,
             },
             Language::Ruby => TreeSitterConfig {
                 language: tree_sitter_ruby::LANGUAGE,
@@ -935,6 +960,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Kotlin => TreeSitterConfig {
                 language: tree_sitter_kotlin_ng::LANGUAGE,
@@ -958,6 +984,7 @@ impl Language {
                 import_kinds: &["import", "import_header", "import_list"],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Java => TreeSitterConfig {
                 language: tree_sitter_java::LANGUAGE,
@@ -987,6 +1014,7 @@ impl Language {
                 import_kinds: &["import_declaration"],
                 leading_comment_kinds: &["line_comment", "block_comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::C => TreeSitterConfig {
                 language: tree_sitter_c::LANGUAGE,
@@ -1009,6 +1037,7 @@ impl Language {
                 import_kinds: &["preproc_include"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Cpp => TreeSitterConfig {
                 language: tree_sitter_cpp::LANGUAGE,
@@ -1037,6 +1066,7 @@ impl Language {
                 import_kinds: &["preproc_include", "using_declaration"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Bash => TreeSitterConfig {
                 language: tree_sitter_bash::LANGUAGE,
@@ -1052,6 +1082,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Lua => TreeSitterConfig {
                 language: tree_sitter_lua::LANGUAGE,
@@ -1075,6 +1106,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Css => TreeSitterConfig {
                 language: tree_sitter_css::LANGUAGE,
@@ -1098,6 +1130,7 @@ impl Language {
                 import_kinds: &["import_statement"],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Hcl => TreeSitterConfig {
                 language: tree_sitter_hcl::LANGUAGE,
@@ -1116,6 +1149,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Markdown => TreeSitterConfig {
                 language: tree_sitter_md::LANGUAGE,
@@ -1141,6 +1175,7 @@ impl Language {
                 // context instead of swallowing the file. A dedicated
                 // section model is future work.
                 transparent_expansion: false,
+                visibility: VisibilityRule::None,
             },
             Language::Sql => TreeSitterConfig {
                 language: tree_sitter_sequel::LANGUAGE,
@@ -1193,6 +1228,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Toml => TreeSitterConfig {
                 language: tree_sitter_toml_ng::LANGUAGE,
@@ -1227,6 +1263,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &["comment"],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Json => TreeSitterConfig {
                 language: tree_sitter_json::LANGUAGE,
@@ -1242,6 +1279,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
             Language::Yaml => TreeSitterConfig {
                 language: tree_sitter_yaml::LANGUAGE,
@@ -1257,6 +1295,7 @@ impl Language {
                 import_kinds: &[],
                 leading_comment_kinds: &[],
                 transparent_expansion: true,
+                visibility: VisibilityRule::None,
             },
         }
     }

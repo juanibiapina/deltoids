@@ -70,7 +70,7 @@ pub struct Theme {
     pub status_typechange: (u8, u8, u8),
     /// Registry name of the syntax theme used to color diff bodies and
     /// breadcrumbs. Resolved by [`Theme::load`] (explicit `[theme]
-    /// syntax_theme` key → `BAT_THEME` → mode default) and passed to
+    /// syntax_theme` key → mode default) and passed to
     /// [`crate::theme_by_name`] by the renderers. `default`/`for_mode` set the
     /// mode default so a plain `Theme::default()` stays self-consistent.
     pub syntax_theme_name: String,
@@ -150,46 +150,21 @@ impl Theme {
         let (explicit, overlay) = read_user_theme_config().unwrap_or_default();
         let mode = load_color_mode(explicit);
         let mut theme = resolve_theme(mode, &overlay);
-        theme.syntax_theme_name = resolve_selected_syntax_theme_name(&overlay, mode);
+        theme.syntax_theme_name = resolve_syntax_theme_from(overlay.syntax_theme.as_deref(), mode);
         theme
     }
 }
 
-/// Resolve the selected syntax-theme name for [`Theme::load`].
-///
-/// Precedence: an explicit `[theme] syntax_theme` key, then `BAT_THEME`, then
-/// the light/dark mode default. Names are validated against the registry
-/// ([`theme_names`]); an unknown name falls through to the next source so a
-/// typo silently degrades to the mode default rather than a broken theme.
+/// The selected syntax-theme name for [`Theme::load`]: the `[theme]
+/// syntax_theme` key when the registry ([`theme_names`]) knows it, else the
+/// light/dark mode default, so a typo degrades to the default rather than a
+/// broken theme. Split out from config IO so it is unit-testable.
 #[cfg(not(target_arch = "wasm32"))]
-fn resolve_selected_syntax_theme_name(overlay: &ThemeConfig, mode: ColorMode) -> String {
-    let bat = env::var("BAT_THEME").ok();
-    resolve_syntax_theme_from(overlay.syntax_theme.as_deref(), bat.as_deref(), mode)
-}
-
-/// Pure precedence for the selected syntax-theme name: explicit `[theme]
-/// syntax_theme` key, then `BAT_THEME`, then the mode default. Each candidate
-/// is accepted only when the registry knows it, so a typo degrades to the next
-/// source. Split out from env/config IO so precedence is unit-testable.
-#[cfg(not(target_arch = "wasm32"))]
-fn resolve_syntax_theme_from(
-    explicit: Option<&str>,
-    bat_theme: Option<&str>,
-    mode: ColorMode,
-) -> String {
-    let known = |name: &str| theme_names().contains(&name);
-
-    if let Some(name) = explicit
-        && known(name)
-    {
-        return name.to_string();
+fn resolve_syntax_theme_from(explicit: Option<&str>, mode: ColorMode) -> String {
+    match explicit {
+        Some(name) if theme_names().contains(&name) => name.to_string(),
+        _ => default_syntax_theme_name(mode).to_string(),
     }
-    if let Some(name) = bat_theme
-        && known(name)
-    {
-        return name.to_string();
-    }
-    default_syntax_theme_name(mode).to_string()
 }
 
 /// Read the user's `[theme]` config, returning `(explicit_mode, overlay)`.
@@ -242,17 +217,18 @@ pub struct SyntaxAssets {
 impl SyntaxAssets {
     /// Load syntax assets from the syntaxes and themes bundled with bat.
     ///
-    /// Uses `BAT_THEME` if set. Otherwise uses `[theme] mode` (or terminal
-    /// detection when mode is `auto`) to choose appropriate defaults: Monokai
-    /// Extended for dark, GitHub for light.
+    /// The theme follows `[theme] mode` (or terminal detection when mode is
+    /// `auto`): Monokai Extended for dark, GitHub for light.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
         let syntax_set = SYNTAX_SET.get_or_init(bundled_syntax_set);
 
         let syntax_theme = SYNTAX_THEME.get_or_init(|| {
-            let assets = HighlightingAssets::from_binary();
-            let theme_name = resolve_syntax_theme_name(&assets);
-            assets.get_theme(&theme_name).clone()
+            let (explicit, _) = read_user_theme_config().unwrap_or_default();
+            let theme_name = default_syntax_theme_name(load_color_mode(explicit));
+            HighlightingAssets::from_binary()
+                .get_theme(theme_name)
+                .clone()
         });
 
         Self {
@@ -360,7 +336,7 @@ fn default_syntax_theme() -> &'static SyntectTheme {
 }
 
 /// Resolve a syntax theme by registry name. `None` or an unknown name falls
-/// back to [`default_syntax_theme`] (the mode/`BAT_THEME` default on native,
+/// back to [`default_syntax_theme`] (the mode default on native,
 /// Monokai Extended on wasm), so callers that do not select a theme keep the
 /// prior colors exactly.
 pub fn theme_by_name(name: Option<&str>) -> &'static SyntectTheme {
@@ -407,22 +383,6 @@ pub(crate) fn bundled_syntax_set() -> SyntaxSet {
     two_face::syntax::extra_newlines()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn resolve_syntax_theme_name(assets: &HighlightingAssets) -> String {
-    // 1. Check BAT_THEME
-    if let Ok(theme) = env::var("BAT_THEME")
-        && assets.themes().any(|t| t == theme)
-    {
-        return theme;
-    }
-
-    // 2. Use the resolved light/dark mode to pick a default syntax theme.
-    // This makes `[theme] mode = "light"` behave like delta's `light = true`:
-    // it affects both diff backgrounds and the syntax theme fallback.
-    let (explicit, _) = read_user_theme_config().unwrap_or_default();
-    default_syntax_theme_name(load_color_mode(explicit)).to_string()
-}
-
 fn default_syntax_theme_name(mode: ColorMode) -> &'static str {
     match mode {
         ColorMode::Light => DEFAULT_LIGHT_SYNTAX_THEME,
@@ -464,7 +424,7 @@ fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
         status_typechange: parse_hex_color(&overlay.status_typechange)
             .unwrap_or(base.status_typechange),
         // Carried through unchanged; [`Theme::load`] overwrites it with the
-        // fully-resolved name (explicit key → BAT_THEME → mode default).
+        // fully-resolved name (explicit key → mode default).
         syntax_theme_name: base.syntax_theme_name,
     }
 }
@@ -481,7 +441,7 @@ struct ThemeConfig {
     /// `"light"`, `"dark"`, or `"auto"` (default).
     mode: Option<String>,
     /// Registry name of the syntax theme (e.g. `"TokyoNight"`, `"GitHub"`).
-    /// Takes precedence over `BAT_THEME` and the mode default.
+    /// Takes precedence over the mode default.
     syntax_theme: Option<String>,
     diff_added_bg: Option<String>,
     diff_added_emph_bg: Option<String>,
@@ -774,39 +734,25 @@ mod tests {
 
     #[test]
     fn syntax_theme_precedence_explicit_key_wins() {
-        // A valid explicit key beats BAT_THEME and the mode default.
-        let name = resolve_syntax_theme_from(
-            Some(TOKYO_NIGHT_THEME_NAME),
-            Some("GitHub"),
-            ColorMode::Dark,
-        );
+        // A valid explicit key beats the mode default.
+        let name = resolve_syntax_theme_from(Some(TOKYO_NIGHT_THEME_NAME), ColorMode::Dark);
         assert_eq!(name, TOKYO_NIGHT_THEME_NAME);
     }
 
     #[test]
-    fn syntax_theme_precedence_bat_theme_beats_mode_default() {
-        // No explicit key: a valid BAT_THEME wins over the mode default.
-        let name = resolve_syntax_theme_from(None, Some("GitHub"), ColorMode::Dark);
-        assert_eq!(name, "GitHub");
-    }
-
-    #[test]
     fn syntax_theme_precedence_falls_back_to_mode_default() {
-        // Neither source valid: dark → Monokai Extended, light → GitHub.
+        // No key: dark → Monokai Extended, light → GitHub.
         assert_eq!(
-            resolve_syntax_theme_from(None, None, ColorMode::Dark),
+            resolve_syntax_theme_from(None, ColorMode::Dark),
             "Monokai Extended"
         );
-        assert_eq!(
-            resolve_syntax_theme_from(None, None, ColorMode::Light),
-            "GitHub"
-        );
+        assert_eq!(resolve_syntax_theme_from(None, ColorMode::Light), "GitHub");
     }
 
     #[test]
     fn syntax_theme_precedence_unknown_names_degrade() {
-        // Unknown explicit key and unknown BAT_THEME both fall through.
-        let name = resolve_syntax_theme_from(Some("Nope"), Some("AlsoNope"), ColorMode::Light);
+        // An unknown explicit key falls through to the mode default.
+        let name = resolve_syntax_theme_from(Some("Nope"), ColorMode::Light);
         assert_eq!(name, "GitHub");
     }
 

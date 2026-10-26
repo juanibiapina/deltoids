@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Remove loading custom syntaxes and themes from bat's cache (`bat cache --build`). deltoids uses the syntaxes and themes bundled with bat.
+- Remove support for `BAT_THEME`. Set `syntax_theme` under `[theme]` in the config file to choose a syntax theme.
 - TUI: remove the panel numbers and the `0`, `1`, and `2` keys. Click the main view to focus it. Custom commands can now use these keys.
 
 ### Fixed

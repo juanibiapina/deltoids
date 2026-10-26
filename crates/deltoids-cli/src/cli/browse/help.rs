@@ -80,8 +80,9 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
             ),
             ("Enter", "open the summary row, or go to the definition"),
             ("r", "list where the picked symbol is used"),
+            ("i", "show info about the picked symbol"),
             ("Ctrl+o", "go back to before the last jump"),
-            ("Esc", "cancel a lookup / close the callers list"),
+            ("Esc", "close info or the callers list / cancel a lookup"),
         ],
     },
     HelpSection {
@@ -109,6 +110,7 @@ pub(super) const MOUSE_SECTION: HelpSection = HelpSection {
         ("Click a symbol", "pick it"),
         ("Double-click a symbol", "go to its definition"),
         ("Right-click a symbol", "list where it is used"),
+        ("Point at a symbol", "show info about it"),
         ("Double-click", "open a branch or commit, like Enter"),
         ("Wheel", "scroll the pane under the pointer"),
         ("Shift / Ctrl+wheel", "step through files"),
@@ -422,7 +424,7 @@ mod tests {
 
     fn is_mouse_gesture(binding: &str) -> bool {
         let binding = binding.to_lowercase();
-        ["click", "wheel", "drag"]
+        ["click", "wheel", "drag", "point"]
             .iter()
             .any(|word| binding.contains(word))
     }

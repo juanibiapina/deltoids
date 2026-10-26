@@ -23,7 +23,7 @@ Hunks expand to show the enclosing function, so you always know where you are.
 - **Commit and branch review:** open any commit, or a whole branch, as one diff.
 - **Context on demand:** grow a hunk to its enclosing class or the whole file.
 - **Review comments:** copy review notes with file and line references for coding agents.
-- **Code navigation:** jump to definitions and callers through language servers, inside the diff and out.
+- **Code navigation:** jump to definitions and callers, and read a symbol's type and docs, through language servers, inside the diff and out.
 - **Review guidance:** see which changes need attention first.
 - **Responsive TUI:** keep up with changes without unnecessary redraws.
 - **Syntax themes:** choose colors that suit your workflow.

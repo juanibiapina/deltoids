@@ -1,5 +1,6 @@
-//! Go to definition and callers from the diff, through `FilesMode`'s
-//! keys, mouse, and screen, against a scripted language server.
+//! Go to definition, callers, and hover info from the diff, through
+//! `FilesMode`'s keys, mouse, and screen, against a scripted language
+//! server.
 
 use std::fs;
 use std::sync::Arc;
@@ -595,6 +596,197 @@ fn a_click_picks_a_symbol_a_double_click_goes_to_it_and_a_right_click_lists_call
     click(&mut state, MouseButton::Right, at_total);
     let screen = test_screen::screen(&mut state).join("\n");
     assert!(screen.contains("Callers of total"), "{screen}");
+}
+
+/// The shop server, also answering hover with `info` as Markdown.
+fn hovering(info: &'static str) -> impl Fn(&dyn Fn(&str) -> String) -> Script {
+    move |uri| {
+        let shop = shop_server(uri);
+        Arc::new(move |message| match message {
+            Message::Request(request) if request.method == "textDocument/hover" => {
+                Reply::Result(json!({ "contents": { "kind": "markdown", "value": info } }))
+            }
+            message => shop(message),
+        })
+    }
+}
+
+const SAVINGS_INFO: &str =
+    "```rust\npub fn savings(&self) -> u32\n```\n\n---\n\nWhat the cart saves.";
+
+/// Move the pointer to `(row, column)`.
+fn point(state: &mut FilesMode, (row, column): (u16, u16)) {
+    Mode::handle_mouse(
+        state,
+        make_mouse(MouseEventKind::Moved, column, row),
+        PANE_HEIGHT,
+    );
+}
+
+fn wheel(state: &mut FilesMode, kind: MouseEventKind, (row, column): (u16, u16)) {
+    Mode::handle_mouse(state, make_mouse(kind, column, row), PANE_HEIGHT);
+}
+
+fn on_screen(state: &mut FilesMode, text: &str) -> bool {
+    test_screen::screen(state).join("\n").contains(text)
+}
+
+#[test]
+fn resting_the_pointer_on_a_symbol_shows_its_info_until_it_moves_off() {
+    let Fixture {
+        mut state,
+        record,
+        dir: _dir,
+    } = fixture(hovering(SAVINGS_INFO));
+    open(&mut state, "src/main.rs");
+    let cursor_before = cursor(&state);
+    let at = spot(&mut state, "savings()");
+
+    point(&mut state, at);
+    let below = spot(&mut state, "pub fn savings(&self) -> u32");
+    assert_eq!(
+        below.0,
+        at.0 + 2,
+        "the popup's first row sits under the symbol"
+    );
+    assert!(on_screen(&mut state, "What the cart saves."));
+    let asked = &record.params("textDocument/hover")[0];
+    assert_eq!(asked["position"], json!({ "line": 4, "character": 24 }));
+    assert_eq!(
+        cursor(&state),
+        cursor_before,
+        "hover leaves the cursor alone"
+    );
+
+    point(&mut state, below);
+    assert!(
+        on_screen(&mut state, "What the cart saves."),
+        "the popup stays while the pointer is on it"
+    );
+
+    point(&mut state, (at.0, 2));
+    assert!(!on_screen(&mut state, "What the cart saves."));
+    assert_eq!(record.params("textDocument/hover").len(), 1);
+}
+
+#[test]
+fn sweeping_across_symbols_asks_only_where_the_pointer_rests() {
+    let Fixture {
+        mut state,
+        record,
+        dir: _dir,
+    } = fixture(hovering(SAVINGS_INFO));
+    open(&mut state, "src/main.rs");
+    let (cart, savings) = (
+        spot(&mut state, "cart.savings"),
+        spot(&mut state, "savings()"),
+    );
+    point(&mut state, cart);
+    point(&mut state, savings);
+    assert!(on_screen(&mut state, "What the cart saves."));
+    let asked = record.params("textDocument/hover");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0]["position"]["character"], json!(24));
+}
+
+#[test]
+fn i_shows_info_for_the_picked_symbol_and_any_key_closes_it() {
+    let Fixture {
+        mut state,
+        dir: _dir,
+        ..
+    } = fixture(hovering(SAVINGS_INFO));
+    open(&mut state, "src/main.rs");
+    cursor_to(&mut state, "src/main.rs", LineSide::New, 5);
+
+    press(&mut state, KeyCode::Char('i'));
+    assert!(on_screen(&mut state, "What the cart saves."));
+    assert!(navigate::escape(&mut state), "Esc closes the popup");
+    assert!(!on_screen(&mut state, "What the cart saves."));
+    assert_eq!(
+        cursor(&state),
+        Some(("src/main.rs".to_string(), LineSide::New, 5))
+    );
+
+    press(&mut state, KeyCode::Char('i'));
+    assert!(on_screen(&mut state, "What the cart saves."));
+    press(&mut state, KeyCode::Char('k'));
+    assert!(!on_screen(&mut state, "What the cart saves."));
+    assert_eq!(
+        cursor(&state),
+        Some(("src/main.rs".to_string(), LineSide::New, 4)),
+        "the key that closes the popup still moves the cursor"
+    );
+}
+
+#[test]
+fn hover_stays_quiet_where_i_says_why_there_is_nothing() {
+    let Fixture {
+        mut state,
+        record,
+        dir,
+    } = fixture(|uri| shop_server(uri));
+    open(&mut state, "src/main.rs");
+    let at = spot(&mut state, "savings()");
+    point(&mut state, at);
+    assert!(
+        !on_screen(&mut state, "No info found"),
+        "the pointer never sets the status"
+    );
+    assert_eq!(record.params("textDocument/hover").len(), 1);
+
+    cursor_to(&mut state, "src/main.rs", LineSide::New, 5);
+    press(&mut state, KeyCode::Char('i'));
+    assert!(on_screen(&mut state, "No info found"));
+
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    press(&mut state, KeyCode::Char('j'));
+    point(&mut state, (at.0, 2));
+    point(&mut state, at);
+    test_screen::screen(&mut state);
+    assert_eq!(
+        record.params("textDocument/hover").len(),
+        2,
+        "a line that changed on disk is never asked about"
+    );
+    cursor_to(&mut state, "src/main.rs", LineSide::New, 5);
+    press(&mut state, KeyCode::Char('i'));
+    assert!(on_screen(
+        &mut state,
+        "This line has changed since this version"
+    ));
+}
+
+#[test]
+fn the_wheel_scrolls_a_long_hover_under_the_pointer() {
+    let long: &'static str = (1..=40)
+        .map(|row| format!("row {row:02}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .leak();
+    let Fixture {
+        mut state,
+        dir: _dir,
+        ..
+    } = fixture(hovering(long));
+    open(&mut state, "src/main.rs");
+    let at = spot(&mut state, "savings()");
+    point(&mut state, at);
+    assert!(on_screen(&mut state, "row 01"));
+    assert!(on_screen(&mut state, "↓ more"));
+
+    let popup = spot(&mut state, "row 02");
+    for _ in 0..4 {
+        wheel(&mut state, MouseEventKind::ScrollDown, popup);
+    }
+    assert!(!on_screen(&mut state, "row 01"), "the popup scrolled");
+    assert!(on_screen(&mut state, "row 03"));
+
+    wheel(&mut state, MouseEventKind::ScrollDown, (at.0, 2));
+    assert!(
+        !on_screen(&mut state, "row 03"),
+        "the wheel elsewhere closes it"
+    );
 }
 
 #[test]

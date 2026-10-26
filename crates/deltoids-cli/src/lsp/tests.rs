@@ -58,6 +58,10 @@ fn total(text: &str) -> Symbol<'_> {
 }
 
 fn wait(lsp: &Lsp, ticket: &Ticket) -> Result<Vec<Found>, String> {
+    places(wait_reply(lsp, ticket))
+}
+
+fn wait_reply(lsp: &Lsp, ticket: &Ticket) -> Result<super::Reply, String> {
     for _ in 0..400 {
         if let Some(answer) = lsp.answer(ticket) {
             return answer;
@@ -67,12 +71,81 @@ fn wait(lsp: &Lsp, ticket: &Ticket) -> Result<Vec<Found>, String> {
     panic!("no answer");
 }
 
+fn places(answer: Result<super::Reply, String>) -> Result<Vec<Found>, String> {
+    match answer? {
+        super::Reply::Places(found) => Ok(found),
+        super::Reply::Info(text) => panic!("expected places, got info: {text}"),
+    }
+}
+
 fn found(path: &str, line: usize, caller: Option<&str>) -> Found {
     Found {
         path: path.to_string(),
         line,
         caller: caller.map(str::to_string),
     }
+}
+
+fn info(contents: Value) -> Result<super::Reply, String> {
+    let (lsp, _) = fake::lsp(
+        Path::new(ROOT),
+        utf8(),
+        answering("textDocument/hover", json!({ "contents": contents })),
+    );
+    let ticket = lsp.ask(Query::Hover, total(MAIN)).unwrap();
+    wait_reply(&lsp, &ticket)
+}
+
+#[test]
+fn hover_contents_of_every_shape_come_back_as_markdown() {
+    let text = |text: &str| Ok(super::Reply::Info(text.to_string()));
+    assert_eq!(
+        info(json!({ "kind": "markdown", "value": "```rust\nfn total() -> u32\n```" })),
+        text("```rust\nfn total() -> u32\n```")
+    );
+    assert_eq!(
+        info(json!({ "language": "rust", "value": "fn total() -> u32" })),
+        text("```rust\nfn total() -> u32\n```")
+    );
+    assert_eq!(
+        info(json!(["Adds up *items*.", { "language": "rust", "value": "fn total()" }, ""])),
+        text("Adds up *items*.\n\n```rust\nfn total()\n```")
+    );
+    assert_eq!(
+        info(json!({ "kind": "plaintext", "value": "total() -> u32\nsums *all*\n\nmore" })),
+        text("total\\(\\) \\-\\> u32\\\nsums \\*all\\*\n\nmore")
+    );
+}
+
+#[test]
+fn a_hover_with_nothing_to_show_says_so() {
+    assert_eq!(info(json!("")), Err("No info found".to_string()));
+    let (lsp, _) = fake::lsp(
+        Path::new(ROOT),
+        utf8(),
+        answering("textDocument/hover", Value::Null),
+    );
+    let ticket = lsp.ask(Query::Hover, total(MAIN)).unwrap();
+    assert_eq!(wait_reply(&lsp, &ticket), Err("No info found".to_string()));
+}
+
+#[test]
+fn a_hover_asks_at_the_symbol_and_the_client_says_it_reads_markdown() {
+    let (lsp, record) = fake::lsp(
+        Path::new(ROOT),
+        utf8(),
+        answering("textDocument/hover", json!({ "contents": "total" })),
+    );
+    let ticket = lsp.ask(Query::Hover, total(MAIN)).unwrap();
+    wait_reply(&lsp, &ticket).unwrap();
+    let asked = &record.params("textDocument/hover")[0];
+    assert_eq!(asked["textDocument"]["uri"], json!(uri("src/main.rs")));
+    assert_eq!(asked["position"], json!({ "line": 3, "character": 22 }));
+    let initialize = &record.params("initialize")[0];
+    assert_eq!(
+        initialize["capabilities"]["textDocument"]["hover"]["contentFormat"],
+        json!(["markdown", "plaintext"])
+    );
 }
 
 #[test]
@@ -1189,7 +1262,7 @@ fn rust_analyzer_finds_a_definition_in_another_file() {
     let lsp = Lsp::with_launcher(dir.path(), table, Box::new(super::transport::spawn));
     let answer = |ticket: &Ticket| loop {
         if let Some(answer) = lsp.answer(ticket) {
-            return answer;
+            return places(answer);
         }
         thread::sleep(Duration::from_millis(20));
     };
@@ -1311,7 +1384,7 @@ fn rust_analyzer_lists_every_use_of_any_symbol() {
             }
             thread::sleep(Duration::from_millis(20));
         };
-        answer
+        places(answer)
             .unwrap_or_default()
             .into_iter()
             .map(|found| (found.path, found.line))

@@ -638,6 +638,28 @@ pub fn render_code_line(code: &str, highlight: Option<&str>, theme: &Theme) -> V
         .collect()
 }
 
+/// `code`'s lines, highlighted together as `highlight` (a syntect syntax
+/// name) in the theme's syntax colors; plain for an unknown syntax.
+pub fn render_code_block(
+    code: &str,
+    highlight: Option<&str>,
+    theme: &Theme,
+) -> Vec<Vec<Span<'static>>> {
+    let syntax_theme = crate::theme_by_name(Some(&theme.syntax_theme_name));
+    let lines: Vec<&str> = code.lines().collect();
+    crate::highlight::highlight_block(&lines, highlight, syntax_theme)
+        .into_iter()
+        .map(|ranges| {
+            ranges
+                .into_iter()
+                .map(|(style, text)| {
+                    Span::styled(text.to_string(), to_ratatui_style(Style::default(), style))
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Convert syntect foreground color to ratatui Color.
 ///
 /// The "ansi" theme encodes ANSI color indices specially:
@@ -2164,5 +2186,18 @@ mod tests {
         let plain = render_code_line("anything at all", Some("No Such Syntax"), &theme);
         let text: String = plain.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(text, "anything at all");
+    }
+
+    #[test]
+    fn a_code_block_carries_a_comment_from_one_line_to_the_next() {
+        let theme = Theme::default();
+        let block = render_code_block("/* opens\nfn closes */", Some("Rust"), &theme);
+        let alone = render_code_line("fn closes */", Some("Rust"), &theme);
+        assert_eq!(block.len(), 2);
+        let text: String = block[1].iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "fn closes */");
+        let fg = |spans: &[Span<'static>]| spans.first().and_then(|span| span.style.fg);
+        assert_eq!(fg(&block[1]), fg(&block[0]));
+        assert_ne!(fg(&block[1]), fg(&alone));
     }
 }

@@ -178,6 +178,22 @@ fn key_and_mouse_input_resume_pending_work_when_focus_gain_is_missing() {
 }
 
 #[test]
+fn pointer_motion_reaches_the_mode_without_drawing_a_frame() {
+    let (mut mode, files) = one_mode();
+    let mut shell = shell();
+    shell.take_draw_budget();
+    let moves = (0..20)
+        .map(|column| Event::Mouse(mouse(MouseEventKind::Moved, column, 5)))
+        .collect();
+    events(&mut shell, &mut mode, moves);
+    assert_eq!(files.borrow().mouse, 20);
+    assert!(
+        !shell.needs_redraw(),
+        "the mode asks for a frame when hover changes"
+    );
+}
+
+#[test]
 fn resize_is_retained_while_hidden_and_rendered_in_full_on_return() {
     let (mut mode, _) = one_mode();
     let mut shell = shell();

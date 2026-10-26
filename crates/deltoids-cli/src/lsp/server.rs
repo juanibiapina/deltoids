@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::TryRecvError;
 use lsp_server::{ErrorCode, Message, Notification, Request, RequestId, Response};
-use lsp_types::{GotoDefinitionResponse, Location};
+use lsp_types::{GotoDefinitionResponse, Hover, HoverContents, Location, MarkedString, MarkupKind};
 use serde_json::{Value, json};
 
 use super::callers::{self, Lookup, Progress, Step, Support};
@@ -29,7 +29,14 @@ pub(super) struct Hit {
     pub(super) caller: Option<String>,
 }
 
-pub(super) type Answer = Result<Vec<Hit>, String>;
+/// What a finished query brings back.
+pub(super) enum Payload {
+    Hits(Vec<Hit>),
+    /// Hover contents, as Markdown.
+    Info(String),
+}
+
+pub(super) type Answer = Result<Payload, String>;
 
 /// A query, with what it needs to place its position once the server
 /// has said how it counts columns.
@@ -53,6 +60,7 @@ enum Outgoing {
 enum Stage {
     Definition,
     Callers(Step),
+    Hover,
 }
 
 impl Stage {
@@ -60,6 +68,7 @@ impl Stage {
         match self {
             Stage::Definition => "definition",
             Stage::Callers(_) => "callers",
+            Stage::Hover => "info",
         }
     }
 }
@@ -155,7 +164,8 @@ impl Server {
                     "definition": { "linkSupport": true },
                     "declaration": { "linkSupport": true },
                     "references": {},
-                    "callHierarchy": {}
+                    "callHierarchy": {},
+                    "hover": { "contentFormat": ["markdown", "plaintext"] }
                 }
             }
         });
@@ -401,31 +411,43 @@ impl Server {
                     Progress::Done(answer) => self.finish(ticket, waiting.stage, answer, answers),
                 }
             }
+            Stage::Hover => {
+                self.forget(ticket);
+                let answer = match result.map(hover_text) {
+                    Ok(Some(text)) => Ok(Payload::Info(text)),
+                    Ok(None) => Err(self.none_found(waiting.stage)),
+                    Err(error) => Err(error),
+                };
+                answers.push((ticket, answer));
+            }
         }
     }
 
-    /// Answer `ticket` with `answer`; no hits says none were found.
+    /// Answer `ticket` with `hits`; no hits says none were found.
     fn finish(
         &mut self,
         ticket: u64,
         stage: Stage,
-        answer: Answer,
+        hits: Result<Vec<Hit>, String>,
         answers: &mut Vec<(u64, Answer)>,
     ) {
         self.forget(ticket);
-        let answer = match answer {
-            Ok(hits) if hits.is_empty() => {
-                let indexing = if self.work.is_empty() {
-                    String::new()
-                } else {
-                    format!("; {} is still indexing", self.name)
-                };
-                Err(format!("No {} found{indexing}", stage.looked_for()))
-            }
-            Ok(hits) => Ok(dedup(hits)),
+        let answer = match hits {
+            Ok(hits) if hits.is_empty() => Err(self.none_found(stage)),
+            Ok(hits) => Ok(Payload::Hits(dedup(hits))),
             Err(error) => Err(error),
         };
         answers.push((ticket, answer));
+    }
+
+    /// Why `stage` came back empty, noting indexing in progress.
+    fn none_found(&self, stage: Stage) -> String {
+        let indexing = if self.work.is_empty() {
+            String::new()
+        } else {
+            format!("; {} is still indexing", self.name)
+        };
+        format!("No {} found{indexing}", stage.looked_for())
     }
 
     /// Drop what `ticket` still waits for.
@@ -547,6 +569,9 @@ impl Server {
                     Stage::Definition,
                 );
             }
+            Query::Hover => {
+                self.call(ask.ticket, "textDocument/hover", params, Stage::Hover);
+            }
             Query::Callers => {
                 let support = Support {
                     call_hierarchy: self.call_hierarchy,
@@ -638,6 +663,61 @@ pub(super) fn definition_hits(value: Value) -> Vec<Hit> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// A hover answer's contents as one Markdown text, or `None` when it
+/// has nothing to show.
+pub(super) fn hover_text(value: Value) -> Option<String> {
+    let hover = serde_json::from_value::<Option<Hover>>(value).ok()??;
+    let parts: Vec<String> = match hover.contents {
+        HoverContents::Scalar(marked) => vec![marked_text(marked)],
+        HoverContents::Array(marked) => marked.into_iter().map(marked_text).collect(),
+        HoverContents::Markup(markup) => match markup.kind {
+            MarkupKind::Markdown => vec![markup.value],
+            MarkupKind::PlainText => vec![plain_as_markdown(&markup.value)],
+        },
+    };
+    let text = parts
+        .into_iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn marked_text(marked: MarkedString) -> String {
+    match marked {
+        MarkedString::String(markdown) => markdown,
+        MarkedString::LanguageString(code) => {
+            format!("```{}\n{}\n```", code.language, code.value)
+        }
+    }
+}
+
+/// Plain text that reads the same when rendered as Markdown: every
+/// punctuation mark escaped, every line break kept.
+fn plain_as_markdown(text: &str) -> String {
+    let escape = |line: &str| {
+        let mut escaped = String::with_capacity(line.len());
+        for ch in line.chars() {
+            if ch.is_ascii_punctuation() {
+                escaped.push('\\');
+            }
+            escaped.push(ch);
+        }
+        escaped
+    };
+    text.split("\n\n")
+        .map(|paragraph| {
+            paragraph
+                .lines()
+                .map(escape)
+                .collect::<Vec<_>>()
+                .join("\\\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn location_hit(location: &Location, caller: Option<String>) -> Option<Hit> {

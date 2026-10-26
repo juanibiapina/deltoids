@@ -80,7 +80,7 @@ crates/
       tests.rs               #   interface tests; fixtures/ holds recorded
                              #     patches and Jev answers (re-record with
                              #     `record_jev_fixtures -- --ignored`)
-    src/lsp/                 # Language servers: definition + callers for a symbol
+    src/lsp/                 # Language servers: definition, callers, and hover info for a symbol
       mod.rs                 #   Lsp handle (warm/ask/answer/cancel/progress/sync/poll)
       server.rs              #   one server: handshake, queue, documents, requests, progress
       callers.rs             #   callers lookup: every use of any symbol (call
@@ -138,7 +138,10 @@ crates/
         reload.rs            #     working-tree watcher + rebuild
         review.rs            #     review guidance: Jev job, judgments, row notes
         navigate.rs          #     go to definition/callers, jumps, Ctrl+o, visited files
-        navigation_tests.rs  #     navigation through keys, mouse, and screen (fake Lsp)
+        hover/               #     hover popup: pointer rest or `i`, server info by the symbol
+          mod.rs             #       wait, request, place, scroll, close rules
+          markdown.rs        #       hover Markdown -> wrapped, highlighted lines
+        navigation_tests.rs  #     navigation and hover through keys, mouse, and screen (fake Lsp)
         test_support.rs      #     shared test fixtures
       vcs/                   #   git vs GitButler: the only place they differ
         mod.rs               #     Vcs (reads) + Writer (stage/discard)

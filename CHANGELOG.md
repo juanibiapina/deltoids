@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TUI: rest the pointer on a symbol in the diff, or press `i` on the picked one, to see its type and docs from the language server.
+
 ### Changed
 
 - TUI: `h` and `l`, and the Left and Right arrows, pick the previous and next symbol in the diff, instead of `b` and `w`. They no longer switch side panels; use `Tab` or `Shift+Tab`.

@@ -65,6 +65,7 @@ mod action_menu;
 mod definitions_tests;
 mod definitions_view;
 mod diff_pane;
+mod hover;
 #[cfg(test)]
 mod interaction_tests;
 mod model;
@@ -1010,7 +1011,15 @@ fn handle_view_key(state: &mut FilesMode, key: KeyCode, height: usize) -> bool {
 }
 
 /// Handle a mode-internal key (the shell strips global bindings first).
+/// Any key but `Esc` closes the hover popup before it acts.
 fn handle_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand {
+    if key != KeyCode::Esc {
+        navigate::close_hover(state);
+    }
+    handle_mode_key(state, key, height)
+}
+
+fn handle_mode_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand {
     match state.input {
         InputState::Commenting { .. } => return handle_comment_key(state, key),
         InputState::Discarding { .. } => return handle_discard_key(state, key),
@@ -1432,6 +1441,7 @@ fn handle_key_event(state: &mut FilesMode, key: KeyEvent, height: usize) -> AppC
         if state.action_job.is_none() {
             state.status = None;
         }
+        navigate::close_hover(state);
         navigate::back(state);
         return AppCommand::Continue;
     }
@@ -1446,6 +1456,7 @@ impl Mode for FilesMode {
     fn background(&mut self, active: bool) -> BackgroundWork {
         let action_changed = collect_action(self) | self.collect_review();
         if !active {
+            navigate::close_hover(self);
             self.staged.pause();
             self.unstaged.pause();
             return BackgroundWork::default();
@@ -1470,7 +1481,7 @@ impl Mode for FilesMode {
     fn reserves_key(&self, key: KeyCode) -> bool {
         matches!(key, KeyCode::Char('f' | 'F' | 'o'))
             || self.focus == Focus::Diff
-                && matches!(key, KeyCode::Char('h' | 'l' | 'r') | KeyCode::Enter)
+                && matches!(key, KeyCode::Char('h' | 'l' | 'r' | 'i') | KeyCode::Enter)
             || !self.read_only
                 && self.focus == Focus::Sidebar
                 && matches!(key, KeyCode::Char(' ' | 'd' | 'a'))

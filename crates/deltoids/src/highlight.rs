@@ -99,6 +99,23 @@ pub(crate) fn highlight_line<'a>(
     highlight_or_plain(&mut state, line, assets.syntax_set)
 }
 
+/// Highlight `lines` together, from the grammar's initial state, so
+/// constructs spanning lines (block comments, strings) carry over: a
+/// code block shown outside its file.
+#[cfg(feature = "ratatui")]
+pub(crate) fn highlight_block<'a>(
+    lines: &[&'a str],
+    highlight: Option<&str>,
+    syntax_theme: &'static SyntectTheme,
+) -> Vec<Vec<(Style, &'a str)>> {
+    let assets = SyntaxAssets::load();
+    let mut state = HighlightLines::new(assets.syntax_for_name(highlight), syntax_theme);
+    lines
+        .iter()
+        .map(|line| highlight_or_plain(&mut state, line, assets.syntax_set))
+        .collect()
+}
+
 /// Highlight one line through `state`, falling back to a single default-styled
 /// range covering the whole line when syntect errors. The fallback mirrors the
 /// renderers' previous plain-text behavior.

@@ -792,7 +792,11 @@ impl Shell {
                 self.handle_key(mode, key, vp.height)
             }
             Event::Mouse(mouse) => {
-                self.resume();
+                if mouse.kind == MouseEventKind::Moved && self.interactive() {
+                    self.focused = Some(true);
+                } else {
+                    self.resume();
+                }
                 self.handle_mouse(mode, mouse, vp.height)
             }
             _ => AppCommand::Continue,

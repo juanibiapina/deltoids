@@ -402,6 +402,8 @@ impl Mode for Workspace {
                 self.focus(self.side, false);
             }
             (self.side, inner_height(self.side_rect))
+        } else if mouse.kind == MouseEventKind::Moved {
+            (self.side, height)
         } else {
             return AppCommand::Continue;
         };

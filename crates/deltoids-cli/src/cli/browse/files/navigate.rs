@@ -1,10 +1,11 @@
-//! Go to a definition or list a function's callers from the diff, through
-//! language servers.
+//! Go to a definition, list a function's callers, or show what the
+//! server says about a symbol, from the diff, through language servers.
 //!
 //! This slice owns the symbol under the cursor (underlined, moved with
-//! `h`/`l`, the arrows, or a click), the pending lookup and its footer
-//! spinner, the callers list, jumps and the way back (`Ctrl+o`), and
-//! visited files: unchanged files a jump opens whole.
+//! `h`/`l`, the arrows, or a click), the symbol under the pointer (for hover), the
+//! pending lookup and its footer spinner, the callers list, jumps and the
+//! way back (`Ctrl+o`), and visited files: unchanged files a jump opens
+//! whole.
 //!
 //! One rule decides which lines can be asked about and landed on: the
 //! body drawing the line must show the same text as the file on disk,
@@ -30,13 +31,14 @@ use deltoids::render_tui::{
 };
 use deltoids::{Diff, Language, LineKind, LineMap, Symbols, Theme};
 
+use super::hover::{Hover, Spot};
 use super::model::{Column, FileBody, Model};
 use super::{FilesMode, Focus};
 use crate::cli::browse::comments::{CommentAnchor, LineSide};
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::syntax_badge::SyntaxBadge;
 use crate::cli::browse::text::display_width;
-use crate::lsp::{FileEvents, Found, Lsp, Query, State, Symbol, Ticket};
+use crate::lsp::{FileEvents, Found, Lsp, Query, Reply, State, Symbol, Ticket};
 use crate::sidebar::{IconMode, filter_icon};
 
 /// Spinner frames, one per 100 ms.
@@ -58,6 +60,7 @@ pub(super) struct Navigation {
     picked: Option<(CommentAnchor, usize)>,
     pending: Option<Pending>,
     list: Option<List>,
+    hover: Hover,
     back: Vec<Origin>,
     /// Paths opened as visited files, in the order they were opened.
     visited: Vec<String>,
@@ -163,6 +166,7 @@ struct Target {
 impl Navigation {
     pub(super) fn new(lsp: Option<Lsp>, root: Option<PathBuf>) -> Self {
         Self {
+            hover: Hover::new(lsp.clone()),
             lsp,
             root,
             disk: HashMap::new(),
@@ -315,7 +319,8 @@ impl Navigation {
 /// A key, before Files mode's own bindings. The open list takes every
 /// key; otherwise any key cancels a pending lookup, and in the focused
 /// diff `h`/`l` and Left/Right move the picked symbol, `Enter` asks for its
-/// definition and `r` for its callers. Reports whether it took the key.
+/// definition, `r` for its callers, and `i` for its info. Reports
+/// whether it took the key.
 pub(super) fn handle_key(state: &mut FilesMode, key: KeyCode) -> bool {
     if state.nav.list.is_some() {
         list_key(state, key);
@@ -333,14 +338,35 @@ pub(super) fn handle_key(state: &mut FilesMode, key: KeyCode) -> bool {
         KeyCode::Char('h') | KeyCode::Left => step_symbol(state, -1),
         KeyCode::Enter => ask(state, Query::Definition),
         KeyCode::Char('r') => ask(state, Query::Callers),
+        KeyCode::Char('i') => info(state),
         _ => return false,
     }
     true
 }
 
-/// A mouse event navigation owns: any press while the list is open, and
-/// a right click on the diff. Reports whether it took the event.
+/// Close the hover popup, as any key but `Esc` does before it acts.
+pub(super) fn close_hover(state: &mut FilesMode) {
+    state.nav.hover.close();
+}
+
+/// A mouse event navigation owns: pointer moves (hover), the wheel over
+/// the hover popup, any press while the list is open, and a right click
+/// on the diff. Any other event closes the hover popup. Reports whether
+/// it took the event.
 pub(super) fn mouse(state: &mut FilesMode, mouse: &MouseEvent) -> bool {
+    let position = Position::new(mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Moved => {
+            pointer_moved(state, position, mouse);
+            return true;
+        }
+        MouseEventKind::ScrollDown if state.nav.hover.scroll(position, 1) => return true,
+        MouseEventKind::ScrollUp if state.nav.hover.scroll(position, -1) => return true,
+        MouseEventKind::Up(_) => {}
+        _ => {
+            state.nav.hover.close();
+        }
+    }
     let press = |button| mouse.kind == MouseEventKind::Down(button);
     if state.nav.list.is_some() {
         if press(MouseButton::Left) || press(MouseButton::Right) {
@@ -375,6 +401,87 @@ enum Press {
     Left,
     Double,
     Right,
+}
+
+/// The pointer moved to `position`: keep the hover popup while it stays
+/// on the symbol or the popup, and otherwise rest on the symbol under it.
+fn pointer_moved(state: &mut FilesMode, position: Position, mouse: &MouseEvent) {
+    if state.nav.hover.holds(position) {
+        return;
+    }
+    let spot = if state.nav.list.is_none()
+        && diff_scrollbar::body_area(state.diff_rect).contains(position)
+    {
+        spot_at(state, mouse)
+    } else {
+        None
+    };
+    state.nav.hover.rest(spot);
+}
+
+/// The symbol under the pointer, when it can be asked about.
+fn spot_at(state: &mut FilesMode, mouse: &MouseEvent) -> Option<Spot> {
+    let row = row_at(state, mouse);
+    let column = state.shown();
+    let pane = state.pane(column);
+    let scroll = pane.cursor.scroll;
+    let (first, anchor, offset) = pane
+        .line_at(row)
+        .map(|(first, anchor, offset)| (first, anchor.clone(), offset))?;
+    let body = diff_scrollbar::body_area(state.diff_rect);
+    let x = mouse.column.saturating_sub(body.x) as usize;
+    let (target, _) = target_on(state, anchor.clone(), |text, ranges| {
+        let byte = byte_at(text, offset, x, body.width as usize)?;
+        ranges.iter().position(|range| range.contains(&byte))
+    })
+    .ok()?;
+    let top = first.checked_sub(scroll)?;
+    Some(spot(target, anchor, body, top))
+}
+
+/// `target`'s symbol on `anchor`'s line as hover sees it, the line's
+/// first row drawn `top` rows into `body`.
+fn spot(target: Target, anchor: CommentAnchor, body: Rect, top: usize) -> Spot {
+    let text = line_text(&target.diff, target.line);
+    let cells = line_cells(text, target.columns.clone(), body.width as usize)
+        .into_iter()
+        .filter_map(|(row, columns)| {
+            let y = body.y as usize + top + row;
+            (y < body.bottom() as usize)
+                .then(|| Rect::new(body.x + columns.start, y as u16, columns.len() as u16, 1))
+        })
+        .collect();
+    Spot {
+        anchor,
+        columns: target.columns,
+        cells,
+        name: target.name,
+        language: target.language,
+        highlight: target.diff.highlight().map(str::to_string),
+        path: target.path,
+        disk: target.disk,
+        disk_line: target.disk_line,
+    }
+}
+
+/// `i`: show the server's info about the picked symbol.
+fn info(state: &mut FilesMode) {
+    let target = match target(state) {
+        Ok((target, _)) => target,
+        Err(message) => {
+            state.status = Some(message);
+            return;
+        }
+    };
+    let Some(anchor) = cursor_anchor(state) else {
+        return;
+    };
+    let Some((body, top)) = state.pane(state.shown()).cursor_on_screen(state.diff_rect) else {
+        return;
+    };
+    if let Err(message) = state.nav.hover.open(spot(target, anchor, body, top)) {
+        state.status = Some(message);
+    }
 }
 
 /// The diff window row under the pointer.
@@ -440,8 +547,9 @@ pub(super) fn ask(state: &mut FilesMode, query: Query) {
     }
 }
 
-/// Drop the pending lookup, if any.
+/// Drop the pending lookup, if any, and close the hover popup.
 pub(super) fn cancel(state: &mut FilesMode) {
+    state.nav.hover.close();
     if let Some(pending) = state.nav.pending.take()
         && let Some(lsp) = &state.nav.lsp
     {
@@ -449,9 +557,12 @@ pub(super) fn cancel(state: &mut FilesMode) {
     }
 }
 
-/// `Esc`: close the list or cancel the lookup. Reports whether there was
-/// either.
+/// `Esc`: close the hover popup, the list, or cancel the lookup.
+/// Reports whether there was any.
 pub(super) fn escape(state: &mut FilesMode) -> bool {
+    if state.nav.hover.close() {
+        return true;
+    }
     if state.nav.list.take().is_some() {
         return true;
     }
@@ -600,7 +711,14 @@ pub(super) fn tick(state: &mut FilesMode) -> (bool, bool) {
         answered(state, pending, answer);
         changed = true;
     }
-    let busy = state.nav.pending.is_some() || state.nav.loading();
+    let hover = state.nav.hover.tick();
+    changed |= hover.changed;
+    if let Some(message) = hover.status {
+        state.status = Some(message);
+        changed = true;
+    }
+    let busy =
+        state.nav.pending.is_some() || state.nav.hover.asking().is_some() || state.nav.loading();
     changed |= busy != state.nav.busy;
     state.nav.busy = busy;
     if busy {
@@ -608,12 +726,13 @@ pub(super) fn tick(state: &mut FilesMode) -> (bool, bool) {
         changed |= frame != state.nav.frame;
         state.nav.frame = frame;
     }
-    (changed, busy)
+    (changed, busy || hover.pending)
 }
 
-fn answered(state: &mut FilesMode, pending: Pending, answer: Result<Vec<Found>, String>) {
+fn answered(state: &mut FilesMode, pending: Pending, answer: Result<Reply, String>) {
     let mut found = match answer {
-        Ok(found) => found,
+        Ok(Reply::Places(found)) => found,
+        Ok(Reply::Info(_)) => return,
         Err(message) => {
             state.status = Some(message);
             return;
@@ -648,7 +767,7 @@ fn answered(state: &mut FilesMode, pending: Pending, answer: Result<Vec<Found>, 
     entries.sort_by_key(|entry| !entry.place.in_diff());
     let title = match pending.query {
         Query::Definition => format!("Definitions of {}", pending.name),
-        Query::Callers => format!("Callers of {}", pending.name),
+        Query::Callers | Query::Hover => format!("Callers of {}", pending.name),
     };
     state.nav.list = Some(List {
         title,
@@ -882,6 +1001,26 @@ fn remember(state: &mut FilesMode) {
 /// or why there is none to ask about.
 fn target(state: &mut FilesMode) -> Result<(Target, Vec<Range<usize>>), String> {
     let anchor = cursor_anchor(state).ok_or("Move the cursor to a diff line first")?;
+    let picked = match &state.nav.picked {
+        Some((picked, index)) if *picked == anchor => Some(*index),
+        _ => None,
+    };
+    target_on(state, anchor, |text, ranges| {
+        Some(match picked {
+            Some(index) => index.min(ranges.len() - 1),
+            None => first_call(text, ranges),
+        })
+    })
+}
+
+/// The symbol `pick` chooses on `anchor`'s line (given the line's text
+/// and its symbols' byte ranges) and every symbol of that line, or why
+/// there is none to ask about.
+fn target_on(
+    state: &mut FilesMode,
+    anchor: CommentAnchor,
+    pick: impl FnOnce(&str, &[Range<usize>]) -> Option<usize>,
+) -> Result<(Target, Vec<Range<usize>>), String> {
     let index = state.model.index_of(&anchor.path).ok_or("")?;
     let column = state.shown();
     let (diff, side) =
@@ -914,10 +1053,7 @@ fn target(state: &mut FilesMode) -> Result<(Target, Vec<Range<usize>>), String> 
         return Err("No symbol on this line".to_string());
     }
     let text = line_text(&diff, anchor.line);
-    let picked = match &state.nav.picked {
-        Some((picked, index)) if *picked == anchor => (*index).min(ranges.len() - 1),
-        _ => first_call(text, &ranges),
-    };
+    let picked = pick(text, &ranges).ok_or("No symbol there")?;
     let columns = ranges[picked].clone();
     let name = text[columns.clone()].to_string();
     Ok((
@@ -994,10 +1130,14 @@ fn sidebar_height(state: &FilesMode) -> usize {
 /// The footer while a lookup runs, in place of the pane's own. `None`
 /// when no lookup is pending.
 pub(super) fn footer(nav: &Navigation) -> Option<String> {
+    if let Some(name) = nav.hover.asking() {
+        return Some(format!("{} Finding info for {name}", nav.spinner()));
+    }
     let pending = nav.pending.as_ref()?;
     let what = match pending.query {
         Query::Definition => "definition",
         Query::Callers => "callers",
+        Query::Hover => "info",
     };
     Some(format!(
         "{} Finding {what} of {}",
@@ -1054,6 +1194,7 @@ pub(super) fn draw(
         }
     }
     draw_border_badge(state, frame, area, theme);
+    state.nav.hover.draw(frame, area, theme);
     if let Some(list) = state.nav.list.as_mut() {
         draw_list(frame, list, theme);
     }

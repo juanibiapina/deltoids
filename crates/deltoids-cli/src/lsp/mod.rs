@@ -1,8 +1,8 @@
-//! Language servers: where a symbol is defined and who uses it.
+//! Language servers: where a symbol is defined, who uses it, and what
+//! the server says about it.
 //!
 //! [`Lsp`] is the whole interface. Ask a [`Query`] about a [`Symbol`],
-//! get a [`Ticket`], and read its [`Found`] locations once the server
-//! answers. Everything protocol-shaped stays inside: starting servers
+//! get a [`Ticket`], and read its [`Reply`] once the server answers. Everything protocol-shaped stays inside: starting servers
 //! (lazily, one per distinct command), the handshake, position encodings,
 //! file URIs, keeping open documents in step with the text the caller
 //! shows, the callers lookup (call hierarchy and references together,
@@ -40,7 +40,7 @@ pub(crate) mod fake;
 mod tests;
 
 use config::{ServerSpec, ServerTable};
-use server::{Ask, Hit, Server};
+use server::{Ask, Hit, Payload, Server};
 use transport::Link;
 pub(crate) use watched_files::FileEvents;
 
@@ -62,6 +62,17 @@ pub(crate) struct Symbol<'a> {
 pub(crate) enum Query {
     Definition,
     Callers,
+    /// The server's info about the symbol: its type, signature, and docs.
+    Hover,
+}
+
+/// A query's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Reply {
+    /// For [`Query::Definition`] and [`Query::Callers`]: never empty.
+    Places(Vec<Found>),
+    /// For [`Query::Hover`]: Markdown, never empty.
+    Info(String),
 }
 
 /// One answer location.
@@ -122,7 +133,7 @@ struct Inner {
     /// Servers that did not start, and whether their program is missing.
     failures: HashMap<ServerSpec, bool>,
     next_ticket: u64,
-    answers: HashMap<u64, Result<Vec<Found>, String>>,
+    answers: HashMap<u64, Result<Reply, String>>,
     /// Changes to the files the servers watch, fed by the workdir watcher.
     files: FileEvents,
 }
@@ -212,7 +223,7 @@ impl Lsp {
     }
 
     /// `ticket`'s answer, once the server sent it. `None` while pending.
-    pub(crate) fn answer(&self, ticket: &Ticket) -> Option<Result<Vec<Found>, String>> {
+    pub(crate) fn answer(&self, ticket: &Ticket) -> Option<Result<Reply, String>> {
         let mut inner = self.0.borrow_mut();
         inner.pump();
         inner.answers.remove(&ticket.0)
@@ -299,8 +310,13 @@ impl Inner {
             }
         }
         for (ticket, answer) in answered {
-            let found = answer.map(|hits| hits.into_iter().map(|hit| self.found(hit)).collect());
-            self.answers.insert(ticket, found);
+            let reply = answer.map(|payload| match payload {
+                Payload::Hits(hits) => {
+                    Reply::Places(hits.into_iter().map(|hit| self.found(hit)).collect())
+                }
+                Payload::Info(text) => Reply::Info(text),
+            });
+            self.answers.insert(ticket, reply);
         }
     }
 

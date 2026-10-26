@@ -14,7 +14,7 @@ use crate::highlight::HunkHighlighter;
 use crate::hunk_header::{Breadcrumb, BreadcrumbRow, HunkHeader, display_width};
 use crate::intraline::{EmphKind, EmphSection, LineEmphasis, compute_subhunk_emphasis};
 use crate::symlink::SymlinkView;
-use crate::{ChangeLayout, Hunk, HunkRun, LineKind, arrange_change};
+use crate::{Hunk, HunkRun, LineKind};
 
 const TAB_WIDTH: usize = 4;
 
@@ -108,7 +108,6 @@ pub fn render_hunk(
     highlight: Option<&str>,
     width: usize,
     fill: BgFill,
-    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<String> {
     let mut output = Vec::new();
@@ -150,7 +149,6 @@ pub fn render_hunk(
                     &mut highlighter,
                     width,
                     fill,
-                    layout,
                     theme,
                 ));
             }
@@ -340,7 +338,6 @@ fn render_subhunk(
     highlighter: &mut HunkHighlighter,
     width: usize,
     fill: BgFill,
-    layout: ChangeLayout,
     theme: &Theme,
 ) -> Vec<String> {
     let mut minus_lines: Vec<&str> = Vec::new();
@@ -356,45 +353,20 @@ fn render_subhunk(
 
     let (minus_emphasis, plus_emphasis) = compute_subhunk_emphasis(&minus_lines, &plus_lines);
 
-    // Bind each line to its emphasis in stored order, then reorder for the
-    // chosen layout. Binding before the reorder keeps emphasis aligned with
-    // its line no matter how the layout interleaves the two kinds. A change
-    // run holds only Removed/Added lines (context arrives separately), so the
-    // interleave never drops a line.
-    let plain = LineEmphasis::Plain;
-    let mut minus_idx = 0;
-    let mut plus_idx = 0;
-    let annotated: Vec<(&(LineKind, &str), &LineEmphasis)> = lines
-        .iter()
-        .map(|item| match item.0 {
-            LineKind::Removed => {
-                let emphasis = &minus_emphasis[minus_idx];
-                minus_idx += 1;
-                (item, emphasis)
-            }
-            LineKind::Added => {
-                let emphasis = &plus_emphasis[plus_idx];
-                plus_idx += 1;
-                (item, emphasis)
-            }
-            LineKind::Context => (item, &plain),
-        })
-        .collect();
-
+    let mut minus_emphasis = minus_emphasis.iter();
+    let mut plus_emphasis = plus_emphasis.iter();
     let mut output = Vec::new();
-    // Interleaving preserves each kind's relative order, so the two-sided
-    // highlighter still receives removed lines (minus state) and added lines
-    // (plus state) in order; only their alternation changes.
-    for (item, emphasis) in arrange_change(&annotated, |(item, _)| item.0.clone(), layout) {
-        let (kind, content) = item;
+    for (kind, content) in lines {
         match kind {
             LineKind::Removed => {
+                let emphasis = minus_emphasis.next().expect("emphasis per removed line");
                 let ranges = highlighter.removed(content);
                 output.push(render_diff_line_with_emphasis(
                     kind, content, emphasis, &ranges, width, fill, theme,
                 ));
             }
             LineKind::Added => {
+                let emphasis = plus_emphasis.next().expect("emphasis per added line");
                 let ranges = highlighter.added(content);
                 output.push(render_diff_line_with_emphasis(
                     kind, content, emphasis, &ranges, width, fill, theme,
@@ -708,14 +680,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(
-            &hunk,
-            Some("TypeScriptReact"),
-            80,
-            BgFill::Spaces,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("TypeScriptReact"), 80, BgFill::Spaces, &theme);
         // Body rows follow the 3-line line-number box.
         let body = &lines[3..];
         let first = fg_set(&body[0]); // "/**"
@@ -742,7 +707,6 @@ mod tests {
             Some("TypeScriptReact"),
             80,
             BgFill::Spaces,
-            ChangeLayout::Grouped,
             &theme,
         );
         let standalone_set = fg_set(&standalone[3]);
@@ -776,14 +740,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(
-            &hunk,
-            Some("TypeScriptReact"),
-            80,
-            BgFill::Spaces,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("TypeScriptReact"), 80, BgFill::Spaces, &theme);
         let body = &lines[3..];
         // Comment color from the intro context line.
         let comment = fg_set(&body[1]);
@@ -956,14 +913,7 @@ mod tests {
     fn render_hunk_includes_breadcrumb_when_ancestors_present() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            80,
-            BgFill::AnsiErase,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::AnsiErase, &theme);
         assert!(lines.iter().any(|l| l.contains("┐")));
     }
 
@@ -987,16 +937,7 @@ mod tests {
         let render = |diff: &Diff| -> Vec<String> {
             diff.hunks()
                 .iter()
-                .flat_map(|h| {
-                    render_hunk(
-                        h,
-                        diff.highlight(),
-                        120,
-                        BgFill::Spaces,
-                        ChangeLayout::Grouped,
-                        &theme,
-                    )
-                })
+                .flat_map(|h| render_hunk(h, diff.highlight(), 120, BgFill::Spaces, &theme))
                 .collect()
         };
 
@@ -1016,22 +957,8 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        let highlighted = render_hunk(
-            &hunk,
-            Some("Dockerfile"),
-            80,
-            BgFill::Spaces,
-            ChangeLayout::Grouped,
-            &theme,
-        );
-        let plain = render_hunk(
-            &hunk,
-            None,
-            80,
-            BgFill::Spaces,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let highlighted = render_hunk(&hunk, Some("Dockerfile"), 80, BgFill::Spaces, &theme);
+        let plain = render_hunk(&hunk, None, 80, BgFill::Spaces, &theme);
         assert!(
             highlighted.iter().any(|l| l.contains("\x1b[38;2;")),
             "expected a truecolor foreground escape, got {highlighted:?}"
@@ -1043,14 +970,7 @@ mod tests {
     fn render_hunk_added_line_carries_added_bg() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            80,
-            BgFill::AnsiErase,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::AnsiErase, &theme);
         assert!(lines.iter().any(|l| l.contains("\x1b[48;2;32;48;59m")));
     }
 
@@ -1072,14 +992,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            80,
-            BgFill::AnsiErase,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::AnsiErase, &theme);
         // No ancestors -> a 3-line line-number box precedes the change run
         // (removed first, added second).
         assert_eq!(lines.len(), 5);
@@ -1132,38 +1045,19 @@ mod tests {
     }
 
     #[test]
-    fn grouped_layout_keeps_removed_before_added() {
+    fn change_run_shows_removed_before_added() {
         let theme = Theme::default();
         let lines = render_hunk(
             &three_line_replace_hunk(),
             Some("Rust"),
             80,
             BgFill::AnsiErase,
-            ChangeLayout::Grouped,
             &theme,
         );
         // 3-line line-number box, then removed×3, added×3.
         assert_eq!(
             ansi_kind_sequence(&lines),
             vec!['.', '.', '.', '-', '-', '-', '+', '+', '+']
-        );
-    }
-
-    #[test]
-    fn interleaved_layout_alternates_removed_and_added() {
-        let theme = Theme::default();
-        let group = std::num::NonZeroUsize::new(1).unwrap();
-        let lines = render_hunk(
-            &three_line_replace_hunk(),
-            Some("Rust"),
-            80,
-            BgFill::AnsiErase,
-            ChangeLayout::Interleaved { group },
-            &theme,
-        );
-        assert_eq!(
-            ansi_kind_sequence(&lines),
-            vec!['.', '.', '.', '-', '+', '-', '+', '-', '+']
         );
     }
 
@@ -1185,14 +1079,7 @@ mod tests {
             ],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            80,
-            BgFill::AnsiErase,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::AnsiErase, &theme);
         for line in &lines {
             assert!(
                 !line.contains("\x1b[48;2;113;49;55m"),
@@ -1209,14 +1096,7 @@ mod tests {
     fn render_hunk_uses_erase_eol_in_ansi_mode() {
         let theme = Theme::default();
         let hunk = rust_function_hunk();
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            80,
-            BgFill::AnsiErase,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::AnsiErase, &theme);
         assert!(lines.iter().any(|l| l.contains("\x1b[0K")));
     }
 
@@ -1232,14 +1112,7 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            20,
-            BgFill::Spaces,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 20, BgFill::Spaces, &theme);
         // The line-number box occupies the first 3 lines; the padded diff
         // line follows.
         let line = &lines[3];
@@ -1263,14 +1136,7 @@ mod tests {
             }],
             ancestors: Vec::new(),
         };
-        let lines = render_hunk(
-            &hunk,
-            Some("Rust"),
-            80,
-            BgFill::Spaces,
-            ChangeLayout::Grouped,
-            &theme,
-        );
+        let lines = render_hunk(&hunk, Some("Rust"), 80, BgFill::Spaces, &theme);
         let border_fg = rgb_to_ansi_fg(theme.border.0, theme.border.1, theme.border.2);
         assert!(lines[0].contains("┐"), "top box corner");
         assert!(lines[0].contains(&border_fg), "box carries border fg");

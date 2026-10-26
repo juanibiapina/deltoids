@@ -175,7 +175,6 @@ fn run_worker(
                 &job.body,
                 job.numbering,
                 job.epoch.width,
-                job.epoch.layout,
                 &job.theme,
                 &keep_going,
                 &mut publish,

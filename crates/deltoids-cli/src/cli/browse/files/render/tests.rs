@@ -2,12 +2,10 @@ use super::*;
 use std::time::{Duration, Instant};
 
 use crate::cli::browse::files::test_support::{model_of, theme};
-use deltoids::ChangeLayout;
 
 fn epoch(width: usize, theme: &Theme) -> CacheEpoch {
     CacheEpoch {
         width,
-        layout: ChangeLayout::Grouped,
         syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
     }
 }
@@ -68,7 +66,7 @@ fn retention_pressure_keeps_the_selected_file_and_stops_when_preparation_finishe
 }
 
 #[test]
-fn changing_render_settings_rejects_old_width_layout_and_theme_results() {
+fn changing_render_settings_rejects_old_width_and_theme_results() {
     let model = model_of(&["a.txt", "b.txt", "c.txt"]);
     let mut cache = DiffCache::default();
     let initial_theme = theme();
@@ -77,9 +75,6 @@ fn changing_render_settings_rejects_old_width_layout_and_theme_results() {
     changed_theme.syntax_theme_name = "TokyoNight".into();
     let changed = CacheEpoch {
         width: 12,
-        layout: ChangeLayout::Interleaved {
-            group: std::num::NonZeroUsize::new(1).unwrap(),
-        },
         syntax_theme: "TokyoNight",
     };
     cache.request(

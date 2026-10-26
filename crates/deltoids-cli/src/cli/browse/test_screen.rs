@@ -8,8 +8,8 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout};
 
+use deltoids::Theme;
 use deltoids::render_tui::pane_border_color;
-use deltoids::{ChangeLayout, Theme};
 
 use super::mode::{DrawBudget, Mode};
 
@@ -85,14 +85,7 @@ pub(super) fn draw(mode: &mut impl Mode) -> Buffer {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(LEFT), Constraint::Min(10)])
             .split(frame.area());
-        mode.draw(
-            frame,
-            cols[0],
-            cols[1],
-            ChangeLayout::Grouped,
-            &theme,
-            DrawBudget::Full,
-        );
+        mode.draw(frame, cols[0], cols[1], &theme, DrawBudget::Full);
     })
     .unwrap();
     term.backend().buffer().clone()

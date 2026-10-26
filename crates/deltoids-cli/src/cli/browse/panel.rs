@@ -18,8 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use deltoids::Theme;
 use deltoids::render_tui::rgb_to_color;
-use deltoids::{ChangeLayout, Theme};
 
 use super::mode::{AppCommand, BackgroundWork, DrawBudget};
 use crate::sidebar::{IconMode, filter_icon};
@@ -46,7 +46,6 @@ pub(super) trait Panel {
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     );

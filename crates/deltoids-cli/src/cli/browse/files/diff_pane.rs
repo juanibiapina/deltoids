@@ -18,7 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use deltoids::render_tui::{self, pane_block_with_title_line, pane_border_color, rgb_to_color};
-use deltoids::{ChangeLayout, Hunk, LineKind, Theme, git};
+use deltoids::{Hunk, LineKind, Theme, git};
 
 use deltoids::parse::FileDiff;
 use jiff::Timestamp;
@@ -30,7 +30,7 @@ use crate::cli::browse::diff_cursor::{
     Cursor, DiffRow, LinePlace, Opens, Step, keep_visible, restore_cursor, select_row, step_cursor,
 };
 use crate::cli::browse::diff_scrollbar;
-use crate::cli::browse::mode::{DrawBudget, layout_label};
+use crate::cli::browse::mode::DrawBudget;
 use crate::cli::browse::panel::draw_filter_flag;
 use crate::cli::browse::text::{display_width, wrap_text};
 use crate::sidebar::{
@@ -45,14 +45,13 @@ use super::stage_panes::{PaneSpec, PaneTitle};
 pub(super) const SCROLL_STEP_SMALL: usize = 1;
 pub(super) const SCROLL_STEP_LARGE: usize = 3;
 
-/// The identity every retained block shares: its render `width`, the
-/// active change `layout`, and the selected `syntax_theme` (a `&'static`
-/// registry name). A change to any of them invalidates the whole store,
-/// since each alters every block's rendered rows.
+/// The identity every retained block shares: its render `width` and the
+/// selected `syntax_theme` (a `&'static` registry name). A change to
+/// either invalidates the whole store, since each alters every block's
+/// rendered rows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CacheEpoch {
     pub(super) width: usize,
-    pub(super) layout: ChangeLayout,
     pub(super) syntax_theme: &'static str,
 }
 
@@ -123,7 +122,6 @@ pub(super) fn render_file_block(
     body: &FileBody,
     numbering: Numbering,
     width: usize,
-    layout: ChangeLayout,
     theme: &Theme,
     keep_going: &impl Fn() -> bool,
     publish: &mut dyn FnMut(Vec<DiffRow>),
@@ -131,7 +129,6 @@ pub(super) fn render_file_block(
     let mut render = FileRender {
         width,
         numbering,
-        layout,
         theme,
         keep_going,
         preview: FilePreview {
@@ -218,7 +215,6 @@ pub(super) fn render_file_block(
 struct FileRender<'a> {
     width: usize,
     numbering: Numbering,
-    layout: ChangeLayout,
     theme: &'a Theme,
     keep_going: &'a dyn Fn() -> bool,
     preview: FilePreview<'a>,
@@ -253,7 +249,6 @@ impl FileRender<'_> {
                     hunk,
                     diff.highlight(),
                     self.width,
-                    self.layout,
                     self.theme,
                     &keep_going,
                     callback,
@@ -263,7 +258,6 @@ impl FileRender<'_> {
                     hunk,
                     diff.highlight(),
                     self.width,
-                    self.layout,
                     self.theme,
                     &keep_going,
                     callback,
@@ -733,8 +727,6 @@ pub(super) struct DiffPane {
     landing: bool,
     /// True when the window holds one file whose block is fully rendered.
     window_complete: bool,
-    /// The layout the last window was assembled with; shown in the footer.
-    current_layout: ChangeLayout,
     /// What the no-files render shows: the clean state or a build error.
     empty_state: EmptyPane,
     /// The commits whose `git show` headers top the window, in order.
@@ -765,7 +757,6 @@ impl DiffPane {
             reload_top: None,
             landing: true,
             window_complete: false,
-            current_layout: ChangeLayout::Grouped,
             empty_state: EmptyPane::NoChanges,
             header: Vec::new(),
             hide_low: false,
@@ -863,18 +854,11 @@ impl DiffPane {
         self.empty_state = EmptyPane::NoChanges;
     }
 
-    /// Record what this draw shows: title, emptiness, width, layout, and
+    /// Record what this draw shows: title, emptiness, width, and
     /// whether low-value hunks are collapsed.
-    fn adopt_spec(
-        &mut self,
-        spec: &PaneSpec<'_>,
-        width: usize,
-        layout: ChangeLayout,
-        hide_low: bool,
-    ) {
+    fn adopt_spec(&mut self, spec: &PaneSpec<'_>, width: usize, hide_low: bool) {
         self.hide_low = hide_low;
         debug_assert_eq!(spec.column, self.column);
-        self.current_layout = layout;
         self.cached_width = width;
         self.title = spec.title;
         self.empty = spec.order.is_empty() && self.header.is_empty();
@@ -892,13 +876,12 @@ impl DiffPane {
         spec: &PaneSpec<'_>,
         model: &Model,
         width: usize,
-        layout: ChangeLayout,
         theme: &Theme,
         _budget: DrawBudget,
         comments: &CommentStore,
         labels: &HunkLabels<'_>,
     ) {
-        self.adopt_spec(spec, width, layout, labels.hide_low);
+        self.adopt_spec(spec, width, labels.hide_low);
         let display_range = spec.range.clone();
         let mut key = WindowKey {
             files: display_range
@@ -907,7 +890,6 @@ impl DiffPane {
             header: self.header.iter().map(|commit| commit.id.clone()).collect(),
             epoch: CacheEpoch {
                 width,
-                layout,
                 syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
             },
             blocks: self.cache.revision,
@@ -1007,14 +989,12 @@ impl DiffPane {
         selection: &overview::Selection<'_>,
         summary: bool,
         width: usize,
-        layout: ChangeLayout,
         theme: &Theme,
         labels: &HunkLabels<'_>,
     ) {
-        self.adopt_spec(spec, width, layout, labels.hide_low);
+        self.adopt_spec(spec, width, labels.hide_low);
         let epoch = CacheEpoch {
             width,
-            layout,
             syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
         };
         self.cache
@@ -1519,7 +1499,6 @@ impl DiffPane {
             return None;
         }
         let pos = self.cursor.scroll.min(span.saturating_sub(1)) + 1;
-        let layout = layout_label(self.current_layout);
         let progress = if self.cache.visible_pending()
             || self.definitions.visible_pending()
             || self.outline.visible_pending()
@@ -1529,7 +1508,7 @@ impl DiffPane {
             ""
         };
         Some(format!(
-            " line {pos} of {span}{progress}  \u{00b7}  {layout}  \u{00b7}  ? help "
+            " line {pos} of {span}{progress}  \u{00b7}  ? help "
         ))
     }
 }
@@ -1588,10 +1567,9 @@ mod tests {
     use crate::cli::browse::files::model::ResolvedFile;
     use crate::cli::browse::files::test_support::*;
 
-    fn grouped_epoch(width: usize) -> CacheEpoch {
+    fn cache_epoch(width: usize) -> CacheEpoch {
         CacheEpoch {
             width,
-            layout: ChangeLayout::Grouped,
             // Match the theme the render path keys on (test_support `theme()`),
             // so a render-produced epoch compares equal to this helper's.
             syntax_theme: deltoids::theme_name_key(&theme().syntax_theme_name),
@@ -1741,15 +1719,7 @@ mod tests {
             after: format!("context\n{}\n", "new ".repeat(20)),
         }];
         let mut state = make_state(&resolved);
-        let interleaved = ChangeLayout::Interleaved {
-            group: std::num::NonZeroUsize::new(1).unwrap(),
-        };
-        for (mode, layout) in [
-            (ColorMode::Dark, ChangeLayout::Grouped),
-            (ColorMode::Light, ChangeLayout::Grouped),
-            (ColorMode::Dark, interleaved),
-            (ColorMode::Light, interleaved),
-        ] {
+        for mode in [ColorMode::Dark, ColorMode::Light] {
             let theme = Theme::for_mode(mode);
             let mut terminal = Terminal::new(TestBackend::new(60, 40)).unwrap();
             assemble_unstaged(
@@ -1757,7 +1727,6 @@ mod tests {
                 &state.model,
                 &state.sidebar,
                 27,
-                layout,
                 &theme,
             );
             wait_for_render(&mut state.unstaged);
@@ -1767,7 +1736,6 @@ mod tests {
                         frame,
                         Rect::new(0, 0, 30, 40),
                         Rect::new(30, 0, 30, 40),
-                        layout,
                         &theme,
                         DrawBudget::Full,
                     );
@@ -1873,7 +1841,7 @@ mod tests {
     #[test]
     fn diff_cache_retains_blocks_across_selection_changes() {
         let mut cache = DiffCache::default();
-        let e = grouped_epoch(80);
+        let e = cache_epoch(80);
         cache.insert(e, 0, vec![DiffRow::plain(Line::from("a"))]);
         cache.insert(
             e,
@@ -1894,36 +1862,15 @@ mod tests {
     #[test]
     fn diff_cache_width_change_clears_store() {
         let mut cache = DiffCache::default();
-        cache.insert(grouped_epoch(80), 0, vec![DiffRow::plain(Line::from("a"))]);
-        assert!(cache.contains(grouped_epoch(80), 0));
+        cache.insert(cache_epoch(80), 0, vec![DiffRow::plain(Line::from("a"))]);
+        assert!(cache.contains(cache_epoch(80), 0));
 
         // A different width drops the stale block and rebuilds at the new width.
-        assert!(!cache.contains(grouped_epoch(79), 0));
-        assert!(cache.get(grouped_epoch(79), 0).is_none());
-        cache.insert(grouped_epoch(79), 1, vec![DiffRow::plain(Line::from("b"))]);
-        assert!(!cache.contains(grouped_epoch(79), 0));
-        assert!(cache.contains(grouped_epoch(79), 1));
-    }
-
-    #[test]
-    fn diff_cache_layout_change_clears_store() {
-        let mut cache = DiffCache::default();
-        cache.insert(grouped_epoch(80), 0, vec![DiffRow::plain(Line::from("a"))]);
-        assert!(cache.contains(grouped_epoch(80), 0));
-
-        // Same width, different layout: the stale block is dropped and
-        // rebuilt under the new layout epoch.
-        let interleaved = CacheEpoch {
-            width: 80,
-            layout: ChangeLayout::Interleaved {
-                group: std::num::NonZeroUsize::new(1).unwrap(),
-            },
-            syntax_theme: "",
-        };
-        assert!(!cache.contains(interleaved, 0));
-        cache.insert(interleaved, 1, vec![DiffRow::plain(Line::from("b"))]);
-        assert!(!cache.contains(interleaved, 0));
-        assert!(cache.contains(interleaved, 1));
+        assert!(!cache.contains(cache_epoch(79), 0));
+        assert!(cache.get(cache_epoch(79), 0).is_none());
+        cache.insert(cache_epoch(79), 1, vec![DiffRow::plain(Line::from("b"))]);
+        assert!(!cache.contains(cache_epoch(79), 0));
+        assert!(cache.contains(cache_epoch(79), 1));
     }
 
     #[test]
@@ -1931,7 +1878,6 @@ mod tests {
         let mut cache = DiffCache::default();
         let mono = CacheEpoch {
             width: 80,
-            layout: ChangeLayout::Grouped,
             syntax_theme: "Monokai Extended",
         };
         let tokyo = CacheEpoch {
@@ -2106,7 +2052,7 @@ mod tests {
 
         // The test helper waits for completion before reading retained rows.
         let _ = state.visible_diff_window(DrawBudget::Full);
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 0));
     }
 
     #[test]
@@ -2138,7 +2084,7 @@ mod tests {
         wait_for_render(&mut state.unstaged);
         let ready = state.visible_diff_window(DrawBudget::Fast);
         assert!(ready.iter().any(|line| line_text(line).contains("world")));
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 0));
     }
 
     #[test]

@@ -56,7 +56,6 @@ impl Mode for RecordingMode {
         _frame: &mut ratatui::Frame<'_>,
         _left: Rect,
         _right: Rect,
-        _layout: deltoids::ChangeLayout,
         _theme: &Theme,
         _budget: DrawBudget,
     ) {
@@ -322,39 +321,6 @@ fn resize_keys_change_sidebar_width() {
     assert!(s.sidebar_pref.effective(200) > initial);
     s.handle_key(&mut mode, KeyCode::Char('<'), 4);
     assert_eq!(s.sidebar_pref.effective(200), initial);
-}
-
-#[test]
-fn backslash_toggles_grouped_and_interleaved() {
-    use deltoids::ChangeLayout;
-    use std::num::NonZeroUsize;
-    let interleaved = ChangeLayout::Interleaved {
-        group: NonZeroUsize::new(1).unwrap(),
-    };
-    let (mut mode, _) = one_mode();
-    let mut s = shell();
-    // Starts grouped, toggles to interleaved, and back.
-    assert_eq!(s.change_layout, ChangeLayout::Grouped);
-    for expected in [interleaved, ChangeLayout::Grouped] {
-        s.handle_key(&mut mode, KeyCode::Char('\\'), 4);
-        assert_eq!(s.change_layout, expected);
-    }
-}
-
-#[test]
-fn backslash_forces_a_full_frame_so_scroll_survives() {
-    // A layout toggle clears the diff cache; the next frame must be Full
-    // (not a Fast placeholder that would clamp the saved scroll to the top).
-    let (mut mode, _) = one_mode();
-    let mut s = shell();
-    // Simulate a streaming frame: input just arrived, so the budget would
-    // otherwise be Fast.
-    s.note_input(false);
-    s.handle_key(&mut mode, KeyCode::Char('\\'), 4);
-    assert_eq!(s.take_draw_budget(), DrawBudget::Full);
-    // The flag is one-shot: the following frame falls back to the streaming
-    // heuristic (still Fast until input settles).
-    assert_eq!(s.take_draw_budget(), DrawBudget::Fast);
 }
 
 #[test]

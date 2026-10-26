@@ -269,7 +269,6 @@ fn staged_d_opens_a_cancellable_menu_and_enter_discards_the_last_file() {
                 frame,
                 Rect::new(0, 0, 30, 25),
                 Rect::new(30, 0, 80, 25),
-                ChangeLayout::Grouped,
                 &theme(),
                 DrawBudget::Full,
             )
@@ -657,7 +656,6 @@ fn screen(mode: &mut FilesMode, budget: DrawBudget) -> Vec<String> {
             frame,
             Rect::new(0, 0, 30, 24),
             Rect::new(30, 0, 91, 24),
-            deltoids::ChangeLayout::Grouped,
             &theme(),
             budget,
         );

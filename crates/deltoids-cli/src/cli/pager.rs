@@ -319,14 +319,7 @@ fn render(resolved: &ResolvedDiff<'_>, width: usize, fill: BgFill, theme: &Theme
             // Blank line before each hunk
             output.push('\n');
 
-            let hunk_lines = render_hunk(
-                hunk,
-                diff.highlight(),
-                width,
-                fill,
-                deltoids::ChangeLayout::Grouped,
-                theme,
-            );
+            let hunk_lines = render_hunk(hunk, diff.highlight(), width, fill, theme);
             for line in hunk_lines {
                 output.push_str(&line);
                 output.push('\n');

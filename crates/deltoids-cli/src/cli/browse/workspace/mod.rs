@@ -42,8 +42,8 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
+use deltoids::Theme;
 use deltoids::render_tui::{pane_block_with_title_line, pane_border_color, rgb_to_color};
-use deltoids::{ChangeLayout, Theme};
 
 use super::files::{FilesMode, SnapshotPanel};
 use super::history::History;
@@ -298,7 +298,6 @@ impl Mode for Workspace {
         frame: &mut Frame<'_>,
         left: Rect,
         right: Rect,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
@@ -311,7 +310,7 @@ impl Mode for Workspace {
             None => draw_no_repository(frame, left, title, !main_focused, theme),
         }
         match self.panel(current) {
-            Some(panel) => panel.draw_main(frame, right, main_focused, layout, theme, budget),
+            Some(panel) => panel.draw_main(frame, right, main_focused, theme, budget),
             None => {
                 let color = pane_border_color(main_focused, theme);
                 let title = panel_title(color, "Log", theme);

@@ -44,8 +44,8 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
+use deltoids::Theme;
 use deltoids::render_tui::{pane_block, pane_block_with_title_line, rgb_to_color};
-use deltoids::{ChangeLayout, Theme};
 
 mod clipboard;
 mod command;
@@ -183,7 +183,6 @@ fn draw_frame(
     theme: &Theme,
 ) -> Result<Viewport, String> {
     let pref = shell.sidebar_pref;
-    let layout = shell.change_layout;
     // Until the mode is built, draw a loading frame so the UI responds
     // while the (possibly slow) build runs.
     let building = !shell.built;
@@ -205,7 +204,7 @@ fn draw_frame(
             if building {
                 draw_loading(frame, cols[0], cols[1], theme);
             } else {
-                mode.draw(frame, cols[0], cols[1], layout, theme, budget);
+                mode.draw(frame, cols[0], cols[1], theme, budget);
             }
             if let Some(help) = help {
                 let commands: Vec<_> = commands
@@ -307,10 +306,7 @@ struct Shell {
     /// `syntax_theme_name`). Seeds the picker's initial cursor and marks the
     /// active row; the `run()` loop keeps the shared `Theme` in lockstep.
     syntax_theme: String,
-    /// Current diff change-layout. Cycled with `\`.
-    change_layout: ChangeLayout,
-    /// One-shot: force the next frame to draw `Full` (set by a layout
-    /// toggle so the diff rebuilds without a scroll-resetting placeholder).
+    /// One-shot: force the next frame to draw `Full`.
     force_full: bool,
     /// Last-drawn left-column rect, for divider hit-testing.
     left_rect: Rect,
@@ -354,7 +350,6 @@ impl Shell {
             help: None,
             theme_picker: None,
             syntax_theme,
-            change_layout: ChangeLayout::Grouped,
             force_full: false,
             left_rect: Rect::default(),
             receiver: None,
@@ -487,9 +482,7 @@ impl Shell {
     /// defer expensive rendering.
     ///
     /// A one-shot `force_full` overrides the streaming heuristic for the
-    /// next frame and is consumed here. A layout toggle sets it so the diff
-    /// rebuilds fully at once instead of flashing `Fast` placeholders (whose
-    /// short window would clamp the saved scroll to the top).
+    /// next frame and is consumed here.
     fn take_draw_budget(&mut self) -> DrawBudget {
         self.repaint = false;
         if std::mem::take(&mut self.force_full) || self.input_idle {
@@ -662,15 +655,6 @@ impl Shell {
                 self.sidebar_pref.narrow();
                 AppCommand::Continue
             }
-            // `\` cycles the diff change-layout. The cache
-            // keys on layout, so the next draw rebuilds.
-            KeyCode::Char('\\') => {
-                self.change_layout = next_layout(self.change_layout);
-                // Rebuild fully next frame so the diff keeps its scroll
-                // position instead of snapping to the top.
-                self.force_full = true;
-                AppCommand::Continue
-            }
             key if mode.reserves_key(key) => mode.handle_key_event(event, height),
             // Custom commands take priority over unreserved mode keys (but not
             // over the shell globals above). A bound key with a selectable
@@ -831,18 +815,6 @@ fn draw_loading(frame: &mut ratatui::Frame<'_>, left: Rect, right: Rect, theme: 
     let (title, _) = panel::tab_strip(border, &["Loading".to_string()], 0, theme);
     frame.render_widget(pane_block_with_title_line(title, border, None), left);
     frame.render_widget(loading(pane_block("─Diff─", border)), right);
-}
-
-/// Toggle the diff change-layout: `Grouped ⇆ interleaved`. Interleaved uses
-/// a group size of 1 (each removed line next to its replacement).
-fn next_layout(layout: ChangeLayout) -> ChangeLayout {
-    use std::num::NonZeroUsize;
-    match layout {
-        ChangeLayout::Grouped => ChangeLayout::Interleaved {
-            group: NonZeroUsize::new(1).expect("1 is non-zero"),
-        },
-        ChangeLayout::Interleaved { .. } => ChangeLayout::Grouped,
-    }
 }
 
 /// A key-press of `<` or `>` (the sidebar-resize bindings).

@@ -20,7 +20,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use deltoids::render_tui::{pane_block_with_title_line, pane_border_color, rgb_to_color};
-use deltoids::{ChangeLayout, Theme, git};
+use deltoids::{Theme, git};
 
 use super::model::{self, Model};
 use super::reload::Patches;
@@ -275,14 +275,13 @@ impl Panel for SnapshotPanel {
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
         self.diff_width = diff_scrollbar::body_area(area).width as usize;
         self.adopt(theme);
         match self.view() {
-            Some(view) => view.draw_main(frame, area, focused, layout, theme, budget),
+            Some(view) => view.draw_main(frame, area, focused, theme, budget),
             None => {
                 let title = panel_title(pane_border_color(focused, theme), "Diff", theme);
                 self.draw_message(frame, area, title, focused, theme);

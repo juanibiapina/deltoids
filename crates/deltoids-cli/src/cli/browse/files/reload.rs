@@ -315,14 +315,7 @@ mod tests {
 
         assert_eq!(selected_path(&state, &m2).as_deref(), Some("b.txt"));
         // The diff pane is filtered to the restored file and snapped to its top.
-        assemble_unstaged(
-            &mut state.unstaged,
-            &m2,
-            &state.sidebar,
-            80,
-            deltoids::ChangeLayout::Grouped,
-            &theme(),
-        );
+        assemble_unstaged(&mut state.unstaged, &m2, &state.sidebar, 80, &theme());
         let area = ratatui::layout::Rect::new(0, 0, 80, 20);
         let shown = state.unstaged.current_file(&m2, area);
         assert_eq!(shown, m2.index_of("b.txt"));
@@ -371,14 +364,7 @@ mod tests {
         );
 
         assert!(state.sidebar.display_order().is_empty());
-        assemble_unstaged(
-            &mut state.unstaged,
-            &empty,
-            &state.sidebar,
-            80,
-            deltoids::ChangeLayout::Grouped,
-            &theme(),
-        );
+        assemble_unstaged(&mut state.unstaged, &empty, &state.sidebar, 80, &theme());
         assert!(state.unstaged.rows().is_empty());
         assert_eq!(state.unstaged.window_rows(), 0);
         assert_eq!(sidebar_footer(&state.sidebar, &theme()), None);
@@ -514,7 +500,6 @@ mod tests {
             &state.model,
             &state.sidebar,
             80,
-            deltoids::ChangeLayout::Grouped,
             &theme(),
         );
     }
@@ -527,7 +512,6 @@ mod tests {
                 &state.model,
                 &state.sidebar,
                 80,
-                deltoids::ChangeLayout::Grouped,
                 &theme(),
             );
             wait_for_render(&mut state.unstaged);
@@ -537,7 +521,6 @@ mod tests {
             &state.model,
             &state.sidebar,
             80,
-            deltoids::ChangeLayout::Grouped,
             &theme(),
         );
     }

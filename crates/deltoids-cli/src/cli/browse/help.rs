@@ -29,7 +29,6 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         rows: &[
             ("?", "toggle this help"),
             ("t", "pick syntax theme"),
-            ("\\", "cycle diff layout (grouped / interleaved)"),
             ("< / >", "narrow / widen sidebar"),
             ("q", "quit"),
         ],

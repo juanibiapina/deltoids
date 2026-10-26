@@ -34,7 +34,7 @@ use deltoids::render_tui::{
     pane_block_with_title_line, pane_border_color, pane_inner_height, render_pane_scrollbar,
     rgb_to_color,
 };
-use deltoids::{ChangeLayout, Theme, git};
+use deltoids::{Theme, git};
 
 use super::double_click::DoubleClick;
 use super::files::{Snapshot, SnapshotPanel};
@@ -427,7 +427,6 @@ impl History {
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
@@ -438,7 +437,7 @@ impl History {
         }
         let selected = self.selected_commit().is_some();
         if let Some(preview) = self.preview() {
-            preview.draw_main(frame, area, focused, layout, theme, budget);
+            preview.draw_main(frame, area, focused, theme, budget);
             return;
         }
         let color = pane_border_color(focused, theme);
@@ -527,7 +526,6 @@ impl Panel for History {
         frame: &mut Frame<'_>,
         area: Rect,
         focused: bool,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
@@ -537,7 +535,7 @@ impl Panel for History {
                 self.draw_branch_log(frame, area, focused, theme);
             }
             Screen::Branches | Screen::Commits => {
-                self.draw_commit_diff(frame, area, focused, layout, theme, budget);
+                self.draw_commit_diff(frame, area, focused, theme, budget);
             }
         }
     }

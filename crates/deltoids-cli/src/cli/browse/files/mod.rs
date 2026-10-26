@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use deltoids::{ChangeLayout, Diff, LineKind, Theme, git};
+use deltoids::{Diff, LineKind, Theme, git};
 
 use crate::cli::browse::scroll::{ScrollDir, ScrollKind, WheelScroll};
 use crate::sidebar::{Root, Sidebar, display_path};
@@ -272,14 +272,13 @@ impl FilesMode {
         &mut self,
         frame: &mut ratatui::Frame<'_>,
         right: Rect,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
         focused: bool,
     ) {
         self.diff_rect = right;
         let width = super::diff_scrollbar::body_area(right).width as usize;
-        self.assemble_shown(width, layout, theme, budget);
+        self.assemble_shown(width, theme, budget);
         let spec = self.panes.view(self.selection(), self.column);
         let shown_files: Vec<usize> = spec
             .range
@@ -578,13 +577,7 @@ impl FilesMode {
 
     /// Assemble the shown pane for this frame: a summary, a file's
     /// definitions, or the selection's diffs.
-    fn assemble_shown(
-        &mut self,
-        width: usize,
-        layout: ChangeLayout,
-        theme: &Theme,
-        budget: DrawBudget,
-    ) {
+    fn assemble_shown(&mut self, width: usize, theme: &Theme, budget: DrawBudget) {
         self.sync_header();
         let shown = self.shown_view();
         let spec = self.panes.view(self.selection(), self.column);
@@ -615,26 +608,15 @@ impl FilesMode {
         match &shown {
             Shown::Summary(directory) => {
                 let selection = summary(directory);
-                pane.assemble_definitions(
-                    &spec, model, &selection, true, width, layout, theme, &labels,
-                );
+                pane.assemble_definitions(&spec, model, &selection, true, width, theme, &labels);
             }
             Shown::Definitions => {
                 let selection = summary("");
-                pane.assemble_definitions(
-                    &spec, model, &selection, false, width, layout, theme, &labels,
-                );
+                pane.assemble_definitions(&spec, model, &selection, false, width, theme, &labels);
             }
-            Shown::Diffs => pane.assemble_window(
-                &spec,
-                model,
-                width,
-                layout,
-                theme,
-                budget,
-                &self.comments,
-                &labels,
-            ),
+            Shown::Diffs => {
+                pane.assemble_window(&spec, model, width, theme, budget, &self.comments, &labels)
+            }
         }
     }
 
@@ -742,13 +724,7 @@ impl FilesMode {
         }
         loop {
             let width = self.pane(column).cached_width;
-            self.assemble(
-                column,
-                width,
-                ChangeLayout::Grouped,
-                &Theme::default(),
-                budget,
-            );
+            self.assemble(column, width, &Theme::default(), budget);
             let pane = self.pane_mut(column);
             if budget != DrawBudget::Full || !pane.pending() {
                 return pane.rows().iter().map(|row| row.line.clone()).collect();
@@ -759,18 +735,11 @@ impl FilesMode {
 
     /// Assemble `column`'s pane, as a draw does, when the selection shows it.
     #[cfg(test)]
-    fn assemble(
-        &mut self,
-        column: Column,
-        width: usize,
-        layout: ChangeLayout,
-        theme: &Theme,
-        budget: DrawBudget,
-    ) {
+    fn assemble(&mut self, column: Column, width: usize, theme: &Theme, budget: DrawBudget) {
         if self.shown() != column {
             return;
         }
-        self.assemble_shown(width, layout, theme, budget);
+        self.assemble_shown(width, theme, budget);
     }
 
     /// Assemble the unstaged (or only) diff window.
@@ -1499,7 +1468,6 @@ impl Mode for FilesMode {
         frame: &mut ratatui::Frame<'_>,
         left: Rect,
         right: Rect,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
@@ -1508,7 +1476,7 @@ impl Mode for FilesMode {
         let color = pane_border_color(sidebar_focused, theme);
         let (title, _) = panel::tab_strip(color, std::slice::from_ref(&self.label), 0, theme);
         panel::Panel::draw_side(self, frame, left, title, sidebar_focused, theme);
-        self.draw_diff(frame, right, layout, theme, budget, diff_focused);
+        self.draw_diff(frame, right, theme, budget, diff_focused);
     }
 
     fn handle_key(&mut self, key: KeyCode, height: usize) -> AppCommand {
@@ -1673,11 +1641,10 @@ impl panel::Panel for FilesMode {
         frame: &mut ratatui::Frame<'_>,
         area: Rect,
         focused: bool,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     ) {
-        self.draw_diff(frame, area, layout, theme, budget, focused);
+        self.draw_diff(frame, area, theme, budget, focused);
     }
 
     fn focus_main(&mut self, main: bool) {
@@ -1815,25 +1782,10 @@ mod tests {
         let anchor = state.unstaged.cursor_anchor().cloned().unwrap();
         let mut next_theme = theme();
         next_theme.syntax_theme_name = "TokyoNight".into();
-        let next_layout = ChangeLayout::Interleaved {
-            group: std::num::NonZeroUsize::new(1).unwrap(),
-        };
-        state.assemble(
-            Column::Unstaged,
-            8,
-            next_layout,
-            &next_theme,
-            DrawBudget::Fast,
-        );
+        state.assemble(Column::Unstaged, 8, &next_theme, DrawBudget::Fast);
         assert_eq!(state.unstaged.cursor_anchor(), Some(&anchor));
         wait_for_render(&mut state.unstaged);
-        state.assemble(
-            Column::Unstaged,
-            8,
-            next_layout,
-            &next_theme,
-            DrawBudget::Fast,
-        );
+        state.assemble(Column::Unstaged, 8, &next_theme, DrawBudget::Fast);
         assert_eq!(state.unstaged.cursor_anchor(), Some(&anchor));
     }
 
@@ -1853,7 +1805,7 @@ mod tests {
         state.unstaged.carry_over(&Default::default());
         state.visible_diff_window(DrawBudget::Fast);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !state.unstaged.cache.contains(grouped_epoch(80), 0) {
+        while !state.unstaged.cache.contains(cache_epoch(80), 0) {
             state.background(true);
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
@@ -1885,13 +1837,7 @@ mod tests {
         state.visible_diff_window(DrawBudget::Full);
         let ready = render_start.elapsed();
         let assemble = |state: &mut FilesMode| {
-            state.assemble(
-                Column::Unstaged,
-                80,
-                ChangeLayout::Grouped,
-                &Theme::default(),
-                DrawBudget::Fast,
-            );
+            state.assemble(Column::Unstaged, 80, &Theme::default(), DrawBudget::Fast);
         };
         state.unstaged.snap_to_top();
         let assemble_start = Instant::now();
@@ -1922,10 +1868,9 @@ mod tests {
         );
     }
 
-    fn grouped_epoch(width: usize) -> CacheEpoch {
+    fn cache_epoch(width: usize) -> CacheEpoch {
         CacheEpoch {
             width,
-            layout: ChangeLayout::Grouped,
             // Match the theme the render path keys on (test_support `theme()`).
             syntax_theme: deltoids::theme_name_key(&theme().syntax_theme_name),
         }
@@ -2091,21 +2036,9 @@ mod tests {
     /// Re-assemble the diff window, as a draw does.
     fn rebuild_window(state: &mut FilesMode) {
         let width = state.unstaged.cached_width;
-        state.assemble(
-            Column::Unstaged,
-            width,
-            ChangeLayout::Grouped,
-            &Theme::default(),
-            DrawBudget::Full,
-        );
+        state.assemble(Column::Unstaged, width, &Theme::default(), DrawBudget::Full);
         wait_for_render(&mut state.unstaged);
-        state.assemble(
-            Column::Unstaged,
-            width,
-            ChangeLayout::Grouped,
-            &Theme::default(),
-            DrawBudget::Full,
-        );
+        state.assemble(Column::Unstaged, width, &Theme::default(), DrawBudget::Full);
     }
 
     /// Save `text` at `anchor` through the same path the editor uses,
@@ -2287,8 +2220,8 @@ mod tests {
         // Showing every file warms both files' blocks.
         state.show_whole(true);
         rebuild_window(&mut state);
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 1));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 1));
 
         let anchor = CommentAnchor {
             path: "src/b.txt".to_string(),
@@ -2297,9 +2230,9 @@ mod tests {
         };
         note(&mut state, &anchor, "look here");
 
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 0));
         assert!(
-            state.unstaged.cache.contains(grouped_epoch(80), 1),
+            state.unstaged.cache.contains(cache_epoch(80), 1),
             "the commented file's render survives"
         );
         assert!(
@@ -2380,8 +2313,8 @@ mod tests {
         assert_eq!(state.status.as_deref(), Some("Cleared 1 comment"));
         assert!(state.comments.is_empty());
         // Comments are an overlay: clearing must not evict the diff cache.
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 0));
-        assert!(state.unstaged.cache.contains(grouped_epoch(80), 1));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 0));
+        assert!(state.unstaged.cache.contains(cache_epoch(80), 1));
         // The note is gone from screen after the overlay re-renders.
         rebuild_window(&mut state);
         assert!(
@@ -2584,13 +2517,7 @@ mod tests {
 
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        mode.assemble(
-            Column::Unstaged,
-            67,
-            ChangeLayout::Grouped,
-            &theme,
-            DrawBudget::Fast,
-        );
+        mode.assemble(Column::Unstaged, 67, &theme, DrawBudget::Fast);
         wait_for_render(&mut mode.unstaged);
         term.draw(|frame| {
             let area = frame.area();
@@ -2598,14 +2525,7 @@ mod tests {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(30), Constraint::Min(10)])
                 .split(area);
-            mode.draw(
-                frame,
-                cols[0],
-                cols[1],
-                ChangeLayout::Grouped,
-                &theme,
-                DrawBudget::Full,
-            );
+            mode.draw(frame, cols[0], cols[1], &theme, DrawBudget::Full);
         })
         .unwrap();
         term.backend()
@@ -2635,14 +2555,7 @@ mod tests {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(28), Constraint::Min(10)])
                 .split(area);
-            mode.draw(
-                f,
-                cols[0],
-                cols[1],
-                ChangeLayout::Grouped,
-                &theme,
-                DrawBudget::Full,
-            );
+            mode.draw(f, cols[0], cols[1], &theme, DrawBudget::Full);
         })
         .unwrap();
         let text: String = term

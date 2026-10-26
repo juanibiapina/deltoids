@@ -1,4 +1,3 @@
-mod change_layout;
 pub mod config;
 #[cfg(feature = "blob-resolve")]
 pub mod content;
@@ -23,7 +22,6 @@ mod symbols;
 pub mod symlink;
 mod syntax;
 
-pub use change_layout::{ChangeLayout, arrange_change};
 pub use config::{
     ColorMode, SyntaxAssets, TOKYO_NIGHT_THEME_NAME, Theme, theme_by_name, theme_name_key,
     theme_names,

@@ -17,7 +17,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use deltoids::{ChangeLayout, Theme};
+use deltoids::Theme;
 
 /// A request to run a custom command, bubbled up to the `run()` loop
 /// (which owns the `Terminal`). Carries the fully-expanded shell line and
@@ -59,19 +59,6 @@ pub(crate) enum DrawBudget {
     Fast,
 }
 
-/// Short human label for the current diff change-layout, shown in the Diff
-/// pane footer so the toggle's state (and when it wraps back to `grouped`)
-/// is visible.
-pub(crate) fn layout_label(layout: ChangeLayout) -> String {
-    match layout {
-        ChangeLayout::Grouped => "grouped".to_string(),
-        ChangeLayout::Interleaved { group } => match group.get() {
-            1 => "interleaved".to_string(),
-            n => format!("blocks of {n}"),
-        },
-    }
-}
-
 /// Pane sizes from the last drawn frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Viewport {
@@ -111,13 +98,12 @@ pub(crate) trait Mode {
         frame: &mut Frame<'_>,
         left: Rect,
         right: Rect,
-        layout: ChangeLayout,
         theme: &Theme,
         budget: DrawBudget,
     );
 
     /// Handle a key already stripped of the shell's global bindings
-    /// (quit, help, theme picker, sidebar resize, layout toggle).
+    /// (quit, help, theme picker, sidebar resize).
     /// `height` is the inner height of the panes.
     fn handle_key(&mut self, key: KeyCode, height: usize) -> AppCommand;
 

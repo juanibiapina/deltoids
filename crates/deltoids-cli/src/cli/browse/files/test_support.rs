@@ -30,7 +30,6 @@ pub(super) fn assemble_unstaged(
     model: &Model,
     sidebar: &Sidebar,
     width: usize,
-    layout: deltoids::ChangeLayout,
     theme: &Theme,
 ) {
     let order = sidebar.display_order();
@@ -45,7 +44,6 @@ pub(super) fn assemble_unstaged(
         &spec,
         model,
         width,
-        layout,
         theme,
         DrawBudget::Full,
         &CommentStore::default(),

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - TUI: `h` and `l`, and the Left and Right arrows, pick the previous and next symbol in the diff, instead of `b` and `w`. They no longer switch side panels; use `Tab` or `Shift+Tab`.
+- TUI: clicking a row in a summary or a file's definitions selects it. Double-click it, or press `Enter`, to open the diff there.
 
 ### Removed
 

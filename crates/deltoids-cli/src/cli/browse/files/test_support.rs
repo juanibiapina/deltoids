@@ -151,6 +151,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         file_definitions: false,
         summary_diffs: false,
         nav: super::navigate::Navigation::new(None, None),
+        diff_clicks: crate::cli::browse::double_click::DoubleClick::default(),
     };
     state.start_review();
     state

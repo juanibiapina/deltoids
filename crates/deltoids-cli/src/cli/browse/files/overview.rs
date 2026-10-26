@@ -310,17 +310,30 @@ mod tests {
         assert!(rows[logo + 1].contains("binary"), "{}", rows[logo + 1]);
     }
 
+    /// A left press on pane row `y`.
+    fn click(state: &mut FilesMode, y: usize) {
+        Mode::handle_mouse(
+            state,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
+            PANE_HEIGHT,
+        );
+    }
+
     #[test]
-    fn clicking_an_entry_opens_its_file() {
+    fn a_click_selects_an_entry_and_a_double_click_opens_its_file() {
         let mut state = on_src(make_state(&files()));
         let rows = pane(&mut state);
         let (y, _) = row_with(&rows, "M b.rs");
 
-        Mode::handle_mouse(
-            &mut state,
-            make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
-            PANE_HEIGHT,
-        );
+        click(&mut state, y);
+        assert!(state.sidebar.selected_directory_path().is_some());
+        let opens = state
+            .unstaged
+            .cursor_opens()
+            .map(|opens| opens.path.clone());
+        assert_eq!(opens.as_deref(), Some("src/b.rs"));
+
+        click(&mut state, y);
 
         assert_eq!(
             selected_path(&state, &state.model).as_deref(),
@@ -333,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_hunk_opens_its_file_at_that_hunk() {
+    fn double_clicking_a_hunk_opens_its_file_at_that_hunk() {
         let before: String = (1..=40).map(|n| format!("fn f{n}() {{}}\n")).collect();
         let after = before
             .replace("fn f3() {}", "fn f3() { three(); }")
@@ -342,11 +355,8 @@ mod tests {
         let rows = pane(&mut state);
         let (y, _) = row_with(&rows, "fn f30");
 
-        Mode::handle_mouse(
-            &mut state,
-            make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
-            PANE_HEIGHT,
-        );
+        click(&mut state, y);
+        click(&mut state, y);
         pane(&mut state);
 
         let anchor = state.unstaged.cursor_anchor().expect("cursor on a line");

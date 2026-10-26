@@ -34,7 +34,6 @@ use super::model::{Column, FileBody, Model};
 use super::{FilesMode, Focus};
 use crate::cli::browse::comments::{CommentAnchor, LineSide};
 use crate::cli::browse::diff_scrollbar;
-use crate::cli::browse::double_click::DoubleClick;
 use crate::cli::browse::syntax_badge::SyntaxBadge;
 use crate::cli::browse::text::display_width;
 use crate::lsp::{FileEvents, Found, Lsp, Query, State, Symbol, Ticket};
@@ -70,7 +69,6 @@ pub(super) struct Navigation {
     /// Whether the last tick was busy, so the tick that ends the work
     /// draws the spinner away.
     busy: bool,
-    double_click: DoubleClick,
 }
 
 /// A file as last read from disk.
@@ -180,7 +178,6 @@ impl Navigation {
             started: Instant::now(),
             frame: 0,
             busy: false,
-            double_click: DoubleClick::default(),
         }
     }
 
@@ -358,17 +355,26 @@ pub(super) fn mouse(state: &mut FilesMode, mouse: &MouseEvent) -> bool {
     {
         state.focus = Focus::Diff;
         let row = row_at(state, mouse);
-        click(state, mouse, row, true);
+        click(state, mouse, row, Press::Right);
         return true;
     }
     false
 }
 
 /// A left press on the diff: select the line and the symbol under the
-/// pointer; a double click asks for the definition.
-pub(super) fn left_click(state: &mut FilesMode, mouse: &MouseEvent) {
+/// pointer; a double click (`double`) asks for the definition.
+pub(super) fn left_click(state: &mut FilesMode, mouse: &MouseEvent, double: bool) {
     let row = row_at(state, mouse);
-    click(state, mouse, row, false);
+    let press = if double { Press::Double } else { Press::Left };
+    click(state, mouse, row, press);
+}
+
+/// Which press [`click`] handles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Press {
+    Left,
+    Double,
+    Right,
 }
 
 /// The diff window row under the pointer.
@@ -505,8 +511,7 @@ fn list_click(state: &mut FilesMode, mouse: &MouseEvent) {
 /// A press on the diff pane at window row `row`, screen column `column`:
 /// select the line and the symbol under the pointer. A double click asks
 /// for the definition and a right click for the callers.
-fn click(state: &mut FilesMode, mouse: &MouseEvent, row: usize, right: bool) {
-    let double = !right && state.nav.double_click.press(mouse);
+fn click(state: &mut FilesMode, mouse: &MouseEvent, row: usize, press: Press) {
     cancel(state);
     let column = state.shown();
     let Some((first, anchor, offset)) = state
@@ -525,10 +530,10 @@ fn click(state: &mut FilesMode, mouse: &MouseEvent, row: usize, right: bool) {
             && let Some(index) = ranges.iter().position(|range| range.contains(&byte))
         {
             state.nav.picked = Some((anchor, index));
-            if double {
-                ask(state, Query::Definition);
-            } else if right {
-                ask(state, Query::Callers);
+            match press {
+                Press::Double => ask(state, Query::Definition),
+                Press::Right => ask(state, Query::Callers),
+                Press::Left => {}
             }
         }
     }

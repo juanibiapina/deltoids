@@ -54,6 +54,7 @@ use crate::sidebar::{Root, Sidebar, display_path};
 use super::comment_view::render_comment_editor;
 use super::comments::{CommentAnchor, CommentStore, reanchor, review_text};
 use super::diff_cursor::Opens;
+use super::double_click::DoubleClick;
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
 use super::panel;
 use super::vcs::{PendingDiscard, Vcs};
@@ -220,6 +221,8 @@ pub(super) struct FilesMode {
     summary_diffs: bool,
     /// Go to definition, callers, jumps, and visited files.
     nav: navigate::Navigation,
+    /// Tells a double click on the diff pane from two single ones.
+    diff_clicks: DoubleClick,
 }
 
 impl FilesMode {
@@ -446,6 +449,7 @@ impl FilesMode {
             file_definitions: false,
             summary_diffs: false,
             nav: navigate::Navigation::new(None, None),
+            diff_clicks: DoubleClick::default(),
         };
         mode.start_review();
         mode
@@ -1394,19 +1398,28 @@ fn handle_mouse(state: &mut FilesMode, mouse: MouseEvent, height: usize) -> AppC
     }
 }
 
-/// A left click on the diff pane. On an overview row it opens that file,
-/// at the row's hunk when it lists one. On a diff line it moves the
-/// cursor there; clicks on headers, spacers, wrapped continuations, and
-/// comment rows only focus the pane.
+/// A left click on the diff pane. On a summary or definitions row it
+/// moves the cursor there, and a double click opens the row, as `Enter`
+/// does. On a diff line it moves the cursor there; clicks on headers,
+/// spacers, wrapped continuations, and comment rows only focus the pane.
 fn left_click_diff(state: &mut FilesMode, mouse: &MouseEvent, height: usize) {
-    let pane = state.pane(state.shown());
+    let double = state.diff_clicks.press(mouse);
+    let column = state.shown();
+    let pane = state.pane(column);
     let content_y = mouse
         .row
         .saturating_sub(state.diff_rect.y)
         .saturating_sub(1) as usize;
-    match pane.opens_at(pane.cursor.scroll + content_y).cloned() {
-        Some(opens) => state.open(opens, height),
-        None => navigate::left_click(state, mouse),
+    let row = pane.cursor.scroll + content_y;
+    match pane.opens_at(row).cloned() {
+        Some(opens) => {
+            navigate::cancel(state);
+            state.pane_mut(column).select_row(row);
+            if double {
+                state.open(opens, height);
+            }
+        }
+        None => navigate::left_click(state, mouse, double),
     }
 }
 

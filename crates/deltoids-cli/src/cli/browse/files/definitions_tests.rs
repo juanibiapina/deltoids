@@ -270,11 +270,13 @@ fn opening_an_unchanged_definition_shows_it_in_the_diff() {
     let rows = pane(&mut state);
     let (y, _) = row_with(&rows, "fn f28(");
 
-    Mode::handle_mouse(
-        &mut state,
-        make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
-        PANE_HEIGHT,
-    );
+    for _ in 0..2 {
+        Mode::handle_mouse(
+            &mut state,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
+            PANE_HEIGHT,
+        );
+    }
 
     let rows = pane(&mut state);
     assert!(!rows[0].contains("definitions"), "{}", rows[0]);
@@ -290,29 +292,41 @@ fn opening_an_unchanged_definition_shows_it_in_the_diff() {
 }
 
 #[test]
-fn clicking_a_definition_opens_the_diff_at_its_change() {
+fn a_click_selects_a_definition_and_a_double_click_opens_the_diff_at_its_change() {
     let mut state = on_file(0);
     press(&mut state, KeyCode::Char('o'));
     let rows = pane(&mut state);
     let (y, _) = row_with(&rows, "+ pub fn clear");
+    let line = AFTER
+        .lines()
+        .position(|line| line.contains("pub fn clear"))
+        .unwrap()
+        + 1;
+    let click = |state: &mut FilesMode| {
+        Mode::handle_mouse(
+            state,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
+            PANE_HEIGHT,
+        );
+    };
 
-    Mode::handle_mouse(
-        &mut state,
-        make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
-        PANE_HEIGHT,
-    );
+    click(&mut state);
+    assert!(pane(&mut state)[0].contains("definitions"));
+    let opens = state
+        .unstaged
+        .cursor_opens()
+        .cloned()
+        .expect("a row to open");
+    let at = opens.at.expect("a line to open at");
+    assert_eq!((opens.path.as_str(), at.line), ("src/cart.rs", line));
 
+    click(&mut state);
     let rows = pane(&mut state);
     assert!(
         rows[0].contains("src/cart.rs") && !rows[0].contains("definitions"),
         "{}",
         rows[0]
     );
-    let line = AFTER
-        .lines()
-        .position(|line| line.contains("pub fn clear"))
-        .unwrap()
-        + 1;
     let anchor = state.unstaged.cursor_anchor().expect("cursor on a line");
     assert_eq!((anchor.path.as_str(), anchor.line), ("src/cart.rs", line));
 }

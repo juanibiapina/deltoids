@@ -552,6 +552,8 @@ pub(crate) struct TreeSitterConfig {
     /// Node kinds that, when they appear as siblings above a structure,
     /// attach to that structure for scope queries. Typically `comment`
     /// plus the language's attribute kinds (Rust `attribute_item`).
+    /// Rust inner doc comments (`//!`, `/*!`) never attach, though they
+    /// share the comment kinds: they document the enclosing module.
     /// Mirrors the role `decorator` plays for `skip_decorators`.
     pub(crate) leading_comment_kinds: &'static [&'static str],
     /// Whether a contained change with no enclosing structure may expand

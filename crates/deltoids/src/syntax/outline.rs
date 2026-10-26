@@ -14,7 +14,7 @@ use std::ops::Range;
 use rustc_hash::FxHasher;
 use tree_sitter::Node;
 
-use super::{Field, ParsedFile, collapse_whitespace, node_end_line};
+use super::{Field, ParsedFile, collapse_whitespace, is_inner_doc_comment, node_end_line};
 use crate::definitions::DefinitionKind;
 use crate::language::{LeafDefinition, Require};
 
@@ -228,7 +228,7 @@ impl Builder<'_> {
             return None;
         }
         parent.previous = None;
-        if !role.leading {
+        if !role.leading || is_inner_doc_comment(node) {
             return parent.run.take();
         }
         let line = parsed.lines.get(node.start_position().row);
@@ -587,7 +587,8 @@ struct Role {
     call_promoted: bool,
     function_body: bool,
     comment: bool,
-    /// A comment, attribute, or decorator that may sit above a definition.
+    /// A comment, attribute, or decorator that may sit above a definition
+    /// (Rust inner doc comments excepted, per node).
     leading: bool,
     import: bool,
     category: Option<DefinitionKind>,
@@ -942,7 +943,7 @@ fn trailing_comments(node: Node<'_>, roles: &Roles) -> Option<usize> {
     let mut cursor = node.walk();
     let mut tail = None;
     for child in node.children(&mut cursor) {
-        let comment = roles.of(child).leading;
+        let comment = roles.of(child).leading && !is_inner_doc_comment(child);
         tail = match (comment, tail) {
             (true, None) => Some(child.start_byte()),
             (true, kept) => kept,

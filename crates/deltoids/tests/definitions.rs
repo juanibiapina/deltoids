@@ -437,6 +437,18 @@ fn a_doc_comment_edit_is_docs_only() {
 }
 
 #[test]
+fn module_docs_above_a_function_are_top_level_comments() {
+    assert_eq!(
+        report(
+            "a.rs",
+            "//! Old.\n\nfn first() {\n    1;\n}\n",
+            "//! New.\n\nfn first() {\n    2;\n}\n"
+        ),
+        "modified  function  first  [body]  old 3-5  new 3-5  +1 -1\ntop-level  [comments]  at 1\n"
+    );
+}
+
+#[test]
 fn an_attribute_edit_is_attributes_only() {
     assert_eq!(
         report(

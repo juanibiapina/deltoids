@@ -208,7 +208,7 @@ fn a_definition_that_shows_its_members_stands_apart_from_its_neighbours() {
 
 #[test]
 fn a_change_outside_definitions_shows_where_it_is() {
-    let before = "//! Old docs.\n\nuse std::fmt;\n\nfn first() {\n    1;\n}\n\nfn last() {}\n";
+    let before = "//! Old docs.\n\nfn first() {\n    1;\n}\n\nfn last() {}\n";
     let file = ResolvedFile {
         file: file_diff("src/a.rs"),
         before: before.to_string(),

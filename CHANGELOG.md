@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: the language server mark in a file's header turns ready as soon as indexing ends, without waiting for a key press.
 - TUI: `r` lists where any symbol is used, including constants, enum variants, types, and fields. A function's callers include calls through a trait, such as calls in generic code, and leave out calls to other implementations.
 - TUI: fix commits and branch reviews that stayed on `Loading…` after a GitButler rebase left conflicted commits. A conflicted commit now shows its auto-resolved change, as GitButler does.
+- diff: Rust module docs (`//!`, `/*!`) directly above a function no longer count as that function's docs. An edit to them gets no function breadcrumb and no longer pulls the whole function into the hunk.
 
 ## [0.16.0] - 2026-10-21
 

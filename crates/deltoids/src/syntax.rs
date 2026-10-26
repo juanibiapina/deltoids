@@ -889,7 +889,7 @@ fn leading_adjusted_start(node: Node<'_>, leading_comment_kinds: &[&str]) -> usi
     let mut start = node.start_position().row;
     let mut prev = anchor.prev_named_sibling();
     while let Some(p) = prev {
-        if p.kind() == "decorator" || leading_comment_kinds.contains(&p.kind()) {
+        if p.kind() == "decorator" || is_leading_comment(p, leading_comment_kinds) {
             start = p.start_position().row;
             prev = p.prev_named_sibling();
         } else {
@@ -897,6 +897,19 @@ fn leading_adjusted_start(node: Node<'_>, leading_comment_kinds: &[&str]) -> usi
         }
     }
     start
+}
+
+/// Whether `node` is one of the leading-comment `kinds` and documents what
+/// follows it. Rust inner doc comments (`//!`, `/*!`) share the comment
+/// kinds but document the enclosing file or module.
+fn is_leading_comment(node: Node<'_>, kinds: &[&str]) -> bool {
+    kinds.contains(&node.kind()) && !is_inner_doc_comment(node)
+}
+
+/// Whether `node` is a Rust inner doc comment (`//!`, `/*!`): the grammar
+/// marks it with an `inner` field. No other grammar has that field.
+pub(crate) fn is_inner_doc_comment(node: Node<'_>) -> bool {
+    node.child_by_field_name("inner").is_some()
 }
 
 /// Climb to the outermost ancestor that starts on the same source row as
@@ -938,7 +951,7 @@ fn skip_leading_comments<'a>(node: Node<'a>, kinds: &[&str]) -> Node<'a> {
     let mut leading: Option<Node<'a>> = None;
     let mut cur = Some(node);
     while let Some(c) = cur {
-        if kinds.contains(&c.kind()) {
+        if is_leading_comment(c, kinds) {
             leading = Some(c);
         }
         cur = c.parent();
@@ -946,7 +959,7 @@ fn skip_leading_comments<'a>(node: Node<'a>, kinds: &[&str]) -> Node<'a> {
     let Some(mut l) = leading else {
         return node;
     };
-    while kinds.contains(&l.kind()) {
+    while is_leading_comment(l, kinds) {
         if let Some(sib) = l.next_named_sibling() {
             l = sib;
             continue;

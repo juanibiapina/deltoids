@@ -195,8 +195,8 @@ fn non_formatting_changes(before: &str, after: &str, path: &str) -> Option<Strin
         .collect();
     let top_wrong = diff
         .top_level
-        .as_ref()
-        .is_some_and(|top| format!("{:?}", top.aspects) != formatting);
+        .iter()
+        .any(|top| format!("{:?}", top.aspects) != formatting);
     (!wrong.is_empty() || top_wrong).then(|| format!("{wrong:?} top {:?}", diff.top_level))
 }
 
@@ -215,6 +215,9 @@ type Entry = (
 
 fn entries(diff: &DefinitionDiff) -> Vec<Entry> {
     fn walk(change: &DefinitionChange, out: &mut Vec<Entry>) {
+        if !change.is_changed() {
+            return;
+        }
         let place = |place: &Option<deltoids::Place>| {
             place
                 .as_ref()
@@ -228,6 +231,7 @@ fn entries(diff: &DefinitionDiff) -> Vec<Entry> {
             Status::Moved { from: Some(_) } => ("moved", Some(change.name.clone())),
             Status::Moved { from: None } => ("reordered", Some(change.name.clone())),
             Status::Container => ("container", Some(change.name.clone())),
+            Status::Unchanged => unreachable!("skipped above"),
         };
         let new_name = (!matches!(change.status, Status::Removed)).then(|| change.name.clone());
         out.push((
@@ -244,7 +248,7 @@ fn entries(diff: &DefinitionDiff) -> Vec<Entry> {
         }
     }
     let mut out = Vec::new();
-    for change in &diff.changes {
+    for change in &diff.definitions {
         walk(change, &mut out);
     }
     out.sort();
@@ -362,7 +366,7 @@ fn definition_violations(before: &str, after: &str, path: &str) -> Vec<String> {
             place.is_some_and(|(start, end, _)| (start..=end).contains(&line))
         })
     };
-    if forward.top_level.is_none() {
+    if forward.top_level.is_empty() {
         for line in removed
             .into_iter()
             .filter(|&line| has_content(before, line))
@@ -499,6 +503,32 @@ impl Rng {
             0
         } else {
             (self.0 % bound as u64) as usize
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn zz_debug_case() {
+    for case in discover_cases(&cases_root()) {
+        if !case.name.starts_with("042") && !case.name.starts_with("076") {
+            continue;
+        }
+        let original = case.original();
+        let lines: Vec<&str> = original.lines().collect();
+        for seed in [9u64, 11] {
+            let updated = mutate(&lines, seed);
+            let d = deltoids::DefinitionDiff::compute(&original, &updated, &case.diff_path());
+            println!(
+                "== {} seed {seed}\n--- original\n{original}--- updated\n{updated}--- top {:?}\n--- errors {:?}",
+                case.name,
+                d.as_ref().map(|d| &d.top_level),
+                d.as_ref().map(|d| d.has_errors)
+            );
+            println!(
+                "{:?}",
+                definition_violations(&original, &updated, &case.diff_path())
+            );
         }
     }
 }

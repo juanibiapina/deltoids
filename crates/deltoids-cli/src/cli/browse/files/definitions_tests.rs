@@ -18,6 +18,10 @@ impl Cart {
         self.items.iter().sum()
     }
 
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
     fn old_name(&self) -> usize {
         let count = self.items.len();
         let doubled = count * 2;
@@ -34,6 +38,10 @@ pub struct Cart {
 impl Cart {
     pub fn total(&self, discount: u32) -> u32 {
         self.items.iter().sum::<u32>() - discount
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
 
     fn new_name(&self) -> usize {
@@ -126,6 +134,159 @@ fn o_switches_a_file_between_its_diff_and_its_definitions() {
 
     press(&mut state, KeyCode::Char('o'));
     assert!(pane(&mut state).join("\n").contains("2;"));
+}
+
+#[test]
+fn the_definitions_view_shows_unchanged_definitions_around_the_changes() {
+    let mut state = on_file(0);
+    press(&mut state, KeyCode::Char('o'));
+    let rows = pane(&mut state);
+    let text = rows.join("\n");
+    let (cart, _) = row_with(&rows, "pub struct Cart");
+    let (total, _) = row_with(&rows, "~ pub fn total");
+    let (len, _) = row_with(&rows, "pub fn len(&self) -> usize");
+    let (clear, _) = row_with(&rows, "+ pub fn clear");
+    assert!(cart < total && total < len && len < clear, "{text}");
+    let row = state
+        .unstaged
+        .rows()
+        .iter()
+        .find(|row| line_text(&row.line).contains("pub fn len"))
+        .expect("a row for len");
+    let colors: std::collections::HashSet<_> =
+        row.line.spans.iter().map(|span| span.style.fg).collect();
+    assert!(
+        colors.len() > 3,
+        "highlighted like a change: {:?}",
+        row.line
+    );
+
+    assert!(state.sidebar.select_directory_path("src/", 20));
+    state.snap_diff_to_selected_file();
+    let summary = pane(&mut state).join("\n");
+    assert!(summary.contains("~ pub fn total"), "{summary}");
+    assert!(!summary.contains("pub fn len"), "{summary}");
+}
+
+#[test]
+fn a_definition_that_shows_its_members_stands_apart_from_its_neighbours() {
+    let before =
+        "fn first() {}\n\nimpl A {\n    fn a(&self) {\n        1;\n    }\n}\n\nfn last() {}\n";
+    let file = ResolvedFile {
+        file: file_diff("src/a.rs"),
+        before: before.to_string(),
+        after: before.replace("1;", "2;"),
+    };
+    let mut state = make_state(&[file]);
+    state.sidebar.select_file_index(0, 20);
+    state.snap_diff_to_selected_file();
+    press(&mut state, KeyCode::Char('o'));
+    let rows = pane(&mut state);
+    let (first, _) = row_with(&rows, "fn first()");
+    let shown: Vec<String> = rows[first..first + 6]
+        .iter()
+        .map(|row| {
+            let words: Vec<&str> = row
+                .split_whitespace()
+                .filter(|word| *word != "\u{2502}")
+                .collect();
+            words.join(" ")
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "fn first()",
+            "",
+            "impl A",
+            "~ fn a(&self) body +1 -1",
+            "",
+            "fn last()"
+        ]
+    );
+}
+
+#[test]
+fn a_change_outside_definitions_shows_where_it_is() {
+    let before = "//! Old docs.\n\nuse std::fmt;\n\nfn first() {\n    1;\n}\n\nfn last() {}\n";
+    let file = ResolvedFile {
+        file: file_diff("src/a.rs"),
+        before: before.to_string(),
+        after: before.replace("Old docs", "New docs").replace("1;", "2;"),
+    };
+    let mut state = make_state(&[file]);
+    state.sidebar.select_file_index(0, 20);
+    state.snap_diff_to_selected_file();
+    press(&mut state, KeyCode::Char('o'));
+    let rows = pane(&mut state);
+    let (top, row) = row_with(&rows, "~ top level  comments");
+    let (first, _) = row_with(&rows, "~ fn first()");
+    let (last, _) = row_with(&rows, "fn last()");
+    assert!(top < first && first < last, "{row}\n{}", rows.join("\n"));
+}
+
+/// A file of sixty functions, `f30` changed.
+fn sixty_functions() -> ResolvedFile {
+    let before: String = (0..60)
+        .map(|f| format!("fn f{f}(x: u32) -> u32 {{\n    x + {f}\n}}\n\n"))
+        .collect();
+    let after = before.replace("x + 30\n", "x * 30\n");
+    ResolvedFile {
+        file: file_diff("src/many.rs"),
+        before,
+        after,
+    }
+}
+
+#[test]
+fn a_large_level_shows_a_few_definitions_around_each_change() {
+    let mut state = make_state(&[sixty_functions()]);
+    state.sidebar.select_file_index(0, 20);
+    state.snap_diff_to_selected_file();
+    press(&mut state, KeyCode::Char('o'));
+    let rows = pane(&mut state);
+    let text = rows.join("\n");
+    let (above, _) = row_with(&rows, "\u{22ef} 27 more");
+    let (first, _) = row_with(&rows, "fn f27(");
+    let (change, _) = row_with(&rows, "~ fn f30(");
+    let (last, _) = row_with(&rows, "fn f33(");
+    let (below, _) = row_with(&rows, "\u{22ef} 26 more");
+    assert!(
+        above < first && first < change && change < last && last < below,
+        "{text}"
+    );
+    assert!(
+        !text.contains("fn f26(") && !text.contains("fn f34("),
+        "{text}"
+    );
+}
+
+#[test]
+fn opening_an_unchanged_definition_shows_it_in_the_diff() {
+    let mut state = make_state(&[sixty_functions()]);
+    state.sidebar.select_file_index(0, 20);
+    state.snap_diff_to_selected_file();
+    press(&mut state, KeyCode::Char('o'));
+    let rows = pane(&mut state);
+    let (y, _) = row_with(&rows, "fn f28(");
+
+    Mode::handle_mouse(
+        &mut state,
+        make_mouse(MouseEventKind::Down(MouseButton::Left), LEFT + 6, y as u16),
+        PANE_HEIGHT,
+    );
+
+    let rows = pane(&mut state);
+    assert!(!rows[0].contains("definitions"), "{}", rows[0]);
+    assert!(rows.join("\n").contains("x + 28"), "{rows:#?}");
+    let line = sixty_functions()
+        .after
+        .lines()
+        .position(|line| line.starts_with("fn f28("))
+        .unwrap()
+        + 1;
+    let anchor = state.unstaged.cursor_anchor().expect("cursor on a line");
+    assert_eq!(anchor.line, line);
 }
 
 #[test]

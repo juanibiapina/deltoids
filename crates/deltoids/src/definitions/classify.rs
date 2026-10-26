@@ -1,10 +1,16 @@
-//! Say what changed in each pair of definitions, and arrange the changes
-//! as a tree in the new file's order.
+//! Say what changed in each pair of definitions, and arrange the
+//! definitions as a tree in the new file's order: the changes, and the
+//! unchanged definitions around them as context.
+
+use std::hash::{Hash, Hasher};
+use std::ops::Range;
+
+use rustc_hash::FxHasher;
 
 use super::matching::{Link, Pairing, children};
 use super::{Aspects, DefinitionChange, DefinitionDiff, Place, Status, TopLevelChange};
 use crate::engine::DiffOp;
-use crate::syntax::{Definition, Outline};
+use crate::syntax::{Definition, Outline, TopStream};
 
 /// Lines the line diff changed: removed old rows and added new rows; and
 /// for each old row it kept, the new row it kept it at.
@@ -71,7 +77,13 @@ struct Side<'a> {
     /// Per definition: changed own rows, the first of them, own non-blank
     /// rows, and how many of those changed.
     stats: Vec<Stats>,
-    top: Stats,
+    /// Per row: no definition holds it.
+    free: Vec<bool>,
+    /// Per row: code outside every definition is on it (no definition
+    /// holds it, or a comment trails a definition's last line).
+    top: Vec<bool>,
+    /// Per row: it holds more than whitespace.
+    filled: Vec<bool>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -94,30 +106,75 @@ impl<'a> Side<'a> {
                 .for_each(|slot| *slot = Some(index));
         }
         let mut stats = vec![Stats::default(); outline.definitions.len()];
-        let mut top = Stats::default();
+        let mut filled = Vec::with_capacity(changed.len());
         for (row, line) in text.lines().enumerate() {
             let Some(&is_changed) = changed.get(row) else {
                 break;
             };
-            let entry = match owner[row] {
-                Some(index) => &mut stats[index],
-                None => &mut top,
+            let has_text = !line.trim().is_empty();
+            filled.push(has_text);
+            let Some(index) = owner[row] else {
+                continue;
             };
+            let entry = &mut stats[index];
             if is_changed {
                 entry.changed += 1;
                 entry.first.get_or_insert(row + 1);
             }
-            if !line.trim().is_empty() {
+            if has_text {
                 entry.filled += 1;
                 entry.filled_changed += usize::from(is_changed);
             }
+        }
+        let free: Vec<bool> = owner.iter().map(Option::is_none).collect();
+        let mut top = free.clone();
+        for token in &outline.top {
+            let rows = token.rows.start.min(top.len())..token.rows.end.min(top.len());
+            top[rows].fill(true);
         }
         Self {
             outline,
             children: children(outline),
             stats,
+            free,
             top,
+            filled,
         }
+    }
+
+    /// The rows among `rows` with code outside every definition on them.
+    fn top_rows(&self, rows: Range<usize>) -> Vec<usize> {
+        rows.filter(|&row| self.top.get(row).copied().unwrap_or(false))
+            .collect()
+    }
+
+    /// Hashes of the comments, the imports, and the code on `rows`, sorted
+    /// rows outside every definition, each in document order.
+    fn top_hashes(&self, rows: &[usize]) -> [u64; 3] {
+        let mut hashers: [FxHasher; 3] = Default::default();
+        let (Some(&first), Some(&last)) = (rows.first(), rows.last()) else {
+            return hashers.map(|hasher| hasher.finish());
+        };
+        let tokens = &self.outline.top;
+        let start = tokens.partition_point(|token| token.rows.end <= first);
+        let touching = tokens[start..]
+            .iter()
+            .take_while(|token| token.rows.start <= last)
+            .filter(|token| {
+                token
+                    .rows
+                    .clone()
+                    .any(|row| rows.binary_search(&row).is_ok())
+            });
+        for token in touching {
+            let slot = match token.stream {
+                TopStream::Comments => 0,
+                TopStream::Imports => 1,
+                TopStream::Code => 2,
+            };
+            token.hash.hash(&mut hashers[slot]);
+        }
+        hashers.map(|hasher| hasher.finish())
     }
 
     fn definition(&self, index: usize) -> &'a Definition {
@@ -162,6 +219,7 @@ pub(super) fn diff(
     new: &Outline,
     pairing: &Pairing,
     changed: &ChangedRows,
+    ops: &[DiffOp],
     original: &str,
     updated: &str,
 ) -> DefinitionDiff {
@@ -172,32 +230,99 @@ pub(super) fn diff(
         new: &new,
         pairing,
     };
-    let changes = builder.under(None, None);
+    let definitions = builder.under(None, None);
     DefinitionDiff {
-        changes,
-        top_level: top_level(&old, &new),
+        definitions,
+        top_level: merge_top_level(&new, ops.iter().filter_map(|op| top_level(&old, &new, *op))),
         has_errors: old.outline.has_errors || new.outline.has_errors,
     }
 }
 
-fn top_level(old: &Side, new: &Side) -> Option<TopLevelChange> {
-    let (a, b) = (&old.outline.top, &new.outline.top);
+/// One change per stretch of code between two definitions: changes with
+/// no definition between them in the new file read as one. Each comes
+/// with the new rows its line-diff operation covers.
+fn merge_top_level(
+    new: &Side,
+    changes: impl Iterator<Item = (TopLevelChange, Range<usize>)>,
+) -> Vec<TopLevelChange> {
+    let mut merged: Vec<(TopLevelChange, Range<usize>)> = Vec::new();
+    for (change, rows) in changes {
+        let joins = merged.last().is_some_and(|(_, last)| {
+            let between = last.end.min(rows.start)..rows.start;
+            new.free[between].iter().all(|&free| free)
+        });
+        match merged.last_mut() {
+            Some((last, span)) if joins => {
+                last.aspects = last.aspects.union(change.aspects);
+                last.lines = (last.lines.0 + change.lines.0, last.lines.1 + change.lines.1);
+                last.new_first_change = last.new_first_change.or(change.new_first_change);
+                last.old_first_change = last.old_first_change.or(change.old_first_change);
+                span.end = rows.end;
+            }
+            _ => merged.push((change, rows)),
+        }
+    }
+    merged.into_iter().map(|(change, _)| change).collect()
+}
+
+/// The change to the code outside every definition among the rows `op`
+/// changed, when there is one: which of its comments, imports, and code
+/// changed, and where it sits in the new file, with the new rows `op`
+/// covers. Blank lines alone are no change.
+fn top_level(old: &Side, new: &Side, op: DiffOp) -> Option<(TopLevelChange, Range<usize>)> {
+    let (old_rows, new_rows, at) = match op {
+        DiffOp::Equal { .. } => return None,
+        DiffOp::Insert {
+            old_index,
+            new_index,
+            new_len,
+        } => (
+            old_index..old_index,
+            new_index..new_index + new_len,
+            new_index,
+        ),
+        DiffOp::Delete {
+            old_index,
+            old_len,
+            new_index,
+        } => (
+            old_index..old_index + old_len,
+            new_index..new_index,
+            new_index,
+        ),
+        DiffOp::Replace {
+            old_index,
+            old_len,
+            new_index,
+            new_len,
+        } => (
+            old_index..old_index + old_len,
+            new_index..new_index + new_len,
+            new_index,
+        ),
+    };
+    let (old_top, new_top) = (old.top_rows(old_rows), new.top_rows(new_rows.clone()));
+    let [old_comments, old_imports, old_code] = old.top_hashes(&old_top);
+    let [new_comments, new_imports, new_code] = new.top_hashes(&new_top);
     let mut aspects = Aspects {
-        body: a.body != b.body,
-        comments: a.comments != b.comments,
-        imports: a.imports != b.imports,
+        comments: old_comments != new_comments,
+        imports: old_imports != new_imports,
+        body: old_code != new_code,
         ..Aspects::default()
     };
-    // Code that only moved past definitions (an import moved to the end)
-    // hashes the same; the lines the diff changed still show it.
-    let moved = old.top.filled_changed + new.top.filled_changed > 0;
-    aspects.formatting = aspects.is_empty() && (a.raw != b.raw || moved);
-    (!aspects.is_empty()).then_some(TopLevelChange {
+    // Only rows no definition holds can change their layout alone: on a
+    // definition's row, the definition's own change explains the line.
+    let laid_out =
+        |side: &Side, rows: &[usize]| rows.iter().any(|&row| side.free[row] && side.filled[row]);
+    aspects.formatting = aspects.is_empty() && (laid_out(old, &old_top) || laid_out(new, &new_top));
+    let change = TopLevelChange {
         aspects,
-        lines: (new.top.changed, old.top.changed),
-        new_first_change: new.top.first,
-        old_first_change: old.top.first,
-    })
+        lines: (new_top.len(), old_top.len()),
+        new_first_change: new_top.first().map(|row| row + 1),
+        old_first_change: old_top.first().map(|row| row + 1),
+        at: new_top.first().copied().unwrap_or(at) + 1,
+    };
+    (!change.aspects.is_empty()).then_some((change, new_rows))
 }
 
 struct Builder<'a> {
@@ -207,9 +332,9 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    /// The changes among the children of an old and a new parent (the
-    /// file for `None`), in new-file order with each removed definition
-    /// after the one that preceded it in the old file.
+    /// The children of an old and a new parent (the file for `None`), in
+    /// new-file order with each removed definition after the one that
+    /// preceded it in the old file.
     fn under(&self, old_parent: Option<usize>, new_parent: Option<usize>) -> Vec<DefinitionChange> {
         let new_children = &self.new.children[self.new.slot(new_parent)];
         let old_children = &self.old.children[self.old.slot(old_parent)];
@@ -233,10 +358,10 @@ impl Builder<'_> {
         removed_at(&mut changes, None);
         for &n in new_children {
             let change = match self.pairing.old_of[n] {
-                None => Some(self.added(n)),
+                None => self.added(n),
                 Some((o, how)) => self.paired(o, n, how),
             };
-            changes.extend(change);
+            changes.push(change);
             removed_at(&mut changes, Some(n));
         }
         changes
@@ -255,8 +380,8 @@ impl Builder<'_> {
             // A child paired with an old definition moved in from elsewhere.
             children: self.new.children[n]
                 .iter()
-                .filter_map(|&child| match self.pairing.old_of[child] {
-                    None => Some(self.added(child)),
+                .map(|&child| match self.pairing.old_of[child] {
+                    None => self.added(child),
                     Some((o, how)) => self.paired(o, child, how),
                 })
                 .collect(),
@@ -284,7 +409,7 @@ impl Builder<'_> {
         }
     }
 
-    fn paired(&self, o: usize, n: usize, how: Link) -> Option<DefinitionChange> {
+    fn paired(&self, o: usize, n: usize, how: Link) -> DefinitionChange {
         let (before, after) = (self.old.definition(o), self.new.definition(n));
         let (a, b) = (&before.content, &after.content);
         let signature = match how {
@@ -300,7 +425,7 @@ impl Builder<'_> {
             ..Aspects::default()
         };
         aspects.formatting = how != Link::Renamed && aspects.is_empty() && a.raw != b.raw;
-        let children = self.under(Some(o), Some(n));
+        let mut children = self.under(Some(o), Some(n));
         let status = match how {
             Link::Renamed => Status::Renamed {
                 from: before.name.clone(),
@@ -312,10 +437,14 @@ impl Builder<'_> {
             Link::Same if self.old.rewritten(o) && self.new.rewritten(n) => {
                 Status::Moved { from: None }
             }
-            Link::Same if !children.is_empty() => Status::Container,
-            Link::Same => return None,
+            Link::Same if children.iter().any(DefinitionChange::is_changed) => Status::Container,
+            Link::Same => Status::Unchanged,
         };
-        Some(DefinitionChange {
+        // Everything inside an unchanged definition is unchanged too.
+        if status == Status::Unchanged {
+            children.clear();
+        }
+        DefinitionChange {
             kind: after.kind,
             name: after.name.clone(),
             status,
@@ -325,6 +454,6 @@ impl Builder<'_> {
             lines: (self.new.stats[n].changed, self.old.stats[o].changed),
             children,
             uncertain: before.error || after.error,
-        })
+        }
     }
 }

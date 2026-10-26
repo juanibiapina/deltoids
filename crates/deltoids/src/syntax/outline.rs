@@ -22,9 +22,25 @@ use crate::language::{LeafDefinition, Require};
 pub(crate) struct Outline {
     /// In document order; a definition comes before the ones it holds.
     pub(crate) definitions: Vec<Definition>,
-    /// The code outside every definition.
-    pub(crate) top: Content,
+    /// The tokens outside every definition, in document order.
+    pub(crate) top: Vec<TopToken>,
     pub(crate) has_errors: bool,
+}
+
+/// A token outside every definition.
+pub(crate) struct TopToken {
+    /// 0-based rows it covers, end exclusive.
+    pub(crate) rows: Range<usize>,
+    pub(crate) stream: TopStream,
+    pub(crate) hash: u64,
+}
+
+/// What a token outside every definition is part of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopStream {
+    Comments,
+    Imports,
+    Code,
 }
 
 pub(crate) struct Definition {
@@ -71,7 +87,6 @@ pub(crate) struct Content {
     pub(crate) docs: u64,
     /// The attributes and decorators above it.
     pub(crate) attributes: u64,
-    pub(crate) imports: u64,
     /// Every byte, whitespace included.
     pub(crate) raw: u64,
     /// Token hashes of the unnamed signature and the body, for similarity.
@@ -93,8 +108,7 @@ impl ParsedFile {
         for (definition, streams) in definitions.iter_mut().zip(streams) {
             definition.content = streams.finish();
         }
-        let mut top = top.finish();
-        raw_hashes(&self.source, &mut definitions, &mut top);
+        raw_hashes(&self.source, &mut definitions);
         Outline {
             definitions,
             top,
@@ -451,14 +465,14 @@ impl Builder<'_> {
     /// Hand every token to the definition that owns it, with the text
     /// between tokens that is not whitespace (a grammar may leave it to no
     /// token) counted as a token of its own.
-    fn assign_tokens(&mut self, tokens: &[Token]) -> (Vec<Streams>, Streams, bool) {
+    fn assign_tokens(&mut self, tokens: &[Token]) -> (Vec<Streams>, Vec<TopToken>, bool) {
         let mut assign = Assignment {
             streams: self
                 .definitions
                 .iter()
                 .map(|_| Streams::default())
                 .collect(),
-            top: Streams::default(),
+            top: Vec::new(),
             has_errors: false,
             open: Vec::new(),
             next: 0,
@@ -473,14 +487,7 @@ impl Builder<'_> {
                 owner.inspect(|&index| self.definitions[index].error = true);
             }
             if !token.missing {
-                self.route(
-                    owner,
-                    token.start,
-                    token.hash,
-                    token.marks,
-                    &mut assign.streams,
-                    &mut assign.top,
-                );
+                assign.add(self, owner, token.start..token.end, token.hash, token.marks);
             }
         }
         assign.gap(self, self.parsed.source.len(), false);
@@ -514,30 +521,30 @@ impl Builder<'_> {
         open.last().copied()
     }
 
-    /// Add `token` at byte `at` to the stream of `owner` it belongs in: the
-    /// docs above it, its comments, signature, or body; or, outside every
-    /// definition, the file's comments, imports, or code.
-    fn route(
-        &self,
-        owner: Option<usize>,
-        at: usize,
-        token: u64,
-        marks: Marks,
-        streams: &mut [Streams],
-        top: &mut Streams,
-    ) {
-        let comment = marks.comment;
-        let Some(index) = owner else {
-            let stream = if comment {
-                &mut top.comments
-            } else if marks.import {
-                &mut top.imports
-            } else {
-                &mut top.body
-            };
-            token.hash(stream);
-            return;
+    /// A token outside every definition at `bytes`: the rows it covers,
+    /// and whether it is a comment, an import, or code.
+    fn top_token(&self, bytes: Range<usize>, hash: u64, marks: Marks) -> TopToken {
+        let lines = &self.parsed.lines;
+        let first = row_of(lines, bytes.start);
+        let last = row_of(lines, bytes.end.saturating_sub(1).max(bytes.start));
+        let stream = if marks.comment {
+            TopStream::Comments
+        } else if marks.import {
+            TopStream::Imports
+        } else {
+            TopStream::Code
         };
+        TopToken {
+            rows: first..last.max(first) + 1,
+            stream,
+            hash,
+        }
+    }
+
+    /// Add `token` at byte `at` to the stream of definition `index` it
+    /// belongs in: the docs above it, its comments, signature, or body.
+    fn route(&self, index: usize, at: usize, token: u64, marks: Marks, streams: &mut [Streams]) {
+        let comment = marks.comment;
         let definition = &self.definitions[index];
         let stream = &mut streams[index];
         if comment {
@@ -671,7 +678,7 @@ fn walk<'t>(root: Node<'t>, visitor: &mut impl Visit<'t>) {
 /// Where [`Builder::assign_tokens`] stands.
 struct Assignment {
     streams: Vec<Streams>,
-    top: Streams,
+    top: Vec<TopToken>,
     has_errors: bool,
     /// See [`Builder::owner`].
     open: Vec<usize>,
@@ -681,6 +688,22 @@ struct Assignment {
 }
 
 impl Assignment {
+    /// Hand the token at `bytes` to definition `owner`'s streams, or to
+    /// the file's tokens outside every definition.
+    fn add(
+        &mut self,
+        builder: &Builder,
+        owner: Option<usize>,
+        bytes: Range<usize>,
+        hash: u64,
+        marks: Marks,
+    ) {
+        match owner {
+            Some(index) => builder.route(index, bytes.start, hash, marks, &mut self.streams),
+            None => self.top.push(builder.top_token(bytes, hash, marks)),
+        }
+    }
+
     /// Count the text from the last token to `until` as a token when it is
     /// not whitespace.
     fn gap(&mut self, builder: &Builder, until: usize, import: bool) {
@@ -696,7 +719,7 @@ impl Assignment {
             import,
             ..Marks::default()
         };
-        builder.route(owner, at, hash, marks, &mut self.streams, &mut self.top);
+        self.add(builder, owner, at..at + text.trim().len(), hash, marks);
     }
 }
 
@@ -849,8 +872,8 @@ impl ParsedFile {
         None
     }
 
-    /// The header from `head` to `body` on one line; a definition without a
-    /// body shows its first line.
+    /// The header from `head` to `body` on one line, without the `=`
+    /// before a value; a definition without a body shows its first line.
     pub(super) fn signature_text(&self, head: usize, body: Option<usize>, end: usize) -> String {
         let end = match body {
             Some(body) => body.min(end),
@@ -861,7 +884,19 @@ impl ParsedFile {
                     .map_or(end, |line| line.end.min(end).max(head))
             }
         };
-        collapse_whitespace(&self.source[head..end])
+        without_assignment(collapse_whitespace(&self.source[head..end]))
+    }
+}
+
+/// `text` without the `=` that ends it before a value: `const LIMIT: u32`
+/// for `const LIMIT: u32 = 10;`. An `=` that ends an operator (Ruby's
+/// `def ==`, `def <=`) stays.
+fn without_assignment(text: String) -> String {
+    match text.strip_suffix('=') {
+        Some(rest) if !rest.ends_with(|c: char| "=!<>+-*/%&|^~:".contains(c)) => {
+            rest.trim_end().to_string()
+        }
+        _ => text,
     }
 }
 
@@ -939,7 +974,6 @@ struct Streams {
     comments: FxHasher,
     docs: FxHasher,
     attributes: FxHasher,
-    imports: FxHasher,
     tokens: Vec<u64>,
 }
 
@@ -952,17 +986,16 @@ impl Streams {
             comments: self.comments.finish(),
             docs: self.docs.finish(),
             attributes: self.attributes.finish(),
-            imports: self.imports.finish(),
             raw: 0,
             tokens: self.tokens,
         }
     }
 }
 
-/// Hash each definition's own text, and the file's outside every
-/// definition: the pieces between nested definitions, each trimmed, so
-/// adding or removing a nested definition leaves its parent's hash alone.
-fn raw_hashes(source: &str, definitions: &mut [Definition], top: &mut Content) {
+/// Hash each definition's own text: the pieces between nested
+/// definitions, each trimmed, so adding or removing a nested definition
+/// leaves its parent's hash alone.
+fn raw_hashes(source: &str, definitions: &mut [Definition]) {
     let own = |span: Range<usize>, holes: &mut dyn Iterator<Item = Range<usize>>| {
         let mut hasher = FxHasher::default();
         let mut piece = |range: Range<usize>| {
@@ -980,12 +1013,12 @@ fn raw_hashes(source: &str, definitions: &mut [Definition], top: &mut Content) {
         piece(at..span.end.max(at));
         hasher.finish()
     };
-    // Children of each definition, and of the file (the last slot), in
-    // document order.
-    let mut children: Vec<Vec<Range<usize>>> = vec![Vec::new(); definitions.len() + 1];
+    // Children of each definition, in document order.
+    let mut children: Vec<Vec<Range<usize>>> = vec![Vec::new(); definitions.len()];
     for definition in definitions.iter() {
-        let slot = definition.parent.unwrap_or(definitions.len());
-        children[slot].push(definition.span.clone());
+        if let Some(parent) = definition.parent {
+            children[parent].push(definition.span.clone());
+        }
     }
     for (index, definition) in definitions.iter_mut().enumerate() {
         definition.content.raw = own(
@@ -993,10 +1026,6 @@ fn raw_hashes(source: &str, definitions: &mut [Definition], top: &mut Content) {
             &mut children[index].iter().cloned(),
         );
     }
-    top.raw = own(
-        0..source.len(),
-        &mut children[definitions.len()].iter().cloned(),
-    );
 }
 
 #[cfg(test)]
@@ -1026,6 +1055,33 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Each definition's signature, as the definitions view shows it.
+    fn signatures(path: &str, source: &str) -> Vec<String> {
+        let parsed = ParsedFile::parse(path, source).expect("parse");
+        parsed
+            .outline()
+            .definitions
+            .into_iter()
+            .map(|definition| definition.signature)
+            .collect()
+    }
+
+    #[test]
+    fn a_signature_ends_before_the_equals_of_a_value() {
+        assert_eq!(
+            signatures(
+                "a.rs",
+                "const LIMIT: u32 = 10;\nstatic NAME: &str = \"x\";\n"
+            ),
+            ["const LIMIT: u32", "static NAME: &str"]
+        );
+        assert_eq!(signatures("a.py", "LIMIT = 10\n"), ["LIMIT"]);
+        assert_eq!(
+            signatures("a.rb", "class C\n  def ==\n    true\n  end\nend\n"),
+            ["class C", "def =="]
+        );
     }
 
     #[test]

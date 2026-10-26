@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - TUI: file names in the Files panel use the default color. The status letters still show each file's change and staging state.
-- TUI: selecting a directory, or the first row of a commit or branch review, shows a summary instead of all its diffs: each file's status, line counts, review tag, and comment count, and the functions, types, constants, sections, and keys its change added, removed, modified, renamed, or moved, with their signatures. Press `o` to see a file's changed definitions instead of its diff, or a summary's diffs. Click a row or press `Enter` on it to open the diff there.
+- TUI: selecting a directory, or the first row of a commit or branch review, shows a summary instead of all its diffs: each file's status, line counts, review tag, and comment count, then the functions, types, constants, sections, and keys its change added, removed, modified, renamed, or moved, with their signatures, and the imports, comments, and code it changed between them. Press `o` to see a file's definitions instead of its diff, with the unchanged ones around the changes, or a summary's diffs. Click a row or press `Enter` on it to open the diff there.
 - TUI: the Files and Branches panels share the left column as tabs, each at full height. The panel's border lists both tabs; press `Tab`, or click a tab, to switch.
 - TUI: a commit or branch review is the only tab while it is open. `Esc` closes it and returns to the Branches panel.
 - TUI: when a clean working tree gets changes, the Files tab comes back and becomes the current tab.

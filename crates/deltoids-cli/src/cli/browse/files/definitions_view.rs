@@ -1,12 +1,17 @@
-//! One file's block in a summary: what its change did to the file's
-//! definitions, one row per changed definition with its highlighted
-//! signature; for a file without definitions (plain text, a language
-//! without tree-sitter support), one row per hunk naming the scope it
-//! changes; for a file without a text diff, a note. The render cache
-//! draws these in the background (see [`super::render::BlockKind`]).
+//! One file's block in a summary or the definitions view: what its change
+//! did to the file's definitions, one row per changed definition with its
+//! highlighted signature. The definitions view also shows the unchanged
+//! definitions around the changes, as a diff shows context lines:
+//! all of a small level (the file, or a changed definition's members), and
+//! a few on each side of each change in a larger one. A file without
+//! definitions (plain text, a language without tree-sitter support) gets
+//! one row per hunk naming the scope it changes; a file without a text
+//! diff, a note. The render cache draws these in the background (see
+//! [`super::render::BlockKind`]).
 //!
-//! Every row leads somewhere: opening it shows the file's diff at the
-//! row's first changed line.
+//! Every definition row leads somewhere: opening it shows the file's diff
+//! at the row's first changed line, or where an unchanged definition
+//! starts.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -26,20 +31,38 @@ use crate::sidebar::display_path;
 use super::model::FileBody;
 
 const INDENT: &str = "  ";
+/// A level (the file, or a changed definition's members) with at most this
+/// many definitions shows them all, as a hunk shows a whole small scope.
+const WHOLE_LEVEL: usize = 40;
+/// In a larger level, the unchanged definitions shown on each side of a
+/// changed one.
+const AROUND: usize = 3;
 
-/// The block of the file \`file\` whose diff is \`body\`, \`width\` columns wide.
+/// How much of a file's definitions a block shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Detail {
+    /// The changed definitions alone: a summary's block.
+    Changes,
+    /// The changed definitions among the unchanged ones around them: the
+    /// definitions view.
+    Outline,
+}
+
+/// The block of the file `file` whose diff is `body`, `width` columns wide.
 pub(super) fn render_block(
     file: &FileDiff,
     body: &FileBody,
     numbering: Numbering,
     width: usize,
     theme: &Theme,
+    detail: Detail,
 ) -> Vec<DiffRow> {
     let mut block = Block {
         path: display_path(file).to_string(),
         numbering,
         width,
         theme,
+        detail,
         rows: Vec::new(),
         highlight: None,
     };
@@ -58,6 +81,7 @@ struct Block<'a> {
     numbering: Numbering,
     width: usize,
     theme: &'a Theme,
+    detail: Detail,
     rows: Vec<DiffRow>,
     highlight: Option<String>,
 }
@@ -84,15 +108,109 @@ impl Block<'_> {
                 self.muted("syntax errors: what changed is a best guess", INDENT),
             ));
         }
-        for change in &diff.changes {
-            self.change(change, 1);
+        let items = file_items(&diff.definitions, &diff.top_level);
+        self.level(&items, 1);
+    }
+
+    /// One level of definitions, `depth` deep: the changed ones, and in
+    /// an outline the unchanged ones around them, with the rest counted in
+    /// `⋯ N more` rows. A definition that shows the ones inside it reads
+    /// as a block: a blank row sets it apart from its neighbours.
+    fn level(&mut self, items: &[Item<'_>], depth: usize) {
+        let shown = match self.detail {
+            Detail::Changes => items.iter().map(|item| item.is_changed()).collect(),
+            Detail::Outline => context(items),
+        };
+        let start = self.rows.len();
+        let mut hidden = 0;
+        let mut after_block = false;
+        for (&item, shown) in items.iter().zip(shown) {
+            if !shown {
+                hidden += 1;
+                continue;
+            }
+            if self.folds(hidden) {
+                self.separate(after_block, start);
+                self.gap(hidden, depth);
+                after_block = false;
+            }
+            hidden = 0;
+            let block = matches!(item, Item::Definition(definition) if self.opens_up(definition));
+            self.separate(after_block || block, start);
+            match item {
+                Item::Definition(definition) if definition.is_changed() => {
+                    self.change(definition, depth);
+                }
+                Item::Definition(definition) => self.unchanged(definition, depth),
+                Item::TopLevel(top) => self.top_level(top),
+            }
+            after_block = block;
         }
-        if let Some(top) = &diff.top_level {
-            self.top_level(top);
+        if self.folds(hidden) {
+            self.separate(after_block, start);
+            self.gap(hidden, depth);
         }
     }
 
-    /// A row leading to \`at\` in this file.
+    /// Whether `hidden` left-out definitions get a `⋯ N more` row.
+    fn folds(&self, hidden: usize) -> bool {
+        hidden > 0 && self.detail == Detail::Outline
+    }
+
+    /// Whether `definition` shows definitions inside it.
+    fn opens_up(&self, definition: &DefinitionChange) -> bool {
+        definition.is_changed()
+            && match self.detail {
+                Detail::Changes => definition.children.iter().any(DefinitionChange::is_changed),
+                Detail::Outline => !definition.children.is_empty(),
+            }
+    }
+
+    /// A blank row when `wanted` and the level, which started at row
+    /// `start`, already has rows.
+    fn separate(&mut self, wanted: bool, start: usize) {
+        if wanted && self.rows.len() > start {
+            self.space();
+        }
+    }
+
+    /// A blank row, unless the block is empty or already ends in one.
+    fn space(&mut self) {
+        if self.rows.last().is_some_and(|row| row.line.width() > 0) {
+            self.rows.push(DiffRow::plain(Line::default()));
+        }
+    }
+
+    /// `{indent}  {signature}`: an unchanged definition, opening where it
+    /// starts.
+    fn unchanged(&mut self, definition: &DefinitionChange, depth: usize) {
+        let Some(place) = definition.new.as_ref() else {
+            return;
+        };
+        let indent = INDENT.repeat(depth);
+        let room = self.width.saturating_sub(indent.len() + 2).max(8);
+        let shown = shorten_right(&place.signature, room);
+        let mut spans = vec![Span::raw(indent), Span::raw("  ")];
+        spans.extend(render_code_line(
+            &shown,
+            self.highlight.as_deref(),
+            self.theme,
+        ));
+        let at = self.anchor(true, *place.lines.start());
+        self.push(Line::from(spans), Some(at));
+    }
+
+    /// `{indent}  ⋯ N more`: unchanged definitions an outline leaves out.
+    fn gap(&mut self, hidden: usize, depth: usize) {
+        if !self.folds(hidden) {
+            return;
+        }
+        let indent = format!("{}  ", INDENT.repeat(depth));
+        let line = self.muted(&format!("\u{22ef} {hidden} more"), &indent);
+        self.rows.push(DiffRow::plain(line));
+    }
+
+    /// A row leading to `at` in this file.
     fn push(&mut self, line: Line<'static>, at: Option<CommentAnchor>) {
         let place = LinePlace::summary(&self.path, self.rows.len() + 1);
         let opens = Opens {
@@ -119,7 +237,7 @@ impl Block<'_> {
         Style::default().fg(rgb_to_color(rgb))
     }
 
-    /// The anchor of 1-based \`line\` on the old or the new side.
+    /// The anchor of 1-based `line` on the old or the new side.
     fn anchor(&self, new: bool, line: usize) -> CommentAnchor {
         let side = if new {
             self.numbering.new
@@ -133,7 +251,7 @@ impl Block<'_> {
         }
     }
 
-    /// \`{indent}{marker} {signature}  {what changed} ······ +a -r\`, then the
+    /// `{indent}{marker} {signature}  {what changed} ······ +a -r`, then the
     /// old signature when it changed, then the definitions inside it.
     fn change(&mut self, change: &DefinitionChange, depth: usize) {
         let indent = INDENT.repeat(depth);
@@ -186,9 +304,8 @@ impl Block<'_> {
             let line = self.muted(&text, &format!("{indent}    "));
             self.push(line, at);
         }
-        for child in &change.children {
-            self.change(child, depth + 1);
-        }
+        let children: Vec<Item<'_>> = change.children.iter().map(Item::Definition).collect();
+        self.level(&children, depth + 1);
     }
 
     /// Where opening a change goes: its first changed line, or where it
@@ -207,9 +324,16 @@ impl Block<'_> {
         }
     }
 
+    /// `  ~ top level  comments ······ +a -r`: a change to the code outside
+    /// every definition, where it sits among them.
     fn top_level(&mut self, top: &TopLevelChange) {
         let (marker, color) = ("~", rgb_to_color(self.theme.status_modified));
-        let what = aspect_names(&top.aspects).join(", ");
+        // Outside every definition, a body is just code.
+        let what: Vec<&str> = aspect_names(&top.aspects)
+            .into_iter()
+            .map(|name| if name == "body" { "code" } else { name })
+            .collect();
+        let what = what.join(", ");
         let counts = counts(top.lines, self.theme);
         let mut spans = vec![
             Span::raw(INDENT),
@@ -235,7 +359,7 @@ impl Block<'_> {
         self.push(Line::from(spans), at);
     }
 
-    /// \`  impl DiffPane › fn new ······ +1\`: a hunk of a file without
+    /// `  impl DiffPane › fn new ······ +1`: a hunk of a file without
     /// definitions, named by the scope it sits in.
     fn hunk(&mut self, hunk: &Hunk) {
         let kinds = || hunk.lines.iter().map(|line| &line.kind);
@@ -270,13 +394,13 @@ fn marker(status: &Status, theme: &Theme) -> (&'static str, ratatui::style::Colo
         Status::Modified => ("~", theme.status_modified),
         Status::Renamed { .. } => ("\u{2192}", theme.status_partial),
         Status::Moved { .. } => ("\u{21b7}", theme.status_partial),
-        Status::Container => (" ", theme.muted),
+        Status::Container | Status::Unchanged => (" ", theme.muted),
     };
     (marker, rgb_to_color(rgb))
 }
 
-/// What changed, in words: \`body, docs\`, \`renamed from old\`, \`moved
-/// from Server\`.
+/// What changed, in words: `body, docs`, `renamed from old`, `moved
+/// from Server`.
 fn describe(change: &DefinitionChange) -> String {
     let aspects = aspect_names(&change.aspects).join(", ");
     let joined = |lead: String| {
@@ -296,7 +420,7 @@ fn describe(change: &DefinitionChange) -> String {
         }
         Status::Moved { from: None } => joined("moved".to_string()),
         Status::Modified => aspects,
-        Status::Added | Status::Removed | Status::Container => String::new(),
+        Status::Added | Status::Removed | Status::Container | Status::Unchanged => String::new(),
     }
 }
 
@@ -316,7 +440,61 @@ fn aspect_names(aspects: &Aspects) -> Vec<&'static str> {
     .collect()
 }
 
-/// \`+a -r\`, leaving out a zero side.
+/// One row of a level: a definition, or a change to the code outside
+/// every definition (only the file's level has those).
+#[derive(Clone, Copy)]
+enum Item<'d> {
+    Definition(&'d DefinitionChange),
+    TopLevel(&'d TopLevelChange),
+}
+
+impl Item<'_> {
+    fn is_changed(self) -> bool {
+        match self {
+            Item::Definition(definition) => definition.is_changed(),
+            Item::TopLevel(_) => true,
+        }
+    }
+}
+
+/// The file's level: its definitions, with each change to the code
+/// outside them before the first definition that starts at or after it.
+fn file_items<'d>(definitions: &'d [DefinitionChange], top: &'d [TopLevelChange]) -> Vec<Item<'d>> {
+    let mut items = Vec::with_capacity(definitions.len() + top.len());
+    let mut tops = top.iter().peekable();
+    for definition in definitions {
+        if let Some(new) = &definition.new {
+            let start = *new.lines.start();
+            while let Some(change) = tops.next_if(|change| change.at <= start) {
+                items.push(Item::TopLevel(change));
+            }
+        }
+        items.push(Item::Definition(definition));
+    }
+    items.extend(tops.map(Item::TopLevel));
+    items
+}
+
+/// Which of a level's items an outline shows: all of a small level; in a
+/// larger one, the changes and up to [`AROUND`] definitions on each side of
+/// each.
+fn context(items: &[Item<'_>]) -> Vec<bool> {
+    if items.len() <= WHOLE_LEVEL {
+        return vec![true; items.len()];
+    }
+    let mut shown = vec![false; items.len()];
+    let changed = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.is_changed());
+    for (index, _) in changed {
+        let end = (index + AROUND + 1).min(items.len());
+        shown[index.saturating_sub(AROUND)..end].fill(true);
+    }
+    shown
+}
+
+/// `+a -r`, leaving out a zero side.
 fn counts((added, removed): (usize, usize), theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if added > 0 {
@@ -338,7 +516,7 @@ fn counts((added, removed): (usize, usize), theme: &Theme) -> Vec<Span<'static>>
 }
 
 /// The hunk's two innermost scopes as their source reads them
-/// (\`impl DiffPane › fn new\`), or the lines it covers when it sits in
+/// (`impl DiffPane › fn new`), or the lines it covers when it sits in
 /// no scope.
 fn scope_label(hunk: &Hunk) -> String {
     let start = hunk.ancestors.len().saturating_sub(2);
@@ -366,9 +544,9 @@ fn scope_label(hunk: &Hunk) -> String {
 }
 
 /// A scope's first source line, short: up to and including its name, so
-/// \`fn render(&self) -> Line {\` reads \`fn render\`, without a leading
-/// \`pub\` or \`export\`. A scope without a name keeps its line, minus an
-/// opening \`{\`.
+/// `fn render(&self) -> Line {` reads `fn render`, without a leading
+/// `pub` or `export`. A scope without a name keeps its line, minus an
+/// opening `{`.
 fn scope_text(scope: &ScopeNode) -> String {
     let text = scope.text.trim();
     let text = match (!scope.name.is_empty())

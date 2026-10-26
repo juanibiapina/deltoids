@@ -130,7 +130,8 @@ crates/
         model.rs             #     parse/resolve/diff
         diff_pane.rs         #     diff pane slice
         overview.rs          #     summary of a directory or commit: file headers + blocks
-        definitions_view.rs  #     one file's changed definitions (or hunks), drawn in the background
+        definitions_view.rs  #     one file's definition changes, alone or among unchanged
+                             #       ones as context (or hunks), drawn in the background
         definitions_tests.rs #     definitions view and summaries through keys and mouse
         stage_panes.rs       #     which staging column the diff shows, with which files
         sidebar_pane.rs      #     sidebar pane slice

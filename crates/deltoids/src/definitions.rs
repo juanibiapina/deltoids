@@ -140,12 +140,15 @@ pub(crate) enum Family {
 /// Definition changes between two versions of one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionDiff {
-    /// Changed definitions, outermost first. Present definitions come in
-    /// new-file order; a removed one sits right after the definition that
-    /// preceded it in the old file.
-    pub changes: Vec<DefinitionChange>,
-    /// Code outside every definition, when it changed.
-    pub top_level: Option<TopLevelChange>,
+    /// The file's definitions, outermost first: every top-level one, and
+    /// inside each changed one, every definition it holds. Unchanged
+    /// definitions are the context around the changes and hold nothing.
+    /// Present definitions come in new-file order; a removed one sits right
+    /// after the definition that preceded it in the old file.
+    pub definitions: Vec<DefinitionChange>,
+    /// Changes to the code outside every definition, one per stretch of
+    /// code between two definitions, in new-file order.
+    pub top_level: Vec<TopLevelChange>,
     /// Either version has syntax errors.
     pub has_errors: bool,
 }
@@ -174,17 +177,17 @@ impl DefinitionDiff {
             classify::ChangedRows::of(ops, original.lines().count(), updated.lines().count());
         let pairing = matching::pair(&old, &new, &changed.kept);
         Some(classify::diff(
-            &old, &new, &pairing, &changed, original, updated,
+            &old, &new, &pairing, &changed, ops, original, updated,
         ))
     }
 
     /// Nothing changed in any definition or at the top level.
     pub fn is_empty(&self) -> bool {
-        self.changes.is_empty() && self.top_level.is_none()
+        !self.definitions.iter().any(DefinitionChange::is_changed) && self.top_level.is_empty()
     }
 }
 
-/// One changed definition.
+/// One definition and how it changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionChange {
     pub kind: DefinitionKind,
@@ -200,10 +203,17 @@ pub struct DefinitionChange {
     pub new: Option<Place>,
     /// Changed lines among its own lines: (added, removed).
     pub lines: (usize, usize),
-    /// Changed definitions nested inside it.
+    /// The definitions nested inside it; empty when it is unchanged.
     pub children: Vec<DefinitionChange>,
     /// Its text, or its counterpart's, has a syntax error.
     pub uncertain: bool,
+}
+
+impl DefinitionChange {
+    /// It, or a definition inside it, changed.
+    pub fn is_changed(&self) -> bool {
+        self.status != Status::Unchanged
+    }
 }
 
 /// How a definition changed.
@@ -221,8 +231,10 @@ pub enum Status {
     Moved {
         from: Option<Vec<String>>,
     },
-    /// Itself unchanged; listed because a nested definition changed.
+    /// Itself unchanged; a nested definition changed.
     Container,
+    /// Nothing in it changed: context around the changes.
+    Unchanged,
 }
 
 /// What changed in a definition's own lines.
@@ -247,6 +259,21 @@ impl Aspects {
     pub fn is_empty(self) -> bool {
         self == Aspects::default()
     }
+
+    /// What changed in either.
+    pub(crate) fn union(self, other: Aspects) -> Aspects {
+        Aspects {
+            signature: self.signature || other.signature,
+            attributes: self.attributes || other.attributes,
+            body: self.body || other.body,
+            docs: self.docs || other.docs,
+            comments: self.comments || other.comments,
+            formatting: (self.formatting || other.formatting)
+                && !(self.body || other.body || self.comments || other.comments)
+                && !(self.imports || other.imports),
+            imports: self.imports || other.imports,
+        }
+    }
 }
 
 /// Where a definition sits in one version of the file.
@@ -261,10 +288,16 @@ pub struct Place {
     pub first_change: Option<usize>,
 }
 
-/// A change to the code outside every definition.
+/// A change to the code outside every definition: imports, comments, and
+/// statements between definitions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopLevelChange {
+    /// What changed: its comments, imports, code (`body`), or only its
+    /// formatting.
     pub aspects: Aspects,
+    /// Where it sits in the new file, 1-based: its first changed line, or
+    /// the line after code it removed. Definitions around it place it.
+    pub at: usize,
     /// Changed top-level lines: (added, removed).
     pub lines: (usize, usize),
     /// First changed top-level line in the new file, 1-based.
@@ -356,13 +389,24 @@ mod perf {
                 after.lines().count(),
             );
             let pairing = matching::pair(&old, &new, &changed.kept);
-            let diff = classify::diff(&old, &new, &pairing, &changed, &before, &after);
+            let diff = classify::diff(
+                &old,
+                &new,
+                &pairing,
+                &changed,
+                snapshot.ops(),
+                &before,
+                &after,
+            );
             let pairing_time = start.elapsed();
             let share = (outline + pairing_time).as_secs_f64() / parse.as_secs_f64();
             println!(
                 "{path:8} definitions {:5}  changes {:4}  parse {parse:>10.2?}  outline {outline:>10.2?}  pair+classify {pairing_time:>10.2?}  share {:>5.1}%",
                 old.definitions.len(),
-                diff.changes.len(),
+                diff.definitions
+                    .iter()
+                    .filter(|definition| definition.is_changed())
+                    .count(),
                 share * 100.0
             );
             // The tree walk alone costs about a fifth of parsing. Data files

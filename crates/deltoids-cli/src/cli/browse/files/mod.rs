@@ -546,12 +546,34 @@ impl FilesMode {
     }
 
     /// Open a summary or definitions row: its file's diff, at its line.
+    /// No hunk shows an unchanged definition, so the nearest one grows to
+    /// show it, as `z` would.
     fn open(&mut self, opens: Opens, height: usize) {
         let Some(index) = self.model.index_of(&opens.path) else {
             return;
         };
         self.file_definitions = false;
+        if let Some(at) = &opens.at {
+            self.reveal(index, at);
+        }
         self.open_file(index, opens.at, height);
+    }
+
+    /// Grow file `index`'s diff in the shown column until a hunk shows
+    /// `at`, a line of its new side. Nothing changes when one already does.
+    fn reveal(&mut self, index: usize, at: &CommentAnchor) {
+        let column = self.shown();
+        if at.side != self.model.view(index, column).numbering.new {
+            return;
+        }
+        if self
+            .model
+            .reshape(index, column, |diff| diff.reveal(at.line))
+        {
+            self.staged.cache.refresh(index);
+            self.unstaged.cache.refresh(index);
+            self.status = Some("opened like z, x folds it".to_string());
+        }
     }
 
     /// Assemble the shown pane for this frame: a summary, a file's

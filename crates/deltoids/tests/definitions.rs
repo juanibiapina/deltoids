@@ -13,11 +13,15 @@ fn report(path: &str, before: &str, after: &str) -> String {
     if diff.has_errors {
         out.push_str("syntax errors\n");
     }
-    for change in &diff.changes {
+    for change in &diff.definitions {
         write_change(&mut out, change, 0);
     }
-    if let Some(top) = &diff.top_level {
-        out.push_str(&format!("top-level  {}\n", aspects(&top.aspects)));
+    for top in &diff.top_level {
+        out.push_str(&format!(
+            "top-level  {}  at {}\n",
+            aspects(&top.aspects),
+            top.at
+        ));
     }
     out
 }
@@ -40,6 +44,9 @@ fn aspects(aspects: &deltoids::Aspects) -> String {
 }
 
 fn write_change(out: &mut String, change: &DefinitionChange, depth: usize) {
+    if !change.is_changed() {
+        return;
+    }
     let indent = "  ".repeat(depth);
     let status = match &change.status {
         Status::Added => "added".to_string(),
@@ -52,6 +59,7 @@ fn write_change(out: &mut String, change: &DefinitionChange, depth: usize) {
         Status::Moved { from: Some(from) } => format!("moved from {}:", from.join(" › ")),
         Status::Moved { from: None } => "moved:".to_string(),
         Status::Container => "in".to_string(),
+        Status::Unchanged => unreachable!("skipped above"),
     };
     let mut line = format!("{indent}{status}  {}  {}", change.kind.label(), change.name);
     if !change.aspects.is_empty() {
@@ -174,7 +182,7 @@ const LIMIT: usize =   10;
 ";
     assert_eq!(
         report("a.rs", before, after),
-        "in  impl  Builder  old 8-28  new 9-33  +1 -0\n  modified  method  grow  [signature, body, docs]  old 13-16  new 14-17  +3 -3\n    sig- pub fn grow(&mut self)\n    sig+ pub fn grow(&mut self, by: usize)\n  modified  method  shrink  [comments]  old 18-21  new 19-22  +1 -1\n  renamed from old_name:  method  new_name  old 23-27  new 24-28  +1 -1\n  added  method  reset  new 30-32  +3 -0\n    sig+ pub fn reset(&mut self)\nremoved  function  gone  old 30-30  +0 -1\n  sig- fn gone()\nmodified  constant  LIMIT  [formatting]  old 32-32  new 35-35  +1 -1\ntop-level  [imports]\n"
+        "in  impl  Builder  old 8-28  new 9-33  +1 -0\n  modified  method  grow  [signature, body, docs]  old 13-16  new 14-17  +3 -3\n    sig- pub fn grow(&mut self)\n    sig+ pub fn grow(&mut self, by: usize)\n  modified  method  shrink  [comments]  old 18-21  new 19-22  +1 -1\n  renamed from old_name:  method  new_name  old 23-27  new 24-28  +1 -1\n  added  method  reset  new 30-32  +3 -0\n    sig+ pub fn reset(&mut self)\nremoved  function  gone  old 30-30  +0 -1\n  sig- fn gone()\nmodified  constant  LIMIT  [formatting]  old 32-32  new 35-35  +1 -1\ntop-level  [imports]  at 2\n"
     );
 }
 
@@ -184,7 +192,7 @@ const LANGUAGE_CASES: &[(&str, &str, &str, &str)] = &[
         "a.py",
         "import os\n\nLIMIT = 1\n\nclass Shop:\n    def total(self, items):\n        return sum(items)\n\n    def tax(self):\n        # flat\n        return 2\n\n    def old(self):\n        pass\n\ndef gone():\n    pass\n",
         "import os\nimport sys\n\nLIMIT = 2\n\nclass Shop:\n    def total(self, items, discount):\n        return sum(items) - discount\n\n    def tax(self):\n        # flat rate\n        return 2\n\n    def fresh(self):\n        pass\n",
-        "modified  variable  LIMIT  [body]  old 3-3  new 4-4  +1 -1\nin  class  Shop  old 5-14  new 6-15\n  modified  method  total  [signature, body]  old 6-7  new 7-8  +2 -2\n    sig- def total(self, items):\n    sig+ def total(self, items, discount):\n  modified  method  tax  [comments]  old 9-11  new 10-12  +1 -1\n  renamed from old:  method  fresh  old 13-14  new 14-15  +1 -1\nremoved  function  gone  old 16-17  +0 -2\n  sig- def gone():\ntop-level  [imports]\n",
+        "modified  variable  LIMIT  [body]  old 3-3  new 4-4  +1 -1\nin  class  Shop  old 5-14  new 6-15\n  modified  method  total  [signature, body]  old 6-7  new 7-8  +2 -2\n    sig- def total(self, items):\n    sig+ def total(self, items, discount):\n  modified  method  tax  [comments]  old 9-11  new 10-12  +1 -1\n  renamed from old:  method  fresh  old 13-14  new 14-15  +1 -1\nremoved  function  gone  old 16-17  +0 -2\n  sig- def gone():\ntop-level  [imports]  at 2\n",
     ),
     (
         "a.js",
@@ -226,7 +234,7 @@ const LANGUAGE_CASES: &[(&str, &str, &str, &str)] = &[
         "a.c",
         "#include <stdio.h>\n#define LIMIT 1\nint total(int a);\nint total(int a) {\n    return a;\n}\nstatic int gone(void) { return 0; }\n",
         "#include <stdio.h>\n#include <stdlib.h>\n#define LIMIT 2\nint total(int a, int b);\nint total(int a, int b) {\n    return a + b;\n}\n",
-        "modified  macro  LIMIT  [body]  old 2-2  new 3-3  +1 -1\nmodified  function  total  [signature]  old 3-3  new 4-4  +1 -1\n  sig- int total(int a);\n  sig+ int total(int a, int b);\nmodified  function  total  [signature, body]  old 4-6  new 5-7  +2 -2\n  sig- int total(int a)\n  sig+ int total(int a, int b)\nremoved  function  gone  old 7-7  +0 -1\n  sig- static int gone(void)\ntop-level  [imports]\n",
+        "modified  macro  LIMIT  [body]  old 2-2  new 3-3  +1 -1\nmodified  function  total  [signature]  old 3-3  new 4-4  +1 -1\n  sig- int total(int a);\n  sig+ int total(int a, int b);\nmodified  function  total  [signature, body]  old 4-6  new 5-7  +2 -2\n  sig- int total(int a)\n  sig+ int total(int a, int b)\nremoved  function  gone  old 7-7  +0 -1\n  sig- static int gone(void)\ntop-level  [imports]  at 2\n",
     ),
     (
         "a.cpp",
@@ -256,7 +264,7 @@ const LANGUAGE_CASES: &[(&str, &str, &str, &str)] = &[
         "a.tf",
         "region = \"x\"\nresource \"aws_s3_bucket\" \"logs\" {\n  bucket = \"x\"\n}\n",
         "region = \"y\"\nresource \"aws_s3_bucket\" \"logs\" {\n  bucket = \"x\"\n  acl = \"private\"\n}\n",
-        "modified  variable  region  [body]  old 1-1  new 1-1  +1 -1\nin  block  resource \"aws_s3_bucket\" \"logs\"  old 2-4  new 2-5\n  added  variable  acl  new 4-4  +1 -0\n    sig+ acl =\n",
+        "modified  variable  region  [body]  old 1-1  new 1-1  +1 -1\nin  block  resource \"aws_s3_bucket\" \"logs\"  old 2-4  new 2-5\n  added  variable  acl  new 4-4  +1 -0\n    sig+ acl\n",
     ),
     (
         "a.md",
@@ -274,7 +282,7 @@ const LANGUAGE_CASES: &[(&str, &str, &str, &str)] = &[
         "Cargo.toml",
         "[package]\nname = \"x\"\nversion = \"1\"\n\n[dependencies]\nserde = \"1\"\nold = \"1\"\n",
         "[package]\nname = \"x\"\nversion = \"2\"\n\n[dependencies]\nserde = \"1\"\nnew = \"1\"\n",
-        "in  table  package  old 1-4  new 1-4\n  modified  key  version  [body]  old 3-3  new 3-3  +1 -1\nin  table  dependencies  old 5-7  new 5-7\n  removed  key  old  old 7-7  +0 -1\n    sig- old =\n  added  key  new  new 7-7  +1 -0\n    sig+ new =\n",
+        "in  table  package  old 1-4  new 1-4\n  modified  key  version  [body]  old 3-3  new 3-3  +1 -1\nin  table  dependencies  old 5-7  new 5-7\n  removed  key  old  old 7-7  +0 -1\n    sig- old\n  added  key  new  new 7-7  +1 -0\n    sig+ new\n",
     ),
     (
         "a.json",
@@ -384,7 +392,7 @@ fn a_new_file_adds_everything_it_defines() {
             "",
             "use std::fmt;\n\nfn a() {}\n\nimpl S {\n    fn b(&self) {}\n}\n"
         ),
-        "added  function  a  new 3-3  +1 -0\n  sig+ fn a()\nadded  impl  S  new 5-7  +2 -0\n  sig+ impl S\ntop-level  [imports]\n"
+        "added  function  a  new 3-3  +1 -0\n  sig+ fn a()\nadded  impl  S  new 5-7  +2 -0\n  sig+ impl S\ntop-level  [imports]  at 1\n"
     );
 }
 
@@ -453,5 +461,108 @@ fn a_diff_keeps_its_definition_changes_across_expansion() {
         deltoids::Diff::compute("x", "y", "notes.txt")
             .definitions()
             .is_none()
+    );
+}
+
+/// Every definition in `definitions`, one per line as `status name`,
+/// nested ones indented under their parent.
+fn tree(definitions: &[DefinitionChange], depth: usize, out: &mut Vec<String>) {
+    for definition in definitions {
+        let status = match definition.status {
+            Status::Modified => "modified",
+            Status::Container => "in",
+            Status::Unchanged => "unchanged",
+            Status::Added => "added",
+            Status::Removed => "removed",
+            Status::Renamed { .. } => "renamed",
+            Status::Moved { .. } => "moved",
+        };
+        out.push(format!(
+            "{}{status} {}",
+            "  ".repeat(depth),
+            definition.name
+        ));
+        tree(&definition.children, depth + 1, out);
+    }
+}
+
+#[test]
+fn unchanged_definitions_stand_around_the_changes_as_context() {
+    let before = "\
+fn first() {
+    1;
+}
+
+impl Cart {
+    fn total(&self) -> u32 {
+        1
+    }
+
+    fn count(&self) -> usize {
+        2
+    }
+}
+
+impl Untouched {
+    fn get(&self) -> u8 {
+        3
+    }
+}
+";
+    let after = before.replace("        1\n", "        10\n");
+    let diff = DefinitionDiff::compute(before, &after, "a.rs").expect("rust");
+    let mut lines = Vec::new();
+    tree(&diff.definitions, 0, &mut lines);
+    assert_eq!(
+        lines,
+        [
+            "unchanged first",
+            "in Cart",
+            "  modified total",
+            "  unchanged count",
+            "unchanged Untouched",
+        ]
+    );
+    assert!(!diff.is_empty());
+    let same = DefinitionDiff::compute(before, before, "a.rs").expect("rust");
+    assert!(same.is_empty());
+    assert!(
+        same.definitions
+            .iter()
+            .all(|definition| !definition.is_changed())
+    );
+}
+
+#[test]
+fn each_stretch_of_code_outside_definitions_changes_where_it_is() {
+    let before = "\
+//! Old docs.
+
+use std::fmt;
+
+fn first() {}
+
+fn last() {}
+
+// The end.
+";
+    let after = before
+        .replace("//! Old docs.", "//! New docs.\n//! More.")
+        .replace("// The end.", "// The very end.")
+        .replace("use std::fmt;", "use std::fmt;\nuse std::io;");
+    let diff = DefinitionDiff::compute(before, &after, "a.rs").expect("rust");
+    let tops: Vec<(String, usize)> = diff
+        .top_level
+        .iter()
+        .map(|top| (aspects(&top.aspects), top.at))
+        .collect();
+    let line = |text: &str| after.lines().position(|line| line == text).unwrap() + 1;
+    assert_eq!(
+        tops,
+        [
+            // No definition between the docs and the imports: one change.
+            ("[comments, imports]".to_string(), 1),
+            ("[comments]".to_string(), line("// The very end.")),
+        ]
     );
 }

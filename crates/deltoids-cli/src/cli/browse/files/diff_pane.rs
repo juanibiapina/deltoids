@@ -713,8 +713,11 @@ pub(super) struct DiffPane {
     window_key: Option<WindowKey>,
     file_starts: Vec<(usize, usize)>,
     /// Retained definitions blocks: what each file's change did to its
-    /// definitions, for summaries and the definitions view.
+    /// definitions, for summaries.
     pub(super) definitions: DiffCache,
+    /// Retained outline blocks: each file's definitions, the changed ones
+    /// among the unchanged ones around them, for the definitions view.
+    pub(super) outline: DiffCache,
     /// Set by a reload: the next render scrolls the restored cursor back
     /// into view. Ordinary scrolling deliberately leaves the cursor
     /// behind, so this is only armed when the window was rebuilt under
@@ -757,6 +760,7 @@ impl DiffPane {
             window_key: None,
             file_starts: Vec::new(),
             definitions: DiffCache::of(BlockKind::Definitions),
+            outline: DiffCache::of(BlockKind::Outline),
             reveal_cursor: false,
             reload_top: None,
             landing: true,
@@ -1015,7 +1019,13 @@ impl DiffPane {
         };
         self.cache
             .request(epoch, model, self.column, spec.order, None, None, theme);
-        self.definitions.request(
+        let (wanted, idle) = if summary {
+            (&mut self.definitions, &mut self.outline)
+        } else {
+            (&mut self.outline, &mut self.definitions)
+        };
+        idle.request(epoch, model, self.column, spec.order, None, None, theme);
+        wanted.request(
             epoch,
             model,
             self.column,
@@ -1024,11 +1034,16 @@ impl DiffPane {
             None,
             theme,
         );
+        let cache = if summary {
+            &self.definitions
+        } else {
+            &self.outline
+        };
         let key = WindowKey {
             files: Some(selection.files.to_vec()),
             header: self.header.iter().map(|commit| commit.id.clone()).collect(),
             epoch,
-            blocks: self.definitions.revision,
+            blocks: cache.revision,
             comments: selection.comments.revision(),
             labels: labels.revision,
             hide_low: labels.hide_low,
@@ -1044,7 +1059,7 @@ impl DiffPane {
         let blocks: Vec<Option<&[DiffRow]>> = selection
             .files
             .iter()
-            .map(|&file| self.definitions.get(epoch, file))
+            .map(|&file| cache.get(epoch, file))
             .collect();
         let rows = if summary {
             let mut rows = self.header_rows(width, theme);
@@ -1080,18 +1095,20 @@ impl DiffPane {
     pub(super) fn collect(&mut self) -> bool {
         let diffs = self.cache.collect();
         let definitions = self.definitions.collect();
-        diffs || definitions
+        let outline = self.outline.collect();
+        diffs || definitions || outline
     }
 
     /// Whether a background render is still running.
     pub(super) fn pending(&self) -> bool {
-        self.cache.pending() || self.definitions.pending()
+        self.cache.pending() || self.definitions.pending() || self.outline.pending()
     }
 
     /// Stop background renders, keeping what is drawn.
     pub(super) fn pause(&mut self) {
         self.cache.pause();
         self.definitions.pause();
+        self.outline.pause();
     }
 
     /// The window's rows: the commit header, then `files`' blocks, each
@@ -1357,6 +1374,7 @@ impl DiffPane {
         }
         self.cache.carry_over(survivors);
         self.definitions.carry_over(survivors);
+        self.outline.carry_over(survivors);
         self.reset_window();
     }
 
@@ -1502,7 +1520,10 @@ impl DiffPane {
         }
         let pos = self.cursor.scroll.min(span.saturating_sub(1)) + 1;
         let layout = layout_label(self.current_layout);
-        let progress = if self.cache.visible_pending() || self.definitions.visible_pending() {
+        let progress = if self.cache.visible_pending()
+            || self.definitions.visible_pending()
+            || self.outline.visible_pending()
+        {
             "  ·  Rendering…"
         } else {
             ""

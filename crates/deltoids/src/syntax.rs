@@ -21,7 +21,7 @@ use crate::language::{NameRule, TreeSitterConfig};
 mod outline;
 
 use crate::scope::ScopeNode;
-pub(crate) use outline::{Definition, Outline};
+pub(crate) use outline::{Definition, Outline, TopStream};
 
 /// The grammar fields scope queries read.
 #[derive(Debug, Clone, Copy)]

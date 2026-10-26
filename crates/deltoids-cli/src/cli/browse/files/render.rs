@@ -15,7 +15,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use deltoids::Theme;
 use deltoids::parse::FileDiff;
 
-use super::definitions_view;
+use super::definitions_view::{self, Detail};
 use super::diff_pane::{CacheEpoch, render_file_block};
 use super::model::{Column, FileBody, Model};
 use crate::cli::browse::comments::Numbering;
@@ -39,6 +39,9 @@ pub(super) enum BlockKind {
     Diff,
     /// What its change did to its definitions.
     Definitions,
+    /// Its definitions: the changed ones among the unchanged ones around
+    /// them.
+    Outline,
 }
 
 struct Job {
@@ -177,12 +180,17 @@ fn run_worker(
                 &keep_going,
                 &mut publish,
             ),
-            BlockKind::Definitions => Some(definitions_view::render_block(
+            BlockKind::Definitions | BlockKind::Outline => Some(definitions_view::render_block(
                 &job.file,
                 &job.body,
                 job.numbering,
                 job.epoch.width,
                 &job.theme,
+                if job.kind == BlockKind::Outline {
+                    Detail::Outline
+                } else {
+                    Detail::Changes
+                },
             )),
         };
         if let Some(rows) = rows

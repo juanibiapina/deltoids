@@ -13,8 +13,6 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[cfg(not(target_arch = "wasm32"))]
-use bat::assets::HighlightingAssets;
-#[cfg(not(target_arch = "wasm32"))]
 use serde::Deserialize;
 use syntect::highlighting::Theme as SyntectTheme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
@@ -215,7 +213,7 @@ pub struct SyntaxAssets {
 }
 
 impl SyntaxAssets {
-    /// Load syntax assets from the syntaxes and themes bundled with bat.
+    /// Load the bundled syntaxes and the default syntax theme.
     ///
     /// The theme follows `[theme] mode` (or terminal detection when mode is
     /// `auto`): Monokai Extended for dark, GitHub for light.
@@ -225,10 +223,7 @@ impl SyntaxAssets {
 
         let syntax_theme = SYNTAX_THEME.get_or_init(|| {
             let (explicit, _) = read_user_theme_config().unwrap_or_default();
-            let theme_name = default_syntax_theme_name(load_color_mode(explicit));
-            HighlightingAssets::from_binary()
-                .get_theme(theme_name)
-                .clone()
+            registry_theme(default_syntax_theme_name(load_color_mode(explicit)))
         });
 
         Self {
@@ -237,17 +232,13 @@ impl SyntaxAssets {
         }
     }
 
-    /// Load syntax assets on wasm from two-face's embedded syntect dumps (the
-    /// same syntaxes/themes bat ships), avoiding the filesystem and oniguruma.
+    /// Load the bundled syntaxes and the dark default theme, with no
+    /// filesystem access on wasm.
     #[cfg(target_arch = "wasm32")]
     pub fn load() -> Self {
         let syntax_set = SYNTAX_SET.get_or_init(bundled_syntax_set);
 
-        let syntax_theme = SYNTAX_THEME.get_or_init(|| {
-            two_face::theme::extra()
-                .get(two_face::theme::EmbeddedThemeName::MonokaiExtended)
-                .clone()
-        });
+        let syntax_theme = SYNTAX_THEME.get_or_init(|| registry_theme(DEFAULT_DARK_SYNTAX_THEME));
 
         Self {
             syntax_set,
@@ -264,9 +255,8 @@ impl SyntaxAssets {
 // ---------------------------------------------------------------------------
 // Syntax-theme registry
 //
-// One name-keyed registry of syntect themes, populated identically in spirit
-// on native (from bat's `HighlightingAssets`) and wasm (from two-face's
-// embedded dumps), plus the vendored Tokyo Night converted to a dump by
+// One name-keyed registry of syntect themes from two-face's embedded dumps
+// plus the vendored Tokyo Night converted to a dump by
 // `build.rs`. Every renderer resolves its theme through [`theme_by_name`] as
 // an explicit input; `None` / unknown fall back to today's global default so
 // behaviour is byte-identical until a caller passes a real name.
@@ -297,27 +287,14 @@ fn theme_registry() -> &'static ThemeRegistry {
 }
 
 fn build_theme_registry() -> ThemeRegistry {
-    let mut themes: HashMap<&'static str, SyntectTheme> = HashMap::new();
+    let set = two_face::theme::extra();
+    let mut themes: HashMap<&'static str, SyntectTheme> =
+        two_face::theme::EmbeddedLazyThemeSet::theme_names()
+            .iter()
+            .map(|name| (name.as_name(), set.get(*name).clone()))
+            .collect();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let assets = HighlightingAssets::from_binary();
-        for name in assets.themes() {
-            let key: &'static str = Box::leak(name.to_string().into_boxed_str());
-            themes.insert(key, assets.get_theme(name).clone());
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        let set = two_face::theme::extra();
-        for name in two_face::theme::EmbeddedLazyThemeSet::theme_names() {
-            // `as_name()` is already `&'static str`.
-            themes.insert(name.as_name(), set.get(*name).clone());
-        }
-    }
-
-    // Vendored Tokyo Night on both targets. `or_insert_with` so a same-named
+    // `or_insert_with` so a same-named
     // upstream theme (if any) does not get clobbered silently.
     themes
         .entry(TOKYO_NIGHT_THEME_NAME)
@@ -326,6 +303,15 @@ fn build_theme_registry() -> ThemeRegistry {
     let mut names: Vec<&'static str> = themes.keys().copied().collect();
     names.sort_unstable();
     ThemeRegistry { themes, names }
+}
+
+/// A registry theme the code names itself, such as a mode default.
+fn registry_theme(name: &str) -> SyntectTheme {
+    theme_registry()
+        .themes
+        .get(name)
+        .cloned()
+        .expect("default syntax themes are in the registry")
 }
 
 /// Today's global default syntax theme: the value the renderers used before
@@ -368,17 +354,7 @@ pub fn theme_name_key(name: &str) -> &'static str {
 }
 
 /// The bundled syntax set used for both highlighting and stable language
-/// detection. Native builds read bat's embedded assets; wasm builds use
-/// two-face's embedded syntect dumps.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn bundled_syntax_set() -> SyntaxSet {
-    HighlightingAssets::from_binary()
-        .get_syntax_set()
-        .expect("bundled syntax assets should load")
-        .clone()
-}
-
-#[cfg(target_arch = "wasm32")]
+/// detection: two-face's embedded syntect dumps.
 pub(crate) fn bundled_syntax_set() -> SyntaxSet {
     two_face::syntax::extra_newlines()
 }
@@ -701,7 +677,7 @@ mod tests {
             names.contains(&TOKYO_NIGHT_THEME_NAME),
             "registry must include the vendored Tokyo Night, got {names:?}"
         );
-        // A couple of bat-bundled themes we rely on for defaults.
+        // The bundled themes we rely on for defaults.
         assert!(names.contains(&"GitHub"));
         assert!(names.contains(&"Monokai Extended"));
         // Sorted and unique.

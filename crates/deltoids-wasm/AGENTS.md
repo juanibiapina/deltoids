@@ -49,12 +49,12 @@ emphasis, syntect highlighting. Two constraints shape the build, both handled in
   points the `cc` crate at wasi-sdk's clang + sysroot (`CC_wasm32_wasip1`,
   `CFLAGS_wasm32_wasip1`). The browser runs the wasip1 module under
   `@bjorn3/browser_wasi_shim`.
-- **No oniguruma, no bat, no filesystem.** On wasm, syntect uses the pure-Rust
-  `fancy-regex` engine and assets come from `two-face`'s embedded syntect dumps
-  instead of bat. Native builds are unchanged (onig + bat).
+- **No oniguruma, no filesystem.** On wasm, syntect uses the pure-Rust
+  `fancy-regex` engine; native builds use oniguruma. Both targets take their
+  assets from `two-face`'s embedded syntect dumps.
 - **One theme registry, both targets.** `deltoids`'s `config.rs` builds a
-  name-keyed `theme_by_name` / `theme_names` registry — from bat's themes on
-  native, from two-face's embedded themes on wasm — plus a vendored Tokyo Night
+  name-keyed `theme_by_name` / `theme_names` registry from two-face's
+  embedded themes, plus a vendored Tokyo Night
   (`crates/deltoids/assets/themes/tokyonight.tmTheme`) that `deltoids`'s
   `build.rs` converts to a syntect dump at build time and both targets
   `include_bytes!` + `from_binary` (via `dump-load`, no runtime plist parser).

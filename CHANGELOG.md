@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: a commit or branch review is the only tab while it is open. `Esc` closes it and returns to the Branches panel.
 - TUI: when a clean working tree gets changes, the Files tab comes back and becomes the current tab.
 - TUI: the definitions and callers list shows only answers on changed lines under "In this diff". Answers on unchanged lines of a changed file move to "Outside the diff".
+- Change the `zenburn` syntax theme's colors, and add the `InspiredGitHub`, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.dark`, and `base16-ocean.light` syntax themes.
 
 ### Removed
 
-- Remove loading custom syntaxes and themes from bat's cache (`bat cache --build`). deltoids uses the syntaxes and themes bundled with bat.
+- Remove loading custom syntaxes and themes from bat's cache (`bat cache --build`).
+- Remove the `Visual Studio Dark+` syntax theme.
 - Remove support for `BAT_THEME`. Set `syntax_theme` under `[theme]` in the config file to choose a syntax theme.
 - TUI: remove the panel numbers and the `0`, `1`, and `2` keys. Click the main view to focus it. Custom commands can now use these keys.
 

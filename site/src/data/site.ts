@@ -90,7 +90,7 @@ export const REVIEW_FEATURES: ReviewFeature[] = [
   {
     keys: "t",
     title: "Syntax themes",
-    body: "Pick from Tokyo Night and every bat theme, live, or set a default in `config.toml`.",
+    body: "Pick from Tokyo Night and 32 more bundled themes, live, or set a default in `config.toml`.",
     href: "/docs/configuration/#theme",
   },
 ];

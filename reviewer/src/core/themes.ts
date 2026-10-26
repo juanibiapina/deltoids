@@ -15,7 +15,6 @@ export const SYNTAX_THEMES = {
     "Solarized (dark)",
     "gruvbox-dark",
     "Coldark-Dark",
-    "Visual Studio Dark+",
     "zenburn",
   ],
   light: [

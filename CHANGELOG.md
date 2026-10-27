@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-27
+
 ### Added
 
 - TUI: rest the pointer on a symbol in the diff, or press `i` on the picked one, to see its type and docs from the language server.

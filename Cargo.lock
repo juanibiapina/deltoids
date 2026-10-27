@@ -471,7 +471,7 @@ checksum = "5729f5117e208430e437df2f4843f5e5952997175992d1414f94c57d61e270b4"
 
 [[package]]
 name = "deltoids"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "dirs",
  "git2",
@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "deltoids-cli"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "deltoids-wasm"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "deltoids",
 ]
@@ -2442,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "tests"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "tempfile",
 ]

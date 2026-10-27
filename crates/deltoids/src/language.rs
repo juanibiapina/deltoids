@@ -526,7 +526,6 @@ pub(crate) enum VisibilityRule {
 
 /// Per-language tree-sitter configuration.
 pub(crate) struct TreeSitterConfig {
-    pub(crate) language: LanguageFn,
     /// Named code structures (functions, classes, modules, tables, headings).
     /// Resolution prefers the innermost structure that contains a change.
     pub(crate) structure_kinds: &'static [&'static str],
@@ -679,12 +678,14 @@ impl Language {
     /// Detect the language for an in-memory file snapshot.
     ///
     /// Tries file name, extension, then the first source line for shebangs and
-    /// modelines. The path is never read from disk.
+    /// modelines. The path is never read from disk. A language whose grammar
+    /// is left out is not detected.
     pub(crate) fn detect(path: &str, source: &str) -> Option<Self> {
         let syntax_set = detection_syntax_set();
         detect_syntax_by_path(syntax_set, path)
             .or_else(|| detect_syntax_by_first_line(syntax_set, source))
             .and_then(Self::from_syntax)
+            .filter(|language| language.grammar().is_some())
     }
 
     /// Detect the syntect syntax name (the highlight key), independent of
@@ -696,12 +697,59 @@ impl Language {
             .map(|syntax| syntax.name.clone())
     }
 
-    /// Tree-sitter parser and scope taxonomy for this language.
+    /// The tree-sitter grammar for this language, when its `lang-*` feature is on.
+    #[allow(unreachable_patterns, clippy::match_single_binding)]
+    pub(crate) fn grammar(self) -> Option<LanguageFn> {
+        match self {
+            #[cfg(feature = "lang-rust")]
+            Language::Rust => Some(tree_sitter_rust::LANGUAGE),
+            #[cfg(feature = "lang-python")]
+            Language::Python => Some(tree_sitter_python::LANGUAGE),
+            #[cfg(feature = "lang-javascript")]
+            Language::JavaScript => Some(tree_sitter_javascript::LANGUAGE),
+            #[cfg(feature = "lang-typescript")]
+            Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+            #[cfg(feature = "lang-typescript")]
+            Language::Tsx => Some(tree_sitter_typescript::LANGUAGE_TSX),
+            #[cfg(feature = "lang-go")]
+            Language::Go => Some(tree_sitter_go::LANGUAGE),
+            #[cfg(feature = "lang-ruby")]
+            Language::Ruby => Some(tree_sitter_ruby::LANGUAGE),
+            #[cfg(feature = "lang-kotlin")]
+            Language::Kotlin => Some(tree_sitter_kotlin_ng::LANGUAGE),
+            #[cfg(feature = "lang-java")]
+            Language::Java => Some(tree_sitter_java::LANGUAGE),
+            #[cfg(feature = "lang-c")]
+            Language::C => Some(tree_sitter_c::LANGUAGE),
+            #[cfg(feature = "lang-cpp")]
+            Language::Cpp => Some(tree_sitter_cpp::LANGUAGE),
+            #[cfg(feature = "lang-bash")]
+            Language::Bash => Some(tree_sitter_bash::LANGUAGE),
+            #[cfg(feature = "lang-lua")]
+            Language::Lua => Some(tree_sitter_lua::LANGUAGE),
+            #[cfg(feature = "lang-css")]
+            Language::Css => Some(tree_sitter_css::LANGUAGE),
+            #[cfg(feature = "lang-hcl")]
+            Language::Hcl => Some(tree_sitter_hcl::LANGUAGE),
+            #[cfg(feature = "lang-markdown")]
+            Language::Markdown => Some(tree_sitter_md::LANGUAGE),
+            #[cfg(feature = "lang-sql")]
+            Language::Sql => Some(tree_sitter_sequel::LANGUAGE),
+            #[cfg(feature = "lang-toml")]
+            Language::Toml => Some(tree_sitter_toml_ng::LANGUAGE),
+            #[cfg(feature = "lang-json")]
+            Language::Json => Some(tree_sitter_json::LANGUAGE),
+            #[cfg(feature = "lang-yaml")]
+            Language::Yaml => Some(tree_sitter_yaml::LANGUAGE),
+            _ => None,
+        }
+    }
+
+    /// Scope taxonomy for this language.
     #[allow(clippy::too_many_lines)]
     pub(crate) fn tree_sitter_config(self) -> TreeSitterConfig {
         match self {
             Language::Rust => TreeSitterConfig {
-                language: tree_sitter_rust::LANGUAGE,
                 structure_kinds: &[
                     "function_item",
                     "impl_item",
@@ -731,7 +779,6 @@ impl Language {
                 visibility: VisibilityRule::Rust,
             },
             Language::Python => TreeSitterConfig {
-                language: tree_sitter_python::LANGUAGE,
                 structure_kinds: &["function_definition", "class_definition"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition", "lambda"],
@@ -754,7 +801,6 @@ impl Language {
                 visibility: VisibilityRule::Underscore,
             },
             Language::JavaScript => TreeSitterConfig {
-                language: tree_sitter_javascript::LANGUAGE,
                 structure_kinds: &[
                     "function_declaration",
                     "class_declaration",
@@ -808,7 +854,6 @@ impl Language {
                 visibility: VisibilityRule::Exported,
             },
             Language::TypeScript => TreeSitterConfig {
-                language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
                 structure_kinds: &[
                     "function_declaration",
                     "class_declaration",
@@ -854,7 +899,6 @@ impl Language {
                 visibility: VisibilityRule::Exported,
             },
             Language::Tsx => TreeSitterConfig {
-                language: tree_sitter_typescript::LANGUAGE_TSX,
                 structure_kinds: &[
                     "function_declaration",
                     "class_declaration",
@@ -898,7 +942,6 @@ impl Language {
                 visibility: VisibilityRule::Exported,
             },
             Language::Go => TreeSitterConfig {
-                language: tree_sitter_go::LANGUAGE,
                 structure_kinds: &[
                     "function_declaration",
                     "method_declaration",
@@ -934,7 +977,6 @@ impl Language {
                 visibility: VisibilityRule::Capitalized,
             },
             Language::Ruby => TreeSitterConfig {
-                language: tree_sitter_ruby::LANGUAGE,
                 structure_kinds: &["method", "singleton_method", "class", "module"],
                 promoted_kinds: &[],
                 function_body_kinds: &["method", "singleton_method", "block", "do_block", "lambda"],
@@ -963,7 +1005,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Kotlin => TreeSitterConfig {
-                language: tree_sitter_kotlin_ng::LANGUAGE,
                 structure_kinds: &[
                     "class_declaration",
                     "function_declaration",
@@ -987,7 +1028,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Java => TreeSitterConfig {
-                language: tree_sitter_java::LANGUAGE,
                 structure_kinds: &[
                     "class_declaration",
                     "interface_declaration",
@@ -1017,7 +1057,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::C => TreeSitterConfig {
-                language: tree_sitter_c::LANGUAGE,
                 structure_kinds: &["function_definition", "struct_specifier"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
@@ -1040,7 +1079,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Cpp => TreeSitterConfig {
-                language: tree_sitter_cpp::LANGUAGE,
                 structure_kinds: &[
                     "function_definition",
                     "class_specifier",
@@ -1069,7 +1107,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Bash => TreeSitterConfig {
-                language: tree_sitter_bash::LANGUAGE,
                 structure_kinds: &["function_definition"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_definition"],
@@ -1085,7 +1122,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Lua => TreeSitterConfig {
-                language: tree_sitter_lua::LANGUAGE,
                 structure_kinds: &["function_declaration"],
                 promoted_kinds: &[],
                 function_body_kinds: &["function_declaration", "function_definition"],
@@ -1109,7 +1145,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Css => TreeSitterConfig {
-                language: tree_sitter_css::LANGUAGE,
                 structure_kinds: &["rule_set", "media_statement"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
@@ -1133,7 +1168,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Hcl => TreeSitterConfig {
-                language: tree_sitter_hcl::LANGUAGE,
                 structure_kinds: &["block"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
@@ -1152,7 +1186,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Markdown => TreeSitterConfig {
-                language: tree_sitter_md::LANGUAGE,
                 structure_kinds: &["atx_heading", "setext_heading"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
@@ -1178,7 +1211,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Sql => TreeSitterConfig {
-                language: tree_sitter_sequel::LANGUAGE,
                 // DDL statements are the named units of a schema. Each
                 // parses as `statement > create_*/alter_*`; the wrapper
                 // `statement` stays transparent so the breadcrumb reads
@@ -1231,7 +1263,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Toml => TreeSitterConfig {
-                language: tree_sitter_toml_ng::LANGUAGE,
                 structure_kinds: &["table", "table_array_element"],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
@@ -1266,7 +1297,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Json => TreeSitterConfig {
-                language: tree_sitter_json::LANGUAGE,
                 structure_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],
@@ -1282,7 +1312,6 @@ impl Language {
                 visibility: VisibilityRule::None,
             },
             Language::Yaml => TreeSitterConfig {
-                language: tree_sitter_yaml::LANGUAGE,
                 structure_kinds: &[],
                 promoted_kinds: &[],
                 function_body_kinds: &[],

@@ -20,26 +20,26 @@ gix-imara-diff = { version = "0.2", features = ["unified_diff"] }
 # wasm. Keep the base dep engine-free so wasm never pulls the C oniguruma build.
 syntect = { version = "5", default-features = false }
 tree-sitter = "0.26"
-tree-sitter-bash = "0.25"
-tree-sitter-c = "0.24"
-tree-sitter-cpp = "0.23"
-tree-sitter-css = "0.25"
-tree-sitter-go = "0.25"
-tree-sitter-hcl = "1.1"
-tree-sitter-java = "0.23"
-tree-sitter-javascript = "0.25"
-tree-sitter-json = "0.24"
-tree-sitter-kotlin-ng = "1.1"
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-hcl = { version = "1.1", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-kotlin-ng = { version = "1.1", optional = true }
 tree-sitter-language = "0.1"
-tree-sitter-lua = "0.5"
-tree-sitter-md = "0.5"
-tree-sitter-python = "0.25"
-tree-sitter-ruby = "0.23"
-tree-sitter-rust = "0.24"
-tree-sitter-sequel = "0.3"
-tree-sitter-toml-ng = "0.7"
-tree-sitter-typescript = "0.23"
-tree-sitter-yaml = "0.7"
+tree-sitter-lua = { version = "0.5", optional = true }
+tree-sitter-md = { version = "0.5", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-sequel = { version = "0.3", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
 unicode-segmentation = "1"
 unicode-width = "0.2"
 rustc-hash = "2"
@@ -70,7 +70,48 @@ syntect = { version = "5", default-features = false, features = ["parsing", "pli
 tempfile = "3"
 
 [features]
-default = []
+default = [
+    "lang-bash",
+    "lang-c",
+    "lang-cpp",
+    "lang-css",
+    "lang-go",
+    "lang-hcl",
+    "lang-java",
+    "lang-javascript",
+    "lang-json",
+    "lang-kotlin",
+    "lang-lua",
+    "lang-markdown",
+    "lang-python",
+    "lang-ruby",
+    "lang-rust",
+    "lang-sql",
+    "lang-toml",
+    "lang-typescript",
+    "lang-yaml",
+]
+# One tree-sitter grammar each. Without one, that language's files diff like
+# an unknown language: no breadcrumbs, hunk expansion, definitions, or symbols.
+lang-bash = ["dep:tree-sitter-bash"]
+lang-c = ["dep:tree-sitter-c"]
+lang-cpp = ["dep:tree-sitter-cpp"]
+lang-css = ["dep:tree-sitter-css"]
+lang-go = ["dep:tree-sitter-go"]
+lang-hcl = ["dep:tree-sitter-hcl"]
+lang-java = ["dep:tree-sitter-java"]
+lang-javascript = ["dep:tree-sitter-javascript"]
+lang-json = ["dep:tree-sitter-json"]
+lang-kotlin = ["dep:tree-sitter-kotlin-ng"]
+lang-lua = ["dep:tree-sitter-lua"]
+lang-markdown = ["dep:tree-sitter-md"]
+lang-python = ["dep:tree-sitter-python"]
+lang-ruby = ["dep:tree-sitter-ruby"]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-sql = ["dep:tree-sitter-sequel"]
+lang-toml = ["dep:tree-sitter-toml-ng"]
+lang-typescript = ["dep:tree-sitter-typescript"]
+lang-yaml = ["dep:tree-sitter-yaml"]
 # Resolve before/after content for a `parse::FileDiff` from a git
 # repository's object database (uses libgit2 via the `git2` crate).
 blob-resolve = ["dep:git2"]

@@ -101,7 +101,7 @@ impl ParsedFile {
     pub(crate) fn outline(&self) -> Outline {
         let mut builder = Builder {
             parsed: self,
-            roles: Roles::new(&self.config),
+            roles: Roles::new(&self.config, &self.tree.language()),
             definitions: Vec::new(),
             declared: Vec::new(),
             last_child: vec![None],
@@ -615,8 +615,7 @@ struct Role {
 }
 
 impl Roles {
-    fn new(config: &crate::language::TreeSitterConfig) -> Self {
-        let language: tree_sitter::Language = config.language.into();
+    fn new(config: &crate::language::TreeSitterConfig, language: &tree_sitter::Language) -> Self {
         let roles = (0..language.node_kind_count())
             .map(|id| {
                 let Some(kind) = u16::try_from(id)

@@ -9,6 +9,7 @@ This is a Rust workspace for a diff toolkit: an ANSI diff pager, a scrolling TUI
   - `blob-resolve` — adds `git`/`content` modules for resolving before/after blob content from a git repo (used by the `pager` and `tui` subcommands).
   - `ratatui` — adds `render_tui` for rendering hunks/headers as `ratatui::text::Line<'static>` (used by the `tui` subcommand).
   - `html` — adds `render_html` for rendering hunks as semantic HTML (used by the wasm reviewer).
+  - `lang-<name>` — one per tree-sitter grammar, all on by default. Without one, that language's files diff like an unknown language: no breadcrumbs, hunk expansion, definitions, or symbols. `tests/grammar_off.rs` checks this with `--no-default-features`.
 - `deltoids-cli` — ships a single `deltoids` binary with subcommands: `pager` (ANSI diff filter), `tui` (scrolling TUI over the working-tree diff). Cargo-dist publishes one homebrew formula (`deltoids`) and one shell installer for this crate.
 - `deltoids-wasm` — WebAssembly build of the diff engine for the browser PR reviewer at `review.deltoids.dev` (the React app in `reviewer/`). A `cdylib` exposing `render_file`/`render_from_patch` over a C-ABI; builds for `wasm32-wasip1` via wasi-sdk. See `crates/deltoids-wasm/AGENTS.md`.
 - `tests` — cross-crate integration tests

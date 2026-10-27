@@ -96,9 +96,10 @@ impl ParsedFile {
     }
 
     pub(crate) fn parse_as(language: Language, source: &str) -> Option<Self> {
+        let grammar = language.grammar()?;
         let config = language.tree_sitter_config();
         let mut parser = Parser::new();
-        parser.set_language(&config.language.into()).ok()?;
+        parser.set_language(&grammar.into()).ok()?;
         let tree = parser.parse(source, None)?;
         let lines = source
             .lines()

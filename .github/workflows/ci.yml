@@ -38,6 +38,12 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Clippy without grammars
+        run: cargo clippy -p deltoids --no-default-features --lib
+
+      - name: Test without grammars
+        run: cargo test -p deltoids --no-default-features --test grammar_off
+
   cargo-deny:
     name: Cargo Deny
     runs-on: ubuntu-latest

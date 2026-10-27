@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: the `\` toggle for interleaved diff lines. Changed lines always show all removed lines, then all added lines.
 
+### Fixed
+
+- Library: the `deltoids` crate declares its MIT license, so license checkers such as cargo-deny no longer report it as unlicensed ([#11](https://github.com/juanibiapina/deltoids/issues/11)).
+
 ## [0.17.0] - 2026-10-26
 
 ### Changed

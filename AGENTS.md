@@ -20,6 +20,7 @@ cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all -- --check
+cargo deny check bans licenses sources
 ```
 
 Install the binary locally:

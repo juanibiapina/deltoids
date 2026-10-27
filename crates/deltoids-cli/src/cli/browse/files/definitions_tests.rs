@@ -385,6 +385,41 @@ fn a_click_selects_a_definition_and_a_double_click_opens_the_diff_at_its_change(
 }
 
 #[test]
+fn changed_definitions_are_tinted_like_diff_lines() {
+    let before =
+        "fn kept() {\n    1;\n}\n\nfn grown() {\n    a();\n}\n\nfn gone() {\n    alpha();\n}\n";
+    let after = "fn kept() {\n    2;\n}\n\nfn grown() {\n    a();\n    b();\n}\n\nstruct Fresh {\n    x: u8,\n}\n";
+    let file = ResolvedFile {
+        file: file_diff("src/a.rs"),
+        before: before.to_string(),
+        after: after.to_string(),
+    };
+    let mut state = make_state(&[file]);
+    state.sidebar.select_file_index(0, 20);
+    state.snap_diff_to_selected_file();
+    press(&mut state, KeyCode::Char('o'));
+    pane(&mut state);
+    let backgrounds = |text: &str| -> std::collections::HashSet<_> {
+        let row = state
+            .unstaged
+            .rows()
+            .iter()
+            .find(|row| line_text(&row.line).contains(text))
+            .unwrap_or_else(|| panic!("a row for {text}"));
+        row.line.spans.iter().map(|span| span.style.bg).collect()
+    };
+    let theme = deltoids::Theme::default();
+    let added = deltoids::render_tui::rgb_to_color(theme.diff_added_bg);
+    let removed = deltoids::render_tui::rgb_to_color(theme.diff_deleted_bg);
+
+    assert_eq!(backgrounds("+ struct Fresh"), [Some(added)].into());
+    assert_eq!(backgrounds("- fn gone()"), [Some(removed)].into());
+    let changed = deltoids::render_tui::rgb_to_color(theme.definition_changed_bg);
+    assert_eq!(backgrounds("~ fn grown()"), [Some(changed)].into());
+    assert_eq!(backgrounds("~ fn kept()"), [Some(changed)].into());
+}
+
+#[test]
 fn a_definitions_signature_is_highlighted() {
     let mut state = on_file(0);
     press(&mut state, KeyCode::Char('o'));

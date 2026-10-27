@@ -318,6 +318,11 @@ impl Block<'_> {
             " ".repeat(self.width.saturating_sub(used + counts_width)),
         ));
         spans.extend(counts);
+        if let Some(bg) = tint(change, self.theme) {
+            for span in &mut spans {
+                span.style = span.style.bg(bg);
+            }
+        }
         let at = self.opens_at(change);
         self.push(Line::from(spans), at.clone());
         if change.aspects.signature
@@ -420,6 +425,20 @@ fn marker(status: &Status, theme: &Theme) -> (&'static str, ratatui::style::Colo
         Status::Container | Status::Unchanged => (" ", theme.muted),
     };
     (marker, rgb_to_color(rgb))
+}
+
+/// The background of a changed definition's row, following its marker:
+/// the diff's added or deleted line background for an added or removed
+/// definition, the theme's changed-definition background for any other
+/// whose own lines changed. None when its own lines are unchanged.
+fn tint(change: &DefinitionChange, theme: &Theme) -> Option<ratatui::style::Color> {
+    let rgb = match change.status {
+        Status::Added => theme.diff_added_bg,
+        Status::Removed => theme.diff_deleted_bg,
+        _ if change.lines != (0, 0) => theme.definition_changed_bg,
+        _ => return None,
+    };
+    Some(rgb_to_color(rgb))
 }
 
 /// What changed, in words: `body, docs`, `renamed from old`, `moved

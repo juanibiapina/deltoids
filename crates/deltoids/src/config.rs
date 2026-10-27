@@ -42,6 +42,9 @@ pub struct Theme {
     pub diff_deleted_bg: (u8, u8, u8),
     /// Background for emphasized (intraline) deleted regions.
     pub diff_deleted_emph_bg: (u8, u8, u8),
+    /// Background for a definition whose lines changed (an added one uses
+    /// `diff_added_bg`, a removed one `diff_deleted_bg`).
+    pub definition_changed_bg: (u8, u8, u8),
     /// Separator line color (file headers).
     pub separator: (u8, u8, u8),
     /// Border color (breadcrumb boxes, inactive panes).
@@ -82,6 +85,7 @@ impl Default for Theme {
             diff_added_emph_bg: (44, 90, 102),   // #2c5a66
             diff_deleted_bg: (55, 34, 44),       // #37222c
             diff_deleted_emph_bg: (113, 49, 55), // #713137
+            definition_changed_bg: (55, 48, 34), // #373022
             separator: (122, 162, 247),          // #7aa2f7
             border: (122, 162, 247),             // #7aa2f7
             border_active: (255, 150, 108),      // #ff966c
@@ -112,6 +116,7 @@ impl Theme {
                 diff_added_emph_bg: (0xa0, 0xef, 0xa0),
                 diff_deleted_bg: (0xff, 0xe0, 0xe0),
                 diff_deleted_emph_bg: (0xff, 0xc0, 0xc0),
+                definition_changed_bg: (0xff, 0xf4, 0xd0),
                 // Chrome accents stay the saturated Tokyo Night blue/orange;
                 // they read on cream as well as on the dark default.
                 separator: (122, 162, 247),
@@ -386,6 +391,8 @@ fn apply_overlay(base: Theme, overlay: &ThemeConfig) -> Theme {
         diff_deleted_bg: parse_hex_color(&overlay.diff_deleted_bg).unwrap_or(base.diff_deleted_bg),
         diff_deleted_emph_bg: parse_hex_color(&overlay.diff_deleted_emph_bg)
             .unwrap_or(base.diff_deleted_emph_bg),
+        definition_changed_bg: parse_hex_color(&overlay.definition_changed_bg)
+            .unwrap_or(base.definition_changed_bg),
         separator: parse_hex_color(&overlay.separator).unwrap_or(base.separator),
         border: parse_hex_color(&overlay.border).unwrap_or(base.border),
         border_active: parse_hex_color(&overlay.border_active).unwrap_or(base.border_active),
@@ -423,6 +430,7 @@ struct ThemeConfig {
     diff_added_emph_bg: Option<String>,
     diff_deleted_bg: Option<String>,
     diff_deleted_emph_bg: Option<String>,
+    definition_changed_bg: Option<String>,
     separator: Option<String>,
     border: Option<String>,
     border_active: Option<String>,

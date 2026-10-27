@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: rest the pointer on a symbol in the diff, or press `i` on the picked one, to see its type and docs from the language server.
 - TUI: a file's definitions list its public interface first, then restricted and private definitions, each under a heading, for Rust, Go, Python, JavaScript, and TypeScript.
+- TUI: changed definitions are tinted by their marker: added ones green and removed ones red, like lines in the diff, and modified ones amber. Set `definition_changed_bg` under `[theme]` to change the amber.
 
 ### Changed
 

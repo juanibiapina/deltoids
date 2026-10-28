@@ -1,0 +1,25 @@
+# The reviewer at review.deltoids.dev: one Worker that serves the built app
+# (reviewer/dist) as static assets and runs worker/index.ts for any request no
+# file matches (the /api/* routes). See AGENTS.md "Backend".
+name = "deltoids-review"
+main = "worker/index.ts"
+compatibility_date = "2026-10-28"
+workers_dev = false
+routes = [{ pattern = "review.deltoids.dev", custom_domain = true }]
+
+[assets]
+directory = "./dist"
+
+[observability]
+enabled = true
+
+# The Clerk production instance's publishable key. It is public and ships in
+# the page bundle; keep it equal to VITE_CLERK_PUBLISHABLE_KEY in
+# .env.production.
+[vars]
+CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuZGVsdG9pZHMuZGV2JA=="
+
+# Synced from ZeroVault (deltoids-review/production) by bin/sync-secrets. A
+# deploy aborts when one was never set.
+[secrets]
+required = ["CLERK_SECRET_KEY", "CLERK_JWT_KEY"]

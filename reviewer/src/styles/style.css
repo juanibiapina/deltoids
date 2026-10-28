@@ -365,6 +365,12 @@ button:focus-visible {
 .topbar-actions .tool-group {
   margin-left: 0;
 }
+/* Account: a "Sign in" .tool when signed out, Clerk's avatar button when
+   signed in. Only present when the build has a Clerk key. */
+.account {
+  display: flex;
+  align-items: center;
+}
 
 /* Settings popover: all display controls behind one trigger. */
 .settings {

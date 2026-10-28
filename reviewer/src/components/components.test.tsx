@@ -503,3 +503,18 @@ describe("Topbar PR input collapse", () => {
     expect(screen.getByPlaceholderText(/github.com/)).toBeTruthy();
   });
 });
+
+describe("Topbar account button", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // A developer's reviewer/.env.local can hold a Clerk key, and Vitest loads
+  // it; outside AuthProvider the top bar must still render without Clerk.
+  test.each([true, false])("outside AuthProvider, wide=%s: no account button, even with a key set", (wide) => {
+    vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", "pk_test_Y2xlcmsuZXhhbXBsZS5jb20k");
+    mockWidth(wide);
+    renderTopbar(makePrefs());
+    expect(screen.queryByRole("button", { name: /sign in/i })).toBeNull();
+  });
+});

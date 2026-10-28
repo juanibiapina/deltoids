@@ -1,4 +1,5 @@
 /target
 
-# Wrangler local cache (Cloudflare Pages deploy runs from repo root in CI)
+# Wrangler local state and dry-run bundle (reviewer/ deploys as a Cloudflare Worker)
 .wrangler/
+/worker-dist/

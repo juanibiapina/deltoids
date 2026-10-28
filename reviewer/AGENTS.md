@@ -1,9 +1,10 @@
 # reviewer
 
-Standalone React PR reviewer, deployed to Cloudflare Pages at
-`review.deltoids.dev`. It renders any public GitHub pull request as a clean,
-scope-expanded diff entirely in the browser, using the `deltoids-wasm` engine.
-No backend.
+Standalone React PR reviewer, deployed as the Cloudflare Worker
+`deltoids-review` at `review.deltoids.dev`. It renders any public GitHub pull
+request as a clean, scope-expanded diff entirely in the browser, using the
+`deltoids-wasm` engine. The same Worker serves a small backend under `/api`
+(see **Backend**); sign-in is optional and reviewing works signed out.
 
 It lives in the monorepo (so it and `crates/deltoids-wasm` change atomically)
 but ships independently of the marketing site (`site/`, GitHub Pages).
@@ -20,10 +21,19 @@ but ships independently of the marketing site (`site/`, GitHub Pages).
 reviewer/
   index.html                # Vite entry; mounts React into #root
   vite.config.ts            # base "/", React plugin, Vitest config
+  wrangler.toml             # Worker: assets (dist/), route, vars, required secrets
+  .env.production           # committed pk_live_ Clerk key for the Vite build
+  bin/sync-secrets          # ZeroVault -> Worker secrets (run by hand)
+  worker/                   # the Worker (see Backend)
+    index.ts                #   fetch: /api/* dispatch, 401 when signed out
+    auth.ts                 #   authenticate(): the only Clerk-aware server code
+    env.ts                  #   Env bindings
+    index.test.ts           #   /api/me through fetch, with locally signed tokens
+    tsconfig.json           #   Workers types (typecheck runs it too)
   public/
     deltoids_wasm.wasm       # engine (gitignored, built by build-wasm.sh)
   src/
-    main.tsx                # React root + imports the stylesheet
+    main.tsx                # React root (inside AuthProvider) + the stylesheet
     App.tsx                 # app shell: review flow, deep-link, token, prefs
     core/                   # framework-neutral, DOM-free logic
       engine.ts             #   wasm compile (main) + instantiate/marshal (worker)
@@ -49,7 +59,8 @@ reviewer/
       overview.test.ts      #   tests ported from the TUI diff_scrollbar.rs
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
-      Topbar.tsx            #   brand, PR form, token button, toolbar
+      Topbar.tsx            #   brand, PR form, token button, toolbar, account
+      Account.tsx           #   AuthProvider (Clerk when keyed) + AccountButton
       FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
       fileIcons.ts          #   filename -> per-type brand icon (simple-icons)
       ReviewView.tsx        #   selection + diff pane of lazy file cards
@@ -74,26 +85,125 @@ npm install
 # Build the engine once (needs wasi-sdk; see crates/deltoids-wasm/AGENTS.md):
 DEST="$PWD/public/deltoids_wasm.wasm" \
   WASI_SDK=/path/to/wasi-sdk ../crates/deltoids-wasm/build-wasm.sh
-npm run dev        # http://localhost:5173
+npm run dev        # http://localhost:5173 (no sign-in)
+npm run dev:api    # build + Worker on http://localhost:8787, with sign-in
 npm run build      # tsc --noEmit && vite build -> reviewer/dist/
-npm run preview    # serve dist as prod will
-npm test           # vitest run
-npm run typecheck  # tsc --noEmit
+npm run preview    # serve dist (no Worker)
+npm test           # vitest run (app + worker/)
+npm run typecheck  # tsc for the app and for worker/
+npx wrangler deploy --dry-run --outdir=../worker-dist  # bundle check, as CI
 ```
 
 The engine fetches from `/deltoids_wasm.wasm` (root), so `base` is `/` and the
 app is served from the root of its own subdomain.
 
+## Backend
+
+One Cloudflare Worker (`wrangler.toml`, name `deltoids-review`) serves
+`dist/` as static assets and runs `worker/index.ts` only when no file
+matches. Deep links are query strings on `/` (`?pr=...`), so there is no
+single-page-app fallback. Page and API share the origin
+`review.deltoids.dev` (custom domain; `workers_dev = false`), so Clerk's
+`__session` cookie reaches `/api/*` with no CORS. `[observability]` is on:
+a failed Clerk verification or a missing secret shows in the Worker logs.
+
+- `worker/index.ts` authenticates every `/api/*` request with
+  `worker/auth.ts::authenticate(request, env)` (user id or `null`), answers
+  `401 {"error":"unauthenticated"}` on `null`, then dispatches on the path.
+  `GET /api/me` returns `{ userId }`; any other path is 404. To add a route,
+  add a branch to that dispatch; routes get the user id and never import
+  Clerk.
+- `authenticate` calls `@clerk/backend`'s `authenticateRequest` with the
+  request's own origin as the only authorized party, and verifies tokens
+  locally against `CLERK_JWT_KEY` (production never fetches Clerk's JWKS, so
+  it runs the path the tests run). Clerk errors are not caught: the Worker
+  answers 500.
+- The page wraps `App` in `components/Account.tsx::AuthProvider`, the only
+  reader of `VITE_CLERK_PUBLISHABLE_KEY`. With a key it mounts
+  `ClerkProvider`; without one (plain `npm run dev`, forks) the app runs as
+  before. `AccountButton` (in the top bar) shows Clerk's "Sign in" modal
+  button or `UserButton`, and renders nothing outside `AuthProvider`, so
+  tests never need Clerk even when a `.env.local` holds a key.
+
+### Clerk
+
+One Clerk application, GitHub as the only sign-in method in both instances:
+
+- **Production** (`pk_live_`, domain `deltoids.dev`, Frontend API
+  `clerk.deltoids.dev`, Juan's GitHub OAuth app) serves
+  `review.deltoids.dev`. Its publishable key is public and committed in two
+  places that must change together: `wrangler.toml` `[vars]
+  CLERK_PUBLISHABLE_KEY` (Worker) and `.env.production`
+  `VITE_CLERK_PUBLISHABLE_KEY` (Vite build). A publishable key is `pk_live_`
+  + base64 of `<Frontend API host>$`.
+- **Development** (`pk_test_`, Clerk's shared GitHub credentials) serves
+  local dev, since a production instance rejects `localhost`.
+
+Worker env (`worker/env.ts`, all required): `CLERK_PUBLISHABLE_KEY` (var),
+`CLERK_SECRET_KEY` and `CLERK_JWT_KEY` (secrets; `[secrets] required` makes a
+real deploy abort when one was never set, though `--dry-run` does not check).
+
+### Local dev with sign-in
+
+`npm run dev:api` builds the app with the development `pk_test_` key from
+ZeroVault (an environment variable outranks `.env.production`), then runs
+`wrangler dev --local-upstream localhost:8787` with the Worker's development
+secrets served as `.dev.vars` through `zero vault run --mount`. Open
+`http://localhost:8787`; rebuild (rerun) for page changes. `--local-upstream`
+keeps `request.url` on `localhost:8787`; without it wrangler rewrites the URL
+to the `review.deltoids.dev` route and every signed-in request gets 401. A Vite
+proxy from `:5173` would fail the same authorized-party check.
+
+It needs a ZeroVault sign-in for the `deltoids` organization: switch the
+active organization to `deltoids` at `dash.zeroapps.dev`, then from
+`reviewer/` run `npx zero login --context deltoids` once per machine and
+`npx zero context use deltoids` once per checkout (the binding covers one
+path, so every clone binds its own `reviewer/`). Run `zero` only from
+`reviewer/`: the repo root has no `package.json`, so `npx zero` there fetches
+an unrelated npm package. `npm run dev` and `npm test` need no credential.
+
+### Secrets
+
+Every credential lives in ZeroVault (organization `deltoids`), one project per
+consumer, each with `development` and `production`:
+
+| Project | Keys | Read by |
+| --- | --- | --- |
+| `deltoids-review` | `CLERK_SECRET_KEY`, `CLERK_JWT_KEY` (both envs); `CLERK_PUBLISHABLE_KEY` (development only) | `wrangler dev` via `--mount .dev.vars`; production Worker secrets via `bin/sync-secrets` |
+| `deltoids-review-web` | `VITE_CLERK_PUBLISHABLE_KEY` (development only) | `vite build` in `dev:api` |
+| `deltoids-ci` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (production) | the deploy step (OIDC) and `bin/sync-secrets` |
+
+- Never write a real `.dev.vars` or `.env*.local` (both gitignored); `--mount`
+  refuses to run when a real `.dev.vars` exists, and a stale one would win
+  silently.
+- The development publishable key is stored twice and both copies must hold
+  the same `pk_test_` key: `CLERK_PUBLISHABLE_KEY` in
+  `deltoids-review/development` and `VITE_CLERK_PUBLISHABLE_KEY` in
+  `deltoids-review-web/development`. A mismatch makes every local sign-in 401.
+- `deltoids-ci` is separate so the sync, which pushes a whole environment,
+  never turns the Cloudflare token into a Worker secret.
+- `bin/sync-secrets` copies `deltoids-review/production` to the Worker
+  (`wrangler secret bulk`), with Cloudflare credentials from
+  `deltoids-ci/production`. Run it by hand after any change: first setup, or a
+  Clerk key rotation. To rotate `CLERK_JWT_KEY`, set the new PEM in
+  `deltoids-review/production` and run the script; until then every signed-in
+  request gets 401.
+
 ## Deploy
 
 `.github/workflows/reviewer.yml` builds the wasm engine (wasi-sdk + wasm-opt),
-then runs Vitest + type-check + `vite build`, and deploys `reviewer/dist` to
-Cloudflare Pages (project `deltoids-reviewer`). It runs on `reviewer/**`,
+then runs Vitest + type-check + `vite build` and bundles the Worker with
+`wrangler deploy --dry-run` (on PRs too). On `main` it runs
+`npx zero vault run -p deltoids-ci -e production -- npx wrangler deploy`, which
+uploads the Worker and `dist/` together. It runs on `reviewer/**`,
 `crates/deltoids/**`, or `crates/deltoids-wasm/**` changes.
 
-Required repo secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. The
-custom domain `review.deltoids.dev` is attached to the Pages project (DNS
-`CNAME review -> deltoids-reviewer.pages.dev`).
+The repo holds no Cloudflare secret: the job (`id-token: write`) trades its
+GitHub OIDC token for a short-lived ZeroVault token through the CI trust
+record for `juanibiapina/deltoids` at `refs/heads/main`. The Cloudflare token
+in `deltoids-ci` needs Workers Scripts edit plus Workers Routes and DNS edit on
+the `deltoids.dev` zone (the deploy attaches the `review.deltoids.dev` custom
+domain). Worker secrets are not synced by CI; see `bin/sync-secrets`.
 
 ## Notes
 

@@ -13,10 +13,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
   if (!publishableKey) return <>{children}</>;
   return (
-    <ClerkProvider publishableKey={publishableKey}>
+    <ClerkProvider
+      publishableKey={publishableKey}
+      routerPush={followClerk}
+      routerReplace={followClerk}
+    >
       <AuthEnabled.Provider value={true}>{children}</AuthEnabled.Provider>
     </ClerkProvider>
   );
+}
+
+// Clerk routes its same-origin navigations here. The one that matters is
+// sign-out, which goes to `afterSignOutUrl` ("/" by default) and would reload
+// the start page, dropping the open review (`?pr=...`). Clerk reads that URL
+// once at load and the default sign-out menu item cannot be replaced, so the
+// rule lives here: a target without a query string keeps the current one, and
+// a target equal to the current page needs no reload because Clerk's
+// components follow the session on their own. Navigations to other origins
+// (GitHub, Clerk's pages) never reach these hooks.
+function followClerk(to: string): void {
+  const destination = clerkDestination(to, window.location.href);
+  if (destination !== null) window.location.assign(destination);
+}
+
+// Where a Clerk navigation from `current` to `to` should go, or null to stay.
+export function clerkDestination(to: string, current: string): string | null {
+  const url = new URL(to, current);
+  const here = new URL(current);
+  if (!url.search) url.search = here.search;
+  return url.href === here.href ? null : url.href;
 }
 
 export function AccountButton() {

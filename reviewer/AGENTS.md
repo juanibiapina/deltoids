@@ -61,6 +61,7 @@ reviewer/
     components/
       Topbar.tsx            #   brand, PR form, token button, toolbar, account
       Account.tsx           #   AuthProvider (Clerk when keyed) + AccountButton
+      Account.test.ts       #   Clerk navigation keeps the open review
       FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
       fileIcons.ts          #   filename -> per-type brand icon (simple-icons)
       ReviewView.tsx        #   selection + diff pane of lazy file cards
@@ -124,6 +125,9 @@ a failed Clerk verification or a missing secret shows in the Worker logs.
   before. `AccountButton` (in the top bar) shows Clerk's "Sign in" modal
   button or `UserButton`, and renders nothing outside `AuthProvider`, so
   tests never need Clerk even when a `.env.local` holds a key.
+- `AuthProvider` passes `routerPush`/`routerReplace` so Clerk's same-origin
+  navigations keep the query string: sign-out (to `afterSignOutUrl`, `/` by
+  default) stays on the open review instead of reloading the start page.
 
 ### Clerk
 

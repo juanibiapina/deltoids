@@ -488,3 +488,27 @@ fn a_build_adopted_mid_frame_asks_for_one_more_frame() {
 
     assert!(panel.background(true).changed);
 }
+
+#[test]
+fn a_commit_review_points_custom_commands_at_the_working_tree_file() {
+    use crate::cli::browse::panel::Panel;
+    let (dir, _, second) = two_commits();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "fn a() { b() }\n").unwrap();
+    let workdir = dir.path().canonicalize().unwrap();
+    for repo_dir in [dir.path().to_path_buf(), dir.path().join(".git")] {
+        let mut panel = SnapshotPanel::preview(repo_dir, second_commit(dir.path(), &second));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while panel.view().is_none() {
+            panel.adopt(&Theme::default());
+            assert!(Instant::now() < deadline, "snapshot did not build");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(panel.selected_path(), None, "the commit row names no file");
+
+        panel.handle_key(KeyCode::Char('j'), 20);
+
+        let path = panel.selected_path().expect("a file is selected");
+        assert_eq!(path.canonicalize().unwrap(), workdir.join("src/a.rs"));
+    }
+}

@@ -9,7 +9,7 @@
 //! for the commit or branch, whose diff is its commits' `git show`
 //! headers alone. A preview never asks Jev for judgments; a review does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
@@ -98,12 +98,16 @@ impl Snapshot {
     }
 }
 
+/// A finished build: the snapshot's model and the checkout its paths
+/// live in (`None` for a bare repository).
+type Build = Result<(Model, Option<PathBuf>), String>;
+
 /// A snapshot shown as a panel, built on a worker thread.
 pub(in crate::cli::browse) struct SnapshotPanel {
     snapshot: Snapshot,
     /// The build until the view takes it.
-    receiver: Option<mpsc::Receiver<Result<Model, String>>>,
-    built: Option<Result<Model, String>>,
+    receiver: Option<mpsc::Receiver<Build>>,
+    built: Option<Build>,
     view: Option<Result<FilesMode, String>>,
     /// The view was adopted since the last [`Panel::background`]: a draw
     /// may have painted part of the frame as `Loading…`.
@@ -116,6 +120,9 @@ pub(in crate::cli::browse) struct SnapshotPanel {
     diff_width: usize,
     /// Language servers the view navigates with.
     servers: Option<(crate::lsp::Lsp, PathBuf)>,
+    /// The checkout the snapshot's paths live in, once built: custom
+    /// commands run on the selected file there.
+    workdir: Option<PathBuf>,
 }
 
 impl SnapshotPanel {
@@ -140,7 +147,10 @@ impl SnapshotPanel {
         std::thread::spawn(move || {
             let built = git::Repo::discover_at(&repo_dir)
                 .ok_or_else(|| "Not a git repository".to_string())
-                .and_then(|repo| model::build_snapshot_model(&job.patch(&repo)?, &repo));
+                .and_then(|repo| {
+                    let model = model::build_snapshot_model(&job.patch(&repo)?, &repo)?;
+                    Ok((model, repo.workdir().map(Path::to_path_buf)))
+                });
             let _ = sender.send(built);
         });
         Self {
@@ -154,6 +164,7 @@ impl SnapshotPanel {
             whole: false,
             diff_width: 0,
             servers: None,
+            workdir: None,
         }
     }
 
@@ -202,7 +213,10 @@ impl SnapshotPanel {
             return;
         }
         let built = self.built.take().expect("polled above");
-        self.view = Some(built.map(|model| self.build_view(model, theme)));
+        self.view = Some(built.map(|(model, workdir)| {
+            self.workdir = workdir;
+            self.build_view(model, theme)
+        }));
         self.adopted = true;
     }
 
@@ -372,6 +386,7 @@ impl Panel for SnapshotPanel {
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
-        self.view_ref().and_then(Panel::selected_path)
+        let file = self.view_ref()?.selected_file()?;
+        Some(self.workdir.as_ref()?.join(file))
     }
 }

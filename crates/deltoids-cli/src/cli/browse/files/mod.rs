@@ -358,6 +358,16 @@ impl FilesMode {
         }
     }
 
+    /// The workdir-relative path of the file under the selection: the
+    /// selected file, or the first one under a selected directory. `None`
+    /// on the root row or without files.
+    pub(super) fn selected_file(&self) -> Option<&str> {
+        let idx = self.sidebar.nearest_file_index()?;
+        Some(crate::sidebar::display_path(
+            &self.model.files.get(idx)?.file,
+        ))
+    }
+
     /// Where the working tree's repository lives, for opening it again
     /// (history reads it on its own handle). `None` without a repo.
     pub(super) fn repo_dir(&self) -> Option<PathBuf> {
@@ -1620,13 +1630,8 @@ impl Mode for FilesMode {
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
-        // The selected file's workdir-relative path, joined onto the
-        // repo's working directory. `None` without a repo or when there is no file under the selection.
-        let idx = self.sidebar.nearest_file_index()?;
-        let file = &self.model.files.get(idx)?.file;
-        let rel = crate::sidebar::display_path(file);
         let workdir = self.vcs.as_ref()?.repo().workdir()?;
-        Some(workdir.join(rel))
+        Some(workdir.join(self.selected_file()?))
     }
 }
 

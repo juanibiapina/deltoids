@@ -1489,27 +1489,23 @@ impl DiffPane {
         diff_scrollbar::render(frame, area, &self.window, scroll, focused, theme);
     }
 
-    /// Build the diff pane's bottom-right footer: `" line X of Y "` for the
-    /// current scroll position within the assembled window, or `None` when
-    /// the pane is empty. Reads the assembled window, so it is meaningful
-    /// only after [`DiffPane::assemble_window`].
+    /// Build the diff pane's bottom-right footer: the help hint, after a
+    /// "Rendering…" notice while visible blocks are still being drawn, or
+    /// `None` when the pane is empty. Reads the assembled window, so it is
+    /// meaningful only after [`DiffPane::assemble_window`].
     pub(super) fn footer(&self) -> Option<String> {
-        let span = self.window_rows();
-        if span == 0 {
+        if self.window_rows() == 0 {
             return None;
         }
-        let pos = self.cursor.scroll.min(span.saturating_sub(1)) + 1;
         let progress = if self.cache.visible_pending()
             || self.definitions.visible_pending()
             || self.outline.visible_pending()
         {
-            "  ·  Rendering…"
+            "Rendering…  \u{00b7}  "
         } else {
             ""
         };
-        Some(format!(
-            " line {pos} of {span}{progress}  \u{00b7}  ? help "
-        ))
+        Some(format!(" {progress}? help "))
     }
 }
 
@@ -2217,10 +2213,7 @@ mod tests {
         let mut state = make_state(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
         let footer = state.unstaged.footer().expect("footer present");
-        assert!(
-            footer.contains("? help"),
-            "expected '? help' hint in footer, got {footer:?}"
-        );
+        assert_eq!(footer, " ? help ");
     }
 
     #[test]

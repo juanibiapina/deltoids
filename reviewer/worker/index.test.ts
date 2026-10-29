@@ -3,14 +3,11 @@ import { exportSPKI, generateKeyPair, SignJWT } from "jose";
 import worker from "./index";
 import type { Env } from "./env";
 
-// Configured like production: a well-formed `pk_live_` key for the Frontend
-// API host `clerk.example.com`, and the PEM public key that verifies tokens
-// locally, so no case touches the network.
 const FRONTEND_API = "clerk.example.com";
 const ORIGIN = "https://review.example.com";
 const USER_ID = "user_2abc";
-// One fixed time for the token's `iat` and the `__client_uat` cookie: Clerk
-// rejects a token issued before the client's last sign-in.
+// Shared by the token's iat and __client_uat: Clerk rejects a token issued
+// before the client's last sign-in.
 const NOW = Math.floor(Date.now() / 1000);
 
 let env: Env;

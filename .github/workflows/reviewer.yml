@@ -1,9 +1,8 @@
 name: Reviewer
 
-# Builds and deploys the standalone React PR reviewer (reviewer/) as the
-# Cloudflare Worker `deltoids-review` (static assets + /api) at
-# review.deltoids.dev. It ships independently of the marketing Pages deploy
-# (pages.yml). The wasm engine is rebuilt whenever the diff engine or the
+# Builds and deploys the standalone React PR reviewer (reviewer/) as a
+# Cloudflare Worker at review.deltoids.dev. It ships independently of the
+# marketing Pages deploy (pages.yml). The wasm engine is rebuilt whenever the diff engine or the
 # wasm crate change, so the reviewer and engine move atomically.
 
 on:
@@ -25,8 +24,7 @@ on:
 
 permissions:
   contents: read
-  # The deploy step trades the job's GitHub OIDC token for a short-lived
-  # ZeroVault token to read the Cloudflare credentials (deltoids-ci).
+  # ZeroVault reads the job's OIDC token to hand out the Cloudflare token.
   id-token: write
 
 concurrency:
@@ -96,13 +94,11 @@ jobs:
         working-directory: reviewer
         run: npx vite build
 
-      # Bundles the Worker and checks its config without deploying (no
-      # credential needed), so a bundling error shows on the PR.
       - name: Bundle Worker (dry run)
         working-directory: reviewer
         run: npx wrangler deploy --dry-run --outdir=../worker-dist
 
-      # Only main: ZeroVault's CI trust is scoped to refs/heads/main.
+      # ZeroVault's CI trust only accepts refs/heads/main.
       - name: Deploy Worker
         if: github.ref == 'refs/heads/main'
         working-directory: reviewer

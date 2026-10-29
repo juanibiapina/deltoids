@@ -1,5 +1,5 @@
 /target
 
-# Wrangler local state and dry-run bundle (reviewer/ deploys as a Cloudflare Worker)
+# Wrangler local state and dry-run bundle
 .wrangler/
 /worker-dist/

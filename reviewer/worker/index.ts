@@ -1,9 +1,7 @@
 import { authenticate } from "./auth";
 import type { Env } from "./env";
 
-// Static assets (reviewer/dist) are served before this runs, so the Worker
-// only sees requests no file matched. Every `/api/*` route is authenticated
-// here; a route receives the signed-in user id and never imports Clerk.
+// Runs only for requests no static asset matched.
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);

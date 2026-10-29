@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- TUI: the `line X of Y` position in the Diff pane footer.
+
 ### Fixed
 
 - TUI: custom commands, such as an `e` bound to an editor, run on the selected file in a commit or branch review. Before, they did nothing there.

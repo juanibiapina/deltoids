@@ -2,8 +2,9 @@ name: Reviewer
 
 # Builds and deploys the standalone React PR reviewer (reviewer/) as a
 # Cloudflare Worker at review.deltoids.dev. It ships independently of the
-# marketing Pages deploy (pages.yml). The wasm engine is rebuilt whenever the diff engine or the
-# wasm crate change, so the reviewer and engine move atomically.
+# marketing Pages deploy (pages.yml). The wasm engine is rebuilt whenever the
+# diff engine or the wasm crate change, so the reviewer and engine move
+# atomically.
 
 on:
   push:

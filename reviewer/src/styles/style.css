@@ -365,6 +365,10 @@ button:focus-visible {
 .topbar-actions .tool-group {
   margin-left: 0;
 }
+.account {
+  display: flex;
+  align-items: center;
+}
 
 /* Settings popover: all display controls behind one trigger. */
 .settings {

@@ -3,6 +3,7 @@ import type { Prefs } from "../hooks/usePrefs";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { SettingsMenu } from "./SettingsMenu";
 import { DisplayControls } from "./DisplayControls";
+import { AccountButton } from "./Account";
 
 interface TopbarProps {
   topbarRef: RefObject<HTMLElement | null>;
@@ -110,6 +111,7 @@ export function Topbar({
               onToken={onToken}
             />
           )}
+          <AccountButton />
         </div>
       </div>
     </header>

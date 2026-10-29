@@ -187,7 +187,8 @@ checklist.
 ## Reviewer
 
 The browser PR reviewer is the standalone React app in `reviewer/`,
-deployed to `review.deltoids.dev` on Cloudflare Pages by the
+deployed to `review.deltoids.dev` as a Cloudflare Worker (static
+assets plus a small `/api` backend with Clerk sign-in) by the
 `Reviewer` workflow (`.github/workflows/reviewer.yml`) on `reviewer/**`
 or wasm-crate changes. Its wasm engine (`crates/deltoids-wasm`) is
 built (wasi-sdk + wasm-opt) into `reviewer/public/deltoids_wasm.wasm`

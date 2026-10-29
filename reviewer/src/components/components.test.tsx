@@ -1,4 +1,4 @@
-import { createRef } from "react";
+import { createRef, type ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FileTree } from "./FileTree";
@@ -9,6 +9,14 @@ import { LazyObserverProvider } from "./LazyObserver";
 import type { Prefs } from "../hooks/usePrefs";
 import type { PrFile } from "../core/github";
 import type { RenderSession, Rendered } from "../core/renderSession";
+
+// The top bar's account button needs a loaded Clerk; tests render it signed out.
+vi.mock("@clerk/react", () => ({
+  Show: ({ when, children }: { when: string; children: ReactNode }) =>
+    when === "signed-out" ? children : null,
+  SignInButton: ({ children }: { children: ReactNode }) => children,
+  UserButton: () => null,
+}));
 
 function fakeSession(overrides: Partial<RenderSession> = {}): RenderSession {
   return {

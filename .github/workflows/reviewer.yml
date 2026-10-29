@@ -1,9 +1,10 @@
 name: Reviewer
 
-# Builds and deploys the standalone React PR reviewer (reviewer/) to Cloudflare
-# Pages at review.deltoids.dev. It ships independently of the marketing Pages
-# deploy (pages.yml). The wasm engine is rebuilt whenever the diff engine or the
-# wasm crate change, so the reviewer and engine move atomically.
+# Builds and deploys the standalone React PR reviewer (reviewer/) as a
+# Cloudflare Worker at review.deltoids.dev. It ships independently of the
+# marketing Pages deploy (pages.yml). The wasm engine is rebuilt whenever the
+# diff engine or the wasm crate change, so the reviewer and engine move
+# atomically.
 
 on:
   push:
@@ -24,6 +25,8 @@ on:
 
 permissions:
   contents: read
+  # ZeroVault reads the job's OIDC token to hand out the Cloudflare token.
+  id-token: write
 
 concurrency:
   group: reviewer-${{ github.ref }}
@@ -88,14 +91,25 @@ jobs:
         working-directory: reviewer
         run: npm run typecheck
 
-      - name: Build
+      # PRs cannot read ZeroVault; their build is never deployed.
+      - name: Build (PR)
+        if: github.ref != 'refs/heads/main'
         working-directory: reviewer
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: pk_test_placeholder
         run: npx vite build
 
-      - name: Deploy to Cloudflare Pages
-        if: github.event_name != 'pull_request'
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy reviewer/dist --project-name=deltoids-reviewer --branch=main
+      - name: Build
+        if: github.ref == 'refs/heads/main'
+        working-directory: reviewer
+        run: npx zero vault run -p deltoids-review-web -e production -- npx vite build
+
+      - name: Bundle Worker (dry run)
+        working-directory: reviewer
+        run: npx wrangler deploy --dry-run --outdir=../worker-dist
+
+      # ZeroVault's CI trust only accepts refs/heads/main.
+      - name: Deploy Worker
+        if: github.ref == 'refs/heads/main'
+        working-directory: reviewer
+        run: npx zero vault run -p deltoids-ci -e production -- npx wrangler deploy

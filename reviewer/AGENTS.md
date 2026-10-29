@@ -64,8 +64,9 @@ the origin `review.deltoids.dev`, so the Clerk `__session` cookie reaches
 One Clerk application, with GitHub as the only sign-in method:
 
 - Production (`pk_live_`, Juan's GitHub OAuth app `deltoids review`) serves
-  `review.deltoids.dev`. It asks GitHub for the `repo` scope, because GitHub
-  has no read-only scope for private repos. `AccountButton` passes
+  `review.deltoids.dev`. It asks GitHub for the `repo` scope (Clerk dashboard
+  → SSO connections → GitHub → Scopes), because GitHub has no read-only
+  scope for private repos. `AccountButton` passes
   `additionalOAuthScopes` only for a `pk_live_` key.
 - Development (`pk_test_`, shared Clerk GitHub credentials) serves local
   dev, because a production instance rejects `localhost`. It cannot grant

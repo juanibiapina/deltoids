@@ -130,9 +130,9 @@ a failed Clerk verification or a missing secret shows in the Worker logs.
 
 One Clerk application, GitHub as the only sign-in method in both instances:
 
-- **Production** (`pk_live_`, domain `deltoids.dev`, Frontend API
-  `clerk.deltoids.dev`, Juan's GitHub OAuth app) serves
-  `review.deltoids.dev`.
+- **Production** (`pk_live_`, domain `review.deltoids.dev` as a secondary
+  application, Frontend API `clerk.review.deltoids.dev`, Juan's GitHub OAuth
+  app `deltoids review`) serves `review.deltoids.dev`.
 - **Development** (`pk_test_`, Clerk's shared GitHub credentials) serves
   local dev, since a production instance rejects `localhost`.
 
@@ -201,9 +201,10 @@ uploads the Worker and `dist/` together. It runs on `reviewer/**`,
 The repo holds no Cloudflare secret: the job (`id-token: write`) trades its
 GitHub OIDC token for a short-lived ZeroVault token through the CI trust
 record for `juanibiapina/deltoids` at `refs/heads/main`. The Cloudflare token
-in `deltoids-ci` needs Workers Scripts edit plus Workers Routes and DNS edit on
-the `deltoids.dev` zone (the deploy attaches the `review.deltoids.dev` custom
-domain). Worker secrets are not synced by CI; see `bin/sync-secrets`.
+in `deltoids-ci` (`deltoids-review-ci`) has Workers Scripts edit, Account
+Settings read, User Details and Memberships read, and Workers Routes edit,
+DNS edit, and Zone read on the `deltoids.dev` zone (the deploy attaches the
+`review.deltoids.dev` custom domain). Worker secrets are not synced by CI; see `bin/sync-secrets`.
 
 ## Notes
 

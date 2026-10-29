@@ -249,8 +249,6 @@ DNS edit, and Zone read on the `deltoids.dev` zone (the deploy attaches the
   (`Account.tsx`) gives `loaded` and `signedIn`; until `loaded`, the deep
   link waits and Review is disabled, so a signed-in user's first request does
   not go out anonymously. A failed clerk-js counts as loaded and signed out.
-  `main.tsx` removes the old pasted token (`deltoids.gh.token`) once per
-  load; drop that line in a later release.
 - Theme is a `usePrefs` pref persisted under `deltoids.review.theme`
   (`dark`/`light`); first visit follows `prefers-color-scheme`. `App.tsx` sets
   `data-theme` on `<html>`; the light palette lives in `styles/style.css` under

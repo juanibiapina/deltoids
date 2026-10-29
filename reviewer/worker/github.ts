@@ -1,9 +1,10 @@
-// Read-only GitHub proxy for signed-in users: forwards the reviewer's three
-// request shapes (PR, file list, file contents) with the user's token, which
-// never leaves the Worker.
+// Read-only GitHub proxy for signed-in users: forwards the reviewer's four
+// request shapes (PR, file list, file contents, the home page's PR search) with
+// the user's token, which never leaves the Worker.
 
 const PREFIX = "/api/github";
-const ALLOWED = /^\/repos\/[^/]+\/[^/]+\/(pulls\/\d+(\/files)?|contents\/.+)$/;
+const ALLOWED =
+  /^(\/repos\/[^/]+\/[^/]+\/(pulls\/\d+(\/files)?|contents\/.+)|\/search\/issues)$/;
 const PASSED_HEADERS = [
   "content-type",
   "x-ratelimit-limit",

@@ -209,6 +209,25 @@ describe("/api/github/*", () => {
     );
   });
 
+  test("forwards a pull request search with its query", async () => {
+    stubUpstream("gho_x");
+    const res = await get(
+      "/api/github/search/issues?q=is%3Apr%20author%3A%40me&per_page=30",
+      await signedIn("user_search"),
+    );
+    expect(res.status).toBe(200);
+    const [gh] = toHost("api.github.com");
+    expect(gh.url).toBe("https://api.github.com/search/issues?q=is%3Apr%20author%3A%40me&per_page=30");
+    expect(gh.headers.get("authorization")).toBe("Bearer gho_x");
+  });
+
+  test("another search path is 404", async () => {
+    stubUpstream();
+    const res = await get("/api/github/search/code?q=x", await signedIn("user_search_code"));
+    expect(res.status).toBe(404);
+    expect(toHost("api.github.com")).toHaveLength(0);
+  });
+
   test("a path outside the allowlist is 404", async () => {
     stubUpstream();
     const res = await get("/api/github/user", await signedIn("user_allow"));

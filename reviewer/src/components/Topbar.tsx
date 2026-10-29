@@ -55,7 +55,9 @@ export function Topbar({
     <header className="topbar" ref={topbarRef as Ref<HTMLElement>}>
       <div className="topbar-inner">
         <div className="brand">
-          deltoids<span className="brand-dim"> review</span>
+          <a href="/">
+            deltoids<span className="brand-dim"> review</span>
+          </a>
         </div>
 
         {formOpen && (

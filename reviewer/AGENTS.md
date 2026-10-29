@@ -120,11 +120,11 @@ per consumer, each with `development` and `production`:
 
 ## Deploy
 
-`.github/workflows/reviewer.yml` builds the engine, tests, type-checks, and
-bundles the Worker on every PR. PR runs cannot read ZeroVault, so they use a
-placeholder key and never deploy. On `main`, the job trades its GitHub OIDC
-token for a ZeroVault token and runs `wrangler deploy` with `deltoids-ci`.
-The repo holds no Cloudflare secret, and CI does not sync Worker secrets.
+`.github/workflows/reviewer.yml` runs when `reviewer/**`, `crates/deltoids/**`,
+`crates/deltoids-wasm/**`, or the workflow changes: it builds the engine, tests,
+type-checks, and bundles the Worker. PR runs cannot read ZeroVault, so they use a
+placeholder key and never deploy. On `main`, it trades a GitHub OIDC token for a
+ZeroVault token and runs `wrangler deploy`. The repo holds no Cloudflare secret.
 
 ## Invariants
 

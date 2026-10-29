@@ -5,6 +5,7 @@ import {
   rateRemaining,
   renderSides,
   resetRateRemaining,
+  searchPrs,
   type Sides,
 } from "./github";
 import type { Engine } from "./engine";
@@ -103,6 +104,18 @@ describe("GitHub requests", () => {
     await expect(loadSides(ref, file, "b", "h", true)).rejects.toThrow(
       "Your sign-in expired. Reload the page or sign in again.",
     );
+  });
+
+  test("a pull request search goes through the Worker and returns the items", async () => {
+    const item = { html_url: "https://github.com/o/r/pull/1", number: 1 };
+    const fetch = stubFetch(() => Response.json({ total_count: 1, items: [item] }));
+    expect(await searchPrs("author:@me")).toEqual([item]);
+    const url = new URL(fetch.mock.calls[0][0], "https://review.deltoids.dev");
+    expect(url.pathname).toBe("/api/github/search/issues");
+    expect(url.searchParams.get("q")).toBe("is:pr is:open archived:false author:@me");
+    expect(url.searchParams.get("sort")).toBe("updated");
+    expect(url.searchParams.get("order")).toBe("desc");
+    expect(url.searchParams.get("per_page")).toBe("30");
   });
 
   test("resetRateRemaining forgets the last seen budget", async () => {

@@ -116,6 +116,28 @@ export async function fetchPr(ref: PrRef, viaWorker: boolean): Promise<Pr> {
   return data;
 }
 
+// One open pull request from GitHub's issue search, enough for a list row.
+export interface PrSummary {
+  html_url: string;
+  number: number;
+  title: string;
+  draft?: boolean;
+  updated_at: string;
+  user: { login: string } | null;
+}
+
+// The signed-in user's open pull requests matching `query` (search qualifiers
+// such as `author:@me`), most recently updated first, at most 30. `@me` needs
+// the user's token, so this always goes through the Worker.
+export async function searchPrs(query: string): Promise<PrSummary[]> {
+  const q = `is:pr is:open archived:false ${query}`;
+  const { data } = await gh<{ items: PrSummary[] }>(
+    `/search/issues?q=${encodeURIComponent(q)}&sort=updated&order=desc&per_page=30`,
+    true,
+  );
+  return data.items;
+}
+
 export async function fetchFiles(ref: PrRef, viaWorker: boolean): Promise<PrFile[]> {
   const files: PrFile[] = [];
   for (let page = 1; page <= 30; page++) {

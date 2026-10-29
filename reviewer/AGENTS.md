@@ -36,7 +36,8 @@ reviewer/
   src/
     main.tsx                # React root (inside AuthProvider) + the stylesheet
     vite-env.d.ts           # typed import.meta.env (VITE_CLERK_PUBLISHABLE_KEY)
-    App.tsx                 # app shell: review flow, deep-link (after Clerk loads), prefs
+    App.tsx                 # app shell: review flow, deep-link (after Clerk loads), home list, prefs
+    App.test.tsx            # home list vs deep link vs signed out (reviewClient + Clerk mocked)
     core/                   # framework-neutral, DOM-free logic
       engine.ts             #   wasm compile (main) + instantiate/marshal (worker)
       review.worker.ts      #   module worker: engine + Comlink-exposed sessions
@@ -61,7 +62,9 @@ reviewer/
       overview.test.ts      #   tests ported from the TUI diff_scrollbar.rs
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
-      Topbar.tsx            #   brand, PR form (Review waits for Clerk), toolbar, account
+      Topbar.tsx            #   brand (links home), PR form (Review waits for Clerk), toolbar, account
+      PullRequestList.tsx   #   home: the signed-in user's open PRs, one search per section
+      PullRequestList.test.tsx #  rows, empty and error sections, click vs modified click
       Account.tsx           #   AuthProvider (ClerkProvider), AccountButton, useGitHubAccess
       Account.test.tsx      #   useGitHubAccess loading / failed-Clerk tests
       FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
@@ -118,8 +121,8 @@ a failed Clerk verification or a missing secret shows in the Worker logs.
   dispatch; routes get the user id and never import Clerk.
 - `/api/github/*` (`worker/github.ts::proxyGithub`) forwards a signed-in
   user's GitHub reads with their token, which never reaches the browser.
-  Only `GET` on `/repos/{o}/{r}/pulls/{n}`, `.../pulls/{n}/files`, and
-  `.../contents/{path}` passes (other paths 404, other methods 405), so the
+  Only `GET` on `/repos/{o}/{r}/pulls/{n}`, `.../pulls/{n}/files`,
+  `.../contents/{path}`, and `/search/issues` (the home list) passes (other paths 404, other methods 405), so the
   route is no general GitHub client. It sends the caller's `Accept`,
   `Authorization: Bearer`, and a `User-Agent` (GitHub rejects requests
   without one), and returns GitHub's status and body with `content-type`,
@@ -249,6 +252,22 @@ DNS edit, and Zone read on the `deltoids.dev` zone (the deploy attaches the
   (`Account.tsx`) gives `loaded` and `signedIn`; until `loaded`, the deep
   link waits and Review is disabled, so a signed-in user's first request does
   not go out anonymously. A failed clerk-js counts as loaded and signed out.
+- Home (`/` with no `?pr=`) shows a signed-in user's open pull requests
+  (`components/PullRequestList.tsx`) in the sections of GitHub's `/pulls`
+  dashboard: Created (`author:@me`), Assigned (`assignee:@me`), Mentioned
+  (`mentions:@me`), and Review requests (`review-requested:@me`, team
+  requests included). Drafts are listed. Each section is one
+  `github.ts::searchPrs` request through the Worker (`@me` needs the user's
+  token), newest update first, at most 30, sent on each visit to home with no
+  cache or refresh. GitHub's search API allows 30 requests per minute per
+  user, so one visit spends 4 (8 in development, where `StrictMode` mounts
+  twice; the first mount's answers are dropped). `App` reads `?pr=` once
+  at mount and renders the list only with no deep link, `loaded`,
+  `signedIn`, and no review started; deciding during render matters
+  because a child's effects run before App's deep-link effect. A row is a
+  link to `?pr=<html_url>`: a plain click opens the review in place, a
+  modified or middle click keeps the browser default (new tab). Signed out,
+  home stays empty. The brand links to `/`, a full page load.
 - Theme is a `usePrefs` pref persisted under `deltoids.review.theme`
   (`dark`/`light`); first visit follows `prefers-color-scheme`. `App.tsx` sets
   `data-theme` on `<html>`; the light palette lives in `styles/style.css` under

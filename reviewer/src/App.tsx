@@ -9,6 +9,7 @@ import { useTopbarHeight } from "./hooks/useTopbarHeight";
 import { Topbar } from "./components/Topbar";
 import { ReviewView, type ReviewData } from "./components/ReviewView";
 import { useGitHubAccess } from "./components/Account";
+import { PullRequestList } from "./components/PullRequestList";
 
 interface Status {
   text: string;
@@ -27,6 +28,9 @@ export function App() {
   const [data, setData] = useState<ReviewData | null>(null);
   const [started, setStarted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // The deep link, read once. Decided during render so the home list never
+  // mounts (and searches) on a deep link: child effects run before App's.
+  const [initialPr] = useState(() => new URLSearchParams(location.search).get("pr"));
 
   // Guards against overlapping reviews: only the latest request may write state.
   const requestId = useRef(0);
@@ -135,13 +139,20 @@ export function App() {
   // once: `loaded` never returns to false, and sign-in changes do not re-run it.
   useEffect(() => {
     if (!loaded) return;
-    const initial = new URLSearchParams(location.search).get("pr");
-    if (initial) {
-      setInput(initial);
-      void review(initial, signedIn);
+    if (initialPr) {
+      setInput(initialPr);
+      void review(initialPr, signedIn);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
+
+  const openFromList = useCallback(
+    (url: string) => {
+      setInput(url);
+      submit(url);
+    },
+    [submit],
+  );
 
   return (
     <>
@@ -181,6 +192,9 @@ export function App() {
         }
         data-size={prefs.size}
       >
+        {!initialPr && loaded && signedIn && !started && (
+          <PullRequestList onOpen={openFromList} />
+        )}
         {data && (
           <ReviewView
             data={data}

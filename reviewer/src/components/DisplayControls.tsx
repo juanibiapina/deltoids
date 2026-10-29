@@ -3,8 +3,6 @@ import { SYNTAX_THEMES } from "../core/themes";
 
 interface DisplayControlsProps {
   prefs: Prefs;
-  hasToken: boolean;
-  onToken: () => void;
   // "bar": a flat inline row for wide screens. "menu": labeled rows for the
   // popover on narrow screens.
   variant: "bar" | "menu";
@@ -12,12 +10,10 @@ interface DisplayControlsProps {
 }
 
 // The display controls (wrap, line numbers, text size, syntax theme, chrome
-// theme, token) shared between the inline toolbar and the settings popover, so
+// theme) shared between the inline toolbar and the settings popover, so
 // the two never drift.
 export function DisplayControls({
   prefs,
-  hasToken,
-  onToken,
   variant,
   selectId,
 }: DisplayControlsProps) {
@@ -132,14 +128,6 @@ export function DisplayControls({
         >
           {prefs.theme === "dark" ? "☾" : "☀"}
           {menu ? (prefs.theme === "dark" ? " Dark" : " Light") : ""}
-        </button>
-        <button
-          type="button"
-          className={`tool${hasToken ? " has-token" : ""}`}
-          title="GitHub token"
-          onClick={onToken}
-        >
-          🔑{menu ? (hasToken ? " Token set" : " Token") : ""}
         </button>
       </div>
     </>

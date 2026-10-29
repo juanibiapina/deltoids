@@ -11,11 +11,6 @@ export interface OpenReview {
   baseSha: string;
   headSha: string;
   order: number[];
-  token: string;
-}
-
-export interface ReviewSession extends RenderSession {
-  setToken(token: string): void;
 }
 
 interface ReviewWorker {
@@ -42,16 +37,22 @@ export function startReviewWorker(): ReviewWorker {
   return worker;
 }
 
+// Tell the review worker whether GitHub requests go through the Worker
+// (signed in) or straight to GitHub. Comlink keeps message order, so a call
+// made before `openReview` reaches the worker first.
+export function setWorkerSignedIn(value: boolean): void {
+  void startReviewWorker().api.setSignedIn(value);
+}
+
 // Open one review's session in the worker. Rendering waits for the engine;
 // await `startReviewWorker().ready` to surface engine errors.
-export async function openReview(review: OpenReview): Promise<ReviewSession> {
+export async function openReview(review: OpenReview): Promise<RenderSession> {
   const remote = await startReviewWorker().api.open(review);
   return {
     render: (index, theme, urgency) => remote.render(index, theme, urgency),
     renderContext: (index, start, end, theme) =>
       remote.renderContext(index, start, end, theme),
     prioritize: (indices) => void remote.prioritize(indices),
-    setToken: (token) => void remote.setToken(token),
     dispose: () => {
       void remote.dispose().finally(() => remote[Comlink.releaseProxy]());
     },

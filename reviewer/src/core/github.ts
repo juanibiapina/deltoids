@@ -5,16 +5,14 @@ import type { Engine } from "./engine";
 // GitHub API client
 // ---------------------------------------------------------------------------
 
-const TOKEN_KEY = "deltoids.gh.token";
-
-export function token(): string {
-  return localStorage.getItem(TOKEN_KEY) || "";
+// Signed in, requests go through the Worker, which adds the user's GitHub
+// token (it never reaches the browser; the session cookie authenticates).
+// Signed out, they go straight to GitHub anonymously (60/hr per IP).
+function apiBase(viaWorker: boolean): string {
+  return viaWorker ? "/api/github" : "https://api.github.com";
 }
 
-export function setToken(value: string): void {
-  if (value.trim()) localStorage.setItem(TOKEN_KEY, value.trim());
-  else localStorage.removeItem(TOKEN_KEY);
-}
+const SIGN_IN_EXPIRED = "Your sign-in expired. Reload the page or sign in again.";
 
 const JSON_MEDIA = "application/vnd.github+json";
 // The raw media type returns the file body directly and works up to 100 MB;
@@ -23,12 +21,6 @@ const JSON_MEDIA = "application/vnd.github+json";
 // it with a 304 and serves the JSON body for a raw request (seen in
 // Firefox). Raw requests therefore bypass the HTTP cache.
 const RAW_MEDIA = "application/vnd.github.raw+json";
-
-function ghHeaders(auth: string, accept: string): Record<string, string> {
-  const headers: Record<string, string> = { Accept: accept };
-  if (auth) headers.Authorization = `Bearer ${auth}`;
-  return headers;
-}
 
 interface GhError extends Error {
   detail?: string;
@@ -42,13 +34,15 @@ export function rateRemaining(): number | null {
   return lastRemaining;
 }
 
-async function ghFetch(
-  url: string,
-  auth: string,
-  accept = JSON_MEDIA,
-): Promise<Response> {
+// Forget the last seen budget, e.g. after a sign-in change, when it belongs to
+// the other identity.
+export function resetRateRemaining(): void {
+  lastRemaining = null;
+}
+
+async function ghFetch(url: string, accept = JSON_MEDIA): Promise<Response> {
   const res = await fetch(url, {
-    headers: ghHeaders(auth, accept),
+    headers: { Accept: accept },
     cache: accept === RAW_MEDIA ? "no-store" : "default",
   });
   const remaining = res.headers.get("x-ratelimit-remaining");
@@ -65,18 +59,25 @@ function isRateLimited(res: Response): boolean {
   );
 }
 
-async function gh<T>(url: string): Promise<{ data: T; remaining: string | null }> {
-  const res = await ghFetch(url, token());
+async function gh<T>(
+  path: string,
+  viaWorker: boolean,
+): Promise<{ data: T; remaining: string | null }> {
+  const res = await ghFetch(`${apiBase(viaWorker)}${path}`);
   const remaining = res.headers.get("x-ratelimit-remaining");
   if (!res.ok) {
     const body = await res.text();
     let message = `${res.status} ${res.statusText}`;
     if (isRateLimited(res)) {
-      message = token()
-        ? "GitHub rate limit reached for this token."
-        : "GitHub rate limit reached (60/hr). Add a token with 🔑 for 5000/hr.";
+      message = viaWorker
+        ? "GitHub rate limit reached for your account."
+        : "GitHub rate limit reached (60/hr). Sign in with GitHub for 5000/hr.";
     } else if (res.status === 404) {
-      message = "Not found. Private repo? Add a token with 🔑.";
+      message = viaWorker
+        ? "Not found. Private repo? Reauthorize GitHub from your account menu, or ask the repo's organization to approve the deltoids review app."
+        : "Not found. Private repo? Sign in with GitHub.";
+    } else if (res.status === 401) {
+      message = SIGN_IN_EXPIRED;
     }
     const err: GhError = new Error(message);
     err.detail = body;
@@ -107,18 +108,20 @@ export interface PrFile {
   sha?: string;
 }
 
-export async function fetchPr(ref: PrRef): Promise<Pr> {
+export async function fetchPr(ref: PrRef, viaWorker: boolean): Promise<Pr> {
   const { data } = await gh<Pr>(
-    `https://api.github.com/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`,
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`,
+    viaWorker,
   );
   return data;
 }
 
-export async function fetchFiles(ref: PrRef): Promise<PrFile[]> {
+export async function fetchFiles(ref: PrRef, viaWorker: boolean): Promise<PrFile[]> {
   const files: PrFile[] = [];
   for (let page = 1; page <= 30; page++) {
     const { data } = await gh<PrFile[]>(
-      `https://api.github.com/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100&page=${page}`,
+      `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100&page=${page}`,
+      viaWorker,
     );
     files.push(...data);
     if (data.length < 100) break;
@@ -131,14 +134,15 @@ async function fetchContent(
   repoRef: PrRef,
   path: string,
   ref: string,
-  auth: string,
+  viaWorker: boolean,
 ): Promise<string> {
-  const url = `https://api.github.com/repos/${repoRef.owner}/${repoRef.repo}/contents/${encodeURIComponent(
+  const url = `${apiBase(viaWorker)}/repos/${repoRef.owner}/${repoRef.repo}/contents/${encodeURIComponent(
     path,
   ).replace(/%2F/g, "/")}?ref=${encodeURIComponent(ref)}`;
-  const res = await ghFetch(url, auth, RAW_MEDIA);
+  const res = await ghFetch(url, RAW_MEDIA);
   if (res.status === 404) return "";
   if (isRateLimited(res)) throw new RateLimitError(`rate limited loading ${path}`);
+  if (res.status === 401) throw new Error(SIGN_IN_EXPIRED);
   if (!res.ok) throw new Error(`content ${res.status} for ${path}`);
   return res.text();
 }
@@ -155,14 +159,14 @@ export type Sides =
 // the head-side content and let the engine reconstruct the before side (one
 // request instead of two). Otherwise resolve both sides. This is the network
 // half of rendering; cache the result and re-run `renderSides` on theme change.
-// `auth` is the GitHub token ("" for anonymous), passed in because the review
-// worker cannot read `localStorage`.
+// `viaWorker` routes requests through the Worker (signed in) or straight to
+// GitHub (signed out).
 export async function loadSides(
   repoRef: PrRef,
   file: PrFile,
   baseSha: string,
   headSha: string,
-  auth: string,
+  viaWorker: boolean,
 ): Promise<Sides | null> {
   const canPatch =
     (file.status === "modified" || file.status === "renamed") &&
@@ -170,7 +174,7 @@ export async function loadSides(
     file.patch.length > 0;
 
   if (canPatch) {
-    const after = await fetchContent(repoRef, file.filename, headSha, auth);
+    const after = await fetchContent(repoRef, file.filename, headSha, viaWorker);
     if (looksBinary(after)) return null;
     return { kind: "patch", after, patch: file.patch as string, path: file.filename };
   }
@@ -180,7 +184,7 @@ export async function loadSides(
     file,
     baseSha,
     headSha,
-    auth,
+    viaWorker,
   );
   if (looksBinary(before) || looksBinary(after)) return null;
   return { kind: "full", before, after, path };
@@ -191,10 +195,10 @@ export function githubSidesSource(
   files: PrFile[],
   baseSha: string,
   headSha: string,
-  auth: () => string,
+  viaWorker: () => boolean,
 ): { fetch(index: number): Promise<Sides | null>; remaining(): number | null } {
   return {
-    fetch: (index) => loadSides(repoRef, files[index], baseSha, headSha, auth()),
+    fetch: (index) => loadSides(repoRef, files[index], baseSha, headSha, viaWorker()),
     remaining: rateRemaining,
   };
 }
@@ -214,7 +218,7 @@ async function resolveSides(
   file: PrFile,
   baseSha: string,
   headSha: string,
-  auth: string,
+  viaWorker: boolean,
 ): Promise<{ before: string; after: string; path: string }> {
   const newPath = file.filename;
   const oldPath = file.previous_filename || file.filename;
@@ -222,19 +226,19 @@ async function resolveSides(
     case "added":
       return {
         before: "",
-        after: await fetchContent(repoRef, newPath, headSha, auth),
+        after: await fetchContent(repoRef, newPath, headSha, viaWorker),
         path: newPath,
       };
     case "removed":
       return {
-        before: await fetchContent(repoRef, oldPath, baseSha, auth),
+        before: await fetchContent(repoRef, oldPath, baseSha, viaWorker),
         after: "",
         path: oldPath,
       };
     default: {
       const [before, after] = await Promise.all([
-        fetchContent(repoRef, oldPath, baseSha, auth),
-        fetchContent(repoRef, newPath, headSha, auth),
+        fetchContent(repoRef, oldPath, baseSha, viaWorker),
+        fetchContent(repoRef, newPath, headSha, viaWorker),
       ]);
       return { before, after, path: newPath };
     }

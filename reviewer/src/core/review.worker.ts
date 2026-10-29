@@ -1,6 +1,6 @@
 import * as Comlink from "comlink";
 import { instantiateEngine, type Engine } from "./engine";
-import { githubSidesSource } from "./github";
+import { githubSidesSource, resetRateRemaining } from "./github";
 import { createRenderSession } from "./renderSession";
 import type { OpenReview } from "./reviewClient";
 
@@ -11,23 +11,30 @@ const engine: Promise<Engine> = new Promise<WebAssembly.Module>((resolve) => {
   provideModule = resolve;
 }).then(instantiateEngine);
 
+// Whether GitHub requests go through the Worker (signed in). One flag for the
+// whole worker; open sessions read it on every request, so a sign-in change
+// reaches them without reopening.
+let viaWorker = false;
+
 const api = {
   init(module: WebAssembly.Module): Promise<void> {
     provideModule(module);
     return engine.then(() => {});
   },
-  open({ ref, files, baseSha, headSha, order, token }: OpenReview) {
-    let auth = token;
-    const source = githubSidesSource(ref, files, baseSha, headSha, () => auth);
+  setSignedIn(value: boolean): void {
+    viaWorker = value;
+    // The last seen budget belongs to the previous identity; keeping it could
+    // stop a new session's prefetch before its first request.
+    resetRateRemaining();
+  },
+  open({ ref, files, baseSha, headSha, order }: OpenReview) {
+    const source = githubSidesSource(ref, files, baseSha, headSha, () => viaWorker);
     const session = createRenderSession(source, order, engine);
     return Comlink.proxy({
       render: session.render,
       renderContext: session.renderContext,
       prioritize: session.prioritize,
       dispose: session.dispose,
-      setToken(next: string) {
-        auth = next;
-      },
     });
   },
 };

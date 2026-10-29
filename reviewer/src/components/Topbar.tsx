@@ -10,8 +10,9 @@ interface TopbarProps {
   input: string;
   onInput: (value: string) => void;
   onSubmit: () => void;
-  hasToken: boolean;
-  onToken: () => void;
+  // False until Clerk has loaded: a review sent earlier could go out
+  // anonymously for a signed-in user.
+  ready: boolean;
   started: boolean;
   prefs: Prefs;
   onFilesToggle: () => void;
@@ -23,8 +24,7 @@ export function Topbar({
   input,
   onInput,
   onSubmit,
-  hasToken,
-  onToken,
+  ready,
   started,
   prefs,
   onFilesToggle,
@@ -70,7 +70,9 @@ export function Topbar({
               ref={inputRef}
               onChange={(e) => onInput(e.target.value)}
             />
-            <button type="submit">Review</button>
+            <button type="submit" disabled={!ready}>
+              Review
+            </button>
           </form>
         )}
 
@@ -98,18 +100,9 @@ export function Topbar({
             </button>
           )}
           {wide ? (
-            <DisplayControls
-              prefs={prefs}
-              hasToken={hasToken}
-              onToken={onToken}
-              variant="bar"
-            />
+            <DisplayControls prefs={prefs} variant="bar" />
           ) : (
-            <SettingsMenu
-              prefs={prefs}
-              hasToken={hasToken}
-              onToken={onToken}
-            />
+            <SettingsMenu prefs={prefs} />
           )}
           <AccountButton />
         </div>

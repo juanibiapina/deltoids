@@ -1,5 +1,6 @@
-import { authenticate } from "./auth";
+import { authenticate, githubToken } from "./auth";
 import type { Env } from "./env";
+import { proxyGithub } from "./github";
 
 // Runs only for requests no static asset matched.
 export default {
@@ -12,6 +13,11 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/api/me") {
       return json({ userId });
+    }
+    if (url.pathname.startsWith("/api/github/")) {
+      const token = await githubToken(userId, env);
+      if (!token) return json({ error: "no github token" }, 401);
+      return proxyGithub(request, token);
     }
     return notFound();
   },

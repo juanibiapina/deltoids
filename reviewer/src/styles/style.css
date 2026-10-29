@@ -210,7 +210,7 @@ body {
 }
 
 /* Theme toggle lives in the pr-form's trailing controls so it is always
-   visible (works before a PR loads), grouped with Review + the token button. */
+   visible (works before a PR loads), grouped with Review. */
 .theme-toggle {
   flex: none;
   padding: 9px 12px;
@@ -232,7 +232,7 @@ body {
 }
 
 .pr-input {
-  /* basis 0 lets the field shrink freely so Review + 🔑 always fit. */
+  /* basis 0 lets the field shrink freely so Review always fits. */
   flex: 1 1 0;
   min-width: 0;
   padding: 9px 12px;
@@ -268,25 +268,6 @@ button:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--focus-ring);
-}
-
-/* Token affordance carries a set-state dot so the stored token is visible. */
-#token-btn {
-  position: relative;
-  padding: 9px 12px;
-}
-.token-dot {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--added-gutter);
-  opacity: 0;
-}
-#token-btn.has-token .token-dot {
-  opacity: 1;
 }
 
 /* Review toolbar — shown once a PR loads. */

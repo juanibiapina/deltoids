@@ -1,89 +1,48 @@
-# Site maintenance
+# Site
 
-Bare Astro marketing site for `deltoids.dev`. No frameworks beyond Astro
-itself. Minimal client JS. Deploys to GitHub Pages.
-
-The browser PR reviewer no longer lives here. It is the standalone React app in
-`reviewer/`, deployed to `review.deltoids.dev` by `.github/workflows/reviewer.yml`.
-The "Try it live" links point at `SITE.reviewUrl`. `pages.yml` builds only
-`site/**` (no wasm, no rust toolchain).
+Bare Astro marketing site for `deltoids.dev`, with no integrations and
+minimal client JS. The "Try it live" links point at `SITE.reviewUrl`.
 
 ## Local dev
 
 ```bash
 cd site
 npm install
-npm run dev      # http://localhost:4321 with hot reload
-npm run build    # writes site/dist/
-npm run preview  # serves site/dist/ as it'll be served in prod
-```
-
-## Layout
-
-```
-site/
-├── astro.config.mjs       # site URL = https://deltoids.dev
-├── public/                # served verbatim (CNAME, fonts, robots, .nojekyll)
-└── src/
-    ├── data/site.ts         # version, copy, TUI feature cards, install commands, FAQ — single source of truth
-    ├── data/docs.ts         # docs sidebar groups + items — single source of truth
-    ├── styles/global.css    # palette, layout primitives, all section styles
-    ├── layouts/Base.astro   # head, nav, footer, JSON-LD schema
-    ├── layouts/DocsLayout.astro # sidebar + content shell for /docs/* pages
-    ├── components/          # Hero, Review, Pager, Install, Faq, icons
-    ├── components/docs/     # docs-only components (Note callout, ...)
-    ├── assets/screenshots/  # images run through astro:assets
-    ├── pages/index.astro    # composes marketing sections
-    └── pages/docs/          # docs subtree (.mdx files using DocsLayout)
+npm run dev        # http://localhost:4321 with hot reload
+npm run build      # writes site/dist/
+npm run preview    # serves site/dist/
+npx astro check
 ```
 
 ## Conventions
 
-- **`src/data/site.ts` is the single source of truth.** Update there;
-  do not hardcode version, install commands, repo URLs, or copy.
-- **`src/data/docs.ts` is the docs sidebar's single source of truth.**
-  Add a docs page by creating an `.mdx` file under `src/pages/docs/`
-  and appending an entry to `DOCS_NAV`. Active state is decided by
-  exact pathname match in `DocsLayout.astro`.
-- **Docs pages are MDX, not Astro.** Each page sets
-  `layout: "../../layouts/DocsLayout.astro"` in its frontmatter and
-  is written as Markdown prose with H2 sections per topic.
-  Code blocks are intentionally plain (`markdown.syntaxHighlight:
-  false` in `astro.config.mjs`) to match the terminal aesthetic and
-  avoid Shiki's CSS surface. Use `<Note>` from
-  `src/components/docs/Note.astro` for inline callouts; reach for it
-  before reinventing a div.
-- **Keep client JS minimal.** The `<details>` element handles FAQ
-  open/close natively. The only script is the inline click-to-copy
-  handler in `Base.astro` that targets `.cmd-line` elements. Before
-  adding more JS, reconsider whether it's worth the bytes.
-- **Fonts are self-hosted** as latin-subset woff2 in `public/fonts/`,
-  preloaded in `Base.astro`. Do not switch to Google Fonts CDN.
-- **Headings use JetBrains Mono** (terminal aesthetic). Body text
-  uses IBM Plex Sans. Avoid mixing in extra typefaces.
-- **Color contrast**: use `var(--text-muted)` (#9aa5ce) for secondary
-  text. `--text-faint` (#565f89) only on layered backgrounds where
-  contrast still passes; never on the page background.
-- **Inline links in body text** must have an underline (the global
-  rule covers `p a, .answer a, .faq a`). Lighthouse's
-  `link-in-text-block` rule rejects color-only differentiation.
-
-## Release checklist
-
-After a new tag in the main project:
-
-1. Bump `SITE.version` in `src/data/site.ts` (drives the hero badge
-   and JSON-LD `softwareVersion`).
-2. If install commands changed, update `INSTALL_CARDS` in the same
-   file.
-3. Skim `FAQ` and `REVIEW_FEATURES` in the same file, and the docs under
-   `src/pages/docs/`, against the CHANGELOG.
-4. Build locally, eyeball it, push.
+- `src/data/site.ts` is the single source of truth for the version, copy,
+  install commands, repo URLs, and FAQ. Do not hardcode them in pages or
+  components.
+- `src/data/docs.ts` is the single source of truth for the docs sidebar. To
+  add a docs page, create an `.mdx` file under `src/pages/docs/` and append
+  an entry to `DOCS_NAV`.
+- Docs pages are MDX. Each page sets
+  `layout: "../../layouts/DocsLayout.astro"` in its frontmatter and uses H2
+  sections per topic. Code blocks stay plain (`markdown.syntaxHighlight:
+  false` in `astro.config.mjs`). Use `<Note>` from
+  `src/components/docs/Note.astro` for inline callouts.
+- Keep client JS minimal. The `<details>` element opens and closes FAQ
+  entries. The only script is the click-to-copy handler for `.cmd-line` in
+  `Base.astro`.
+- Fonts are self-hosted latin-subset woff2 files in `public/fonts/`,
+  preloaded in `Base.astro`. Do not switch to the Google Fonts CDN.
+- Headings use JetBrains Mono and body text uses IBM Plex Sans. Add no other
+  typefaces.
+- Use `var(--text-muted)` (#9aa5ce) for secondary text. Use `--text-faint`
+  (#565f89) only on layered backgrounds where contrast still passes, never
+  on the page background.
+- Inline links in body text must have an underline (the global rule covers
+  `p a, .answer a, .faq a`). Lighthouse rejects links that differ by color
+  only.
 
 ## Deployment
 
-`.github/workflows/pages.yml` builds and deploys on push to `main`
-when files under `site/**` change. It builds only the Astro site (the
-wasm reviewer moved to `reviewer/` and `reviewer.yml`). The custom
-domain `deltoids.dev` is wired via `public/CNAME` and the GitHub Pages
-settings.
+`.github/workflows/pages.yml` builds only `site/**` and deploys to GitHub
+Pages on push to `main` when files under `site/**` change. The custom
+domain comes from `public/CNAME`.

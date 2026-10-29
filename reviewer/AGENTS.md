@@ -22,7 +22,6 @@ reviewer/
   index.html                # Vite entry; mounts React into #root
   vite.config.ts            # base "/", React plugin, Vitest config
   wrangler.toml             # Worker: assets (dist/), route, vars, required secrets
-  .env.production           # committed pk_live_ Clerk key for the Vite build
   bin/sync-secrets          # ZeroVault -> Worker secrets (run by hand)
   worker/                   # the Worker (see Backend)
     index.ts                #   fetch: /api/* dispatch, 401 when signed out
@@ -34,6 +33,7 @@ reviewer/
     deltoids_wasm.wasm       # engine (gitignored, built by build-wasm.sh)
   src/
     main.tsx                # React root (inside AuthProvider) + the stylesheet
+    vite-env.d.ts           # typed import.meta.env (VITE_CLERK_PUBLISHABLE_KEY)
     App.tsx                 # app shell: review flow, deep-link, token, prefs
     core/                   # framework-neutral, DOM-free logic
       engine.ts             #   wasm compile (main) + instantiate/marshal (worker)
@@ -60,8 +60,7 @@ reviewer/
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
       Topbar.tsx            #   brand, PR form, token button, toolbar, account
-      Account.tsx           #   AuthProvider (Clerk when keyed) + AccountButton
-      Account.test.ts       #   Clerk navigation keeps the open review
+      Account.tsx           #   AuthProvider (ClerkProvider) + AccountButton
       FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
       fileIcons.ts          #   filename -> per-type brand icon (simple-icons)
       ReviewView.tsx        #   selection + diff pane of lazy file cards
@@ -86,9 +85,9 @@ npm install
 # Build the engine once (needs wasi-sdk; see crates/deltoids-wasm/AGENTS.md):
 DEST="$PWD/public/deltoids_wasm.wasm" \
   WASI_SDK=/path/to/wasi-sdk ../crates/deltoids-wasm/build-wasm.sh
-npm run dev        # http://localhost:5173 (no sign-in)
+npm run dev        # http://localhost:5173 (dev Clerk key from ZeroVault)
 npm run dev:api    # build + Worker on http://localhost:8787, with sign-in
-npm run build      # tsc --noEmit && vite build -> reviewer/dist/
+npm run build      # tsc --noEmit && vite build -> reviewer/dist/ (needs the key)
 npm run preview    # serve dist (no Worker)
 npm test           # vitest run (app + worker/)
 npm run typecheck  # tsc for the app and for worker/
@@ -119,15 +118,13 @@ a failed Clerk verification or a missing secret shows in the Worker logs.
   locally against `CLERK_JWT_KEY` (production never fetches Clerk's JWKS, so
   it runs the path the tests run). Clerk errors are not caught: the Worker
   answers 500.
-- The page wraps `App` in `components/Account.tsx::AuthProvider`, the only
-  reader of `VITE_CLERK_PUBLISHABLE_KEY`. With a key it mounts
-  `ClerkProvider`; without one (plain `npm run dev`, forks) the app runs as
-  before. `AccountButton` (in the top bar) shows Clerk's "Sign in" modal
-  button or `UserButton`, and renders nothing outside `AuthProvider`, so
-  tests never need Clerk even when a `.env.local` holds a key.
-- `AuthProvider` passes `routerPush`/`routerReplace` so Clerk's same-origin
-  navigations keep the query string: sign-out (to `afterSignOutUrl`, `/` by
-  default) stays on the open review instead of reloading the start page.
+- The page wraps `App` in `components/Account.tsx::AuthProvider`
+  (`ClerkProvider`). `AccountButton` (in the top bar) shows Clerk's "Sign in"
+  modal button or `UserButton`. Sign-in is optional: reviewing works signed
+  out. Component tests mock `@clerk/react`.
+- `VITE_CLERK_PUBLISHABLE_KEY` is required: `vite.config.ts` fails
+  `vite build` without it. The key is not in the repo; it comes from ZeroVault
+  (see Secrets).
 
 ### Clerk
 
@@ -135,22 +132,18 @@ One Clerk application, GitHub as the only sign-in method in both instances:
 
 - **Production** (`pk_live_`, domain `deltoids.dev`, Frontend API
   `clerk.deltoids.dev`, Juan's GitHub OAuth app) serves
-  `review.deltoids.dev`. Its publishable key is public and committed in two
-  places that must change together: `wrangler.toml` `[vars]
-  CLERK_PUBLISHABLE_KEY` (Worker) and `.env.production`
-  `VITE_CLERK_PUBLISHABLE_KEY` (Vite build). A publishable key is `pk_live_`
-  + base64 of `<Frontend API host>$`.
+  `review.deltoids.dev`.
 - **Development** (`pk_test_`, Clerk's shared GitHub credentials) serves
   local dev, since a production instance rejects `localhost`.
 
-Worker env (`worker/env.ts`, all required): `CLERK_PUBLISHABLE_KEY` (var),
-`CLERK_SECRET_KEY` and `CLERK_JWT_KEY` (secrets; `[secrets] required` makes a
-real deploy abort when one was never set, though `--dry-run` does not check).
+Worker env (`worker/env.ts`): `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`,
+and `CLERK_JWT_KEY`, all Worker secrets. `[secrets] required` makes a real
+deploy abort when one was never set (`--dry-run` does not check).
 
 ### Local dev with sign-in
 
 `npm run dev:api` builds the app with the development `pk_test_` key from
-ZeroVault (an environment variable outranks `.env.production`), then runs
+ZeroVault, then runs
 `wrangler dev --local-upstream localhost:8787` with the Worker's development
 secrets served as `.dev.vars` through `zero vault run --mount`. Open
 `http://localhost:8787`; rebuild (rerun) for page changes. `--local-upstream`
@@ -164,7 +157,7 @@ active organization to `deltoids` at `dash.zeroapps.dev`, then from
 `npx zero context use deltoids` once per checkout (the binding covers one
 path, so every clone binds its own `reviewer/`). Run `zero` only from
 `reviewer/`: the repo root has no `package.json`, so `npx zero` there fetches
-an unrelated npm package. `npm run dev` and `npm test` need no credential.
+an unrelated npm package. `npm test` needs no credential.
 
 ### Secrets
 
@@ -173,17 +166,17 @@ consumer, each with `development` and `production`:
 
 | Project | Keys | Read by |
 | --- | --- | --- |
-| `deltoids-review` | `CLERK_SECRET_KEY`, `CLERK_JWT_KEY` (both envs); `CLERK_PUBLISHABLE_KEY` (development only) | `wrangler dev` via `--mount .dev.vars`; production Worker secrets via `bin/sync-secrets` |
-| `deltoids-review-web` | `VITE_CLERK_PUBLISHABLE_KEY` (development only) | `vite build` in `dev:api` |
+| `deltoids-review` | `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `CLERK_JWT_KEY` (both envs) | `wrangler dev` via `--mount .dev.vars`; production Worker secrets via `bin/sync-secrets` |
+| `deltoids-review-web` | `VITE_CLERK_PUBLISHABLE_KEY` (both envs) | `npm run dev`, `dev:api`, and the CI build on `main` |
 | `deltoids-ci` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (production) | the deploy step (OIDC) and `bin/sync-secrets` |
 
 - Never write a real `.dev.vars` or `.env*.local` (both gitignored); `--mount`
   refuses to run when a real `.dev.vars` exists, and a stale one would win
   silently.
-- The development publishable key is stored twice and both copies must hold
-  the same `pk_test_` key: `CLERK_PUBLISHABLE_KEY` in
-  `deltoids-review/development` and `VITE_CLERK_PUBLISHABLE_KEY` in
-  `deltoids-review-web/development`. A mismatch makes every local sign-in 401.
+- The publishable key is stored twice per environment and both copies must
+  hold the same key: `CLERK_PUBLISHABLE_KEY` in `deltoids-review/<env>` and
+  `VITE_CLERK_PUBLISHABLE_KEY` in `deltoids-review-web/<env>`. A mismatch
+  makes every sign-in 401.
 - `deltoids-ci` is separate so the sync, which pushes a whole environment,
   never turns the Cloudflare token into a Worker secret.
 - `bin/sync-secrets` copies `deltoids-review/production` to the Worker
@@ -197,7 +190,10 @@ consumer, each with `development` and `production`:
 
 `.github/workflows/reviewer.yml` builds the wasm engine (wasi-sdk + wasm-opt),
 then runs Vitest + type-check + `vite build` and bundles the Worker with
-`wrangler deploy --dry-run` (on PRs too). On `main` it runs
+`wrangler deploy --dry-run` (on PRs too). On `main` the build reads
+`VITE_CLERK_PUBLISHABLE_KEY` from `deltoids-review-web/production`; PR runs
+cannot read ZeroVault, so they build with a placeholder key and never deploy.
+On `main` it then runs
 `npx zero vault run -p deltoids-ci -e production -- npx wrangler deploy`, which
 uploads the Worker and `dist/` together. It runs on `reviewer/**`,
 `crates/deltoids/**`, or `crates/deltoids-wasm/**` changes.

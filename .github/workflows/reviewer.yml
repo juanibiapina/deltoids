@@ -91,9 +91,18 @@ jobs:
         working-directory: reviewer
         run: npm run typecheck
 
-      - name: Build
+      # PRs cannot read ZeroVault; their build is never deployed.
+      - name: Build (PR)
+        if: github.ref != 'refs/heads/main'
         working-directory: reviewer
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: pk_test_placeholder
         run: npx vite build
+
+      - name: Build
+        if: github.ref == 'refs/heads/main'
+        working-directory: reviewer
+        run: npx zero vault run -p deltoids-review-web -e production -- npx vite build
 
       - name: Bundle Worker (dry run)
         working-directory: reviewer

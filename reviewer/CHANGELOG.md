@@ -16,4 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Signing in with GitHub raises GitHub's limit to 5000 requests per hour and lets you review private repositories you have access to.
 - The scrollbars throughout the reviewer are now thin and theme-tinted instead of the chunky default ones.
+
+### Removed
+
+- Remove the 🔑 button for pasting a GitHub personal access token. Sign in with GitHub instead.

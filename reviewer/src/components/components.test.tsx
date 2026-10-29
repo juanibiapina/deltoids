@@ -385,8 +385,7 @@ function renderTopbar(prefs: Prefs, overrides: Partial<Parameters<typeof Topbar>
       input=""
       onInput={() => {}}
       onSubmit={() => {}}
-      hasToken={false}
-      onToken={() => {}}
+      ready
       started
       prefs={prefs}
       onFilesToggle={() => {}}
@@ -509,5 +508,11 @@ describe("Topbar PR input collapse", () => {
     mockWidth(false);
     renderTopbar(makePrefs(), { started: false });
     expect(screen.getByPlaceholderText(/github.com/)).toBeTruthy();
+  });
+
+  test("Review is disabled until sign-in state has loaded", () => {
+    mockWidth(true);
+    renderTopbar(makePrefs(), { ready: false });
+    expect(screen.getByRole("button", { name: "Review" })).toHaveProperty("disabled", true);
   });
 });

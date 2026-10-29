@@ -4,18 +4,12 @@ import { DisplayControls } from "./DisplayControls";
 
 interface SettingsMenuProps {
   prefs: Prefs;
-  hasToken: boolean;
-  onToken: () => void;
 }
 
 // Narrow-screen home for the display controls: one trigger opens a popover so
 // the header stays a single row. Trigger carries aria-haspopup/aria-expanded;
 // the panel closes on outside click or Escape and returns focus to the trigger.
-export function SettingsMenu({
-  prefs,
-  hasToken,
-  onToken,
-}: SettingsMenuProps) {
+export function SettingsMenu({ prefs }: SettingsMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -64,8 +58,6 @@ export function SettingsMenu({
         >
           <DisplayControls
             prefs={prefs}
-            hasToken={hasToken}
-            onToken={onToken}
             variant="menu"
             selectId={`${panelId}-theme`}
           />

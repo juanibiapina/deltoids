@@ -1,8 +1,8 @@
 # reviewer
 
 Standalone React PR reviewer, deployed as the Cloudflare Worker
-`deltoids-review` at `review.deltoids.dev`. It renders any public GitHub pull
-request as a clean, scope-expanded diff entirely in the browser, using the
+`deltoids-review` at `review.deltoids.dev`. It renders any GitHub pull request
+the reader can see as a clean, scope-expanded diff in the browser, using the
 `deltoids-wasm` engine. The same Worker serves a small backend under `/api`
 (see **Backend**); sign-in is optional and reviewing works signed out.
 
@@ -25,16 +25,18 @@ reviewer/
   bin/sync-secrets          # ZeroVault -> Worker secrets (run by hand)
   worker/                   # the Worker (see Backend)
     index.ts                #   fetch: /api/* dispatch, 401 when signed out
-    auth.ts                 #   authenticate(): the only Clerk-aware server code
+    auth.ts                 #   authenticate() + githubToken(): the only Clerk-aware server code
+    github.ts               #   proxyGithub(): read-only /api/github/* proxy
     env.ts                  #   Env bindings
-    index.test.ts           #   /api/me through fetch, with locally signed tokens
+    index.test.ts           #   /api/me and /api/github/* through fetch, with locally
+                            #     signed tokens and stubbed Clerk + GitHub
     tsconfig.json           #   Workers types (typecheck runs it too)
   public/
     deltoids_wasm.wasm       # engine (gitignored, built by build-wasm.sh)
   src/
     main.tsx                # React root (inside AuthProvider) + the stylesheet
     vite-env.d.ts           # typed import.meta.env (VITE_CLERK_PUBLISHABLE_KEY)
-    App.tsx                 # app shell: review flow, deep-link, token, prefs
+    App.tsx                 # app shell: review flow, deep-link (after Clerk loads), prefs
     core/                   # framework-neutral, DOM-free logic
       engine.ts             #   wasm compile (main) + instantiate/marshal (worker)
       review.worker.ts      #   module worker: engine + Comlink-exposed sessions
@@ -42,7 +44,7 @@ reviewer/
       renderSession.ts      #   per-review fetch + render queue + theme cache
       renderSession.test.ts #   urgency, mid-render priority, cache, context tests
       github.ts             #   GitHub REST client + loadSides / renderSides
-      github.test.ts        #   renderSides theme + re-render-from-cache tests
+      github.test.ts        #   renderSides + request routing (Worker vs GitHub) tests
       sidesLoader.ts        #   per-review sides cache + background prefetch queue
       sidesLoader.test.ts   #   queue order, priority, rate budget, failure tests
       idle.ts               #   shared one-task-per-idle-slot queue (whenIdle)
@@ -59,8 +61,9 @@ reviewer/
       overview.test.ts      #   tests ported from the TUI diff_scrollbar.rs
       vendor/               #   vendored @bjorn3/browser_wasi_shim 0.4.2 + .d.ts
     components/
-      Topbar.tsx            #   brand, PR form, token button, toolbar, account
-      Account.tsx           #   AuthProvider (ClerkProvider) + AccountButton
+      Topbar.tsx            #   brand, PR form (Review waits for Clerk), toolbar, account
+      Account.tsx           #   AuthProvider (ClerkProvider), AccountButton, useGitHubAccess
+      Account.test.tsx      #   useGitHubAccess loading / failed-Clerk tests
       FileTree.tsx          #   grouped, collapsible tree (react-accessible-treeview)
       fileIcons.ts          #   filename -> per-type brand icon (simple-icons)
       ReviewView.tsx        #   selection + diff pane of lazy file cards
@@ -110,9 +113,29 @@ a failed Clerk verification or a missing secret shows in the Worker logs.
 - `worker/index.ts` authenticates every `/api/*` request with
   `worker/auth.ts::authenticate(request, env)` (user id or `null`), answers
   `401 {"error":"unauthenticated"}` on `null`, then dispatches on the path.
-  `GET /api/me` returns `{ userId }`; any other path is 404. To add a route,
-  add a branch to that dispatch; routes get the user id and never import
-  Clerk.
+  `GET /api/me` returns `{ userId }`; `/api/github/*` is the GitHub proxy
+  (below); any other path is 404. To add a route, add a branch to that
+  dispatch; routes get the user id and never import Clerk.
+- `/api/github/*` (`worker/github.ts::proxyGithub`) forwards a signed-in
+  user's GitHub reads with their token, which never reaches the browser.
+  Only `GET` on `/repos/{o}/{r}/pulls/{n}`, `.../pulls/{n}/files`, and
+  `.../contents/{path}` passes (other paths 404, other methods 405), so the
+  route is no general GitHub client. It sends the caller's `Accept`,
+  `Authorization: Bearer`, and a `User-Agent` (GitHub rejects requests
+  without one), and returns GitHub's status and body with `content-type`,
+  `x-ratelimit-*`, and `Cache-Control: no-store` (a cached private response
+  must not outlive an account switch). A user with no GitHub token gets
+  `401 {"error":"no github token"}`.
+- `auth.ts::githubToken(userId, env)` asks Clerk for the user's GitHub OAuth
+  token and caches the resolved string per user for 30 seconds in module
+  memory, because one review makes a proxied request per file and Clerk's
+  Backend API allows 100 (development) or 1,000 (production) requests per 10
+  seconds. The cache is per isolate and best effort: a miss costs one Clerk
+  call. It never holds an in-flight promise (a cancelled request's promise
+  could hang later requests), a Clerk failure caches nothing, and a GitHub
+  401 does not evict (Clerk would return the same revoked token). The TTL
+  bounds how long a reauthorized user waits for the new token. KV was
+  rejected: it would store users' tokens in a second place.
 - `authenticate` calls `@clerk/backend`'s `authenticateRequest` with the
   request's own origin as the only authorized party, and verifies tokens
   locally against `CLERK_JWT_KEY` (production never fetches Clerk's JWKS, so
@@ -136,6 +159,13 @@ One Clerk application, GitHub as the only sign-in method in both instances:
 - **Development** (`pk_test_`, Clerk's shared GitHub credentials) serves
   local dev, since a production instance rejects `localhost`.
 
+Production asks GitHub for the `repo` scope (Clerk dashboard → SSO
+connections → GitHub → Scopes), because GitHub has no read-only scope for
+private repos. `AccountButton` passes `additionalOAuthScopes: { github:
+["repo"] }` to `UserButton` only for a `pk_live_` key, so the account panel
+prompts users who signed in before to reauthorize. Development cannot grant
+`repo` with shared credentials and reviews public repos only.
+
 Worker env (`worker/env.ts`): `CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`,
 and `CLERK_JWT_KEY`, all Worker secrets. `[secrets] required` makes a real
 deploy abort when one was never set (`--dry-run` does not check).
@@ -149,7 +179,10 @@ secrets served as `.dev.vars` through `zero vault run --mount`. Open
 `http://localhost:8787`; rebuild (rerun) for page changes. `--local-upstream`
 keeps `request.url` on `localhost:8787`; without it wrangler rewrites the URL
 to the `review.deltoids.dev` route and every signed-in request gets 401. A Vite
-proxy from `:5173` would fail the same authorized-party check.
+proxy from `:5173` would fail the same authorized-party check. Signed in under
+plain `npm run dev` there is no Worker, so `/api/github` answers 404 and every
+review fails with the signed-in "Not found" message: use `npm run dev:api` or
+sign out.
 
 It needs a ZeroVault sign-in for the `deltoids` organization: switch the
 active organization to `deltoids` at `dash.zeroapps.dev`, then from
@@ -208,8 +241,14 @@ DNS edit, and Zone read on the `deltoids.dev` zone (the deploy attaches the
 
 ## Notes
 
-- The GitHub token lives in `localStorage` under `deltoids.gh.token`. It does
-  not cross origin, so users re-enter it once on the new subdomain.
+- GitHub requests (`core/github.ts`) take a `viaWorker` flag: signed in they
+  go to `/api/github/...` (the session cookie authenticates; no
+  `Authorization` header in the browser), signed out straight to
+  `api.github.com`, anonymous at 60/hour. Signed-out traffic stays off the
+  Worker so users do not share its one anonymous budget. `useGitHubAccess`
+  (`Account.tsx`) gives `loaded` and `signedIn`; until `loaded`, the deep
+  link waits and Review is disabled, so a signed-in user's first request does
+  not go out anonymously. A failed clerk-js counts as loaded and signed out.
 - Theme is a `usePrefs` pref persisted under `deltoids.review.theme`
   (`dark`/`light`); first visit follows `prefers-color-scheme`. `App.tsx` sets
   `data-theme` on `<html>`; the light palette lives in `styles/style.css` under
@@ -280,11 +319,14 @@ DNS edit, and Zone read on the `deltoids.dev` zone (the deploy attaches the
 - Content fetching and wasm rendering run in one module worker
   (`core/review.worker.ts`, RPC through Comlink), so a render never blocks
   input or paint. The page keeps `fetchPr`/`fetchFiles` (the tree needs
-  them) and passes the file list, shas, tree display order, and token to
+  them) and passes the file list, shas, and tree display order to
   `reviewClient.ts::openReview`, which returns that review's
-  `RenderSession` (`core/renderSession.ts`). Workers cannot read
-  `localStorage`, so the token crosses at `openReview` and on
-  `setToken`. The session wraps `core/sidesLoader.ts::createSidesLoader`:
+  `RenderSession` (`core/renderSession.ts`). The review worker holds one
+  `viaWorker` flag that every open session reads per request; `App` sets it
+  only through `setWorkerSignedIn` in an effect on `signedIn`, which runs
+  before any `openReview` (Comlink keeps order). Setting it also resets
+  `rateRemaining()`, so a new session's prefetch is not stopped by the other
+  identity's budget. The session wraps `core/sidesLoader.ts::createSidesLoader`:
   background fetches in tree order through `p-queue` (concurrency 4), one
   cached promise per file, and `ReviewView` moves the current selection to
   the front with `prioritize`. Background fetching stops when

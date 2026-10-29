@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchPr, fetchFiles, token, setToken } from "./core/github";
+import { fetchPr, fetchFiles } from "./core/github";
 import { parsePrUrl } from "./core/lib";
 import { buildTree, displayOrder } from "./core/filetree";
-import {
-  openReview,
-  startReviewWorker,
-  type ReviewSession,
-} from "./core/reviewClient";
+import { openReview, setWorkerSignedIn, startReviewWorker } from "./core/reviewClient";
+import type { RenderSession } from "./core/renderSession";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
 import { Topbar } from "./components/Topbar";
 import { ReviewView, type ReviewData } from "./components/ReviewView";
+import { useGitHubAccess } from "./components/Account";
 
 interface Status {
   text: string;
@@ -22,21 +20,28 @@ export function App() {
   useTopbarHeight(topbarRef);
 
   const prefs = usePrefs();
+  const { loaded, signedIn } = useGitHubAccess();
 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<Status>({ text: "", isError: false });
   const [data, setData] = useState<ReviewData | null>(null);
   const [started, setStarted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [hasToken, setHasToken] = useState(() => Boolean(token()));
 
   // Guards against overlapping reviews: only the latest request may write state.
   const requestId = useRef(0);
-  const sessionRef = useRef<ReviewSession | null>(null);
+  const sessionRef = useRef<RenderSession | null>(null);
 
   useEffect(() => {
     startReviewWorker();
   }, []);
+
+  // The only path that sets the review worker's flag. It runs in the effect
+  // flush, before any `openReview` (which waits on fetchPr/fetchFiles), so a
+  // new session starts with the current value; open sessions pick up changes.
+  useEffect(() => {
+    setWorkerSignedIn(signedIn);
+  }, [signedIn]);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
@@ -62,7 +67,7 @@ export function App() {
     return () => document.removeEventListener("keydown", onKey);
   }, [closeDrawer]);
 
-  const review = useCallback(async (value: string) => {
+  const review = useCallback(async (value: string, viaWorker: boolean) => {
     const ref = parsePrUrl(value);
     if (!ref) {
       setData(null);
@@ -83,7 +88,10 @@ export function App() {
 
     try {
       const { ready } = startReviewWorker();
-      const [pr, files] = await Promise.all([fetchPr(ref), fetchFiles(ref)]);
+      const [pr, files] = await Promise.all([
+        fetchPr(ref, viaWorker),
+        fetchFiles(ref, viaWorker),
+      ]);
       if (id !== requestId.current) return;
       const order = displayOrder(
         buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -94,7 +102,6 @@ export function App() {
         baseSha: pr.base.sha,
         headSha: pr.head.sha,
         order,
-        token: token(),
       });
       if (id !== requestId.current) {
         session.dispose();
@@ -118,36 +125,23 @@ export function App() {
       const params = new URLSearchParams(location.search);
       params.set("pr", value);
       history.replaceState(null, "", `?${params.toString()}`);
-      void review(value);
+      void review(value, signedIn);
     },
-    [review],
+    [review, signedIn],
   );
 
-  // Deep link: ?pr=<url or owner/repo/number>. Runs once on mount.
+  // Deep link: ?pr=<url or owner/repo/number>. Waits for Clerk, so a
+  // signed-in user's first request does not go out anonymously, then runs
+  // once: `loaded` never returns to false, and sign-in changes do not re-run it.
   useEffect(() => {
+    if (!loaded) return;
     const initial = new URLSearchParams(location.search).get("pr");
     if (initial) {
       setInput(initial);
-      void review(initial);
+      void review(initial, signedIn);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const onToken = useCallback(() => {
-    const current = token();
-    const next = prompt(
-      "GitHub personal access token (read-only, stored in this browser). Leave blank to clear.",
-      current,
-    );
-    if (next === null) return;
-    setToken(next);
-    sessionRef.current?.setToken(next.trim());
-    setHasToken(Boolean(next.trim()));
-    setStatus({
-      text: next.trim() ? "Token saved." : "Token cleared.",
-      isError: false,
-    });
-  }, []);
+  }, [loaded]);
 
   return (
     <>
@@ -156,8 +150,7 @@ export function App() {
         input={input}
         onInput={setInput}
         onSubmit={() => submit(input)}
-        hasToken={hasToken}
-        onToken={onToken}
+        ready={loaded}
         started={started}
         prefs={prefs}
         onFilesToggle={() => setDrawerOpen((v) => !v)}

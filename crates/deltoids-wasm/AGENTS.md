@@ -4,6 +4,18 @@ A `cdylib` that exposes the `deltoids` engine to the browser reviewer in
 `reviewer/` over a small C-ABI. It uses no wasm-bindgen, so the module runs
 under a plain WASI shim (`@bjorn3/browser_wasi_shim`).
 
+## Build
+
+```bash
+# Needs wasi-sdk (https://github.com/WebAssembly/wasi-sdk/releases) and,
+# optionally, wasm-opt (binaryen).
+WASI_SDK=/path/to/wasi-sdk-34.0-<arch>-<os> ./build-wasm.sh
+```
+
+`build-wasm.sh` builds with the `wasm` profile, runs `wasm-opt -Oz`, and
+copies the result to `DEST` (default `reviewer/public/deltoids_wasm.wasm`).
+The `.wasm` file is a gitignored build product.
+
 ## C-ABI
 
 - `alloc(len) -> ptr` and `dealloc(ptr, len)` manage buffers. Free every
@@ -39,18 +51,6 @@ The `deltoids` crate handles these with `cfg(target_arch = "wasm32")` in its
 - Both targets share one theme registry (`config.rs`). `build.rs` converts the
   vendored `assets/themes/*.tmTheme` files to syntect dumps at build time, so
   the wasm module has no runtime plist parser.
-
-## Build
-
-```bash
-# Needs wasi-sdk (https://github.com/WebAssembly/wasi-sdk/releases) and,
-# optionally, wasm-opt (binaryen).
-WASI_SDK=/path/to/wasi-sdk-34.0-<arch>-<os> ./build-wasm.sh
-```
-
-`build-wasm.sh` builds with the `wasm` profile, runs `wasm-opt -Oz`, and
-copies the result to `DEST` (default `reviewer/public/deltoids_wasm.wasm`).
-The `.wasm` file is a gitignored build product.
 
 ## Binary size
 

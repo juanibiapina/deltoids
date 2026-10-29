@@ -23,12 +23,12 @@ Each `*` is a `(ptr, len)` pair. `theme` is a registry name from
 Each render returns the HTML bytes as a packed `ptr << 32 | len` handle,
 which is valid only on 32-bit wasm. The `extern "C"` functions are thin
 marshalling shells over the safe core (`render_html`,
-`render_html_from_patch`). Tests target the safe core.
+`render_html_from_patch`, `render_context_rows`). Tests target the safe core.
 
 ## Build constraints
 
 The `deltoids` crate handles these with `cfg(target_arch = "wasm32")` in its
-`Cargo.toml`, `config.rs`, and `language.rs`:
+`Cargo.toml` and `config.rs`:
 
 - The C tree-sitter grammars need a libc. The build targets `wasm32-wasip1`
   and points the `cc` crate at the clang and sysroot of wasi-sdk

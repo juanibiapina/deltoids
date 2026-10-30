@@ -11,9 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reviewer: on small screens, a review opens on the file tree. Swipe left or right over the diff to move to the next or previous file, and swipe right on the first file to return to the tree. Marking a file as viewed moves on to the next file ([#22](https://github.com/juanibiapina/deltoids/issues/22)).
 
+### Changed
+
+- TUI: panes no longer draw a box around themselves. Each pane has a title row with its name, badges, and footer, with a line under it, and one line divides the side panel from the main view. Messages such as lookup results show at the bottom right of the diff.
 ### Removed
 
 - TUI: the `line X of Y` position in the Diff pane footer.
+- Library: `render_tui::render_pane_scrollbar` and `render_tui::pane_inner_height`.
 
 ### Fixed
 

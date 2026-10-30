@@ -1,8 +1,8 @@
 //! The root mode the shell drives: lazygit's layout.
 //!
 //! The left column shows one of two side panels at full height, as tabs:
-//! its top border lists every shown panel's tab, the current one in the
-//! accent. The right pane is the main view, showing whatever the current
+//! its title row lists every shown panel's tab, the current one in the
+//! focus colour. The right pane is the main view, showing whatever the current
 //! side panel drives:
 //!
 //! 1. Files: the working-tree file tree; main shows its diff. While a
@@ -43,11 +43,12 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 use deltoids::Theme;
-use deltoids::render_tui::{pane_block_with_title_line, pane_border_color, rgb_to_color};
+use deltoids::render_tui::rgb_to_color;
 
 use super::files::{FilesMode, SnapshotPanel};
 use super::history::History;
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
+use super::pane;
 use super::panel::{Panel, panel_title, tab_strip};
 use super::vcs::Vcs;
 use super::watch::ChangeReceiver;
@@ -85,7 +86,7 @@ pub(super) struct Workspace {
     side: Side,
     main_focused: bool,
     side_rect: Rect,
-    /// Each shown tab's columns on the side panel's top border.
+    /// Each shown tab's columns on the side panel's title row.
     tab_hits: Vec<(Side, Range<u16>)>,
     main_rect: Rect,
     /// The `but` program the branches panel runs, when not the one on
@@ -241,7 +242,7 @@ impl Workspace {
 
     /// The side panel whose tab sits under `position`.
     fn tab_at(&self, position: Position) -> Option<Side> {
-        if position.y != self.side_rect.y || position.x + 1 >= self.side_rect.right() {
+        if position.y != self.side_rect.y || position.x >= self.side_rect.right() {
             return None;
         }
         self.tab_hits
@@ -252,7 +253,7 @@ impl Workspace {
 
     /// The tab strip titling the side panel, recording where each tab
     /// lands for clicks.
-    fn tab_title(&mut self, area: Rect, focused: bool, theme: &Theme) -> Line<'static> {
+    fn tab_title(&mut self, area: Rect, theme: &Theme) -> Line<'static> {
         let shown: Vec<Side> = Side::ALL.into_iter().filter(|&s| self.shows(s)).collect();
         let tabs: Vec<String> = shown
             .iter()
@@ -262,9 +263,8 @@ impl Workspace {
             })
             .collect();
         let current = shown.iter().position(|&s| s == self.side).unwrap_or(0);
-        let color = pane_border_color(focused, theme);
-        let (title, ranges) = tab_strip(color, &tabs, current, theme);
-        let left = area.x + 1;
+        let (title, ranges) = tab_strip(&tabs, current, theme);
+        let left = pane::body(area).x;
         self.tab_hits = shown
             .into_iter()
             .zip(ranges)
@@ -304,7 +304,7 @@ impl Mode for Workspace {
         self.side_rect = left;
         self.main_rect = right;
         let (current, main_focused) = (self.side, self.main_focused);
-        let title = self.tab_title(left, !main_focused, theme);
+        let title = self.tab_title(left, theme);
         match self.panel(current) {
             Some(panel) => panel.draw_side(frame, left, title, !main_focused, theme),
             None => draw_no_repository(frame, left, title, !main_focused, theme),
@@ -312,8 +312,7 @@ impl Mode for Workspace {
         match self.panel(current) {
             Some(panel) => panel.draw_main(frame, right, main_focused, theme, budget),
             None => {
-                let color = pane_border_color(main_focused, theme);
-                let title = panel_title(color, "Log", theme);
+                let title = panel_title("Log");
                 draw_no_repository(frame, right, title, main_focused, theme);
             }
         }
@@ -453,7 +452,7 @@ impl Mode for Workspace {
 }
 
 fn inner_height(area: Rect) -> usize {
-    area.height.saturating_sub(2) as usize
+    pane::body_height(area)
 }
 
 fn draw_no_repository(
@@ -463,15 +462,9 @@ fn draw_no_repository(
     focused: bool,
     theme: &Theme,
 ) {
-    let color = pane_border_color(focused, theme);
-    let block = pane_block_with_title_line(title, color, None);
+    let body = pane::draw(frame, area, pane::Chrome::new(title, focused), theme);
     let muted = Style::default().fg(rgb_to_color(theme.muted));
-    frame.render_widget(
-        Paragraph::new("Not a git repository.")
-            .style(muted)
-            .block(block),
-        area,
-    );
+    frame.render_widget(Paragraph::new("Not a git repository.").style(muted), body);
 }
 
 #[cfg(test)]

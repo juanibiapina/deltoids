@@ -19,7 +19,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
-use deltoids::render_tui::{pane_block_with_title_line, pane_border_color, rgb_to_color};
+use deltoids::render_tui::rgb_to_color;
 use deltoids::{Theme, git};
 
 use super::model::{self, Model};
@@ -27,6 +27,7 @@ use super::reload::Patches;
 use super::{FilesMode, review};
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{AppCommand, BackgroundWork, DrawBudget};
+use crate::cli::browse::pane;
 use crate::cli::browse::panel::{Panel, panel_title};
 use crate::cli::browse::vcs::Branch;
 use crate::sidebar::Root;
@@ -256,10 +257,9 @@ impl SnapshotPanel {
             Some(Err(err)) => err.clone(),
             _ => "Loading…".to_string(),
         };
-        let color = pane_border_color(focused, theme);
-        let block = pane_block_with_title_line(title, color, None);
+        let body = pane::draw(frame, area, pane::Chrome::new(title, focused), theme);
         let muted = Style::default().fg(rgb_to_color(theme.muted));
-        frame.render_widget(Paragraph::new(text).style(muted).block(block), area);
+        frame.render_widget(Paragraph::new(text).style(muted), body);
     }
 }
 
@@ -297,7 +297,7 @@ impl Panel for SnapshotPanel {
         match self.view() {
             Some(view) => view.draw_main(frame, area, focused, theme, budget),
             None => {
-                let title = panel_title(pane_border_color(focused, theme), "Diff", theme);
+                let title = panel_title("Diff");
                 self.draw_message(frame, area, title, focused, theme);
             }
         }

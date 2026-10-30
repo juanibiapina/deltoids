@@ -281,7 +281,7 @@ mod tests {
         let rows = pane(&mut state);
         let text = rows.join("\n");
 
-        assert!(rows[0].contains("─src/ ─"), "{}", rows[0]);
+        assert!(rows[0].starts_with(" src/ "), "{}", rows[0]);
         assert!(text.contains("2 files changed  +2 -1"), "{text}");
         let (a, a_row) = row_with(&rows, "M a.rs");
         assert!(a_row.contains("+1 -1"), "{a_row}");
@@ -341,7 +341,7 @@ mod tests {
         );
         assert!(state.sidebar.selected_directory_path().is_none());
         let rows = pane(&mut state);
-        assert!(rows[0].contains("─src/b.rs "), "{}", rows[0]);
+        assert!(rows[0].starts_with(" src/b.rs "), "{}", rows[0]);
         assert!(rows.join("\n").contains("two();"));
     }
 

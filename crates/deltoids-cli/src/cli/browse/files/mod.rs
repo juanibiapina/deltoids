@@ -56,9 +56,9 @@ use super::comments::{CommentAnchor, CommentStore, reanchor, review_text};
 use super::diff_cursor::Opens;
 use super::double_click::DoubleClick;
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
+use super::pane;
 use super::panel;
 use super::vcs::{PendingDiscard, Vcs};
-use deltoids::render_tui::pane_border_color;
 
 mod action_menu;
 #[cfg(test)]
@@ -320,11 +320,15 @@ impl FilesMode {
                 diff_pane::file_heading(&self.model, index, title, budget, theme)
             }),
         };
+        let badge = match (self.shown_view(), current) {
+            (Shown::Diffs, Some(index)) => navigate::border_badge(self, index, theme),
+            _ => Vec::new(),
+        };
         let pane = match spec.column {
             Column::Staged => &mut self.staged,
             Column::Unstaged => &mut self.unstaged,
         };
-        pane.set_heading(heading);
+        pane.set_heading(heading, badge);
         pane.render(frame, right, focused, theme, status.as_deref());
         navigate::observe(self, &shown_files);
         navigate::draw(self, frame, right, focused, theme);
@@ -711,7 +715,7 @@ impl FilesMode {
             .map(|error| format!("Jev unavailable: {error}"));
         self.refresh_guidance();
         if self.hide_low {
-            let height = self.sidebar_rect.height.saturating_sub(2) as usize;
+            let height = pane::body_height(self.sidebar_rect);
             self.rebuild_sidebar(height);
         } else {
             self.sidebar.update_notes(&self.guidance.rows);
@@ -1402,8 +1406,8 @@ fn handle_mouse(state: &mut FilesMode, mouse: MouseEvent, height: usize) -> AppC
             match target {
                 Focus::Sidebar => {
                     let rect = state.sidebar_rect;
-                    let content_y = mouse.row.saturating_sub(rect.y).saturating_sub(1) as usize;
-                    let content_x = mouse.column.saturating_sub(rect.x).saturating_sub(1) as usize;
+                    let content_y = mouse.row.saturating_sub(pane::body(rect).y) as usize;
+                    let content_x = mouse.column.saturating_sub(pane::body(rect).x) as usize;
                     let clicked = state.sidebar.scroll() + content_y;
                     if state.sidebar.click(clicked, content_x, height) {
                         state.snap_diff_to_selected_file();
@@ -1425,10 +1429,7 @@ fn left_click_diff(state: &mut FilesMode, mouse: &MouseEvent, height: usize) {
     let double = state.diff_clicks.press(mouse);
     let column = state.shown();
     let pane = state.pane(column);
-    let content_y = mouse
-        .row
-        .saturating_sub(state.diff_rect.y)
-        .saturating_sub(1) as usize;
+    let content_y = mouse.row.saturating_sub(pane::body(state.diff_rect).y) as usize;
     let row = pane.cursor.scroll + content_y;
     match pane.opens_at(row).cloned() {
         Some(opens) => {
@@ -1507,8 +1508,7 @@ impl Mode for FilesMode {
     ) {
         let (sidebar_focused, diff_focused) =
             (self.focus == Focus::Sidebar, self.focus == Focus::Diff);
-        let color = pane_border_color(sidebar_focused, theme);
-        let (title, _) = panel::tab_strip(color, std::slice::from_ref(&self.label), 0, theme);
+        let (title, _) = panel::tab_strip(std::slice::from_ref(&self.label), 0, theme);
         panel::Panel::draw_side(self, frame, left, title, sidebar_focused, theme);
         self.draw_diff(frame, right, theme, budget, diff_focused);
     }
@@ -1649,20 +1649,16 @@ impl panel::Panel for FilesMode {
         theme: &Theme,
     ) {
         self.sidebar_rect = area;
-        self.sidebar
-            .reveal_selected(area.height.saturating_sub(2) as usize);
-        sidebar_pane::draw_sidebar(
-            frame,
-            area,
-            &self.sidebar,
-            title,
-            sidebar_pane::sidebar_footer(&self.sidebar, theme),
-            focused,
-            theme,
-        );
-        if self.hide_low {
-            panel::draw_filter_flag(frame, area, theme);
-        }
+        self.sidebar.reveal_selected(pane::body_height(area));
+        let badges = if self.hide_low {
+            vec![panel::filter_flag(theme)]
+        } else {
+            Vec::new()
+        };
+        let chrome = pane::Chrome::new(title, focused)
+            .badges(badges)
+            .footer(sidebar_pane::sidebar_footer(&self.sidebar, theme));
+        sidebar_pane::draw_sidebar(frame, area, &self.sidebar, chrome, theme);
     }
 
     fn draw_main(
@@ -2406,11 +2402,11 @@ mod tests {
             .rposition(|row| row.is_selectable())
             .unwrap();
 
-        // Row 0 of the pane body is one below the pane's top border.
+        // The pane body starts below its title row and rule.
         let mouse = make_mouse(
             MouseEventKind::Down(MouseButton::Left),
             50,
-            (last_line_row + 1) as u16,
+            (last_line_row + 2) as u16,
         );
         handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.unstaged.cursor.row, last_line_row);

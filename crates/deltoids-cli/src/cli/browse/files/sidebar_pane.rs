@@ -4,21 +4,19 @@
 //! coordination owned by the shell, not this slice.
 
 use crossterm::event::KeyCode;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use deltoids::Theme;
-use deltoids::render_tui::{
-    pane_block_with_title_line, pane_border_color, pane_inner_height, render_pane_scrollbar,
-    rgb_to_color,
-};
+use deltoids::render_tui::{pane_border_color, rgb_to_color};
 
 use crate::sidebar::{Sidebar, SidebarFile, display_path};
 
 use super::model::{Model, body_deltas};
+use super::pane;
 
 /// Build the sidebar from a model plus per-file delta counts.
 pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
@@ -95,15 +93,11 @@ pub(super) fn draw_sidebar(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     sidebar: &Sidebar,
-    title: Line<'static>,
-    footer: Option<Line<'static>>,
-    focused: bool,
+    chrome: pane::Chrome,
     theme: &Theme,
 ) {
-    let inner = area.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
+    let focused = chrome.focused;
+    let inner = pane::draw(frame, area, chrome, theme);
     let viewport = inner.height as usize;
     let inner_width = inner.width as usize;
     let scroll = sidebar.scroll();
@@ -128,43 +122,33 @@ pub(super) fn draw_sidebar(
     // Extend the selection background across the full inner pane width
     // so the highlighted row reads as a continuous bar (matching
     // lazygit's `List` widget). Pad against the inner
-    // width so the trailing block stops just before the right border.
+    // width so the trailing block stops just before the scrollbar.
     if let Some(rel) = sidebar.selected().checked_sub(scroll)
         && rel < visible.len()
     {
         pad_selected_row(&mut visible[rel], inner_width, theme);
     }
 
-    let color = pane_border_color(focused, theme);
-    let block = pane_block_with_title_line(title, color, footer);
-    frame.render_widget(Paragraph::new(visible).block(block), area);
+    frame.render_widget(Paragraph::new(visible), inner);
     if let Some(offset) = sidebar
         .rule_position()
         .and_then(|position| position.checked_sub(start))
         .filter(|&offset| start + offset < end)
     {
-        draw_rule(frame, area, inner.y + offset as u16, color);
+        let color = pane_border_color(focused, theme);
+        draw_rule(frame, inner, inner.y + offset as u16, color);
     }
 
-    render_pane_scrollbar(
-        frame,
-        area,
-        total,
-        sidebar.selected(),
-        pane_inner_height(area),
-        focused,
-        theme,
-    );
+    pane::draw_scrollbar(frame, area, total, sidebar.selected(), focused, theme);
 }
 
-/// `├───┤` across `area` at screen row `y`, joined to its side borders.
-fn draw_rule(frame: &mut ratatui::Frame<'_>, area: Rect, y: u16, color: ratatui::style::Color) {
-    let inner = area.width.saturating_sub(2) as usize;
-    let rule = format!("├{}┤", "─".repeat(inner));
+/// A `───` rule across `body` at screen row `y`.
+fn draw_rule(frame: &mut ratatui::Frame<'_>, body: Rect, y: u16, color: ratatui::style::Color) {
+    let rule = "─".repeat(body.width as usize);
     let row = Rect {
-        x: area.x,
+        x: body.x,
         y,
-        width: area.width,
+        width: body.width,
         height: 1,
     };
     frame.render_widget(
@@ -295,7 +279,7 @@ mod tests {
     use crossterm::event::{MouseButton, MouseEventKind};
 
     fn drawn_rows(sidebar: &Sidebar, width: u16) -> Vec<String> {
-        let backend = ratatui::backend::TestBackend::new(width, 6);
+        let backend = ratatui::backend::TestBackend::new(width, 7);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
@@ -303,15 +287,13 @@ mod tests {
                     frame,
                     frame.area(),
                     sidebar,
-                    Line::from("Files"),
-                    None,
-                    true,
+                    pane::Chrome::new(Line::from("Files"), true),
                     &Theme::default(),
                 )
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        (1..5)
+        (2..6)
             .map(|y| {
                 (1..width - 1)
                     .map(|x| buffer[(x, y)].symbol().to_string())
@@ -531,10 +513,10 @@ mod tests {
         let row_count = state.sidebar.row_count();
         assert!(row_count >= 2, "need at least 2 rows for this test");
 
-        // Sidebar rect starts at y=0, so row 1 = border,
-        // row 2 = second content row (index 1). Click on the last row.
+        // The sidebar's body starts below its title row and rule.
+        // Click on the last row.
         let target_row = row_count - 1;
-        let mouse_y = 1 + target_row as u16; // +1 for top border
+        let mouse_y = 2 + target_row as u16;
         let mouse = make_mouse(MouseEventKind::Down(MouseButton::Left), 5, mouse_y);
         handle_mouse(&mut state, mouse, 18);
         assert_eq!(state.sidebar.selected(), target_row,);

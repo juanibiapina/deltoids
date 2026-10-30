@@ -9,12 +9,12 @@
 //! disappearing.
 
 /// Numerator/denominator of the terminal width used as the default
-/// sidebar outer width (borders included). 1/4 keeps the tree compact
+/// sidebar outer width (divider included). 1/4 keeps the tree compact
 /// while still scaling with the terminal: a 120-col terminal gets 30, a
 /// 200-col terminal gets 50. Matches lazygit's default `sidePanelWidth`.
 const SIDEBAR_WIDTH_NUM: u16 = 1;
 const SIDEBAR_WIDTH_DEN: u16 = 4;
-/// Smallest the sidebar may be shrunk to (outer width, includes borders).
+/// Smallest the sidebar may be shrunk to (outer width, includes the divider).
 const MIN_SIDEBAR_WIDTH: u16 = 24;
 /// Smallest the diff/content pane may be squeezed to when the sidebar
 /// grows. Bounds how wide the sidebar can get.
@@ -22,7 +22,7 @@ const MIN_DIFF_WIDTH: u16 = 24;
 /// Columns added/removed per `<`/`>` keypress.
 const SIDEBAR_RESIZE_STEP: u16 = 4;
 
-/// Default sidebar outer width (borders included) for a terminal of
+/// Default sidebar outer width (divider included) for a terminal of
 /// `terminal_width`: a fixed fraction of the terminal, clamped to
 /// `[MIN_SIDEBAR_WIDTH, terminal_width - MIN_DIFF_WIDTH]` so it never
 /// starves the content pane. Used to seed a [`Preference`].
@@ -33,8 +33,8 @@ pub fn default_width(terminal_width: u16) -> u16 {
     )
 }
 
-/// Content/diff pane width left after a sidebar of `sidebar_width` and
-/// the content pane's own two borders. Saturates to 0 on a tiny
+/// Content/diff pane width left after a sidebar of `sidebar_width`, the
+/// gap after the divider, and the content pane's scrollbar column. Saturates to 0 on a tiny
 /// terminal (never panics).
 pub fn diff_pane_width(sidebar_width: u16, terminal_width: u16) -> usize {
     terminal_width.saturating_sub(sidebar_width + 2) as usize
@@ -90,7 +90,7 @@ impl Preference {
     }
 
     /// Absolute set from a divider drag at terminal column `column`. The
-    /// sidebar's right border sits at `column`, so its outer width is
+    /// sidebar's divider sits at `column`, so its outer width is
     /// `column + 1`, floored at the minimum.
     pub fn set_from_divider(&mut self, column: u16) {
         self.preferred = column.saturating_add(1).max(MIN_SIDEBAR_WIDTH);

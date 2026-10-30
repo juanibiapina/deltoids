@@ -28,14 +28,9 @@
 //! highlights a single opening scope line in isolation, which is never
 //! mid-construct.
 
-use ratatui::Frame;
-use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols::scrollbar as scrollbar_symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Block, BorderType, Borders};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Style as SyntectStyle};
 use unicode_width::UnicodeWidthChar;
@@ -1105,7 +1100,7 @@ fn display_width(text: &str) -> usize {
 // ---------------------------------------------------------------------------
 //
 // These build the rounded, titled, optionally-footered [`Block`] used to
-// frame each pane in the TUI, plus the matching scrollbar widget.
+// frame popups in the TUI.
 
 /// Pick the border colour for a pane based on whether it currently has
 /// focus. Active panes use [`Theme::border_active`] (the bright accent),
@@ -1116,11 +1111,6 @@ pub fn pane_border_color(active: bool, theme: &Theme) -> Color {
     } else {
         rgb_to_color(theme.border)
     }
-}
-
-/// Inner height of a pane block (its area minus the two border rows).
-pub fn pane_inner_height(area: Rect) -> usize {
-    area.height.saturating_sub(2) as usize
 }
 
 /// Build a rounded-border [`Block`] with the given title and border
@@ -1150,55 +1140,6 @@ pub fn pane_block_with_title_line(
         block = block.title_bottom(footer.right_aligned());
     }
     block
-}
-
-/// Render a vertical scrollbar inside the right border of `area`,
-/// coloured to match the pane border: the active accent when `active`,
-/// the plain border colour otherwise (see [`pane_border_color`]). No-op
-/// when the content fits the viewport.
-///
-/// `content_length` is the number of logical rows of content;
-/// `position` is the current top-row index (or selected-row index in a
-/// list); `viewport` is the inner pane height. The scrollbar uses the
-/// inner area (1-row vertical margin) so the thumb stays clear of the
-/// rounded corners.
-pub fn render_pane_scrollbar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    content_length: usize,
-    position: usize,
-    viewport: usize,
-    active: bool,
-    theme: &Theme,
-) {
-    if content_length <= viewport.max(1) {
-        return;
-    }
-    let color = pane_border_color(active, theme);
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .symbols(scrollbar_symbols::VERTICAL)
-        .thumb_symbol("\u{2590}")
-        .track_style(Style::default().fg(color))
-        .thumb_style(Style::default().fg(color))
-        .begin_symbol(None)
-        .end_symbol(None);
-    // Ratatui only puts the thumb at the track bottom when position ==
-    // content_length - 1. Our scroll offsets max out at
-    // content_length - viewport, so pass max_scroll + 1 as the content
-    // length and clamp the position accordingly. This makes the thumb
-    // reach the bottom for both offset-based and selection-based panes.
-    let max_scroll = content_length.saturating_sub(viewport);
-    let mut scrollbar_state = ScrollbarState::new(max_scroll.saturating_add(1))
-        .position(position.min(max_scroll))
-        .viewport_content_length(viewport);
-    frame.render_stateful_widget(
-        scrollbar,
-        area.inner(Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scrollbar_state,
-    );
 }
 
 #[cfg(test)]
@@ -2122,57 +2063,6 @@ mod tests {
                 "adjacent ancestors should not produce a `...` row"
             );
         }
-    }
-
-    fn scrollbar_fg_colors(active: bool, theme: &Theme) -> Vec<Color> {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let mut term = Terminal::new(TestBackend::new(6, 8)).unwrap();
-        term.draw(|f| {
-            let area = f.area();
-            render_pane_scrollbar(f, area, 100, 0, 4, active, theme);
-        })
-        .unwrap();
-        term.backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.fg)
-            .filter(|fg| *fg != Color::Reset)
-            .collect()
-    }
-
-    #[test]
-    fn scrollbar_uses_active_border_color_when_focused() {
-        let theme = Theme::default();
-        let colors = scrollbar_fg_colors(true, &theme);
-        let active = rgb_to_color(theme.border_active);
-        let inactive = rgb_to_color(theme.border);
-        assert!(
-            colors.contains(&active),
-            "focused scrollbar should use border_active, got: {colors:?}"
-        );
-        assert!(
-            !colors.contains(&inactive),
-            "focused scrollbar must not use the inactive border color"
-        );
-    }
-
-    #[test]
-    fn scrollbar_uses_border_color_when_inactive() {
-        let theme = Theme::default();
-        let colors = scrollbar_fg_colors(false, &theme);
-        let active = rgb_to_color(theme.border_active);
-        let inactive = rgb_to_color(theme.border);
-        assert!(
-            colors.contains(&inactive),
-            "inactive scrollbar should use the border color, got: {colors:?}"
-        );
-        assert!(
-            !colors.contains(&active),
-            "inactive scrollbar must not use the active border color"
-        );
     }
 
     #[test]

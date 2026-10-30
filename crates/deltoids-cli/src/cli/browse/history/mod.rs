@@ -25,20 +25,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
-use ratatui::layout::{Margin, Position, Rect};
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use deltoids::render_tui::{
-    pane_block_with_title_line, pane_border_color, pane_inner_height, render_pane_scrollbar,
-    rgb_to_color,
-};
+use deltoids::render_tui::rgb_to_color;
 use deltoids::{Theme, git};
 
 use super::double_click::DoubleClick;
 use super::files::{Snapshot, SnapshotPanel};
 use super::mode::{AppCommand, BackgroundWork, DrawBudget};
+use super::pane;
 use super::panel::{Panel, panel_title};
 use super::vcs::{Branch, Vcs};
 
@@ -417,9 +415,13 @@ impl History {
             Some(Err(err)) => vec![Line::from(err.clone())],
             None => Vec::new(),
         };
-        let color = pane_border_color(focused, theme);
-        let block = pane_block_with_title_line(panel_title(color, "Log", theme), color, None);
-        frame.render_widget(Paragraph::new(lines).block(block), area);
+        let body = pane::draw(
+            frame,
+            area,
+            pane::Chrome::new(panel_title("Log"), focused),
+            theme,
+        );
+        frame.render_widget(Paragraph::new(lines), body);
     }
 
     fn draw_commit_diff(
@@ -440,20 +442,21 @@ impl History {
             preview.draw_main(frame, area, focused, theme, budget);
             return;
         }
-        let color = pane_border_color(focused, theme);
         let text = if selected { "Loading…" } else { "" };
-        let block = pane_block_with_title_line(panel_title(color, "Diff", theme), color, None);
+        let body = pane::draw(
+            frame,
+            area,
+            pane::Chrome::new(panel_title("Diff"), focused),
+            theme,
+        );
         let muted = Style::default().fg(rgb_to_color(theme.muted));
-        frame.render_widget(Paragraph::new(text).style(muted).block(block), area);
+        frame.render_widget(Paragraph::new(text).style(muted), body);
     }
 
     /// Select the list row under a click in the side panel. Returns the
     /// row it selected, or `None` when the click hit nothing selectable.
     fn click_row(&mut self, row: u16) -> Option<usize> {
-        let inner = self.side_rect.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
+        let inner = pane::body(self.side_rect);
         if row < inner.y || row >= inner.bottom() {
             return None;
         }
@@ -658,18 +661,19 @@ fn draw_list(
     cursor: &mut Cursor,
     theme: &Theme,
 ) {
-    let color = pane_border_color(chrome.focused, theme);
-    let block = pane_block_with_title_line(chrome.title, color, chrome.footer);
+    let focused = chrome.focused;
+    let frame_chrome = pane::Chrome::new(chrome.title, focused).footer(chrome.footer);
+    let body = pane::draw(frame, area, frame_chrome, theme);
     let rows = match rows {
         Ok(rows) => rows,
         Err(message) => {
             let muted = Style::default().fg(rgb_to_color(theme.muted));
-            frame.render_widget(Paragraph::new(message).style(muted).block(block), area);
+            frame.render_widget(Paragraph::new(message).style(muted), body);
             return;
         }
     };
-    let height = pane_inner_height(area);
-    let width = area.width.saturating_sub(2) as usize;
+    let height = body.height as usize;
+    let width = body.width as usize;
     let visible = cursor.visible(rows.len(), height);
     let selected_bg = Style::default().bg(rgb_to_color(theme.selection_bg));
     let lines: Vec<Line<'static>> = rows[visible.clone()]
@@ -685,16 +689,8 @@ fn draw_list(
             row
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines).block(block), area);
-    render_pane_scrollbar(
-        frame,
-        area,
-        rows.len(),
-        cursor.selected,
-        height,
-        chrome.focused,
-        theme,
-    );
+    frame.render_widget(Paragraph::new(lines), body);
+    pane::draw_scrollbar(frame, area, rows.len(), cursor.selected, focused, theme);
 }
 
 /// `  2d * main`: the tip's age, a star on the current branch.

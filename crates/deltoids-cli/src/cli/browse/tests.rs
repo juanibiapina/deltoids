@@ -411,7 +411,7 @@ fn loading_frame_shows_sidebar_title_and_message() {
         "loading message missing: {text:?}"
     );
     assert!(
-        text.contains("─Loading─"),
+        text.starts_with(" Loading "),
         "sidebar title missing: {text:?}"
     );
 }

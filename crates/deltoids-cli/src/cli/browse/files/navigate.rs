@@ -488,8 +488,7 @@ fn info(state: &mut FilesMode) {
 fn row_at(state: &FilesMode, mouse: &MouseEvent) -> usize {
     let content_y = mouse
         .row
-        .saturating_sub(state.diff_rect.y)
-        .saturating_sub(1) as usize;
+        .saturating_sub(super::pane::body(state.diff_rect).y) as usize;
     state.pane(state.shown()).cursor.scroll + content_y
 }
 
@@ -1120,7 +1119,7 @@ fn diff_height(state: &FilesMode) -> usize {
 }
 
 fn sidebar_height(state: &FilesMode) -> usize {
-    state.sidebar_rect.height.saturating_sub(2).max(1) as usize
+    super::pane::body_height(state.sidebar_rect).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,18 +1192,17 @@ pub(super) fn draw(
             }
         }
     }
-    draw_border_badge(state, frame, area, theme);
     state.nav.hover.draw(frame, area, theme);
     if let Some(list) = state.nav.list.as_mut() {
         draw_list(frame, list, theme);
     }
 }
 
-/// The right end of the diff pane's top border for file `index`: its
+/// The right end of the diff pane's title row for file `index`: its
 /// language badge (icon and name), then its language server's state. A
 /// green `●` when ready, a spinner (and percentage) while it starts or
 /// indexes, a red `✕` when it failed, nothing when there is no server.
-fn border_badge(state: &FilesMode, index: usize, theme: &Theme) -> Vec<Span<'static>> {
+pub(super) fn border_badge(state: &FilesMode, index: usize, theme: &Theme) -> Vec<Span<'static>> {
     let Some((diff, _)) = body(&state.model, index, state.shown()) else {
         return Vec::new();
     };
@@ -1244,7 +1242,7 @@ fn border_badge(state: &FilesMode, index: usize, theme: &Theme) -> Vec<Span<'sta
     spans
 }
 
-/// Columns the right end of the border takes for file `index`, with the
+/// Columns the right end of the title row takes for file `index`, with the
 /// filter funnel when it shows: what the title leaves free.
 pub(super) fn border_badge_width(state: &FilesMode, index: usize, theme: &Theme) -> usize {
     let badge: usize = border_badge(state, index, theme)
@@ -1257,52 +1255,6 @@ pub(super) fn border_badge_width(state: &FilesMode, index: usize, theme: &Theme)
         0
     };
     badge + funnel + 2
-}
-
-/// Draw the right end of the diff pane's top border for the file the
-/// pane is on, left of the filter funnel when there is one, and only
-/// over the border's rule, so the title keeps priority.
-fn draw_border_badge(state: &FilesMode, frame: &mut ratatui::Frame<'_>, area: Rect, theme: &Theme) {
-    let Some(index) = state.pane(state.shown()).current_file(&state.model, area) else {
-        return;
-    };
-    let spans = border_badge(state, index, theme);
-    if spans.is_empty() {
-        return;
-    }
-    let width: usize = spans
-        .iter()
-        .map(|span| display_width(&span.content))
-        .sum::<usize>()
-        + 2;
-    let funnel = if state.hide_low_hunks {
-        display_width(filter_icon(IconMode::from_env())) + 1
-    } else {
-        0
-    };
-    let Some(end) = (area.right() as usize).checked_sub(2 + funnel) else {
-        return;
-    };
-    let Some(start) = end.checked_sub(width) else {
-        return;
-    };
-    let buffer = frame.buffer_mut();
-    let y = area.y;
-    let on_rule = (start.saturating_sub(1).max(area.x as usize + 1)..end)
-        .all(|x| buffer[(x as u16, y)].symbol() == "─");
-    if !on_rule {
-        return;
-    }
-    let border = buffer[(start as u16, y)].style();
-    let mut x = start as u16;
-    buffer.set_string(x, y, " ", border);
-    x += 1;
-    for span in spans {
-        let style = border.patch(span.style);
-        buffer.set_string(x, y, &span.content, style);
-        x += display_width(&span.content) as u16;
-    }
-    buffer.set_string(x, y, " ", border);
 }
 
 fn draw_list(frame: &mut ratatui::Frame<'_>, list: &mut List, theme: &Theme) {

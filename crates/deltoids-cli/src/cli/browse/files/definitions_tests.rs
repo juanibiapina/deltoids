@@ -235,7 +235,7 @@ impl Cart {
     state.snap_diff_to_selected_file();
     press(&mut state, KeyCode::Char('o'));
     let rows = pane(&mut state);
-    let shown: Vec<String> = rows[1..rows.len() - 1]
+    let shown: Vec<String> = rows[2..]
         .iter()
         .map(|row| row.replace('\u{2502}', "").trim().to_string())
         .filter(|row| !row.is_empty())

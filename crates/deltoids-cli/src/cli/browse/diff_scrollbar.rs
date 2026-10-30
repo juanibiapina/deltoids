@@ -1,13 +1,14 @@
-//! Change overview beside the diff pane's right-border scrollbar.
+//! Change overview beside the diff pane's scrollbar.
 
-use deltoids::render_tui::{render_pane_scrollbar, rgb_to_color};
+use deltoids::render_tui::rgb_to_color;
 use deltoids::{LineKind, Theme};
 use deltoids_review::overview::{Change, Span, change_cells};
 use ratatui::Frame;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 
 use super::diff_cursor::DiffRow;
+use super::pane;
 
 /// Reserve one inner column when at least one column remains for text.
 /// Reservation is independent of overflow, so wrapping cannot change it.
@@ -16,10 +17,7 @@ pub(super) fn body_width(inner_width: usize) -> usize {
 }
 
 pub(super) fn body_area(area: Rect) -> Rect {
-    let mut inner = area.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
+    let mut inner = pane::body(area);
     inner.width = body_width(inner.width as usize) as u16;
     inner
 }
@@ -35,15 +33,12 @@ pub(super) fn render(
     focused: bool,
     theme: &Theme,
 ) {
-    let inner = area.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
+    let inner = pane::body(area);
     let height = inner.height as usize;
     if height == 0 || inner.width == 0 {
         return;
     }
-    render_pane_scrollbar(frame, area, rows.len(), scroll, height, focused, theme);
+    pane::draw_scrollbar(frame, area, rows.len(), scroll, focused, theme);
     if inner.width < 2 {
         return;
     }
@@ -112,17 +107,17 @@ mod tests {
         kinds[50] = Some(LineKind::Added);
         kinds[100] = Some(LineKind::Removed);
         let theme = Theme::default();
-        let top = render_rows(&kinds, 0, 10, 7);
-        let bottom = render_rows(&kinds, 96, 10, 7);
+        let top = render_rows(&kinds, 0, 10, 8);
+        let bottom = render_rows(&kinds, 95, 10, 8);
         for buffer in [&top, &bottom] {
-            assert_eq!(buffer[(8, 1)].fg, rgb_to_color(theme.status_deleted));
-            assert_eq!(buffer[(8, 3)].fg, rgb_to_color(theme.status_added));
-            assert_eq!(buffer[(8, 5)].fg, rgb_to_color(theme.status_deleted));
+            assert_eq!(buffer[(8, 2)].fg, rgb_to_color(theme.status_deleted));
+            assert_eq!(buffer[(8, 4)].fg, rgb_to_color(theme.status_added));
+            assert_eq!(buffer[(8, 7)].fg, rgb_to_color(theme.status_deleted));
         }
-        assert_eq!(top[(9, 1)].symbol(), "▐");
-        assert_eq!(bottom[(9, 5)].symbol(), "▐");
-        assert_ne!(top[(9, 5)].symbol(), "▐");
-        assert_ne!(bottom[(9, 1)].symbol(), "▐");
+        assert_eq!(top[(9, 2)].symbol(), "▐");
+        assert_eq!(bottom[(9, 7)].symbol(), "▐");
+        assert_ne!(top[(9, 7)].symbol(), "▐");
+        assert_ne!(bottom[(9, 2)].symbol(), "▐");
     }
 
     #[test]
@@ -131,12 +126,12 @@ mod tests {
             &[Some(LineKind::Added), Some(LineKind::Removed), None, None],
             0,
             10,
-            4,
+            5,
         );
         let theme = Theme::default();
-        assert_eq!(buffer[(8, 1)].symbol(), "▀");
-        assert_eq!(buffer[(8, 1)].fg, rgb_to_color(theme.status_added));
-        assert_eq!(buffer[(8, 1)].bg, rgb_to_color(theme.status_deleted));
+        assert_eq!(buffer[(8, 2)].symbol(), "▀");
+        assert_eq!(buffer[(8, 2)].fg, rgb_to_color(theme.status_added));
+        assert_eq!(buffer[(8, 2)].bg, rgb_to_color(theme.status_deleted));
     }
 
     #[test]
@@ -150,14 +145,14 @@ mod tests {
             ],
             0,
             10,
-            8,
+            9,
         );
-        assert_eq!(buffer[(8, 1)].symbol(), "█");
-        assert_eq!(buffer[(8, 2)].symbol(), " ");
+        assert_eq!(buffer[(8, 2)].symbol(), "█");
         assert_eq!(buffer[(8, 3)].symbol(), " ");
-        assert_eq!(buffer[(8, 4)].symbol(), "█");
-        assert_eq!(buffer[(8, 5)].symbol(), " ");
-        assert_eq!(buffer[(9, 1)].symbol(), " ");
+        assert_eq!(buffer[(8, 4)].symbol(), " ");
+        assert_eq!(buffer[(8, 5)].symbol(), "█");
+        assert_eq!(buffer[(8, 6)].symbol(), " ");
+        assert_eq!(buffer[(9, 2)].symbol(), " ");
     }
 
     #[test]
@@ -166,10 +161,7 @@ mod tests {
             for height in 0..5 {
                 let area = Rect::new(0, 0, width, height);
                 let body = body_area(area);
-                let inner = area.inner(Margin {
-                    vertical: 1,
-                    horizontal: 1,
-                });
+                let inner = pane::body(area);
                 assert_eq!(body.width as usize, body_width(inner.width as usize));
                 let _ = render_rows(&[Some(LineKind::Added)], 0, width, height);
             }

@@ -5,13 +5,13 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 use git2::{Repository, Signature, Time};
 
 use deltoids::Theme;
-use deltoids::render_tui::rgb_to_color;
+use ratatui::style::Modifier;
 
 use super::{Side, Workspace};
 use crate::cli::browse::files::FilesMode;
 use crate::cli::browse::mode::{Mode, Viewport};
 use crate::cli::browse::test_screen::{
-    LEFT, PANE_HEIGHT, draw, left_border_focused, left_text, right_focused, right_text,
+    LEFT, PANE_HEIGHT, RIGHT, draw, left_focused, left_text, right_focused, right_text,
 };
 #[cfg(unix)]
 use crate::cli::browse::vcs::test_support::{fixture as but_fixture, stub_but};
@@ -141,7 +141,7 @@ fn left_rows(workspace: &mut Workspace) -> Vec<String> {
     left_text(workspace).lines().map(str::to_string).collect()
 }
 
-/// The first column of side panel `n`'s tab on the top border: `'1'`
+/// The first column of side panel `n`'s tab on the title row: `'1'`
 /// for Files, `'2'` for Branches.
 fn tab_column(workspace: &mut Workspace, n: char) -> Option<u16> {
     let side = match n {
@@ -157,18 +157,21 @@ fn tab_column(workspace: &mut Workspace, n: char) -> Option<u16> {
         .map(|(_, columns)| columns.start)
 }
 
-/// Whether the side panel's top border has a tab for panel `n`.
+/// Whether the side panel's title row has a tab for panel `n`.
 fn has_panel(workspace: &mut Workspace, n: char) -> bool {
     tab_column(workspace, n).is_some()
 }
 
-/// The side panel the column shows: the tab drawn in the accent.
+/// The side panel the column shows: the tab drawn in bold.
 fn current_tab(workspace: &mut Workspace) -> char {
-    let accent = rgb_to_color(Theme::default().border_active);
     ['1', '2']
         .into_iter()
         .find(|&n| {
-            tab_column(workspace, n).is_some_and(|column| draw(workspace)[(column, 0)].fg == accent)
+            tab_column(workspace, n).is_some_and(|column| {
+                draw(workspace)[(column, 0)]
+                    .modifier
+                    .contains(Modifier::BOLD)
+            })
         })
         .unwrap_or_else(|| panic!("no current tab:\n{}", left_text(workspace)))
 }
@@ -194,21 +197,21 @@ fn show(workspace: &mut Workspace, n: char) {
     assert_eq!(current_tab(workspace), n, "{}", left_text(workspace));
 }
 
-/// Focus the main view the way a user does: click its top border.
+/// Focus the main view the way a user does: click its title.
 fn focus_main(workspace: &mut Workspace) {
     left_rows(workspace);
-    click(workspace, LEFT + 1, 0);
+    click(workspace, RIGHT, 0);
     assert!(right_focused(workspace));
 }
 
-/// The side panel's top border: its tab strip.
+/// The side panel's title row: its tab strip.
 fn title(workspace: &mut Workspace) -> String {
     left_rows(workspace).swap_remove(0)
 }
 
-/// The side panel whose border shows focus, if any.
+/// The side panel whose title shows focus, if any.
 fn focused_panel(workspace: &mut Workspace) -> Option<char> {
-    left_border_focused(workspace, 0).then(|| current_tab(workspace))
+    left_focused(workspace).then(|| current_tab(workspace))
 }
 
 #[test]
@@ -217,9 +220,7 @@ fn one_side_panel_fills_the_column_and_its_title_lists_both_tabs() {
     let mut workspace = workspace(dir.path());
 
     let rows = left_rows(&mut workspace);
-    assert!(rows[0].contains("─Files─Local branches─"), "{}", rows[0]);
-    assert!(rows.last().unwrap().starts_with('╰'), "{}", rows.join("\n"));
-    assert_eq!(rows.iter().filter(|row| row.starts_with('╭')).count(), 1);
+    assert!(rows[0].starts_with(" Files  Local branches"), "{}", rows[0]);
     assert_eq!(current_tab(&mut workspace), '1');
     let files = left_text(&mut workspace);
     assert!(files.contains("greet.rs"), "{files}");
@@ -230,10 +231,7 @@ fn one_side_panel_fills_the_column_and_its_title_lists_both_tabs() {
     assert!(branches.contains("feature"), "{branches}");
     assert!(!branches.contains("greet.rs"), "{branches}");
     let right = right_text(&mut workspace);
-    assert!(
-        right.lines().next().unwrap().starts_with("╭─Log─"),
-        "{right}"
-    );
+    assert!(right.lines().next().unwrap().starts_with(" Log"), "{right}");
 }
 
 #[test]
@@ -278,7 +276,7 @@ fn a_clean_tree_hides_files_and_branches_fills_the_column() {
         "{}",
         left_text(&mut workspace)
     );
-    assert!(left_rows(&mut workspace)[0].contains("─Local branches─"));
+    assert!(left_rows(&mut workspace)[0].starts_with(" Local branches"));
     assert_eq!(focused_panel(&mut workspace), Some('2'));
     assert!(right_text(&mut workspace).contains("say hi"));
 }
@@ -643,7 +641,7 @@ fn enter_on_a_branch_lists_its_commits_and_enter_reviews_one_in_files() {
     assert!(right_text(&mut workspace).contains("fn feature()"));
 
     press(&mut workspace, &[KeyCode::Esc]);
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).starts_with(" Files"));
     assert_eq!(focused_panel(&mut workspace), Some('2'));
     assert!(panel(&mut workspace, '2').contains("Commits (feature)"));
     press(&mut workspace, &[KeyCode::Esc]);
@@ -686,13 +684,13 @@ fn a_commit_review_opens_on_its_commit_row_and_header() {
 
     let short = head_short(dir.path());
     let files = panel(&mut workspace, '1');
-    assert!(files.contains(&format!("─Commit {short}─")), "{files}");
+    assert!(files.starts_with(&format!(" Commit {short}")), "{files}");
     let rows = panel_lines(&mut workspace, '1');
     assert!(rows[0].ends_with("explain the change"), "{rows:#?}");
     assert!(!rows[0].contains(&short), "{rows:#?}");
     let lines: Vec<&str> = files.lines().collect();
     assert!(
-        lines[2].starts_with("├──") && lines[2].ends_with("──┤"),
+        !lines[3].trim().is_empty() && lines[3].trim().chars().all(|c| c == '─'),
         "{files}"
     );
     let header = right_text(&mut workspace);
@@ -732,7 +730,7 @@ fn a_review_is_the_only_tab_until_esc_returns_to_the_reviewed_row() {
     let short = head_short(dir.path());
     assert_eq!(current_tab(&mut workspace), '1');
     assert!(!has_panel(&mut workspace, '2'));
-    assert!(title(&mut workspace).starts_with(&format!("╭─Commit {short}──")));
+    assert!(title(&mut workspace).starts_with(&format!(" Commit {short}  ")));
 
     for key in [KeyCode::Tab, KeyCode::BackTab] {
         press(&mut workspace, &[key]);
@@ -808,7 +806,7 @@ fn double_clicking_a_commit_opens_it_like_enter() {
     let commit = row_of(&mut workspace, "add feature");
 
     click(&mut workspace, 5, commit);
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).starts_with(" Files"));
     assert_eq!(current_tab(&mut workspace), '2');
     click(&mut workspace, 5, commit);
 
@@ -929,19 +927,16 @@ fn gitbutler_workspace(dir: &Path, stubs: &Path, status: &Path) -> Workspace {
     )
 }
 
-/// The inner rows of panel `[n]`, borders and trailing blanks removed.
+/// The body rows of panel `[n]`, title row, rule, left inset, and
+/// trailing blanks removed.
 fn panel_lines(workspace: &mut Workspace, n: char) -> Vec<String> {
     let text = panel(workspace, n);
     let rows: Vec<&str> = text.lines().collect();
-    let mut lines: Vec<String> = rows[1..rows.len() - 1]
+    let mut lines: Vec<String> = rows[2..]
         .iter()
         .map(|row| {
             let chars: Vec<char> = row.chars().collect();
-            chars[1..chars.len() - 1]
-                .iter()
-                .collect::<String>()
-                .trim_end()
-                .to_string()
+            chars[1..].iter().collect::<String>().trim_end().to_string()
         })
         .collect();
     while lines.last().is_some_and(String::is_empty) {
@@ -1098,7 +1093,7 @@ fn a_commit_row_previews_its_diff_and_enter_reviews_it_in_files() {
     assert!(right_text(&mut workspace).contains("fn feature()"));
 
     press(&mut workspace, &[KeyCode::Esc]);
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).starts_with(" Files"));
     assert_eq!(focused_panel(&mut workspace), Some('2'));
     show(&mut workspace, '1');
     assert!(panel(&mut workspace, '1').contains("greet.rs"));
@@ -1116,7 +1111,7 @@ fn double_clicking_a_workspace_commit_reviews_it_in_files() {
     let commit = row_of(&mut workspace, "abcd add feature");
 
     click(&mut workspace, 5, commit);
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).starts_with(" Files"));
     click(&mut workspace, 5, commit);
 
     let files = panel(&mut workspace, '1');
@@ -1302,7 +1297,7 @@ fn a_review_keeps_its_comments_until_esc_brings_back_the_working_tree() {
     assert!(copied(&mut workspace).contains("why final"));
 
     press(&mut workspace, &[KeyCode::Esc, KeyCode::Esc]);
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).starts_with(" Files"));
     assert_eq!(focused_panel(&mut workspace), Some('2'));
     show(&mut workspace, '1');
     assert!(panel(&mut workspace, '1').contains("greet.rs"));
@@ -1320,7 +1315,7 @@ fn enter_on_an_empty_branch_does_nothing() {
     assert!(left_text(&mut workspace).contains("[empty]"));
     press(&mut workspace, &[KeyCode::Enter]);
 
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).starts_with(" Files"));
     assert_eq!(focused_panel(&mut workspace), Some('2'));
 }
 
@@ -1333,8 +1328,8 @@ fn enter_on_an_unapplied_branch_lists_its_commits() {
 
     press(&mut workspace, &[KeyCode::Char('G'), KeyCode::Enter]);
 
-    assert!(panel(&mut workspace, '2').contains("─Commits (parked)─"));
-    assert!(title(&mut workspace).contains("─Files─"));
+    assert!(title(&mut workspace).contains("Commits (parked)"));
+    assert!(title(&mut workspace).starts_with(" Files"));
 }
 
 #[cfg(unix)]

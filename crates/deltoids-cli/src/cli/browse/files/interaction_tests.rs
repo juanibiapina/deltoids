@@ -734,7 +734,7 @@ fn a_directory_overview_counts_the_shown_column_and_s_switches_it() {
 
     let rows = settle(&mut mode);
     assert!(
-        rows[0].contains("─src/ · Staged - Unstaged "),
+        rows[0].contains(" src/ · Staged - Unstaged "),
         "{}",
         rows[0]
     );
@@ -753,7 +753,7 @@ fn a_file_with_both_columns_shows_one_and_s_switches_to_the_other() {
     select_file(&mut mode, "a.txt");
     let rows = settle(&mut mode);
     assert!(
-        rows[0].contains("─a.txt · Staged - Unstaged "),
+        rows[0].contains(" a.txt · Staged - Unstaged "),
         "{}",
         rows[0]
     );
@@ -771,7 +771,7 @@ fn a_file_with_both_columns_shows_one_and_s_switches_to_the_other() {
     // the next file that has both.
     select_file(&mut mode, "b.txt");
     let rows = settle(&mut mode);
-    assert!(rows[0].contains("─b.txt ─"), "{}", rows[0]);
+    assert!(rows[0].contains(" b.txt "), "{}", rows[0]);
     assert!(!rows[0].contains("Staged"), "{}", rows[0]);
     Mode::handle_key(&mut mode, KeyCode::Char('s'), 20);
     assert_eq!(mode.shown(), Column::Unstaged, "s needs both columns");
@@ -1187,8 +1187,8 @@ fn a_visited_file_taller_than_the_screen_opens_at_its_first_hunk() {
     let mut mode = live(dir.path());
 
     let body = diff_body(&settle(&mut mode));
-    assert!(body[1].starts_with("──╮"), "{}", body.join("\n"));
-    assert!(body[2].starts_with("7 │"), "{}", body.join("\n"));
+    assert!(body[2].starts_with("──╮"), "{}", body.join("\n"));
+    assert!(body[3].starts_with("7 │"), "{}", body.join("\n"));
 }
 
 #[test]
@@ -1198,7 +1198,7 @@ fn a_visited_file_that_fits_keeps_its_header() {
 
     let rows = settle(&mut mode);
     assert_eq!(mode.unstaged.cursor.scroll, 0, "{}", rows.join("\n"));
-    assert!(rows[0].contains("─a.txt "), "{}", rows[0]);
+    assert!(rows[0].contains(" a.txt "), "{}", rows[0]);
 }
 
 #[test]
@@ -1239,7 +1239,7 @@ fn scrolling_before_the_file_renders_cancels_the_landing() {
 
     let rows = settle(&mut mode);
     assert_eq!(mode.unstaged.cursor.scroll, 0, "{}", rows.join("\n"));
-    assert!(rows[0].contains("─a.rs "), "{}", rows[0]);
+    assert!(rows[0].contains(" a.rs "), "{}", rows[0]);
 }
 
 #[test]
@@ -1294,7 +1294,10 @@ fn gitbutler_adopting_the_repository_shows_one_uncommitted_column_and_one_discar
     )
     .unwrap();
     let after = settle(&mut mode).join("\n");
-    assert!(after.contains("─a.txt ─"), "{after}");
+    assert!(
+        after.lines().next().unwrap_or_default().contains(" a.txt "),
+        "{after}"
+    );
     assert!(!after.contains("Staged"), "{after}");
 
     Mode::handle_key(&mut mode, KeyCode::Char('d'), 20);
@@ -1305,7 +1308,7 @@ fn gitbutler_adopting_the_repository_shows_one_uncommitted_column_and_one_discar
 }
 
 #[test]
-fn borders_say_when_f_or_shift_f_hides_low_value_changes() {
+fn titles_say_when_f_or_shift_f_hides_low_value_changes() {
     let (dir, _) = fixture(&["src/a.txt"]);
     fs::write(dir.path().join("src/a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
@@ -1313,10 +1316,7 @@ fn borders_say_when_f_or_shift_f_hides_low_value_changes() {
     let flags = |top: &str| {
         let sidebar: String = top.chars().take(30).collect();
         let diff: String = top.chars().skip(30).collect();
-        (
-            sidebar.ends_with("\u{f0b0}─╮"),
-            diff.ends_with("\u{f0b0}─╮"),
-        )
+        (sidebar.contains('\u{f0b0}'), diff.contains('\u{f0b0}'))
     };
     assert_eq!(flags(&top(&mut mode)), (false, false), "{}", top(&mut mode));
 

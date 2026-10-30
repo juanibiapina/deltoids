@@ -17,7 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use deltoids::render_tui::{self, pane_block_with_title_line, pane_border_color, rgb_to_color};
+use deltoids::render_tui::{self, rgb_to_color};
 use deltoids::{Hunk, LineKind, Theme, git};
 
 use deltoids::parse::FileDiff;
@@ -31,7 +31,8 @@ use crate::cli::browse::diff_cursor::{
 };
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::DrawBudget;
-use crate::cli::browse::panel::draw_filter_flag;
+use crate::cli::browse::pane;
+use crate::cli::browse::panel::{filter_flag, panel_title};
 use crate::cli::browse::text::{display_width, wrap_text};
 use crate::sidebar::{
     FileMode, IconMode, ModeChange, RowNote, display_path, file_metadata, render_note, symlink_icon,
@@ -561,19 +562,15 @@ fn named_heading(label: &str, title: PaneTitle, budget: usize, theme: &Theme) ->
         _ => None,
     };
     let tabs_width = if tabs.is_some() { 22 } else { 0 };
-    let room = budget.saturating_sub(3 + tabs_width);
-    let mut spans = vec![
-        Span::raw("─"),
-        Span::styled(
-            shorten_left(label, room),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let room = budget.saturating_sub(1 + tabs_width);
+    let mut spans = vec![Span::styled(
+        shorten_left(label, room),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
     if let Some(shown) = tabs {
         spans.push(Span::raw(" · "));
         spans.extend(column_tabs(shown, theme));
     }
-    spans.push(Span::raw(" ─"));
     Line::from(spans)
 }
 
@@ -736,6 +733,9 @@ pub(super) struct DiffPane {
     /// The title naming the current file, set before each render; the
     /// pane's own title when `None`.
     heading: Option<Line<'static>>,
+    /// Marks for the right end of the title row: the current file's
+    /// language and its server's state.
+    badge: Vec<Span<'static>>,
 }
 
 impl DiffPane {
@@ -761,13 +761,19 @@ impl DiffPane {
             header: Vec::new(),
             hide_low: false,
             heading: None,
+            badge: Vec::new(),
         }
     }
 
     /// Title the next render with `heading` (the current file), or with
-    /// the pane's own title for `None`.
-    pub(super) fn set_heading(&mut self, heading: Option<Line<'static>>) {
+    /// the pane's own title for `None`, and `badge` at the row's end.
+    pub(super) fn set_heading(
+        &mut self,
+        heading: Option<Line<'static>>,
+        badge: Vec<Span<'static>>,
+    ) {
         self.heading = heading;
+        self.badge = badge;
     }
 
     /// Settle what a render of `area` will show: land on the first hunk
@@ -1124,25 +1130,29 @@ impl DiffPane {
         (window, starts)
     }
 
-    /// The border with its title, flagged while low-value hunks are
-    /// collapsed.
-    fn draw_border(
+    /// The title row: the title, then the badge, the funnel while
+    /// low-value hunks are collapsed, and the help hint. Returns the body.
+    fn draw_title(
         &self,
         frame: &mut ratatui::Frame<'_>,
         area: Rect,
-        color: Color,
-        footer: Option<Line<'static>>,
+        focused: bool,
         theme: &Theme,
-    ) {
-        let title = match &self.heading {
-            Some(heading) if !self.empty => heading.clone(),
-            _ => heading(self.title, theme),
+    ) -> Rect {
+        let (title, mut badges) = match &self.heading {
+            Some(heading) if !self.empty => (heading.clone(), self.badge.clone()),
+            _ => (heading(self.title, theme), Vec::new()),
         };
-        let block = pane_block_with_title_line(title, color, footer);
-        frame.render_widget(block, area);
         if self.hide_low {
-            draw_filter_flag(frame, area, theme);
+            if !badges.is_empty() {
+                badges.push(Span::raw(" "));
+            }
+            badges.push(filter_flag(theme));
         }
+        let chrome = pane::Chrome::new(title, focused)
+            .badges(badges)
+            .footer(self.footer().map(Line::from));
+        pane::draw(frame, area, chrome, theme)
     }
 
     /// A window of no files: the header's rows alone, kept until `key`
@@ -1400,7 +1410,8 @@ impl DiffPane {
 
     /// Display the window last assembled by
     /// [`DiffPane::assemble_window`]: clamp the scroll, slice the
-    /// viewport, highlight the cursor, and paint the footer + scrollbar.
+    /// viewport, highlight the cursor, and paint the title row and
+    /// scrollbar, with `status` over the end of the last row.
     pub(super) fn render(
         &mut self,
         frame: &mut ratatui::Frame<'_>,
@@ -1409,18 +1420,24 @@ impl DiffPane {
         theme: &Theme,
         status: Option<&str>,
     ) {
-        let color = pane_border_color(focused, theme);
+        self.render_window(frame, area, focused, theme);
+        if let Some(status) = status {
+            pane::draw_message(frame, area, Line::from(format!(" {status} ")), theme);
+        }
+    }
 
+    fn render_window(
+        &mut self,
+        frame: &mut ratatui::Frame<'_>,
+        area: Rect,
+        focused: bool,
+        theme: &Theme,
+    ) {
         // With no files, render an empty state rather than a blank pane:
         // either the clean "No local changes." line (a reverted/committed
         // tree or a non-repo) or a build-error message.
         if self.empty {
-            let footer = status.map(|message| Line::from(format!(" {message} ")));
-            self.draw_border(frame, area, color, footer, theme);
-            let inner = area.inner(ratatui::layout::Margin {
-                vertical: 1,
-                horizontal: 1,
-            });
+            let inner = self.draw_title(frame, area, focused, theme);
             match &self.empty_state {
                 EmptyPane::NoChanges | EmptyPane::Loading => {
                     let text = match self.empty_state {
@@ -1476,11 +1493,7 @@ impl DiffPane {
             })
             .collect();
 
-        let footer = status
-            .map(|status| format!(" {status} "))
-            .or_else(|| self.footer())
-            .map(Line::from);
-        self.draw_border(frame, area, color, footer, theme);
+        self.draw_title(frame, area, focused, theme);
         frame.render_widget(Paragraph::new(visible), inner);
 
         // Vertical scrollbar reflects the assembled window: when the
@@ -1489,7 +1502,7 @@ impl DiffPane {
         diff_scrollbar::render(frame, area, &self.window, scroll, focused, theme);
     }
 
-    /// Build the diff pane's bottom-right footer: the help hint, after a
+    /// Build the diff pane's title row footer: the help hint, after a
     /// "Rendering…" notice while visible blocks are still being drawn, or
     /// `None` when the pane is empty. Reads the assembled window, so it is
     /// meaningful only after [`DiffPane::assemble_window`].
@@ -1545,15 +1558,10 @@ fn heading(title: PaneTitle, theme: &Theme) -> Line<'static> {
         Column::Unstaged => "Unstaged",
     };
     match title {
-        PaneTitle::Diff => Line::from("─Diff─"),
-        PaneTitle::Uncommitted => Line::from("─Uncommitted changes─"),
-        PaneTitle::One(column) => Line::from(format!("─{} changes─", label(column))),
-        PaneTitle::Both(shown) => {
-            let mut spans = vec![Span::raw("─")];
-            spans.extend(column_tabs(shown, theme));
-            spans.push(Span::raw("─"));
-            Line::from(spans)
-        }
+        PaneTitle::Diff => panel_title("Diff"),
+        PaneTitle::Uncommitted => panel_title("Uncommitted changes"),
+        PaneTitle::One(column) => panel_title(&format!("{} changes", label(column))),
+        PaneTitle::Both(shown) => Line::from(column_tabs(shown, theme)),
     }
 }
 
@@ -1753,8 +1761,6 @@ mod tests {
             assert!(added_count > 1);
             assert!(removed_count > 1);
             assert_eq!(state.unstaged.cached_width, 27);
-            assert_eq!(buffer[(59, 0)].symbol(), "╮");
-            assert_eq!(buffer[(59, 39)].symbol(), "╯");
         }
     }
 
@@ -1785,8 +1791,8 @@ mod tests {
         let selection_bg = rgb_to_color(theme().selection_bg);
         let bg_of_row = |focused: bool, pane: &mut DiffPane| {
             let term = draw(focused, pane);
-            // Row 0 of the body sits one row below the pane border.
-            let y = (cursor_row + 1) as u16;
+            // The body starts below the title row and its rule.
+            let y = (cursor_row + 2) as u16;
             term.backend().buffer()[(1, y)].style().bg
         };
 
@@ -2084,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn the_border_shows_the_files_syntax_support() {
+    fn the_title_shows_the_files_syntax_support() {
         let border = |path: &str| -> String {
             let resolved = vec![ResolvedFile {
                 file: file_diff(path),
@@ -2095,15 +2101,19 @@ mod tests {
             crate::cli::browse::test_screen::screen(&mut state).remove(0)
         };
         let kotlin = border("Main.kt");
-        assert!(kotlin.contains("Kotlin ─╮"), "{kotlin}");
+        assert!(kotlin.contains("Kotlin  ? help"), "{kotlin}");
         let docker = border("Dockerfile");
         assert!(
-            docker.contains("Dockerfile · no scope context ─╮"),
+            docker.contains("Dockerfile · no scope context  ? help"),
             "{docker}"
         );
         let plain = border("notes.txt");
-        assert!(plain.contains("─notes.txt "), "{plain}");
-        assert!(plain.ends_with("──╮"), "plain text has no badge: {plain}");
+        let after_name = plain.split("notes.txt").nth(1).unwrap_or_default();
+        assert_eq!(
+            after_name.trim(),
+            "? help",
+            "plain text has no badge: {plain}"
+        );
     }
 
     #[test]
@@ -2126,7 +2136,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_is_named_old_to_new_on_the_border() {
+    fn a_rename_is_named_old_to_new_in_the_title() {
         let mut f = file_diff("new.txt");
         f.old_path = "old.txt".to_string();
         f.rename_from = Some("old.txt".to_string());
@@ -2137,7 +2147,7 @@ mod tests {
         }];
         let mut state = make_state(&resolved);
         let border = crate::cli::browse::test_screen::screen(&mut state).remove(0);
-        assert!(border.contains("─old.txt → new.txt "), "{border}");
+        assert!(border.contains("│ old.txt → new.txt "), "{border}");
     }
 
     #[test]

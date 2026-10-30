@@ -45,7 +45,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use deltoids::Theme;
-use deltoids::render_tui::{pane_block, pane_block_with_title_line, rgb_to_color};
+use deltoids::render_tui::rgb_to_color;
 
 mod clipboard;
 mod command;
@@ -59,6 +59,7 @@ mod files;
 mod help;
 mod history;
 mod mode;
+mod pane;
 mod panel;
 mod scroll;
 mod sidebar_width;
@@ -197,15 +198,14 @@ fn draw_frame(
         .draw(|frame| {
             let area = frame.area();
             let sw = pref.effective(area.width);
-            let cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(sw), Constraint::Min(10)])
-                .split(area);
+            let (left, divider, right) = split_columns(area, sw);
+            pane::draw_divider(frame, divider, area, theme);
             if building {
-                draw_loading(frame, cols[0], cols[1], theme);
+                draw_loading(frame, left, right, theme);
             } else {
-                mode.draw(frame, cols[0], cols[1], theme, budget);
+                mode.draw(frame, left, right, theme, budget);
             }
+            pane::draw_junction(frame, divider, area, theme);
             if let Some(help) = help {
                 let commands: Vec<_> = commands
                     .iter()
@@ -238,7 +238,7 @@ fn draw_frame(
         height: area.height,
     };
     Ok(Viewport {
-        height: area.height.saturating_sub(2) as usize,
+        height: pane::body_height(area),
         diff_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
     })
 }
@@ -529,15 +529,15 @@ impl Shell {
         timeout
     }
 
-    /// The two adjacent border columns forming the divider between the
-    /// left column and the right pane. `None` when the left column has
+    /// The divider between the left column and the right pane, and the
+    /// gap after it: both grab a drag. `None` when the left column has
     /// zero width.
     fn divider_columns(&self) -> Option<(u16, u16)> {
         if self.left_rect.width == 0 {
             return None;
         }
-        let right_border = self.left_rect.right().saturating_sub(1);
-        Some((right_border, right_border.saturating_add(1)))
+        let divider = self.left_rect.right().saturating_sub(1);
+        Some((divider, divider.saturating_add(1)))
     }
 
     fn is_on_divider(&self, col: u16) -> bool {
@@ -808,17 +808,39 @@ impl Shell {
 /// column titled `Loading`, and a centered `Loading…` message in the
 /// main view.
 fn draw_loading(frame: &mut ratatui::Frame<'_>, left: Rect, right: Rect, theme: &Theme) {
-    let border = rgb_to_color(theme.border);
     let muted = Style::default().fg(rgb_to_color(theme.muted));
-    let loading = |block| {
+    pane::draw(
+        frame,
+        left,
+        pane::Chrome::new(
+            panel::tab_strip(&["Loading".to_string()], 0, theme).0,
+            false,
+        ),
+        theme,
+    );
+    let body = pane::draw(
+        frame,
+        right,
+        pane::Chrome::new(panel::panel_title("Diff"), false),
+        theme,
+    );
+    frame.render_widget(
         Paragraph::new("Loading…")
             .style(muted)
-            .alignment(Alignment::Center)
-            .block(block)
-    };
-    let (title, _) = panel::tab_strip(border, &["Loading".to_string()], 0, theme);
-    frame.render_widget(pane_block_with_title_line(title, border, None), left);
-    frame.render_widget(loading(pane_block("─Diff─", border)), right);
+            .alignment(Alignment::Center),
+        body,
+    );
+}
+
+/// The left column, the divider's column, and the right pane, for a
+/// left column `sw` wide. The divider is the left column's last
+/// column, where its scrollbar runs.
+fn split_columns(area: Rect, sw: u16) -> (Rect, u16, Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(sw), Constraint::Min(10)])
+        .split(area);
+    (cols[0], cols[0].right().saturating_sub(1), cols[1])
 }
 
 /// A key-press of `<` or `>` (the sidebar-resize bindings).

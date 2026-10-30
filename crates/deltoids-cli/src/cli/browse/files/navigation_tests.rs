@@ -450,7 +450,7 @@ fn callers_list_the_diff_first_and_an_outside_caller_opens_as_a_visited_file() {
         .find(|row| row.contains("report.rs"))
         .unwrap_or_default();
     assert!(row.contains('○') && !row.contains("visited"), "{row}");
-    assert!(screen.contains("─○ src/report.rs "), "{screen}");
+    assert!(screen.contains("│ ○ src/report.rs "), "{screen}");
     assert!(screen.contains("not in this diff"), "{screen}");
     assert_eq!(
         state.sidebar.totals().files,

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type TouchEvent,
+} from "react";
 import type { Pr, PrFile } from "../core/github";
 import type { PrRef } from "../core/lib";
 import type { RenderSession } from "../core/renderSession";
@@ -6,11 +13,14 @@ import {
   buildTree,
   displayOrder,
   selectionFiles,
+  stepFile,
   stepSelection,
   type Selection,
 } from "../core/filetree";
 import { createWheelStepper } from "../core/wheel";
+import { createSwipeTracker, type SwipeEdges } from "../core/swipe";
 import { useReviewed } from "../hooks/useReviewed";
+import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
 import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
 import { FileCard } from "./FileCard";
@@ -28,10 +38,24 @@ interface ReviewViewProps {
   syntaxTheme: string;
   hideViewed: boolean;
   onNavigate: () => void;
+  // Opens the file tree drawer (small screens).
+  onShowTree: () => void;
 }
 
 function selectionKey(selection: Selection): string {
   return selection.kind === "file" ? `file:${selection.index}` : `dir:${selection.id}`;
+}
+
+// Where the touched diff's horizontal scroll sits. `.diff` is the only element
+// that scrolls sideways (nowrap mode); outside one, or with no overflow, both
+// edges hold.
+function swipeEdges(target: Element): SwipeEdges {
+  const diff = target.closest(".diff");
+  if (!diff) return { atLeft: true, atRight: true };
+  return {
+    atLeft: diff.scrollLeft <= 0,
+    atRight: diff.scrollLeft + diff.clientWidth >= diff.scrollWidth - 1,
+  };
 }
 
 export function ReviewView({
@@ -39,9 +63,11 @@ export function ReviewView({
   syntaxTheme,
   hideViewed,
   onNavigate,
+  onShowTree,
 }: ReviewViewProps) {
   const { ref, files, session } = data;
   const { isReviewed, toggle } = useReviewed(ref, files);
+  const small = !useMediaQuery(WIDE_QUERY, true);
 
   const tree = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -73,6 +99,14 @@ export function ReviewView({
     (index: number) => isReviewed(files[index]),
     [isReviewed, files],
   );
+  const isHidden = hideViewed ? isReviewedByIndex : undefined;
+
+  // Small screens open a review on the file tree. Mount only, so a later
+  // render never reopens the drawer.
+  useEffect(() => {
+    if (small) onShowTree();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const collapsedRef = useRef(new Set<string>());
   const handleExpandChange = useCallback((id: string, expanded: boolean) => {
@@ -85,7 +119,6 @@ export function ReviewView({
     const pane = paneRef.current;
     if (!pane) return;
     const stepper = createWheelStepper();
-    const isHidden = hideViewed ? isReviewedByIndex : undefined;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.shiftKey) return;
       e.preventDefault();
@@ -97,7 +130,7 @@ export function ReviewView({
     };
     pane.addEventListener("wheel", onWheel, { passive: false });
     return () => pane.removeEventListener("wheel", onWheel);
-  }, [tree, hideViewed, isReviewedByIndex]);
+  }, [tree, isHidden]);
 
   const handleSelect = useCallback(
     (next: Selection) => {
@@ -106,6 +139,47 @@ export function ReviewView({
     },
     [onNavigate],
   );
+
+  // Small screens: a sideways swipe over the diff steps between files, and a
+  // right swipe on the first file goes back to the tree.
+  const swipeRef = useRef(createSwipeTracker());
+  const onTouchStart = (e: TouchEvent) => {
+    if (!small) return;
+    const tracker = swipeRef.current;
+    const target = e.target as Element;
+    // A second finger (pinch zoom) or the scrollbar track is no swipe.
+    if (e.touches.length > 1 || target.closest(".diff-scrollbar")) {
+      tracker.cancel();
+      return;
+    }
+    const touch = e.touches[0];
+    tracker.start(touch.clientX, touch.clientY, swipeEdges(target));
+  };
+  const onTouchEnd = (e: TouchEvent) => {
+    if (!small) return;
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+    const step = swipeRef.current.end(touch.clientX, touch.clientY);
+    if (step === 0) return;
+    const next = stepFile(tree, selection, step, isHidden);
+    if (step === -1 && next === selection) onShowTree();
+    else setSelection(next);
+  };
+  const onTouchCancel = () => {
+    if (small) swipeRef.current.cancel();
+  };
+
+  // Small screens: marking the shown file viewed moves on to the next file,
+  // or to the tree after the last one.
+  const handleToggleReviewed = (index: number) => {
+    const wasReviewed = isReviewed(files[index]);
+    toggle(files[index]);
+    if (wasReviewed || !small) return;
+    if (selection.kind !== "file" || selection.index !== index) return;
+    const next = stepFile(tree, selection, 1, isHidden);
+    if (next === selection) onShowTree();
+    else setSelection(next);
+  };
 
   return (
     <LazyObserverProvider rootRef={scrollerRef}>
@@ -118,7 +192,13 @@ export function ReviewView({
           selection={selection}
           onExpandChange={handleExpandChange}
         />
-        <div className="pane" ref={paneRef}>
+        <div
+          className="pane"
+          ref={paneRef}
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+          onTouchCancel={onTouchCancel}
+        >
           <div className="pane-scroll" ref={scrollerRef}>
             <div ref={contentRef}>
               {order.map((i) => (
@@ -129,7 +209,7 @@ export function ReviewView({
                   session={session}
                   syntaxTheme={syntaxTheme}
                   reviewed={isReviewed(files[i])}
-                  onToggleReviewed={() => toggle(files[i])}
+                  onToggleReviewed={() => handleToggleReviewed(i)}
                   hidden={!shown.has(i)}
                   solo={selection.kind === "file"}
                 />

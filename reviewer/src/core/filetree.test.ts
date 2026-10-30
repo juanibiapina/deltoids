@@ -5,6 +5,7 @@ import {
   displayOrder,
   pruneReviewed,
   selectionFiles,
+  stepFile,
   stepSelection,
   ROOT_ID,
   type TreeNode,
@@ -215,5 +216,54 @@ describe("stepSelection", () => {
     expect(stepSelection(nodes, { kind: "file", index: 3 }, -1, hidden)).toEqual({ kind: "dir", id: "a" });
     const pruned = { collapsed: new Set<string>(), isHidden: (i: number) => i === 1 };
     expect(stepSelection(nodes, { kind: "file", index: 1 }, 1, pruned)).toEqual({ kind: "file", index: 0 });
+  });
+});
+
+describe("stepFile", () => {
+  // Files in tree order: c.ts (2) · e.ts (3) · f.ts (4) · x.ts (1) · z.md (0)
+  const nodes = buildTree(
+    files(["z.md"], ["ab/x.ts"], ["a/b/c.ts"], ["a/b/d/e.ts"], ["a/f.ts"]),
+  );
+  const walk = (
+    start: Parameters<typeof stepFile>[1],
+    direction: 1 | -1,
+    isHidden?: (i: number) => boolean,
+  ) => {
+    const out = [];
+    let sel = start;
+    for (;;) {
+      const next = stepFile(nodes, sel, direction, isHidden);
+      if (next === sel) return out;
+      out.push(next.kind === "file" ? next.index : next.id);
+      sel = next;
+    }
+  };
+
+  test("steps over files only, in tree order", () => {
+    expect(walk({ kind: "file", index: 2 }, 1)).toEqual([3, 4, 1, 0]);
+    expect(walk({ kind: "file", index: 0 }, -1)).toEqual([1, 4, 3, 2]);
+  });
+
+  test("skips hidden files", () => {
+    const hidden = (i: number) => i === 1 || i === 3;
+    expect(walk({ kind: "file", index: 2 }, 1, hidden)).toEqual([4, 0]);
+    expect(walk({ kind: "file", index: 0 }, -1, hidden)).toEqual([4, 2]);
+  });
+
+  test("places a directory or hidden selection by its tree position", () => {
+    expect(stepFile(nodes, { kind: "dir", id: "ab" }, 1)).toEqual({ kind: "file", index: 1 });
+    expect(stepFile(nodes, { kind: "dir", id: "ab" }, -1)).toEqual({ kind: "file", index: 4 });
+    const hidden = (i: number) => i === 3;
+    expect(stepFile(nodes, { kind: "file", index: 3 }, 1, hidden)).toEqual({ kind: "file", index: 4 });
+    expect(stepFile(nodes, { kind: "file", index: 3 }, -1, hidden)).toEqual({ kind: "file", index: 2 });
+  });
+
+  test("returns the same selection at either end", () => {
+    const first = { kind: "file", index: 2 } as const;
+    const last = { kind: "file", index: 0 } as const;
+    expect(stepFile(nodes, first, -1)).toBe(first);
+    expect(stepFile(nodes, last, 1)).toBe(last);
+    const lastShown = { kind: "file", index: 1 } as const;
+    expect(stepFile(nodes, lastShown, 1, (i) => i === 0)).toBe(lastShown);
   });
 });

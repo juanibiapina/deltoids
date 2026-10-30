@@ -8,7 +8,7 @@ import {
   type TreeMeta,
 } from "../core/filetree";
 import { fileIcon } from "./fileIcons";
-import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
 import type { PrFile } from "../core/github";
 
 interface FileTreeProps {
@@ -142,7 +142,7 @@ export function FileTree({
   // (never `scrollIntoView`, which would also scroll the window). On the narrow
   // drawer the sidebar is off-canvas, so skip it entirely.
   const navRef = useRef<HTMLElement>(null);
-  const wide = useMediaQuery("(min-width: 1024px)");
+  const wide = useMediaQuery(WIDE_QUERY);
   useEffect(() => {
     if (!wide || !selection) return;
     const nav = navRef.current;
@@ -171,8 +171,9 @@ export function FileTree({
           onExpandChange?.(String(element.id), isExpanded)
         }
         onSelect={({ element, isBranch, isSelected }) => {
-          // onSelect also fires for the node being deselected; only act on the
-          // newly-selected one, else clicking B scrolls to the old A.
+          // Keyboard selection of a file lands here; clicks use the row's own
+          // onClick. onSelect also fires for the node being deselected; only
+          // act on the newly-selected one, else selecting B scrolls to the old A.
           if (isBranch || !isSelected) return;
           const meta = element.metadata as TreeMeta | undefined;
           const index = meta?.fileIndex;
@@ -218,9 +219,16 @@ export function FileTree({
             meta?.fileIndex !== undefined &&
             meta.fileIndex === selection.index;
 
+          // A click always reports the file, also when the library still counts
+          // it as selected after the view moved on (wheel, swipe); the
+          // library's onSelect fires only when its own selection changes.
+          const index = meta?.fileIndex;
+          const onClick =
+            index === undefined ? undefined : () => onSelect({ kind: "file", index });
+
           return (
             <div
-              {...getNodeProps()}
+              {...getNodeProps({ onClick })}
               className={`tree-row tree-file${reviewed ? " reviewed" : ""}${active ? " active" : ""}`}
               aria-current={active ? "true" : undefined}
               title={meta?.path ?? element.name}

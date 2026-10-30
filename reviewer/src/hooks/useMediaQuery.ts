@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 
+// At this width and above the file tree is a fixed sidebar. Below it the tree
+// is an off-canvas drawer and the reviewer uses its small-screen flow.
+export const WIDE_QUERY = "(min-width: 1024px)";
+
 // Track a media query. Falls back to `initial` where matchMedia is absent
 // (jsdom in tests), so components render a deterministic default there.
 export function useMediaQuery(query: string, initial = false): boolean {

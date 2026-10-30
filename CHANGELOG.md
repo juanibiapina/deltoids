@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Reviewer: on small screens, a review opens on the file tree. Swipe left or right over the diff to move to the next or previous file, and swipe right on the first file to return to the tree. Marking a file as viewed moves on to the next file ([#22](https://github.com/juanibiapina/deltoids/issues/22)).
+
 ### Removed
 
 - TUI: the `line X of Y` position in the Diff pane footer.
 
 ### Fixed
 
+- Reviewer: clicking a file in the tree shows it again after Ctrl+wheel moved to another file. Before, the click did nothing.
 - TUI: custom commands, such as an `e` bound to an editor, run on the selected file in a commit or branch review. Before, they did nothing there.
 
 ## [0.18.0] - 2026-10-27

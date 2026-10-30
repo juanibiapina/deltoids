@@ -48,6 +48,7 @@ export function App() {
   }, [signedIn]);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
   // Mobile drawer: reflect open state on <body>, close on Escape.
   useEffect(() => {
@@ -201,6 +202,7 @@ export function App() {
             syntaxTheme={prefs.syntaxTheme}
             hideViewed={prefs.hideViewed}
             onNavigate={closeDrawer}
+            onShowTree={openDrawer}
           />
         )}
       </main>

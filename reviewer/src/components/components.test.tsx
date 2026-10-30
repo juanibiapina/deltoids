@@ -1,6 +1,6 @@
 import { createRef, type ReactNode } from "react";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { FileTree } from "./FileTree";
 import { Topbar } from "./Topbar";
 import { FileCard } from "./FileCard";
@@ -291,24 +291,38 @@ describe("FileCard rendering", () => {
   });
 });
 
+function renderReview({
+  reviewFiles = files,
+  onNavigate = () => {},
+  onShowTree = () => {},
+}: {
+  reviewFiles?: PrFile[];
+  onNavigate?: () => void;
+  onShowTree?: () => void;
+} = {}) {
+  const data = {
+    ref: { owner: "o", repo: "r", number: 1 },
+    pr: { number: 1, title: "t", additions: 1, deletions: 1 },
+    files: reviewFiles,
+    session: fakeSession({ render: vi.fn(() => new Promise<Rendered>(() => {})) }),
+  } as unknown as ReviewData;
+  return render(
+    <ReviewView
+      data={data}
+      syntaxTheme="TokyoNight"
+      hideViewed
+      onNavigate={onNavigate}
+      onShowTree={onShowTree}
+    />,
+  );
+}
+
+const shownCards = () =>
+  Array.from(document.querySelectorAll<HTMLElement>("section.file"))
+    .filter((el) => !el.hidden)
+    .map((el) => el.id);
+
 describe("ReviewView selection", () => {
-  function renderReview() {
-    const data = {
-      ref: { owner: "o", repo: "r", number: 1 },
-      pr: { number: 1, title: "t", additions: 1, deletions: 1 },
-      files,
-      session: fakeSession({ render: vi.fn(() => new Promise<Rendered>(() => {})) }),
-    } as unknown as ReviewData;
-    return render(
-      <ReviewView data={data} syntaxTheme="TokyoNight" hideViewed onNavigate={() => {}} />,
-    );
-  }
-
-  const shownCards = () =>
-    Array.from(document.querySelectorAll<HTMLElement>("section.file"))
-      .filter((el) => !el.hidden)
-      .map((el) => el.id);
-
   test("opens on the first file in tree order, alone", () => {
     renderReview();
     expect(shownCards()).toEqual(["file-2"]);
@@ -355,6 +369,119 @@ describe("ReviewView selection", () => {
     expect(shownCards()).toEqual(["file-0", "file-1"]);
     wheelPane({ deltaY: 100, ctrlKey: true });
     expect(shownCards()).toEqual(["file-0", "file-1"]);
+  });
+});
+
+describe("ReviewView on a small screen", () => {
+  // Tree order: README.md (2) · src/ · a.ts (0) · b.ts (1)
+  const shaFiles: PrFile[] = files.map((f, i) => ({ ...f, sha: `sha${i}` }));
+
+  beforeEach(() => localStorage.clear());
+
+  const tree = () => within(screen.getByRole("tree"));
+
+  function swipe(dx: number, target: Element = document.querySelector(".pane")!) {
+    fireEvent.touchStart(target, { touches: [{ clientX: 200, clientY: 300 }] });
+    fireEvent.touchEnd(target, { changedTouches: [{ clientX: 200 + dx, clientY: 305 }] });
+  }
+
+  test("opens on the file tree", () => {
+    mockWidth(false);
+    const onShowTree = vi.fn();
+    renderReview({ onShowTree });
+    expect(onShowTree).toHaveBeenCalledTimes(1);
+  });
+
+  test("a left swipe shows the next file, a right swipe on the first file the tree", () => {
+    mockWidth(false);
+    const onShowTree = vi.fn();
+    renderReview({ onShowTree });
+    expect(shownCards()).toEqual(["file-2"]);
+    swipe(-100);
+    expect(shownCards()).toEqual(["file-0"]);
+    swipe(-100);
+    expect(shownCards()).toEqual(["file-1"]);
+    swipe(-100);
+    expect(shownCards()).toEqual(["file-1"]);
+    swipe(100);
+    swipe(100);
+    expect(shownCards()).toEqual(["file-2"]);
+    onShowTree.mockClear();
+    swipe(100);
+    expect(onShowTree).toHaveBeenCalledTimes(1);
+    expect(shownCards()).toEqual(["file-2"]);
+  });
+
+  test("a diff panned partway does not change files", () => {
+    mockWidth(false);
+    renderReview();
+    const diff = document.querySelector("#file-2 .diff")!;
+    Object.defineProperty(diff, "scrollWidth", { value: 800 });
+    Object.defineProperty(diff, "clientWidth", { value: 300 });
+    Object.defineProperty(diff, "scrollLeft", { value: 200 });
+    swipe(-100, diff.querySelector(".bar")!);
+    expect(shownCards()).toEqual(["file-2"]);
+  });
+
+  test("a swipe on the scrollbar track does nothing", () => {
+    mockWidth(false);
+    renderReview();
+    swipe(-100, document.querySelector(".diff-scrollbar")!);
+    expect(shownCards()).toEqual(["file-2"]);
+  });
+
+  test("tapping a file in the tree shows it after swipes moved away", () => {
+    mockWidth(false);
+    const onNavigate = vi.fn();
+    const onShowTree = vi.fn();
+    renderReview({ onNavigate, onShowTree });
+    fireEvent.click(tree().getByText("README.md"));
+    swipe(-100);
+    swipe(100);
+    onShowTree.mockClear();
+    swipe(100);
+    expect(onShowTree).toHaveBeenCalledTimes(1);
+    onNavigate.mockClear();
+    fireEvent.click(tree().getByText("README.md"));
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(shownCards()).toEqual(["file-2"]);
+
+    swipe(-100);
+    expect(shownCards()).toEqual(["file-0"]);
+    fireEvent.click(tree().getByText("README.md"));
+    expect(shownCards()).toEqual(["file-2"]);
+  });
+
+  test("marking the shown file viewed moves on and drops it from the tree", () => {
+    mockWidth(false);
+    const onShowTree = vi.fn();
+    renderReview({ reviewFiles: shaFiles, onShowTree });
+    const viewed = (id: string) =>
+      document.querySelector<HTMLInputElement>(`#${id} .review-toggle input`)!;
+    fireEvent.click(viewed("file-2"));
+    expect(shownCards()).toEqual(["file-0"]);
+    expect(tree().queryByText("README.md")).toBeNull();
+
+    fireEvent.click(viewed("file-0"));
+    expect(shownCards()).toEqual(["file-1"]);
+    onShowTree.mockClear();
+    fireEvent.click(viewed("file-1"));
+    expect(onShowTree).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["wide", () => mockWidth(true)],
+    ["without matchMedia", () => {}],
+  ])("none of this happens %s", (_name, setup) => {
+    setup();
+    const onShowTree = vi.fn();
+    renderReview({ reviewFiles: shaFiles, onShowTree });
+    swipe(-100);
+    swipe(100);
+    expect(shownCards()).toEqual(["file-2"]);
+    fireEvent.click(document.querySelector<HTMLInputElement>("#file-2 .review-toggle input")!);
+    expect(shownCards()).toEqual(["file-2"]);
+    expect(onShowTree).not.toHaveBeenCalled();
   });
 });
 

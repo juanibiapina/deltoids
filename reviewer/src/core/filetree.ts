@@ -192,22 +192,37 @@ function selectionId(nodes: TreeNode[], selection: Selection): string | undefine
   return nodes.find((n) => !n.metadata.isDir && n.metadata.fileIndex === selection.index)?.id;
 }
 
-// The sidebar row after (direction 1) or before (-1) the selection, among the
-// rows the sidebar shows: hidden files and their emptied directories are
-// pruned, and children of collapsed directories are skipped. The selection
-// itself may be hidden; it is placed by its position in the full tree. At
-// either end the selection is returned unchanged.
-export function stepSelection(
+// The row after (direction 1) or before (-1) the selection among `rows`. The
+// selection need not be one of the rows (a hidden file, a directory when
+// stepping files); it is placed by its position in the full tree. At either
+// end the selection is returned unchanged.
+function stepAmong(
   nodes: TreeNode[],
   selection: Selection,
   direction: 1 | -1,
-  { collapsed, isHidden }: StepOptions,
+  rows: TreeNode[],
 ): Selection {
   const position = new Map(nodes.map((n, i) => [n.id, i]));
   const current = selectionId(nodes, selection);
   if (current === undefined) return selection;
   const from = position.get(current) ?? -1;
 
+  const next =
+    direction === 1
+      ? rows.find((n) => position.get(n.id)! > from)
+      : [...rows].reverse().find((n) => position.get(n.id)! < from);
+  return next ? asSelection(next) : selection;
+}
+
+// The sidebar row after (direction 1) or before (-1) the selection, among the
+// rows the sidebar shows: hidden files and their emptied directories are
+// pruned, and children of collapsed directories are skipped.
+export function stepSelection(
+  nodes: TreeNode[],
+  selection: Selection,
+  direction: 1 | -1,
+  { collapsed, isHidden }: StepOptions,
+): Selection {
   const shown = isHidden ? pruneReviewed(nodes, isHidden) : nodes;
   const open = new Set<string>([ROOT_ID]);
   const rows: TreeNode[] = [];
@@ -216,12 +231,25 @@ export function stepSelection(
     rows.push(n);
     if (n.metadata.isDir && !collapsed.has(n.id)) open.add(n.id);
   }
+  return stepAmong(nodes, selection, direction, rows);
+}
 
-  const next =
-    direction === 1
-      ? rows.find((n) => position.get(n.id)! > from)
-      : [...rows].reverse().find((n) => position.get(n.id)! < from);
-  return next ? asSelection(next) : selection;
+// The file after (direction 1) or before (-1) the selection in tree order,
+// skipping hidden files. Directories and folding do not apply: the small-screen
+// swipe moves between files.
+export function stepFile(
+  nodes: TreeNode[],
+  selection: Selection,
+  direction: 1 | -1,
+  isHidden?: (fileIndex: number) => boolean,
+): Selection {
+  const rows = nodes.filter(
+    (n) =>
+      !n.metadata.isDir &&
+      n.metadata.fileIndex !== undefined &&
+      !isHidden?.(n.metadata.fileIndex),
+  );
+  return stepAmong(nodes, selection, direction, rows);
 }
 
 // Drop reviewed file leaves (and any directory that becomes empty as a result)

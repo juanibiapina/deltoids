@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - TUI: panes no longer draw a box around themselves. Each pane has a title row with its name, badges, and footer, with a line under it, and one line divides the side panel from the main view. Messages such as lookup results show at the bottom right of the diff.
+- TUI: the file list shows one status letter per file instead of a staged and an unstaged column. The letter is green when all of the file's changes are staged, amber when some are, and red when none are, and the Files title counts the files with staged changes.
+
 ### Removed
 
 - TUI: the `line X of Y` position in the Diff pane footer.

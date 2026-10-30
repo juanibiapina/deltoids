@@ -241,8 +241,10 @@ fn pad_selected_row(line: &mut Line<'static>, width: usize, theme: &Theme) {
     ));
 }
 
-/// Build the sidebar pane's bottom-right footer: the aggregate `+N -N`
-/// line counts in the added and deleted colours, as on each row.
+/// Build the sidebar pane's footer: how many files have staged changes,
+/// then the aggregate `+N -N` line counts in the added and deleted
+/// colours, as on each row. The count says in words what the green and
+/// amber names say in colour.
 ///
 /// Returns `None` when no lines changed.
 pub(super) fn sidebar_footer(sidebar: &Sidebar, theme: &Theme) -> Option<Line<'static>> {
@@ -251,6 +253,14 @@ pub(super) fn sidebar_footer(sidebar: &Sidebar, theme: &Theme) -> Option<Line<'s
         return None;
     }
     let mut spans = vec![Span::raw(" ")];
+    let staged = sidebar.staged_count();
+    if staged > 0 {
+        spans.push(Span::styled(
+            format!("{staged} staged"),
+            Style::default().fg(rgb_to_color(theme.status_added)),
+        ));
+        spans.push(Span::raw(" \u{b7} "));
+    }
     if totals.added > 0 {
         spans.push(Span::styled(
             format!("+{}", totals.added),
@@ -383,6 +393,34 @@ mod tests {
         assert_eq!(added.style.fg, Some(rgb_to_color(theme.status_added)));
         let deleted = line.spans.iter().find(|s| s.content == "-5").unwrap();
         assert_eq!(deleted.style.fg, Some(rgb_to_color(theme.status_deleted)));
+    }
+
+    #[test]
+    fn footer_counts_files_with_staged_changes() {
+        use crate::sidebar::{ChangeKind, StageStatus};
+        let diffs = [file_diff("a.rs"), file_diff("b.rs"), file_diff("c.rs")];
+        let stages = [
+            (Some(ChangeKind::Modified), None),
+            (Some(ChangeKind::Modified), Some(ChangeKind::Modified)),
+            (None, Some(ChangeKind::Modified)),
+        ];
+        let files: Vec<_> = diffs
+            .iter()
+            .zip(stages)
+            .map(|(file, (staged, unstaged))| SidebarFile {
+                file,
+                added: 1,
+                deleted: 0,
+                stage: Some(StageStatus { staged, unstaged }),
+            })
+            .collect();
+        let sidebar =
+            Sidebar::build_with_icons(&files, &Theme::default(), crate::sidebar::IconMode::Off);
+
+        let line = sidebar_footer(&sidebar, &Theme::default()).unwrap();
+
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, " 2 staged \u{b7} +3 ");
     }
 
     #[test]

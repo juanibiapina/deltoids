@@ -368,6 +368,17 @@ impl Sidebar {
         self.totals
     }
 
+    /// Files with staged changes, all or some.
+    pub fn staged_count(&self) -> usize {
+        self.rows
+            .iter()
+            .zip(&self.file_meta)
+            .filter(|(row, meta)| {
+                matches!(row, Row::File { .. }) && meta.stage.is_some_and(StageStatus::is_staged)
+            })
+            .count()
+    }
+
     /// Number of visible rows (dirs + files outside folded directories).
     pub fn row_count(&self) -> usize {
         self.visible.len()

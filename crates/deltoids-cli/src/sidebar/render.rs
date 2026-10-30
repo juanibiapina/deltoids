@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use super::icons::{BRANCH_GLYPH, COMMIT_GLYPH, IconMode, dir_icon, file_icon};
-use super::status::{FileMode, FileStatus, ModeChange};
+use super::status::{ChangeKind, FileMode, FileStatus, ModeChange, StageStatus};
 use super::tree::Row;
 use super::{FileRowMeta, Root, RowNote};
 
@@ -258,32 +258,14 @@ fn file_row_spans(
     spans.push(Span::styled(indent(depth), base));
 
     match meta.stage {
-        // Two-column stage field (lazygit parity): staged column then
-        // worktree column, each in its own colour.
+        // One letter for what changed; its colour says how much of it is
+        // staged.
         Some(stage) => {
-            // Untracked renders porcelain `??`: the staging model keeps
-            // the staged column empty (an untracked file is not staged),
-            // but display convention shows `?` in both columns.
-            let is_untracked = stage.staged.is_none()
-                && stage.unstaged == Some(super::status::ChangeKind::Untracked);
-            let staged_col = if is_untracked {
-                Some(super::status::ChangeKind::Untracked)
-            } else {
-                stage.staged
-            };
-            spans.push(stage_char_span(
-                staged_col,
-                StageColumn::Staged,
-                base,
-                theme,
+            spans.push(Span::styled(
+                format!("{} ", shown_kind(stage).letter()),
+                base.fg(stage_color(stage, theme))
+                    .add_modifier(Modifier::BOLD),
             ));
-            spans.push(stage_char_span(
-                stage.unstaged,
-                StageColumn::Worktree,
-                base,
-                theme,
-            ));
-            spans.push(Span::styled(" ".to_string(), base));
         }
         // Fallback: single change-type letter from the combined diff
         // (no repo).
@@ -370,41 +352,23 @@ pub(super) fn arrow_columns(depth: usize) -> Range<usize> {
     start..start + UNFOLDED_ARROW.width()
 }
 
-/// Which porcelain column a stage character belongs to. The column
-/// governs the default colour (staged = green, worktree = red).
-#[derive(Clone, Copy)]
-enum StageColumn {
-    Staged,
-    Worktree,
+/// The change a file's one letter stands for: the staged change, unless
+/// the worktree has since deleted the file; the worktree change when
+/// nothing is staged.
+fn shown_kind(stage: StageStatus) -> ChangeKind {
+    match (stage.staged, stage.unstaged) {
+        (_, Some(ChangeKind::Deleted)) => ChangeKind::Deleted,
+        (Some(kind), _) | (None, Some(kind)) => kind,
+        (None, None) => ChangeKind::Modified,
+    }
 }
 
-/// One character of the two-column stage field: the change letter (or a
-/// space when the column is empty), coloured by lazygit's rule. The
-/// staged column is green, the worktree column red; an untracked `?` is
-/// red regardless of column; an empty column takes the name colour.
-fn stage_char_span(
-    change: Option<super::status::ChangeKind>,
-    column: StageColumn,
-    base: Style,
-    theme: &Theme,
-) -> Span<'static> {
-    match change {
-        None => Span::styled(" ".to_string(), base),
-        Some(kind) => {
-            let color = if kind == super::status::ChangeKind::Untracked {
-                rgb_to_color(theme.status_deleted)
-            } else {
-                match column {
-                    StageColumn::Staged => rgb_to_color(theme.status_added),
-                    StageColumn::Worktree => rgb_to_color(theme.status_deleted),
-                }
-            };
-            Span::styled(
-                kind.letter().to_string(),
-                base.fg(color).add_modifier(Modifier::BOLD),
-            )
-        }
-    }
+/// A file letter's colour by how much of its change is staged: green for
+/// all, amber for some, red for none, as lazygit colours its staged and
+/// worktree columns.
+fn stage_color(stage: StageStatus, theme: &Theme) -> Color {
+    stage_tint(stage.is_staged(), stage.is_unstaged(), theme)
+        .unwrap_or_else(|| rgb_to_color(theme.status_deleted))
 }
 
 /// Lazygit's directory-label tint: green when fully staged, yellow when
@@ -577,9 +541,7 @@ mod tests {
         let sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
         let spans = &sidebar.rows()[0].spans;
 
-        // Staged column carries the single `T`.
-        let [(sc, _), (wc, _)] = stage_chars(spans);
-        assert_eq!((sc, wc), ('T', ' '));
+        assert_eq!(letter(spans).0, "T");
 
         let combined = spans.iter().map(|s| s.content.as_ref()).collect::<String>();
         assert!(
@@ -710,88 +672,74 @@ mod tests {
         sidebar.rows()[0].spans.clone()
     }
 
-    /// The first two spans after the leading indent are the stage
-    /// characters (staged, worktree). Return them as (char, fg).
-    fn stage_chars(spans: &[Span<'static>]) -> [(char, Option<Color>); 2] {
+    /// The letter after the leading indent, and its colour.
+    fn letter(spans: &[Span<'static>]) -> (String, Option<Color>) {
         // spans[0] is the indent (empty for a top-level file).
-        let staged = &spans[1];
-        let worktree = &spans[2];
-        [
-            (staged.content.chars().next().unwrap(), staged.style.fg),
-            (worktree.content.chars().next().unwrap(), worktree.style.fg),
-        ]
+        (spans[1].content.trim().to_string(), spans[1].style.fg)
     }
 
     fn name_span<'a>(spans: &'a [Span<'static>], name: &str) -> &'a Span<'static> {
         spans.iter().find(|s| s.content == name).expect("name span")
     }
 
+    fn stage(staged: Option<ChangeKind>, unstaged: Option<ChangeKind>) -> StageStatus {
+        StageStatus { staged, unstaged }
+    }
+
     #[test]
-    fn stage_field_staged_add_shows_a_space() {
+    fn a_fully_staged_file_has_a_green_letter() {
         let f = fd("added.rs");
-        let spans = stage_row(
-            &f,
-            StageStatus {
-                staged: Some(ChangeKind::Added),
-                unstaged: None,
-            },
+        let spans = stage_row(&f, stage(Some(ChangeKind::Added), None));
+        assert_eq!(
+            letter(&spans),
+            ("A".to_string(), Some(rgb_to_color(theme().status_added)))
         );
-        let [(sc, sfg), (wc, _)] = stage_chars(&spans);
-        assert_eq!(sc, 'A');
-        assert_eq!(sfg, Some(rgb_to_color(theme().status_added)));
-        assert_eq!(wc, ' ');
         assert_eq!(name_span(&spans, "added.rs").style.fg, None);
     }
 
     #[test]
-    fn stage_field_unstaged_modify_shows_space_m() {
+    fn an_unstaged_file_has_a_red_letter() {
         let f = fd("mod.rs");
-        let spans = stage_row(
-            &f,
-            StageStatus {
-                staged: None,
-                unstaged: Some(ChangeKind::Modified),
-            },
+        let spans = stage_row(&f, stage(None, Some(ChangeKind::Modified)));
+        assert_eq!(
+            letter(&spans),
+            ("M".to_string(), Some(rgb_to_color(theme().status_deleted)))
         );
-        let [(sc, _), (wc, wfg)] = stage_chars(&spans);
-        assert_eq!(sc, ' ');
-        assert_eq!(wc, 'M');
-        assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
         assert_eq!(name_span(&spans, "mod.rs").style.fg, None);
     }
 
     #[test]
-    fn stage_field_staged_then_edited_shows_mm_yellow_name() {
+    fn a_partly_staged_file_has_one_amber_letter() {
         let f = fd("both.rs");
         let spans = stage_row(
             &f,
-            StageStatus {
-                staged: Some(ChangeKind::Modified),
-                unstaged: Some(ChangeKind::Modified),
-            },
+            stage(Some(ChangeKind::Added), Some(ChangeKind::Modified)),
         );
-        let [(sc, sfg), (wc, wfg)] = stage_chars(&spans);
-        assert_eq!((sc, wc), ('M', 'M'));
-        assert_eq!(sfg, Some(rgb_to_color(theme().status_added)));
-        assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
+        assert_eq!(
+            letter(&spans),
+            ("A".to_string(), Some(rgb_to_color(theme().status_partial)))
+        );
         assert_eq!(name_span(&spans, "both.rs").style.fg, None);
     }
 
     #[test]
-    fn stage_field_untracked_shows_double_question_red() {
-        let f = fd("new.rs");
+    fn a_file_deleted_after_staging_shows_d() {
+        let f = fd("gone.rs");
         let spans = stage_row(
             &f,
-            StageStatus {
-                staged: None,
-                unstaged: Some(ChangeKind::Untracked),
-            },
+            stage(Some(ChangeKind::Modified), Some(ChangeKind::Deleted)),
         );
-        // Untracked renders porcelain `??`: `?` in both columns, both red.
-        let [(sc, sfg), (wc, wfg)] = stage_chars(&spans);
-        assert_eq!((sc, wc), ('?', '?'));
-        assert_eq!(sfg, Some(rgb_to_color(theme().status_deleted)));
-        assert_eq!(wfg, Some(rgb_to_color(theme().status_deleted)));
+        assert_eq!(letter(&spans).0, "D");
+    }
+
+    #[test]
+    fn an_untracked_file_shows_a_red_question_mark() {
+        let f = fd("new.rs");
+        let spans = stage_row(&f, stage(None, Some(ChangeKind::Untracked)));
+        assert_eq!(
+            letter(&spans),
+            ("?".to_string(), Some(rgb_to_color(theme().status_deleted)))
+        );
         assert_eq!(name_span(&spans, "new.rs").style.fg, None);
     }
 
@@ -805,7 +753,7 @@ mod tests {
         custom.status_deleted = (4, 5, 6);
         custom.status_partial = (7, 8, 9);
 
-        // Fully staged add: the stage char uses status_added.
+        // Fully staged add: the letter uses status_added.
         let f = fd("added.rs");
         let files = vec![SidebarFile {
             file: &f,
@@ -818,8 +766,7 @@ mod tests {
         }];
         let sidebar = Sidebar::build_with_icons(&files, &custom, IconMode::Off);
         let spans = &sidebar.rows()[0].spans;
-        let [(_, sfg), _] = stage_chars(spans);
-        assert_eq!(sfg, Some(rgb_to_color(custom.status_added)));
+        assert_eq!(letter(spans).1, Some(rgb_to_color(custom.status_added)));
         // +N uses status_added, -N uses status_deleted.
         let plus = spans
             .iter()

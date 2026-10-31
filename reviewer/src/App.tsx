@@ -2,10 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchPr, fetchFiles } from "./core/github";
 import { parsePrUrl } from "./core/lib";
 import { buildTree, displayOrder } from "./core/filetree";
+import { loadReviewCore } from "./core/reviewCore";
+import { attachSheetDrag } from "./core/sheetDrag";
 import { openReview, setWorkerSignedIn, startReviewWorker } from "./core/reviewClient";
 import type { RenderSession } from "./core/renderSession";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
+import { useMediaQuery } from "./hooks/useMediaQuery";
 import { Topbar } from "./components/Topbar";
 import { ReviewView, type ReviewData } from "./components/ReviewView";
 import { useGitHubAccess } from "./components/Account";
@@ -22,6 +25,9 @@ export function App() {
 
   const prefs = usePrefs();
   const { loaded, signedIn } = useGitHubAccess();
+  const smallTouch = useMediaQuery("(max-width: 767px) and (pointer: coarse)");
+  const layout =
+    prefs.layoutChoice === "auto" ? (smallTouch ? "phone" : "desktop") : prefs.layoutChoice;
 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<Status>({ text: "", isError: false });
@@ -58,6 +64,17 @@ export function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("reviewing", data !== null);
   }, [data]);
+
+  useEffect(() => {
+    document.documentElement.dataset.layout = layout;
+  }, [layout]);
+
+  // On phones the file list is a full-height sheet: drag it down to close.
+  useEffect(() => {
+    if (layout !== "phone" || !drawerOpen) return;
+    const sheet = document.querySelector<HTMLElement>(".sidebar");
+    return sheet ? attachSheetDrag(sheet, closeDrawer) : undefined;
+  }, [layout, drawerOpen, closeDrawer]);
 
   // Reflect the theme choice on <html> so the CSS palette switches.
   useEffect(() => {
@@ -96,6 +113,7 @@ export function App() {
       const [pr, files] = await Promise.all([
         fetchPr(ref, viaWorker),
         fetchFiles(ref, viaWorker),
+        loadReviewCore(),
       ]);
       if (id !== requestId.current) return;
       const order = displayOrder(
@@ -201,6 +219,7 @@ export function App() {
             data={data}
             syntaxTheme={prefs.syntaxTheme}
             hideViewed={prefs.hideViewed}
+            layout={layout}
             onNavigate={closeDrawer}
             onShowTree={openDrawer}
           />

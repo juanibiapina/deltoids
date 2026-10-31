@@ -2,6 +2,7 @@
 
 use deltoids::render_tui::{render_pane_scrollbar, rgb_to_color};
 use deltoids::{LineKind, Theme};
+use deltoids_review::overview::{Change, Span, change_cells};
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Style};
@@ -47,26 +48,28 @@ pub(super) fn render(
         return;
     }
 
-    let mut cells = vec![(false, false); height];
-    for (index, row) in rows.iter().enumerate() {
-        let cell = if rows.len() <= height {
-            index
-        } else {
-            // Use the endpoints of both ranges so the last row reaches
-            // the bottom. u128 keeps multiplication safe on large inputs.
-            ((index as u128 * (height - 1) as u128) / (rows.len() - 1) as u128) as usize
-        };
-        match row.kind {
-            Some(LineKind::Added) => cells[cell].0 = true,
-            Some(LineKind::Removed) => cells[cell].1 = true,
-            _ => {}
-        }
-    }
+    let spans: Vec<Span> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let change = match row.kind {
+                Some(LineKind::Added) => Change::Added,
+                Some(LineKind::Removed) => Change::Removed,
+                _ => return None,
+            };
+            Some(Span {
+                top: index as f64,
+                height: 1.0,
+                change,
+            })
+        })
+        .collect();
+    let cells = change_cells(&spans, rows.len() as f64, height as f64, 1.0);
     let added = rgb_to_color(theme.status_added);
     let removed = rgb_to_color(theme.status_deleted);
     let x = inner.right() - 1;
-    for (offset, (has_added, has_removed)) in cells.into_iter().enumerate() {
-        let (symbol, style) = match (has_added, has_removed) {
+    for (offset, cell) in cells.into_iter().enumerate() {
+        let (symbol, style) = match (cell.added, cell.removed) {
             (true, true) => ("▀", Style::default().fg(added).bg(removed)),
             (true, false) => ("█", Style::default().fg(added).bg(Color::Reset)),
             (false, true) => ("█", Style::default().fg(removed).bg(Color::Reset)),

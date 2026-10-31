@@ -24,6 +24,7 @@ function fakeSession(overrides: Partial<RenderSession> = {}): RenderSession {
       Promise.resolve<Rendered>({ kind: "html", html: `<div class="row">${theme}</div>` }),
     ),
     renderContext: vi.fn(() => Promise.resolve("")),
+    reshape: vi.fn(() => Promise.resolve(null)),
     prioritize: vi.fn(),
     dispose: vi.fn(),
     ...overrides,
@@ -495,12 +496,14 @@ function makePrefs(overrides: Partial<Prefs> = {}): Prefs {
     theme: "dark",
     syntaxTheme: "TokyoNight",
     syntaxThemeChoice: null,
+    layoutChoice: "desktop",
     toggleWrap: () => {},
     toggleLineNumbers: () => {},
     toggleHideViewed: () => {},
     stepSize: () => {},
     toggleTheme: () => {},
     setSyntaxTheme: () => {},
+    setLayoutChoice: () => {},
     ...overrides,
   };
 }

@@ -9,7 +9,8 @@
 //! Available only when the `html` cargo feature is enabled.
 //!
 //! Class contract (styled by the web app's CSS):
-//! - `.hunk`            one hunk block
+//! - `.hunk`            one hunk block; carries `data-hunk` (its index in
+//!   the hunk list) so a client can grow or shrink that hunk's context
 //! - `.gap`             divider between two hunks standing in for the unshown
 //!   lines; carries `data-gap-lines` (count) and `data-gap-new-start` /
 //!   `data-gap-new-end` / `data-gap-old-start` so a client can render that
@@ -75,13 +76,14 @@ fn render_hunks_html(
     // End (exclusive, 1-based) of the previous hunk in new/old line space, so
     // the gap before the next hunk is a pure function of the hunk list.
     let mut prev_end: Option<(usize, usize)> = None;
-    for hunk in hunks {
+    for (index, hunk) in hunks.iter().enumerate() {
         if let Some((prev_new_end, prev_old_end)) = prev_end {
             let count = hunk.new_start.saturating_sub(prev_new_end);
             if count > 0 {
                 render_gap(prev_new_end, prev_old_end, count, &mut html);
             }
         }
+        html.push_str(&format!("<div class=\"hunk\" data-hunk=\"{index}\">"));
         render_hunk_html(hunk, highlight, theme, &mut first_change_emitted, &mut html);
         prev_end = Some((
             hunk.new_start + hunk_new_span(hunk),
@@ -206,7 +208,6 @@ fn render_hunk_html(
     first_change_emitted: &mut bool,
     html: &mut String,
 ) {
-    html.push_str("<div class=\"hunk\">");
     render_header(hunk, html);
 
     let mut highlighter = HunkHighlighter::new(highlight, syntax_theme);

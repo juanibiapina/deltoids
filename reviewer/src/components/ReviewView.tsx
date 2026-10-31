@@ -19,12 +19,16 @@ import {
 } from "../core/filetree";
 import { createWheelStepper } from "../core/wheel";
 import { createSwipeTracker, type SwipeEdges } from "../core/swipe";
+import { attachScrollAnchor } from "../core/scrollAnchor";
+import { reshapeHunkAtTop } from "../core/hunkNav";
 import { useReviewed } from "../hooks/useReviewed";
 import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
 import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
 import { FileCard } from "./FileCard";
 import { DiffScrollbar } from "./DiffScrollbar";
+
+export type Layout = "phone" | "desktop";
 
 export interface ReviewData {
   ref: PrRef;
@@ -37,9 +41,16 @@ interface ReviewViewProps {
   data: ReviewData;
   syntaxTheme: string;
   hideViewed: boolean;
+  layout?: Layout;
   onNavigate: () => void;
-  // Opens the file tree drawer (small screens).
+  // Opens the file tree: the drawer on small screens, the full-height sheet
+  // on the phone layout.
   onShowTree: () => void;
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && (el.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName));
 }
 
 function selectionKey(selection: Selection): string {
@@ -62,12 +73,14 @@ export function ReviewView({
   data,
   syntaxTheme,
   hideViewed,
+  layout = "desktop",
   onNavigate,
   onShowTree,
 }: ReviewViewProps) {
+  const phone = layout === "phone";
   const { ref, files, session } = data;
   const { isReviewed, toggle } = useReviewed(ref, files);
-  const small = !useMediaQuery(WIDE_QUERY, true);
+  const small = !useMediaQuery(WIDE_QUERY, true) || phone;
 
   const tree = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -94,6 +107,13 @@ export function ReviewView({
   useEffect(() => {
     if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
   }, [key]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    return attachScrollAnchor(scroller, content);
+  }, []);
 
   const isReviewedByIndex = useCallback(
     (index: number) => isReviewed(files[index]),
@@ -131,6 +151,18 @@ export function ReviewView({
     pane.addEventListener("wheel", onWheel, { passive: false });
     return () => pane.removeEventListener("wheel", onWheel);
   }, [tree, isHidden]);
+
+  // z / x grow and shrink the hunk at the reading position, as in the TUI.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
+      const scroller = scrollerRef.current;
+      if (!scroller || (e.key !== "z" && e.key !== "x")) return;
+      if (reshapeHunkAtTop(scroller, e.key === "z" ? "expand" : "shrink")) e.preventDefault();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   const handleSelect = useCallback(
     (next: Selection) => {
@@ -212,15 +244,18 @@ export function ReviewView({
                   onToggleReviewed={() => handleToggleReviewed(i)}
                   hidden={!shown.has(i)}
                   solo={selection.kind === "file"}
+                  onOpenFiles={phone ? onShowTree : undefined}
                 />
               ))}
             </div>
           </div>
-          <DiffScrollbar
-            scrollerRef={scrollerRef}
-            contentRef={contentRef}
-            selectionKey={key}
-          />
+          {!phone && (
+            <DiffScrollbar
+              scrollerRef={scrollerRef}
+              contentRef={contentRef}
+              selectionKey={key}
+            />
+          )}
         </div>
       </div>
     </LazyObserverProvider>

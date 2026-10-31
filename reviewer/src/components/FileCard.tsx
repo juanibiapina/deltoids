@@ -3,6 +3,7 @@ import type { PrFile } from "../core/github";
 import type { RenderSession, Rendered } from "../core/renderSession";
 import { whenIdle } from "../core/idle";
 import { useLazy } from "./LazyObserver";
+import { RESHAPE_EVENT, type ReshapeDetail } from "../core/hunkNav";
 
 interface FileCardProps {
   index: number;
@@ -13,6 +14,23 @@ interface FileCardProps {
   onToggleReviewed: () => void;
   hidden?: boolean;
   solo?: boolean;
+  // When set, the path opens the file list (phone layout).
+  onOpenFiles?: () => void;
+}
+
+function ChevronDown() {
+  return (
+    <svg className="path-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path
+        d="M4 6l4 4 4-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 type Body =
@@ -40,6 +58,7 @@ export function FileCard({
   onToggleReviewed,
   hidden = false,
   solo = false,
+  onOpenFiles,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLDivElement>(null);
@@ -99,11 +118,42 @@ export function FileCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syntaxTheme, hidden, seen]);
 
-  // Record a clicked gap divider so the expansion effect reveals it.
+  // Grow or shrink one hunk's context in the engine and show the result.
+  const reshape = (op: "expand" | "shrink", hunk: number) => {
+    const theme = syntaxTheme;
+    void session.reshape(index, op, hunk, theme).then((rendered) => {
+      if (!rendered) return;
+      shownTheme.current = theme;
+      setBody(bodyFor(rendered, theme));
+    });
+  };
+
+  // `z`/`x` reach a hunk as a RESHAPE_EVENT (core/hunkNav.ts).
+  const reshapeRef = useRef(reshape);
+  reshapeRef.current = reshape;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onReshape = (event: Event) => {
+      const { op, hunk } = (event as CustomEvent<ReshapeDetail>).detail;
+      reshapeRef.current(op, hunk);
+    };
+    el.addEventListener(RESHAPE_EVENT, onReshape);
+    return () => el.removeEventListener(RESHAPE_EVENT, onReshape);
+  }, []);
+
+  // A hunk's scope header grows the hunk to its enclosing scope; a gap divider
+  // is recorded so the expansion effect reveals it.
   const onDiffClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    const gap = (event.target as HTMLElement).closest?.(".gap") as
-      | HTMLElement
-      | null;
+    const target = event.target as HTMLElement;
+    const header = target.closest?.(".hunk > .breadcrumb, .hunk > .lineno");
+    if (header) {
+      if (window.getSelection()?.toString()) return;
+      const hunk = Number(header.closest<HTMLElement>(".hunk")?.dataset.hunk);
+      if (Number.isFinite(hunk)) reshape("expand", hunk);
+      return;
+    }
+    const gap = target.closest?.(".gap") as HTMLElement | null;
     if (!gap) return;
     const start = Number(gap.dataset.gapNewStart);
     if (!Number.isFinite(start)) return;
@@ -154,7 +204,19 @@ export function FileCard({
   return (
     <section className={className} id={`file-${index}`} ref={ref} hidden={hidden}>
       <div className="file-head">
-        <span className="path">{file.filename}</span>
+        {onOpenFiles ? (
+          <button
+            type="button"
+            className="path path-button"
+            aria-label={`${file.filename}, show all files`}
+            onClick={onOpenFiles}
+          >
+            <span className="path-text">{file.filename}</span>
+            <ChevronDown />
+          </button>
+        ) : (
+          <span className="path">{file.filename}</span>
+        )}
         <label className="review-toggle">
           <input
             type="checkbox"

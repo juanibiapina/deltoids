@@ -14,6 +14,11 @@ const HIDE_VIEWED_KEY = "deltoids.review.hide-viewed";
 const SIZE_KEY = "deltoids.review.size";
 export const THEME_KEY = "deltoids.review.theme";
 export const SYNTAX_THEME_KEY = "deltoids.review.syntax-theme";
+export const LAYOUT_KEY = "deltoids.review.layout";
+export const LAYOUT_CHOICES = ["auto", "phone", "desktop"] as const;
+export type LayoutChoice = (typeof LAYOUT_CHOICES)[number];
+// "desktop" until the phone layout is accepted on real devices; then "auto".
+export const DEFAULT_LAYOUT: LayoutChoice = "desktop";
 export const SIZES = ["s", "m", "l"] as const;
 export type Size = (typeof SIZES)[number];
 export type Theme = "dark" | "light";
@@ -29,6 +34,9 @@ export interface Prefs {
   syntaxTheme: string;
   // The user's explicit choice, or `null` when it derives from `theme`.
   syntaxThemeChoice: string | null;
+  // Which review layout to use; "auto" picks the phone layout on small touch
+  // screens. A `?layout=` URL parameter overrides it for the page load.
+  layoutChoice: LayoutChoice;
   toggleWrap: () => void;
   toggleLineNumbers: () => void;
   toggleHideViewed: () => void;
@@ -37,6 +45,19 @@ export interface Prefs {
   // Set an explicit syntax theme, or `null` to revert to the mode-derived
   // default. Persists across sessions.
   setSyntaxTheme: (name: string | null) => void;
+  // Persist a layout choice; it also replaces a `?layout=` override.
+  setLayoutChoice: (choice: LayoutChoice) => void;
+}
+
+function isLayoutChoice(value: string | null): value is LayoutChoice {
+  return (LAYOUT_CHOICES as readonly string[]).includes(value ?? "");
+}
+
+function initialLayoutChoice(): LayoutChoice {
+  const override = new URLSearchParams(location.search).get("layout");
+  if (isLayoutChoice(override)) return override;
+  const stored = localStorage.getItem(LAYOUT_KEY);
+  return isLayoutChoice(stored) ? stored : DEFAULT_LAYOUT;
 }
 
 // The mode-derived default syntax theme, used when the user has not chosen one.
@@ -82,6 +103,12 @@ export function usePrefs(): Prefs {
   const [syntaxThemeChoice, setSyntaxThemeChoice] = useState<string | null>(
     initialSyntaxThemeChoice,
   );
+  const [layoutChoice, setLayoutChoiceState] = useState<LayoutChoice>(initialLayoutChoice);
+
+  const setLayoutChoice = useCallback((choice: LayoutChoice) => {
+    localStorage.setItem(LAYOUT_KEY, choice);
+    setLayoutChoiceState(choice);
+  }, []);
 
   const toggleWrap = useCallback(() => {
     setNowrap((prev) => {
@@ -148,11 +175,13 @@ export function usePrefs(): Prefs {
     theme,
     syntaxTheme,
     syntaxThemeChoice,
+    layoutChoice,
     toggleWrap,
     toggleLineNumbers,
     toggleHideViewed,
     stepSize,
     toggleTheme,
     setSyntaxTheme,
+    setLayoutChoice,
   };
 }

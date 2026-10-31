@@ -30,6 +30,7 @@ clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"
 crossterm = { version = "0.29", features = ["use-dev-tty"] }
 deltoids = { path = "../deltoids", features = ["blob-resolve", "ratatui"] }
+deltoids-review = { path = "../deltoids-review" }
 git2 = "0.21"
 globset = "0.4"
 jiff = "0.2.38"

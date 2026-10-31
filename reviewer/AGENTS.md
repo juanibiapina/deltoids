@@ -8,7 +8,8 @@ and renders a GitHub pull request as a scope-expanded diff with the
 
 `src/core/` holds the DOM-free logic, `src/components/` and `src/hooks/` the
 React UI, and `worker/` the backend. `public/deltoids_wasm.wasm` is the
-engine, a gitignored build product.
+engine and `public/deltoids_review.wasm` the shared review core
+(`crates/deltoids-review`), both gitignored build products.
 
 ## Dev / build / test
 
@@ -18,11 +19,16 @@ npm install
 # Build the engine once (needs wasi-sdk; see crates/deltoids-wasm/AGENTS.md):
 DEST="$PWD/public/deltoids_wasm.wasm" \
   WASI_SDK=/path/to/wasi-sdk ../crates/deltoids-wasm/build-wasm.sh
+npm run core       # build the review core (needs the wasm32-unknown-unknown target);
+                   # dev, dev:api, build, and test run it first
 npm run dev        # http://localhost:5173 (dev Clerk key from ZeroVault)
 npm run dev:api    # build + Worker on http://localhost:8787, with sign-in
 npm run build      # tsc --noEmit && vite build -> reviewer/dist/ (needs the key)
 npm run preview    # serve dist (no Worker)
 npm test           # vitest run (app + worker/)
+npm run e2e        # Playwright in Chromium and WebKit against `vite --mode e2e`
+                   # (Clerk stubbed signed out, GitHub served from test/e2e/fixture.ts);
+                   # needs the engine in public/
 npm run typecheck  # tsc for the app and for worker/
 npx wrangler deploy --dry-run --outdir=../worker-dist  # bundle check, as CI
 ```
@@ -139,9 +145,27 @@ ZeroVault token and runs `wrangler deploy`. The repo holds no Cloudflare secret.
 - A theme switch must not fetch from GitHub again. Fetching (`loadSides`) is
   separate from the pure `renderSides`, and `RenderSession` re-renders from
   the sides it holds.
-- The `index.html` preload of `/deltoids_wasm.wasm` (`as="fetch"` +
-  `crossorigin`) must match the `compileStreaming` request in
-  `core/engine.ts`. Otherwise the engine downloads twice.
+- The `index.html` preloads of `/deltoids_wasm.wasm` and
+  `/deltoids_review.wasm` (`as="fetch"` + `crossorigin`) must match the
+  `compileStreaming` requests in `core/engine.ts` and `core/reviewCore.ts`.
+  Otherwise each module downloads twice.
+- `openReview` awaits `loadReviewCore()` before `buildTree`, so the review
+  view and its children can call the core synchronously.
+- Scrolling stays pixel-still: `core/scrollAnchor.ts` keeps the top visible
+  row in place when content above it changes size, and `.pane-scroll` sets
+  `overflow-anchor: none` so native anchoring does not correct twice. Diff
+  line heights are whole pixels (`--diff-lh`). `test/e2e/scroll.e2e.ts`
+  checks lazy cards, gap reveals, and theme switches.
+- The layout flag (`usePrefs` `layoutChoice`, key `deltoids.review.layout`)
+  picks the desktop or phone layout; `auto` means phone on
+  `(max-width: 767px) and (pointer: coarse)`. `?layout=` overrides it for
+  one page load without saving it. The default stays `desktop` until the
+  phone layout is accepted on real devices. App sets
+  `html[data-layout]`, and the phone CSS sits last in `style.css` so it
+  wins over the width breakpoints.
+- Hunk context (`z`/`x`, the hunk `−`/`+` tools, the phone bar) goes
+  through `RenderSession.reshape`, which keeps one engine `DiffShape` per
+  file. Later renders, including theme switches, keep the shape.
 - The diff selection lives in `ReviewView` state. The tree library's
   controlled `expandedIds` was rejected: collapsing a directory also folds
   its descendants, out of sync with the prop.

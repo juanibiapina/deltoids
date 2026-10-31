@@ -29,7 +29,8 @@ function byId(nodes: TreeNode[], id: string): TreeNode {
   return n;
 }
 
-// Mirrors crates/deltoids-cli/src/sidebar/tree.rs::build_rows tests.
+// The grouping rules are specified in crates/deltoids-review/src/tree.rs;
+// these check the node shape built on top of them.
 
 test("groups files under a common directory", () => {
   const nodes = buildTree(files(["src/a.rs"], ["src/b.rs"]));

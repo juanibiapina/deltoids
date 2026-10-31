@@ -33,6 +33,7 @@ const api = {
     return Comlink.proxy({
       render: session.render,
       renderContext: session.renderContext,
+      reshape: session.reshape,
       prioritize: session.prioritize,
       dispose: session.dispose,
     });

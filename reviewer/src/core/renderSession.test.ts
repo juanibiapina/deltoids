@@ -16,13 +16,39 @@ function fakeSource(): SidesSource & { fetch: ReturnType<typeof vi.fn> } {
   };
 }
 
-function fakeEngine(onRender: (path: string) => void = () => {}): Engine {
+interface FakeEngine extends Engine {
+  renders: ReturnType<typeof vi.fn>;
+  closed: string[];
+}
+
+// Shapes render "path:theme", plus "+N" after N expansions.
+function fakeEngine(onRender: (path: string) => void = () => {}): FakeEngine {
+  const renders = vi.fn();
+  const closed: string[] = [];
   return {
-    renderFile: vi.fn((_before: string, _after: string, path: string, theme: string) => {
-      onRender(path);
-      return path === "f8" ? "" : `${path}:${theme}`;
-    }),
-    renderFromPatch: vi.fn(),
+    renders,
+    closed,
+    openShape: (sides) => {
+      let level = 0;
+      return {
+        render: (theme) => {
+          renders(sides.path, theme);
+          onRender(sides.path);
+          if (sides.path === "f8") return "";
+          return `${sides.path}:${theme}${level ? `+${level}` : ""}`;
+        },
+        expand: () => {
+          level++;
+          return true;
+        },
+        shrink: () => {
+          if (level === 0) return false;
+          level--;
+          return true;
+        },
+        close: () => closed.push(sides.path),
+      };
+    },
     renderContext: vi.fn(
       (after: string, path: string, start: number, end: number, theme: string) =>
         `${after}|${path}|${start}-${end}|${theme}`,
@@ -74,10 +100,10 @@ describe("RenderSession", () => {
     const { session: s, source } = session([], engine);
     await s.render(0, "A", "now");
     await s.render(0, "A", "now");
-    expect(engine.renderFile).toHaveBeenCalledTimes(1);
+    expect(engine.renders).toHaveBeenCalledTimes(1);
 
     await expect(s.render(0, "B", "now")).resolves.toEqual({ kind: "html", html: "f0:B" });
-    expect(engine.renderFile).toHaveBeenCalledTimes(2);
+    expect(engine.renders).toHaveBeenCalledTimes(2);
     expect(source.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -93,5 +119,32 @@ describe("RenderSession", () => {
     await s.render(0, "T", "now");
     await expect(s.renderContext(0, 2, 5, "T")).resolves.toBe("after0|f0|2-5|T");
     expect(source.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("a reshape re-renders the file, and later renders keep the shape", async () => {
+    const engine = fakeEngine();
+    const { session: s, source } = session([], engine);
+    await s.render(0, "A", "now");
+    await expect(s.reshape(0, "expand", 0, "A")).resolves.toEqual({ kind: "html", html: "f0:A+1" });
+    await expect(s.render(0, "A", "now")).resolves.toEqual({ kind: "html", html: "f0:A+1" });
+    await expect(s.render(0, "B", "now")).resolves.toEqual({ kind: "html", html: "f0:B+1" });
+    await expect(s.reshape(0, "shrink", 0, "B")).resolves.toEqual({ kind: "html", html: "f0:B" });
+    expect(source.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("a reshape that changes nothing, or comes before the first render, is null", async () => {
+    const { session: s } = session([], fakeEngine());
+    await expect(s.reshape(0, "expand", 0, "A")).resolves.toBeNull();
+    await s.render(0, "A", "now");
+    await expect(s.reshape(0, "shrink", 0, "A")).resolves.toBeNull();
+  });
+
+  test("dispose closes every open shape", async () => {
+    const engine = fakeEngine();
+    const { session: s } = session([], engine);
+    await s.render(0, "A", "now");
+    await s.render(1, "A", "now");
+    s.dispose();
+    expect(engine.closed.sort()).toEqual(["f0", "f1"]);
   });
 });

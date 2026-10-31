@@ -1,5 +1,4 @@
 import { looksBinary, type PrRef } from "./lib";
-import type { Engine } from "./engine";
 
 // ---------------------------------------------------------------------------
 // GitHub API client
@@ -180,7 +179,7 @@ export type Sides =
 // file is binary. For modified/renamed files that carry a `patch`, fetch only
 // the head-side content and let the engine reconstruct the before side (one
 // request instead of two). Otherwise resolve both sides. This is the network
-// half of rendering; cache the result and re-run `renderSides` on theme change.
+// half of rendering; the engine's `openShape` renders it in any theme.
 // `viaWorker` routes requests through the Worker (signed in) or straight to
 // GitHub (signed out).
 export async function loadSides(
@@ -228,11 +227,6 @@ export function githubSidesSource(
 // Render already-fetched `sides` to HTML with the given syntax `theme` (a
 // registry name; "" selects the default). Pure and synchronous, so it can be
 // re-run on a theme switch against cached `Sides`.
-export function renderSides(engine: Engine, sides: Sides, theme: string): string {
-  return sides.kind === "patch"
-    ? engine.renderFromPatch(sides.after, sides.patch, sides.path, theme)
-    : engine.renderFile(sides.before, sides.after, sides.path, theme);
-}
 
 // Resolve before/after content for a changed file based on its status.
 async function resolveSides(

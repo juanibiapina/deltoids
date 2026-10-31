@@ -11,6 +11,11 @@ export default defineConfig(({ command, mode }) => {
   return {
     base: "/",
     plugins: [react()],
+    // Playwright runs `vite --mode e2e` with Clerk replaced by a signed-out stub.
+    resolve:
+      mode === "e2e"
+        ? { alias: { "@clerk/react": new URL("./test/e2e/clerk.tsx", import.meta.url).pathname } }
+        : undefined,
     build: {
       target: "es2022",
     },
@@ -20,6 +25,7 @@ export default defineConfig(({ command, mode }) => {
     test: {
       environment: "jsdom",
       globals: true,
+      setupFiles: ["./test/setup.ts"],
     },
   };
 });

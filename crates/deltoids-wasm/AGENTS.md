@@ -29,6 +29,15 @@ The `.wasm` file is a gitignored build product.
   lines `start..=end` (1-based, inclusive) of `after` as highlighted context
   rows. The reviewer uses it to expand gaps.
 
+- `session_open(before*, after*, path*) -> u32` and
+  `session_open_patch(after*, patch*, path*) -> u32` keep one file's diff
+  in the module and return its id (never 0). `session_render(id, theme*)`
+  renders it (0 for an unknown id), `session_expand(id, hunk)` and
+  `session_shrink(id, hunk)` grow or shrink one hunk's context (1 changed,
+  0 unchanged, -1 unknown id), and `session_close(id)` frees it. The
+  reviewer replays its steps into a fresh session after a trap replaces
+  the instance (`core/engine.ts`).
+
 Each `*` is a `(ptr, len)` pair. `theme` is a registry name from
 `deltoids::theme_names`. An empty name selects the default theme.
 

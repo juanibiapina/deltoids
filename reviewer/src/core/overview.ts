@@ -1,15 +1,13 @@
-export type ChangeKind = "added" | "removed";
+import {
+  changeCells as coreChangeCells,
+  type ChangeKind,
+  type CoreCell,
+  type CoreSpan,
+} from "./reviewCore";
 
-export interface Span {
-  top: number;
-  height: number;
-  kind: ChangeKind;
-}
-
-export interface Cell {
-  added: boolean;
-  removed: boolean;
-}
+export type { ChangeKind };
+export type Span = CoreSpan;
+export type Cell = CoreCell;
 
 export interface Geometry {
   contentHeight: number;
@@ -19,29 +17,10 @@ export interface Geometry {
 export const CELL_PX = 3;
 export const MIN_THUMB_PX = 24;
 
+// The overview cells come from the shared core
+// (`crates/deltoids-review/src/overview.rs`), the same code as the TUI's.
 export function changeCells(spans: Span[], g: Geometry, cellPx = CELL_PX): Cell[] {
-  const count = Math.max(0, Math.floor(g.track / cellPx));
-  const cells = Array.from({ length: count }, () => ({ added: false, removed: false }));
-  if (count === 0 || g.contentHeight <= 0) return cells;
-
-  const fits = g.contentHeight <= g.track;
-  const cellAt = (y: number): number => {
-    const clamped = Math.min(Math.max(y, 0), g.contentHeight - 1);
-    const cell = fits
-      ? Math.floor(clamped / cellPx)
-      : g.contentHeight <= 1
-        ? 0
-        : Math.floor((clamped * (count - 1)) / (g.contentHeight - 1));
-    return Math.min(cell, count - 1);
-  };
-
-  for (const span of spans) {
-    if (span.height <= 0) continue;
-    const first = cellAt(span.top);
-    const last = cellAt(span.top + span.height - 1);
-    for (let i = first; i <= last; i++) cells[i][span.kind] = true;
-  }
-  return cells;
+  return coreChangeCells(spans, g.contentHeight, g.track, cellPx);
 }
 
 export function thumb(scrollTop: number, g: Geometry): { top: number; height: number } | null {

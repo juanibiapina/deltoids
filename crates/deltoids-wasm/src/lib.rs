@@ -22,6 +22,8 @@ use deltoids::parse::GitDiff;
 use deltoids::render_html::{render_context_html, render_file_html};
 use deltoids::reverse::reconstruct_before;
 
+mod session;
+
 /// Layout for a raw byte buffer of `len` bytes (align 1). Allocation and
 /// freeing must use the identical layout, so both go through here.
 fn layout(len: usize) -> Layout {
@@ -81,12 +83,15 @@ pub fn render_html(before: &str, after: &str, path: &str, theme: &str) -> String
 /// header is synthesized for the parser; reconstruction ignores the paths.
 /// `theme` is a registry theme name (empty = default).
 pub fn render_html_from_patch(after: &str, patch: &str, path: &str, theme: &str) -> String {
+    render_html(&before_from_patch(after, patch), after, path, theme)
+}
+
+fn before_from_patch(after: &str, patch: &str) -> String {
     let synthetic = format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{patch}");
-    let before = match GitDiff::parse(&synthetic).files.first() {
+    match GitDiff::parse(&synthetic).files.first() {
         Some(file) => reconstruct_before(after, file),
         None => after.to_string(),
-    };
-    render_html(&before, after, path, theme)
+    }
 }
 
 /// Render new-file lines `start..=end` (1-based, inclusive) of `after` as
@@ -180,6 +185,85 @@ pub unsafe extern "C" fn render_context(
     let path = unsafe { str_from_parts(path_ptr, path_len) };
     let theme = unsafe { str_from_parts(theme_ptr, theme_len) };
     pack_bytes(render_context_rows(&after, &path, &theme, start, end).into_bytes())
+}
+
+/// Open a diff session on `before` → `after` and return its id (never 0).
+///
+/// # Safety
+/// The `(ptr, len)` pairs must describe buffers owned by this module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn session_open(
+    before_ptr: *const u8,
+    before_len: usize,
+    after_ptr: *const u8,
+    after_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+) -> u32 {
+    let before = unsafe { str_from_parts(before_ptr, before_len) };
+    let after = unsafe { str_from_parts(after_ptr, after_len) };
+    let path = unsafe { str_from_parts(path_ptr, path_len) };
+    session::open(&before, &after, &path)
+}
+
+/// Open a diff session from `after` and a unified `patch`, like
+/// [`render_from_patch`]. Returns its id (never 0).
+///
+/// # Safety
+/// The `(ptr, len)` pairs must describe buffers owned by this module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn session_open_patch(
+    after_ptr: *const u8,
+    after_len: usize,
+    patch_ptr: *const u8,
+    patch_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+) -> u32 {
+    let after = unsafe { str_from_parts(after_ptr, after_len) };
+    let patch = unsafe { str_from_parts(patch_ptr, patch_len) };
+    let path = unsafe { str_from_parts(path_ptr, path_len) };
+    session::open_from_patch(&after, &patch, &path)
+}
+
+/// Render session `id` as HTML (packed handle), or return 0 when the id is
+/// unknown.
+///
+/// # Safety
+/// The `theme` pair must describe a buffer owned by this module, or be
+/// `(_, 0)` for the default theme.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn session_render(id: u32, theme_ptr: *const u8, theme_len: usize) -> u64 {
+    let theme = unsafe { str_from_parts(theme_ptr, theme_len) };
+    session::html(id, &theme).map_or(0, |html| pack_bytes(html.into_bytes()))
+}
+
+fn reshape_code(reshape: session::Reshape) -> i32 {
+    match reshape {
+        session::Reshape::Changed => 1,
+        session::Reshape::Unchanged => 0,
+        session::Reshape::Unknown => -1,
+    }
+}
+
+/// Grow hunk `hunk` of session `id` one scope level: 1 changed, 0 already
+/// at the whole file, -1 unknown session.
+#[unsafe(no_mangle)]
+pub extern "C" fn session_expand(id: u32, hunk: u32) -> i32 {
+    reshape_code(session::expand(id, hunk as usize))
+}
+
+/// Undo the latest growth that reached hunk `hunk`: 1 changed, 0 nothing to
+/// undo, -1 unknown session.
+#[unsafe(no_mangle)]
+pub extern "C" fn session_shrink(id: u32, hunk: u32) -> i32 {
+    reshape_code(session::shrink(id, hunk as usize))
+}
+
+/// Forget session `id`.
+#[unsafe(no_mangle)]
+pub extern "C" fn session_close(id: u32) {
+    session::close(id);
 }
 
 /// Copy `len` bytes at `ptr` into an owned `String`, lossily decoding any

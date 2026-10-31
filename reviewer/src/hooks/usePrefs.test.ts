@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { SYNTAX_THEME_KEY, usePrefs } from "./usePrefs";
+import { LAYOUT_KEY, SYNTAX_THEME_KEY, usePrefs } from "./usePrefs";
 
 const HIDE_LN_KEY = "deltoids.review.hide-ln";
 const HIDE_VIEWED_KEY = "deltoids.review.hide-viewed";
@@ -123,5 +123,38 @@ describe("usePrefs hide viewed", () => {
     act(() => result.current.toggleHideViewed());
     expect(result.current.hideViewed).toBe(true);
     expect(localStorage.getItem(HIDE_VIEWED_KEY)).toBe("1");
+  });
+});
+
+describe("usePrefs layout", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockColorScheme(false);
+    history.replaceState(null, "", "/");
+  });
+
+  test("defaults to the desktop layout", () => {
+    const { result } = renderHook(() => usePrefs());
+    expect(result.current.layoutChoice).toBe("desktop");
+  });
+
+  test("keeps a chosen layout across reloads", () => {
+    const { result } = renderHook(() => usePrefs());
+    act(() => result.current.setLayoutChoice("phone"));
+    expect(result.current.layoutChoice).toBe("phone");
+    expect(renderHook(() => usePrefs()).result.current.layoutChoice).toBe("phone");
+  });
+
+  test("?layout= overrides the stored choice without saving it", () => {
+    localStorage.setItem(LAYOUT_KEY, "desktop");
+    history.replaceState(null, "", "/?layout=phone");
+    expect(renderHook(() => usePrefs()).result.current.layoutChoice).toBe("phone");
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe("desktop");
+  });
+
+  test("an unknown ?layout= value falls back to the stored choice", () => {
+    localStorage.setItem(LAYOUT_KEY, "auto");
+    history.replaceState(null, "", "/?layout=tablet");
+    expect(renderHook(() => usePrefs()).result.current.layoutChoice).toBe("auto");
   });
 });

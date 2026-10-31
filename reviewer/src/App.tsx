@@ -7,6 +7,7 @@ import { openReview, setWorkerSignedIn, startReviewWorker } from "./core/reviewC
 import type { RenderSession } from "./core/renderSession";
 import { usePrefs } from "./hooks/usePrefs";
 import { useTopbarHeight } from "./hooks/useTopbarHeight";
+import { useMediaQuery } from "./hooks/useMediaQuery";
 import { Topbar } from "./components/Topbar";
 import { ReviewView, type ReviewData } from "./components/ReviewView";
 import { useGitHubAccess } from "./components/Account";
@@ -23,6 +24,9 @@ export function App() {
 
   const prefs = usePrefs();
   const { loaded, signedIn } = useGitHubAccess();
+  const smallTouch = useMediaQuery("(max-width: 767px) and (pointer: coarse)");
+  const layout =
+    prefs.layoutChoice === "auto" ? (smallTouch ? "phone" : "desktop") : prefs.layoutChoice;
 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<Status>({ text: "", isError: false });
@@ -59,6 +63,10 @@ export function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("reviewing", data !== null);
   }, [data]);
+
+  useEffect(() => {
+    document.documentElement.dataset.layout = layout;
+  }, [layout]);
 
   // Reflect the theme choice on <html> so the CSS palette switches.
   useEffect(() => {
@@ -203,8 +211,10 @@ export function App() {
             data={data}
             syntaxTheme={prefs.syntaxTheme}
             hideViewed={prefs.hideViewed}
+            layout={layout}
             onNavigate={closeDrawer}
             onShowTree={openDrawer}
+            onFiles={() => setDrawerOpen((v) => !v)}
           />
         )}
       </main>

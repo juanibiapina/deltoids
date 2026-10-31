@@ -156,6 +156,16 @@ ZeroVault token and runs `wrangler deploy`. The repo holds no Cloudflare secret.
   `overflow-anchor: none` so native anchoring does not correct twice. Diff
   line heights are whole pixels (`--diff-lh`). `test/e2e/scroll.e2e.ts`
   checks lazy cards, gap reveals, and theme switches.
+- The layout flag (`usePrefs` `layoutChoice`, key `deltoids.review.layout`)
+  picks the desktop or phone layout; `auto` means phone on
+  `(max-width: 767px) and (pointer: coarse)`. `?layout=` overrides it for
+  one page load without saving it. The default stays `desktop` until the
+  phone layout is accepted on real devices. App sets
+  `html[data-layout]`, and the phone CSS sits last in `style.css` so it
+  wins over the width breakpoints.
+- Hunk context (`z`/`x`, the hunk `−`/`+` tools, the phone bar) goes
+  through `RenderSession.reshape`, which keeps one engine `DiffShape` per
+  file. Later renders, including theme switches, keep the shape.
 - The diff selection lives in `ReviewView` state. The tree library's
   controlled `expandedIds` was rejected: collapsing a directory also folds
   its descendants, out of sync with the prop.

@@ -20,12 +20,16 @@ import {
 import { createWheelStepper } from "../core/wheel";
 import { createSwipeTracker, type SwipeEdges } from "../core/swipe";
 import { attachScrollAnchor } from "../core/scrollAnchor";
+import { reshapeHunkAtTop } from "../core/hunkNav";
 import { useReviewed } from "../hooks/useReviewed";
 import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
 import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
 import { FileCard } from "./FileCard";
 import { DiffScrollbar } from "./DiffScrollbar";
+import { MobileBar } from "./MobileBar";
+
+export type Layout = "phone" | "desktop";
 
 export interface ReviewData {
   ref: PrRef;
@@ -38,9 +42,17 @@ interface ReviewViewProps {
   data: ReviewData;
   syntaxTheme: string;
   hideViewed: boolean;
+  layout?: Layout;
   onNavigate: () => void;
   // Opens the file tree drawer (small screens).
   onShowTree: () => void;
+  // Open the file list (the phone layout's bottom sheet).
+  onFiles?: () => void;
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return !!el && (el.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName));
 }
 
 function selectionKey(selection: Selection): string {
@@ -63,9 +75,12 @@ export function ReviewView({
   data,
   syntaxTheme,
   hideViewed,
+  layout = "desktop",
   onNavigate,
   onShowTree,
+  onFiles = () => {},
 }: ReviewViewProps) {
+  const phone = layout === "phone";
   const { ref, files, session } = data;
   const { isReviewed, toggle } = useReviewed(ref, files);
   const small = !useMediaQuery(WIDE_QUERY, true);
@@ -139,6 +154,39 @@ export function ReviewView({
     pane.addEventListener("wheel", onWheel, { passive: false });
     return () => pane.removeEventListener("wheel", onWheel);
   }, [tree, isHidden]);
+
+  // z / x grow and shrink the hunk at the reading position, as in the TUI.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
+      const scroller = scrollerRef.current;
+      if (!scroller || (e.key !== "z" && e.key !== "x")) return;
+      if (reshapeHunkAtTop(scroller, e.key === "z" ? "expand" : "shrink")) e.preventDefault();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // The file before (-1) or after (1) the selected one, skipping directory
+  // rows and hidden files; null at either end.
+  const neighbor = useCallback(
+    (direction: 1 | -1): Selection | null => {
+      const isHidden = hideViewed ? isReviewedByIndex : undefined;
+      let current = selection;
+      for (;;) {
+        const next = stepSelection(tree, current, direction, {
+          collapsed: new Set(),
+          isHidden,
+        });
+        if (selectionKey(next) === selectionKey(current)) return null;
+        if (next.kind === "file") return next;
+        current = next;
+      }
+    },
+    [tree, selection, hideViewed, isReviewedByIndex],
+  );
+  const prevFile = phone ? neighbor(-1) : null;
+  const nextFile = phone ? neighbor(1) : null;
 
   const handleSelect = useCallback(
     (next: Selection) => {
@@ -220,15 +268,26 @@ export function ReviewView({
                   onToggleReviewed={() => handleToggleReviewed(i)}
                   hidden={!shown.has(i)}
                   solo={selection.kind === "file"}
+                  nav={
+                    phone
+                      ? {
+                          onPrev: prevFile ? () => setSelection(prevFile) : undefined,
+                          onNext: nextFile ? () => setSelection(nextFile) : undefined,
+                        }
+                      : undefined
+                  }
                 />
               ))}
             </div>
           </div>
-          <DiffScrollbar
-            scrollerRef={scrollerRef}
-            contentRef={contentRef}
-            selectionKey={key}
-          />
+          {!phone && (
+            <DiffScrollbar
+              scrollerRef={scrollerRef}
+              contentRef={contentRef}
+              selectionKey={key}
+            />
+          )}
+          {phone && <MobileBar scrollerRef={scrollerRef} onFiles={onFiles} />}
         </div>
       </div>
     </LazyObserverProvider>

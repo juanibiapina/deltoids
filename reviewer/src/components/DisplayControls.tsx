@@ -1,4 +1,4 @@
-import type { Prefs } from "../hooks/usePrefs";
+import { LAYOUT_CHOICES, type LayoutChoice, type Prefs } from "../hooks/usePrefs";
 import { SYNTAX_THEMES } from "../core/themes";
 
 interface DisplayControlsProps {
@@ -80,6 +80,27 @@ export function DisplayControls({
     </select>
   );
 
+  const layoutNames: Record<LayoutChoice, string> = {
+    auto: "Auto",
+    phone: "Phone",
+    desktop: "Desktop",
+  };
+  const layoutSelect = (
+    <select
+      className="tool layout-select"
+      aria-label="Layout"
+      title="Layout"
+      value={prefs.layoutChoice}
+      onChange={(e) => prefs.setLayoutChoice(e.target.value as LayoutChoice)}
+    >
+      {LAYOUT_CHOICES.map((choice) => (
+        <option key={choice} value={choice}>
+          {menu ? layoutNames[choice] : `${layoutNames[choice]} layout`}
+        </option>
+      ))}
+    </select>
+  );
+
   return (
     <>
       <div className={menu ? "settings-row" : "tool-group"}>
@@ -114,6 +135,7 @@ export function DisplayControls({
       </div>
       {menu && wrap("Text size", sizeGroup)}
       {wrap("Syntax theme", themeSelect)}
+      {wrap("Layout", layoutSelect)}
       <div className={menu ? "settings-row" : "tool-group"}>
         <button
           type="button"

@@ -52,6 +52,7 @@ export async function openReview(review: OpenReview): Promise<RenderSession> {
     render: (index, theme, urgency) => remote.render(index, theme, urgency),
     renderContext: (index, start, end, theme) =>
       remote.renderContext(index, start, end, theme),
+    reshape: (index, op, hunk, theme) => remote.reshape(index, op, hunk, theme),
     prioritize: (indices) => void remote.prioritize(indices),
     dispose: () => {
       void remote.dispose().finally(() => remote[Comlink.releaseProxy]());

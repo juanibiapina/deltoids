@@ -1,6 +1,6 @@
 import PQueue from "p-queue";
-import { renderSides, type Sides } from "./github";
-import type { Engine } from "./engine";
+import type { Sides } from "./github";
+import type { DiffShape, Engine } from "./engine";
 import { createSidesLoader, type SidesSource } from "./sidesLoader";
 
 export type Rendered =
@@ -27,6 +27,15 @@ export interface RenderSession {
     end: number,
     theme: string,
   ): Promise<string>;
+  // Grow ("expand") or shrink hunk `hunk` of file `index` and render the
+  // result in `theme`. Resolves to null when the file has not rendered yet or
+  // the hunk cannot change. Later renders of the file keep the new shape.
+  reshape(
+    index: number,
+    op: "expand" | "shrink",
+    hunk: number,
+    theme: string,
+  ): Promise<Rendered | null>;
   prioritize(indices: number[]): void;
   dispose(): void;
 }
@@ -54,7 +63,19 @@ export function createRenderSession(
   const loader = createSidesLoader(source, order);
   const queue = new PQueue({ concurrency: 1 });
   const jobs = new Map<number, Job>();
+  const shapes = new Map<number, DiffShape>();
   let nextId = 0;
+
+  const shapeFor = (engine: Engine, index: number, sides: Sides): DiffShape => {
+    let shape = shapes.get(index);
+    if (!shape) {
+      shape = engine.openShape(sides);
+      shapes.set(index, shape);
+    }
+    return shape;
+  };
+  const rendered = (html: string): Rendered =>
+    html ? { kind: "html", html } : { kind: "empty" };
 
   // Wasm calls are synchronous. Yielding a macrotask after each one lets
   // messages that arrived meanwhile (a click's "now" render) enqueue before
@@ -95,8 +116,7 @@ export function createRenderSession(
       return run(
         (ready): Rendered => {
           if (cancelled) throw new Error("superseded");
-          const html = renderSides(ready, fetched, theme);
-          return html ? { kind: "html", html } : { kind: "empty" };
+          return rendered(shapeFor(ready, index, fetched).render(theme));
         },
         isUrgent ? NOW : BACKGROUND,
         taskId,
@@ -147,6 +167,23 @@ export function createRenderSession(
         CONTEXT,
       );
     },
+    reshape(index, op, hunk, theme) {
+      return run((): Rendered | null => {
+        const shape = shapes.get(index);
+        if (!shape || !(op === "expand" ? shape.expand(hunk) : shape.shrink(hunk))) {
+          return null;
+        }
+        const result = rendered(shape.render(theme));
+        jobs.get(index)?.cancel();
+        jobs.set(index, {
+          theme,
+          result: Promise.resolve(result),
+          promote() {},
+          cancel() {},
+        });
+        return result;
+      }, NOW);
+    },
     prioritize(indices) {
       loader.prioritize(indices);
     },
@@ -155,6 +192,8 @@ export function createRenderSession(
       queue.clear();
       jobs.forEach((job) => job.cancel());
       jobs.clear();
+      shapes.forEach((shape) => shape.close());
+      shapes.clear();
     },
   };
 }

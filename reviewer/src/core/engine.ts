@@ -1,3 +1,4 @@
+import type { Sides } from "./github";
 import {
   WASI,
   OpenFile,
@@ -10,18 +11,6 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface Engine {
-  // Compute the deltoids diff HTML body from full before/after content.
-  // `theme` is a registry theme name; "" selects the default.
-  renderFile(before: string, after: string, path: string, theme: string): string;
-  // Compute the diff HTML from after content plus a unified patch, letting the
-  // engine reconstruct the before side (one fewer GitHub request). `theme` is
-  // a registry theme name; "" selects the default.
-  renderFromPatch(
-    after: string,
-    patch: string,
-    path: string,
-    theme: string,
-  ): string;
   // Render new-file lines start..=end (1-based, inclusive) of `after` as
   // highlighted context rows, revealing the lines a `.gap` divider skips.
   renderContext(
@@ -31,15 +20,41 @@ export interface Engine {
     end: number,
     theme: string,
   ): string;
+  // Keep one file's diff alive so its hunks can grow and shrink context.
+  openShape(sides: Sides): DiffShape;
+}
+
+// One file's diff with its current context shape. The engine owns the diff;
+// a trap that replaces the engine instance reopens it and replays the steps,
+// so a shape stays usable.
+export interface DiffShape {
+  render(theme: string): string;
+  // Grow hunk `hunk` one scope level. False when it already shows the file.
+  expand(hunk: number): boolean;
+  // Undo the latest growth that reached hunk `hunk`. False when none did.
+  shrink(hunk: number): boolean;
+  close(): void;
+}
+
+interface Bound {
+  renderContext: Engine["renderContext"];
+  open(sides: Sides): number;
+  render(id: number, theme: string): string;
+  reshape(op: "expand" | "shrink", id: number, hunk: number): boolean;
+  close(id: number): void;
 }
 
 interface EngineExports {
   memory: WebAssembly.Memory;
   alloc(len: number): number;
   dealloc(ptr: number, len: number): void;
-  render_file(...args: number[]): bigint;
-  render_from_patch(...args: number[]): bigint;
   render_context(...args: number[]): bigint;
+  session_open(...args: number[]): number;
+  session_open_patch(...args: number[]): number;
+  session_render(id: number, ...theme: number[]): bigint;
+  session_expand(id: number, hunk: number): number;
+  session_shrink(id: number, hunk: number): number;
+  session_close(id: number): void;
 }
 
 // Compile the wasm module once. `fetch` reuses the `index.html` preload, so
@@ -69,23 +84,52 @@ export async function instantiateEngine(
   module: WebAssembly.Module,
 ): Promise<Engine> {
   let current = bind(module);
-  const call = <T>(work: (engine: Engine) => T): T => {
+  let generation = 0;
+  const call = <T>(work: (bound: Bound) => T): T => {
     try {
       return work(current);
     } catch (err) {
       if (!(err instanceof WebAssembly.RuntimeError)) throw err;
       current = bind(module);
+      generation++;
       throw new Error(`diff engine crashed (${err.message})`);
     }
   };
+  const openShape = (sides: Sides): DiffShape => {
+    const steps: ["expand" | "shrink", number][] = [];
+    let id = 0;
+    let openedIn = -1;
+    const ensure = (bound: Bound): number => {
+      if (openedIn !== generation) {
+        id = bound.open(sides);
+        openedIn = generation;
+        for (const [op, hunk] of steps) bound.reshape(op, id, hunk);
+      }
+      return id;
+    };
+    const reshape = (op: "expand" | "shrink", hunk: number) =>
+      call((bound) => {
+        const changed = bound.reshape(op, ensure(bound), hunk);
+        if (changed) steps.push([op, hunk]);
+        return changed;
+      });
+    return {
+      render: (theme) => call((bound) => bound.render(ensure(bound), theme)),
+      expand: (hunk) => reshape("expand", hunk),
+      shrink: (hunk) => reshape("shrink", hunk),
+      close: () => {
+        if (openedIn === generation) current.close(id);
+        openedIn = -1;
+      },
+    };
+  };
   return {
-    renderFile: (...args) => call((engine) => engine.renderFile(...args)),
-    renderFromPatch: (...args) => call((engine) => engine.renderFromPatch(...args)),
-    renderContext: (...args) => call((engine) => engine.renderContext(...args)),
+    renderContext: (...args) => call((bound) => bound.renderContext(...args)),
+    openShape,
   };
 }
 
-function bind(module: WebAssembly.Module): Engine {
+function bind(module: WebAssembly.Module): Bound {
   const wasi = new WASI(
     [],
     [],
@@ -102,8 +146,8 @@ function bind(module: WebAssembly.Module): Engine {
   const instance = new WebAssembly.Instance(module, importObject);
   wasi.initialize(instance);
 
-  const { memory, alloc, dealloc, render_file, render_from_patch, render_context } =
-    instance.exports as unknown as EngineExports;
+  const exports = instance.exports as unknown as EngineExports;
+  const { memory, alloc, dealloc, render_context } = exports;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -125,30 +169,6 @@ function bind(module: WebAssembly.Module): Engine {
     return html;
   }
 
-  function renderFile(
-    before: string,
-    after: string,
-    path: string,
-    theme: string,
-  ): string {
-    const args = [put(before), put(after), put(path), put(theme)];
-    const html = takeResult(render_file(...args.flat()));
-    for (const [p, l] of args) dealloc(p, l);
-    return html;
-  }
-
-  function renderFromPatch(
-    after: string,
-    patch: string,
-    path: string,
-    theme: string,
-  ): string {
-    const args = [put(after), put(patch), put(path), put(theme)];
-    const html = takeResult(render_from_patch(...args.flat()));
-    for (const [p, l] of args) dealloc(p, l);
-    return html;
-  }
-
   function renderContext(
     after: string,
     path: string,
@@ -164,5 +184,29 @@ function bind(module: WebAssembly.Module): Engine {
     return html;
   }
 
-  return { renderFile, renderFromPatch, renderContext };
+  function withStrings<T>(strings: string[], work: (args: number[]) => T): T {
+    const args = strings.map(put);
+    try {
+      return work(args.flat());
+    } finally {
+      for (const [p, l] of args) dealloc(p, l);
+    }
+  }
+
+  return {
+    renderContext,
+    open: (sides) =>
+      sides.kind === "patch"
+        ? withStrings([sides.after, sides.patch, sides.path], (a) => exports.session_open_patch(...a))
+        : withStrings([sides.before, sides.after, sides.path], (a) => exports.session_open(...a)),
+    render: (id, theme) =>
+      withStrings([theme], (a) => {
+        const packed = exports.session_render(id, ...a);
+        if (packed === 0n) throw new Error(`unknown diff session ${id}`);
+        return takeResult(packed);
+      }),
+    reshape: (op, id, hunk) =>
+      (op === "expand" ? exports.session_expand : exports.session_shrink)(id, hunk >>> 0) === 1,
+    close: (id) => exports.session_close(id),
+  };
 }

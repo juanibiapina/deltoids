@@ -13,7 +13,15 @@ interface FileCardProps {
   onToggleReviewed: () => void;
   hidden?: boolean;
   solo?: boolean;
+  // Previous/next file buttons in the header (phone layout).
+  nav?: { onPrev?: () => void; onNext?: () => void };
 }
+
+const TOOLS_HTML =
+  '<span class="hunk-tools">' +
+  '<button type="button" class="hunk-tool" data-ctx="shrink" aria-label="Less context" title="Less context (x)">−</button>' +
+  '<button type="button" class="hunk-tool" data-ctx="expand" aria-label="More context" title="More context (z)">+</button>' +
+  "</span>";
 
 type Body =
   | { kind: "pending" }
@@ -40,6 +48,7 @@ export function FileCard({
   onToggleReviewed,
   hidden = false,
   solo = false,
+  nav,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLDivElement>(null);
@@ -99,11 +108,28 @@ export function FileCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syntaxTheme, hidden, seen]);
 
-  // Record a clicked gap divider so the expansion effect reveals it.
+  // Grow or shrink one hunk's context in the engine and show the result.
+  const reshape = (op: "expand" | "shrink", hunk: number) => {
+    const theme = syntaxTheme;
+    void session.reshape(index, op, hunk, theme).then((rendered) => {
+      if (!rendered) return;
+      shownTheme.current = theme;
+      setBody(bodyFor(rendered, theme));
+    });
+  };
+
+  // A hunk tool grows or shrinks its hunk; a gap divider is recorded so the
+  // expansion effect reveals it.
   const onDiffClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    const gap = (event.target as HTMLElement).closest?.(".gap") as
-      | HTMLElement
-      | null;
+    const target = event.target as HTMLElement;
+    const tool = target.closest?.("[data-ctx]") as HTMLElement | null;
+    if (tool) {
+      const hunk = Number(tool.closest<HTMLElement>(".hunk")?.dataset.hunk);
+      const op = tool.dataset.ctx;
+      if (Number.isFinite(hunk) && (op === "expand" || op === "shrink")) reshape(op, hunk);
+      return;
+    }
+    const gap = target.closest?.(".gap") as HTMLElement | null;
     if (!gap) return;
     const start = Number(gap.dataset.gapNewStart);
     if (!Number.isFinite(start)) return;
@@ -123,6 +149,9 @@ export function FileCard({
   useEffect(() => {
     const root = diffRef.current;
     if (!root || body.kind !== "html") return;
+    root
+      .querySelectorAll<HTMLElement>(".hunk > .breadcrumb, .hunk > .lineno")
+      .forEach((header) => header.insertAdjacentHTML("afterbegin", TOOLS_HTML));
     root.querySelectorAll<HTMLElement>(".gap").forEach((gap) => {
       const start = Number(gap.dataset.gapNewStart);
       const end = Number(gap.dataset.gapNewEnd);
@@ -154,7 +183,29 @@ export function FileCard({
   return (
     <section className={className} id={`file-${index}`} ref={ref} hidden={hidden}>
       <div className="file-head">
+        {nav && (
+          <button
+            type="button"
+            className="tool file-nav"
+            aria-label="Previous file"
+            disabled={!nav.onPrev}
+            onClick={nav.onPrev}
+          >
+            ‹
+          </button>
+        )}
         <span className="path">{file.filename}</span>
+        {nav && (
+          <button
+            type="button"
+            className="tool file-nav"
+            aria-label="Next file"
+            disabled={!nav.onNext}
+            onClick={nav.onNext}
+          >
+            ›
+          </button>
+        )}
         <label className="review-toggle">
           <input
             type="checkbox"

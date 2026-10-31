@@ -95,6 +95,14 @@ jobs:
         working-directory: reviewer
         run: npm run typecheck
 
+      # Real-layout checks (scroll anchoring) in Chromium and WebKit, which
+      # has no native scroll anchoring.
+      - name: Browser tests
+        working-directory: reviewer
+        run: |
+          npx playwright install --with-deps chromium webkit
+          npx playwright test
+
       # PRs cannot read ZeroVault; their build is never deployed.
       - name: Build (PR)
         if: github.ref != 'refs/heads/main'

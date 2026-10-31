@@ -26,6 +26,9 @@ npm run dev:api    # build + Worker on http://localhost:8787, with sign-in
 npm run build      # tsc --noEmit && vite build -> reviewer/dist/ (needs the key)
 npm run preview    # serve dist (no Worker)
 npm test           # vitest run (app + worker/)
+npm run e2e        # Playwright in Chromium and WebKit against `vite --mode e2e`
+                   # (Clerk stubbed signed out, GitHub served from test/e2e/fixture.ts);
+                   # needs the engine in public/
 npm run typecheck  # tsc for the app and for worker/
 npx wrangler deploy --dry-run --outdir=../worker-dist  # bundle check, as CI
 ```
@@ -148,6 +151,11 @@ ZeroVault token and runs `wrangler deploy`. The repo holds no Cloudflare secret.
   Otherwise each module downloads twice.
 - `openReview` awaits `loadReviewCore()` before `buildTree`, so the review
   view and its children can call the core synchronously.
+- Scrolling stays pixel-still: `core/scrollAnchor.ts` keeps the top visible
+  row in place when content above it changes size, and `.pane-scroll` sets
+  `overflow-anchor: none` so native anchoring does not correct twice. Diff
+  line heights are whole pixels (`--diff-lh`). `test/e2e/scroll.e2e.ts`
+  checks lazy cards, gap reveals, and theme switches.
 - The diff selection lives in `ReviewView` state. The tree library's
   controlled `expandedIds` was rejected: collapsing a directory also folds
   its descendants, out of sync with the prop.

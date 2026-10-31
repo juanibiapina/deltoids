@@ -19,6 +19,7 @@ import {
 } from "../core/filetree";
 import { createWheelStepper } from "../core/wheel";
 import { createSwipeTracker, type SwipeEdges } from "../core/swipe";
+import { attachScrollAnchor } from "../core/scrollAnchor";
 import { useReviewed } from "../hooks/useReviewed";
 import { useMediaQuery, WIDE_QUERY } from "../hooks/useMediaQuery";
 import { LazyObserverProvider } from "./LazyObserver";
@@ -94,6 +95,13 @@ export function ReviewView({
   useEffect(() => {
     if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
   }, [key]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return;
+    return attachScrollAnchor(scroller, content);
+  }, []);
 
   const isReviewedByIndex = useCallback(
     (index: number) => isReviewed(files[index]),

@@ -126,6 +126,9 @@ html.reviewing .layout {
   margin-right: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* core/scrollAnchor.ts anchors the text in every browser (Safari has no
+     native anchoring); native anchoring would correct a second time. */
+  overflow-anchor: none;
   scrollbar-width: none;
 }
 .pane-scroll::-webkit-scrollbar {
@@ -829,7 +832,8 @@ body.drawer-open .scrim {
 .diff {
   font-family: var(--mono);
   font-size: var(--diff-font, 13px);
-  line-height: 1.5;
+  /* Whole pixels, so rows never sit on fractional offsets. */
+  line-height: var(--diff-lh, 20px);
   tab-size: 4;
 }
 
@@ -837,12 +841,15 @@ body.drawer-open .scrim {
 /* Text-size cycle: app.js sets data-size on <main>. */
 main[data-size="s"] {
   --diff-font: 11.5px;
+  --diff-lh: 17px;
 }
 main[data-size="m"] {
   --diff-font: 13px;
+  --diff-lh: 20px;
 }
 main[data-size="l"] {
   --diff-font: 15px;
+  --diff-lh: 22px;
 }
 
 .hunk {

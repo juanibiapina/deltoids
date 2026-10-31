@@ -10,3 +10,7 @@ dist/
 # Secrets come from ZeroVault; never a real file
 .dev.vars
 *.local
+
+# Playwright output
+test-results/
+playwright-report/

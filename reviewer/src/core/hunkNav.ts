@@ -1,48 +1,26 @@
-// Find hunks relative to the reading position: the phone layout's bottom
-// bar and the desktop z/x keys act on the hunk at the top of the scroller.
+// The desktop z/x keys act on the hunk at the top of the scroller. The key
+// handler finds the hunk; its FileCard listens for RESHAPE_EVENT and asks
+// the engine to grow or shrink it.
 
-function hunks(scroller: HTMLElement): HTMLElement[] {
-  return [...scroller.querySelectorAll<HTMLElement>(".file:not([hidden]) .hunk[data-hunk]")];
+export const RESHAPE_EVENT = "deltoids:reshape";
+
+export interface ReshapeDetail {
+  op: "expand" | "shrink";
+  hunk: number;
 }
 
-// The height a sticky file header covers at the top of the scroller.
-function topInset(scroller: HTMLElement): number {
-  const box = scroller.getBoundingClientRect();
-  for (const head of scroller.querySelectorAll<HTMLElement>(".file:not([hidden]) .file-head")) {
-    if (getComputedStyle(head).position !== "sticky") return 0;
-    const rect = head.getBoundingClientRect();
-    if (rect.bottom > box.top) return rect.bottom - box.top;
-  }
-  return 0;
-}
-
-function readingTop(scroller: HTMLElement): number {
-  return scroller.getBoundingClientRect().top + topInset(scroller);
-}
-
-// The hunk under the reading position, else the first one below it.
+// The hunk under the top edge of the scroller, else the first one below it.
 export function hunkAtTop(scroller: HTMLElement): HTMLElement | null {
-  const top = readingTop(scroller) + 1;
-  return hunks(scroller).find((h) => h.getBoundingClientRect().bottom > top) ?? null;
+  const top = scroller.getBoundingClientRect().top + 1;
+  const hunks = scroller.querySelectorAll<HTMLElement>(".file:not([hidden]) .hunk[data-hunk]");
+  return [...hunks].find((h) => h.getBoundingClientRect().bottom > top) ?? null;
 }
 
-// Scroll the next (1) or previous (-1) hunk's start to the reading position.
-// Returns false at either end.
-export function scrollToHunk(scroller: HTMLElement, direction: 1 | -1): boolean {
-  const top = readingTop(scroller);
-  const all = hunks(scroller);
-  const target =
-    direction === 1
-      ? all.find((h) => h.getBoundingClientRect().top > top + 1)
-      : all.filter((h) => h.getBoundingClientRect().top < top - 1).pop();
-  if (!target) return false;
-  scroller.scrollTop += target.getBoundingClientRect().top - top;
-  return true;
-}
-
-// Grow or shrink the context of the hunk at the reading position.
+// Grow or shrink the context of the hunk at the top of the scroller.
 export function reshapeHunkAtTop(scroller: HTMLElement, op: "expand" | "shrink"): boolean {
-  const button = hunkAtTop(scroller)?.querySelector<HTMLElement>(`[data-ctx="${op}"]`);
-  button?.click();
-  return !!button;
+  const hunk = hunkAtTop(scroller);
+  if (!hunk) return false;
+  const detail: ReshapeDetail = { op, hunk: Number(hunk.dataset.hunk) };
+  hunk.dispatchEvent(new CustomEvent(RESHAPE_EVENT, { detail, bubbles: true }));
+  return true;
 }

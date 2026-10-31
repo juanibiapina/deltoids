@@ -3,6 +3,7 @@ import type { PrFile } from "../core/github";
 import type { RenderSession, Rendered } from "../core/renderSession";
 import { whenIdle } from "../core/idle";
 import { useLazy } from "./LazyObserver";
+import { RESHAPE_EVENT, type ReshapeDetail } from "../core/hunkNav";
 
 interface FileCardProps {
   index: number;
@@ -13,15 +14,24 @@ interface FileCardProps {
   onToggleReviewed: () => void;
   hidden?: boolean;
   solo?: boolean;
-  // Previous/next file buttons in the header (phone layout).
-  nav?: { onPrev?: () => void; onNext?: () => void };
+  // When set, the path opens the file list (phone layout).
+  onOpenFiles?: () => void;
 }
 
-const TOOLS_HTML =
-  '<span class="hunk-tools">' +
-  '<button type="button" class="hunk-tool" data-ctx="shrink" aria-label="Less context" title="Less context (x)">−</button>' +
-  '<button type="button" class="hunk-tool" data-ctx="expand" aria-label="More context" title="More context (z)">+</button>' +
-  "</span>";
+function ChevronDown() {
+  return (
+    <svg className="path-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path
+        d="M4 6l4 4 4-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 type Body =
   | { kind: "pending" }
@@ -48,7 +58,7 @@ export function FileCard({
   onToggleReviewed,
   hidden = false,
   solo = false,
-  nav,
+  onOpenFiles,
 }: FileCardProps) {
   const ref = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLDivElement>(null);
@@ -118,15 +128,29 @@ export function FileCard({
     });
   };
 
-  // A hunk tool grows or shrinks its hunk; a gap divider is recorded so the
-  // expansion effect reveals it.
+  // `z`/`x` reach a hunk as a RESHAPE_EVENT (core/hunkNav.ts).
+  const reshapeRef = useRef(reshape);
+  reshapeRef.current = reshape;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onReshape = (event: Event) => {
+      const { op, hunk } = (event as CustomEvent<ReshapeDetail>).detail;
+      reshapeRef.current(op, hunk);
+    };
+    el.addEventListener(RESHAPE_EVENT, onReshape);
+    return () => el.removeEventListener(RESHAPE_EVENT, onReshape);
+  }, []);
+
+  // A hunk's scope header grows the hunk to its enclosing scope; a gap divider
+  // is recorded so the expansion effect reveals it.
   const onDiffClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    const tool = target.closest?.("[data-ctx]") as HTMLElement | null;
-    if (tool) {
-      const hunk = Number(tool.closest<HTMLElement>(".hunk")?.dataset.hunk);
-      const op = tool.dataset.ctx;
-      if (Number.isFinite(hunk) && (op === "expand" || op === "shrink")) reshape(op, hunk);
+    const header = target.closest?.(".hunk > .breadcrumb, .hunk > .lineno");
+    if (header) {
+      if (window.getSelection()?.toString()) return;
+      const hunk = Number(header.closest<HTMLElement>(".hunk")?.dataset.hunk);
+      if (Number.isFinite(hunk)) reshape("expand", hunk);
       return;
     }
     const gap = target.closest?.(".gap") as HTMLElement | null;
@@ -149,9 +173,6 @@ export function FileCard({
   useEffect(() => {
     const root = diffRef.current;
     if (!root || body.kind !== "html") return;
-    root
-      .querySelectorAll<HTMLElement>(".hunk > .breadcrumb, .hunk > .lineno")
-      .forEach((header) => header.insertAdjacentHTML("afterbegin", TOOLS_HTML));
     root.querySelectorAll<HTMLElement>(".gap").forEach((gap) => {
       const start = Number(gap.dataset.gapNewStart);
       const end = Number(gap.dataset.gapNewEnd);
@@ -183,28 +204,18 @@ export function FileCard({
   return (
     <section className={className} id={`file-${index}`} ref={ref} hidden={hidden}>
       <div className="file-head">
-        {nav && (
+        {onOpenFiles ? (
           <button
             type="button"
-            className="tool file-nav"
-            aria-label="Previous file"
-            disabled={!nav.onPrev}
-            onClick={nav.onPrev}
+            className="path path-button"
+            aria-label={`${file.filename}, show all files`}
+            onClick={onOpenFiles}
           >
-            ‹
+            <span className="path-text">{file.filename}</span>
+            <ChevronDown />
           </button>
-        )}
-        <span className="path">{file.filename}</span>
-        {nav && (
-          <button
-            type="button"
-            className="tool file-nav"
-            aria-label="Next file"
-            disabled={!nav.onNext}
-            onClick={nav.onNext}
-          >
-            ›
-          </button>
+        ) : (
+          <span className="path">{file.filename}</span>
         )}
         <label className="review-toggle">
           <input

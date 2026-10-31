@@ -95,7 +95,7 @@ export function DisplayControls({
     >
       {LAYOUT_CHOICES.map((choice) => (
         <option key={choice} value={choice}>
-          {menu ? layoutNames[choice] : `${layoutNames[choice]} layout`}
+          {layoutNames[choice]}
         </option>
       ))}
     </select>
@@ -135,7 +135,7 @@ export function DisplayControls({
       </div>
       {menu && wrap("Text size", sizeGroup)}
       {wrap("Syntax theme", themeSelect)}
-      {wrap("Layout", layoutSelect)}
+      {menu && wrap("Layout", layoutSelect)}
       <div className={menu ? "settings-row" : "tool-group"}>
         <button
           type="button"

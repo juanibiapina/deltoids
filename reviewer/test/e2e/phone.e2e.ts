@@ -2,64 +2,60 @@ import { expect, test, type Page } from "@playwright/test";
 import { servePullRequest } from "./fixture";
 
 // The phone layout, opened with ?layout=phone so it does not depend on the
-// stored preference.
+// stored preference. A review opens on the file list.
 
-async function open(page: Page): Promise<void> {
+const tree = (page: Page) => page.getByRole("tree", { name: "Changed files" });
+const shownPath = (page: Page) => page.locator(".file:not([hidden]) .path-text");
+
+test.beforeEach(async ({ page }) => {
   await servePullRequest(page);
   await page.goto("/?pr=o/r/1&layout=phone");
-  await expect(page.locator(".file:not([hidden]) .row").first()).toBeVisible({ timeout: 20_000 });
+  await expect(tree(page)).toBeInViewport({ timeout: 20_000 });
+});
+
+async function swipe(page: Page, dx: number): Promise<void> {
+  await page.locator(".pane").evaluate((pane, dx) => {
+    const box = pane.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const touch = (clientX: number) =>
+      new Touch({ identifier: 1, target: pane, clientX, clientY: y });
+    pane.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(x)], changedTouches: [touch(x)] }));
+    pane.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touch(x + dx)] }));
+  }, dx);
 }
 
-const path = (page: Page) => page.locator(".file:not([hidden]) .file-head .path");
-
-test("shows one file with a bottom bar and no sidebar column", async ({ page }) => {
-  await open(page);
-  const bar = page.getByRole("navigation", { name: "Review" });
-  await expect(bar).toBeVisible();
-  for (const button of await bar.getByRole("button").all()) {
-    expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-  }
+test("the file list fills the screen and a pick shows that file", async ({ page }) => {
+  const box = (await page.locator(".sidebar").boundingBox())!;
+  expect(box.y).toBeLessThanOrEqual(1);
+  expect(box.height).toBeGreaterThanOrEqual(page.viewportSize()!.height - 1);
+  await tree(page).getByText("file03.ts").click();
+  await expect(tree(page)).not.toBeInViewport();
+  await expect(shownPath(page)).toHaveText("src/file03.ts");
   await expect(page.locator(".diff-scrollbar")).toHaveCount(0);
-  const tree = page.getByRole("tree", { name: "Changed files" });
-  await expect(tree).not.toBeInViewport();
 });
 
-test("the file list opens as a sheet and picks a file", async ({ page }) => {
-  await open(page);
-  await page.getByRole("button", { name: "Files" }).click();
-  const tree = page.getByRole("tree", { name: "Changed files" });
-  await expect(tree).toBeInViewport();
-  await tree.getByText("file03.ts").click();
-  await expect(path(page)).toHaveText("src/file03.ts");
-  await expect(tree).not.toBeInViewport();
+test("the sticky path reopens the file list", async ({ page }) => {
+  await tree(page).getByText("file00.ts").click();
+  await expect(tree(page)).not.toBeInViewport();
+  await page.getByRole("button", { name: "src/file00.ts, show all files" }).click();
+  await expect(tree(page)).toBeInViewport();
 });
 
-test("the header steps to the next and previous file", async ({ page }) => {
-  await open(page);
-  await expect(path(page)).toHaveText("src/file00.ts");
-  await expect(page.getByRole("button", { name: "Previous file" })).toBeDisabled();
-  await page.getByRole("button", { name: "Next file" }).click();
-  await expect(path(page)).toHaveText("src/file01.ts");
-  await page.getByRole("button", { name: "Previous file" }).click();
-  await expect(path(page)).toHaveText("src/file00.ts");
+test("a sideways swipe moves between files", async ({ page }) => {
+  await tree(page).getByText("file00.ts").click();
+  await expect(page.locator(".file:not([hidden]) .row").first()).toBeVisible({ timeout: 20_000 });
+  await swipe(page, -150);
+  await expect(shownPath(page)).toHaveText("src/file01.ts");
+  await swipe(page, 150);
+  await expect(shownPath(page)).toHaveText("src/file00.ts");
 });
 
-test("the bar jumps between hunks and grows the one at the top", async ({ page }) => {
-  await open(page);
-  const scroller = page.locator(".pane-scroll");
-  const top = () => scroller.evaluate((el) => el.scrollTop);
-  await page.getByRole("button", { name: "Next hunk" }).click();
-  const first = await top();
-  await page.getByRole("button", { name: "Next hunk" }).click();
-  const second = await top();
-  expect(second).toBeGreaterThan(first);
-  await page.getByRole("button", { name: "Previous hunk" }).click();
-  expect(await top()).toBe(first);
-
+test("tapping a hunk's scope header grows it", async ({ page }) => {
+  await tree(page).getByText("file00.ts").click();
   const rows = page.locator(".file:not([hidden]) .row");
+  await expect(rows.first()).toBeVisible({ timeout: 20_000 });
   const before = await rows.count();
-  await page.getByRole("button", { name: "More context" }).click();
+  await page.locator(".file:not([hidden]) .hunk > .lineno, .file:not([hidden]) .hunk > .breadcrumb").first().tap();
   await expect.poll(() => rows.count()).toBeGreaterThan(before);
-  await page.getByRole("button", { name: "Less context" }).click();
-  await expect.poll(() => rows.count()).toBe(before);
 });

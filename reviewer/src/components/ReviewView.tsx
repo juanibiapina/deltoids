@@ -27,7 +27,6 @@ import { LazyObserverProvider } from "./LazyObserver";
 import { FileTree } from "./FileTree";
 import { FileCard } from "./FileCard";
 import { DiffScrollbar } from "./DiffScrollbar";
-import { MobileBar } from "./MobileBar";
 
 export type Layout = "phone" | "desktop";
 
@@ -44,10 +43,9 @@ interface ReviewViewProps {
   hideViewed: boolean;
   layout?: Layout;
   onNavigate: () => void;
-  // Opens the file tree drawer (small screens).
+  // Opens the file tree: the drawer on small screens, the full-height sheet
+  // on the phone layout.
   onShowTree: () => void;
-  // Open the file list (the phone layout's bottom sheet).
-  onFiles?: () => void;
 }
 
 function isTyping(target: EventTarget | null): boolean {
@@ -78,12 +76,11 @@ export function ReviewView({
   layout = "desktop",
   onNavigate,
   onShowTree,
-  onFiles = () => {},
 }: ReviewViewProps) {
   const phone = layout === "phone";
   const { ref, files, session } = data;
   const { isReviewed, toggle } = useReviewed(ref, files);
-  const small = !useMediaQuery(WIDE_QUERY, true);
+  const small = !useMediaQuery(WIDE_QUERY, true) || phone;
 
   const tree = useMemo(
     () => buildTree(files.map((f) => ({ filename: f.filename, status: f.status }))),
@@ -167,27 +164,6 @@ export function ReviewView({
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  // The file before (-1) or after (1) the selected one, skipping directory
-  // rows and hidden files; null at either end.
-  const neighbor = useCallback(
-    (direction: 1 | -1): Selection | null => {
-      const isHidden = hideViewed ? isReviewedByIndex : undefined;
-      let current = selection;
-      for (;;) {
-        const next = stepSelection(tree, current, direction, {
-          collapsed: new Set(),
-          isHidden,
-        });
-        if (selectionKey(next) === selectionKey(current)) return null;
-        if (next.kind === "file") return next;
-        current = next;
-      }
-    },
-    [tree, selection, hideViewed, isReviewedByIndex],
-  );
-  const prevFile = phone ? neighbor(-1) : null;
-  const nextFile = phone ? neighbor(1) : null;
-
   const handleSelect = useCallback(
     (next: Selection) => {
       onNavigate();
@@ -268,14 +244,7 @@ export function ReviewView({
                   onToggleReviewed={() => handleToggleReviewed(i)}
                   hidden={!shown.has(i)}
                   solo={selection.kind === "file"}
-                  nav={
-                    phone
-                      ? {
-                          onPrev: prevFile ? () => setSelection(prevFile) : undefined,
-                          onNext: nextFile ? () => setSelection(nextFile) : undefined,
-                        }
-                      : undefined
-                  }
+                  onOpenFiles={phone ? onShowTree : undefined}
                 />
               ))}
             </div>
@@ -287,7 +256,6 @@ export function ReviewView({
               selectionKey={key}
             />
           )}
-          {phone && <MobileBar scrollerRef={scrollerRef} onFiles={onFiles} />}
         </div>
       </div>
     </LazyObserverProvider>

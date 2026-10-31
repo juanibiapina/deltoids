@@ -1209,45 +1209,32 @@ main.hide-viewed .file.reviewed:not(.solo) {
 }
 
 /* --------------------------------------------------------------------- */
-/* Hunk tools: grow / shrink one hunk's context (z / x)                  */
+/* Hunk scope headers grow their hunk to the enclosing scope on click,   */
+/* like a gap divider reveals the lines it stands for.                   */
 /* --------------------------------------------------------------------- */
 
-.hunk-tools {
-  float: right;
-  display: inline-flex;
-  gap: 2px;
-  margin-left: 1ch;
-  opacity: 0.45;
-}
-.breadcrumb:hover .hunk-tools,
-.lineno:hover .hunk-tools,
-.hunk-tools:focus-within {
-  opacity: 1;
-}
-.hunk-tool {
-  min-width: 2.2em;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-raised);
-  color: var(--text);
-  font: inherit;
-  line-height: inherit;
+.hunk > .breadcrumb,
+.hunk > .lineno {
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.12s ease-out, color 0.12s ease-out;
 }
-.hunk-tool:hover {
+.hunk > .breadcrumb:hover,
+.hunk > .lineno:hover,
+.hunk > .breadcrumb:active,
+.hunk > .lineno:active {
+  color: var(--text);
   background: var(--bg);
 }
 
 /* --------------------------------------------------------------------- */
-/* Phone layout (html[data-layout="phone"]): one column, sticky file      */
-/* header, file list in a bottom sheet, actions in a bottom bar.          */
-/* Last in the file so it wins over the width breakpoints when chosen on  */
-/* a wide screen with ?layout=phone.                                      */
+/* Phone layout (html[data-layout="phone"]): every file in one scroll,   */
+/* each with a sticky header whose path opens the file list in a sheet.  */
+/* Last in the file so it wins over the width breakpoints when chosen on */
+/* a wide screen with ?layout=phone.                                     */
 /* --------------------------------------------------------------------- */
 
-html[data-layout="phone"] #files-btn,
-html[data-layout="phone"] .hunk-tools {
+html[data-layout="phone"] #files-btn {
   display: none;
 }
 html[data-layout="phone"] .layout {
@@ -1257,59 +1244,94 @@ html[data-layout="phone"].reviewing main {
   padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 html[data-layout="phone"] .pane {
+  border: none;
   border-radius: 0;
-  border-left: none;
-  border-right: none;
 }
 html[data-layout="phone"] .pane-scroll {
   margin-right: 0;
-  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
 }
+
 html[data-layout="phone"] .file-head {
   position: sticky;
   top: 0;
   z-index: 2;
-  min-height: 48px;
-  padding: 4px 6px;
+  gap: 4px;
+  padding: 0 14px 0 4px;
   background: var(--bg-raised);
 }
-html[data-layout="phone"] .file-head .path {
+.path-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.path-button:active {
+  background: var(--bg-row);
+}
+.path-button:focus-visible {
+  outline: 2px solid var(--added-gutter);
+  outline-offset: -2px;
+}
+.path-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  overflow-wrap: normal;
+  /* Keep the file name, the end of the path, in view. */
   direction: rtl;
-  text-align: left;
+  unicode-bidi: plaintext;
+}
+.path-chevron {
+  flex: none;
+  color: var(--muted);
 }
 html[data-layout="phone"] .review-toggle {
   min-height: 44px;
-  margin-left: 0;
-}
-.file-nav {
-  min-width: 44px;
-  min-height: 44px;
-  font-size: 20px;
 }
 
+/* The file list: a full-height sheet that slides up; drag it down to close
+   (core/sheetDrag.ts). */
 html[data-layout="phone"] .sidebar {
   position: fixed;
-  top: auto;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   z-index: 40;
   width: auto;
-  height: min(72dvh, 560px);
+  height: auto;
   max-height: none;
-  padding: 12px 10px calc(env(safe-area-inset-bottom) + 12px);
+  padding: calc(env(safe-area-inset-top) + 28px) max(8px, env(safe-area-inset-right))
+    calc(env(safe-area-inset-bottom) + 12px) max(8px, env(safe-area-inset-left));
   background: var(--bg-raised);
-  border-right: none;
-  border-top: 1px solid var(--border);
-  border-radius: 14px 14px 0 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overscroll-behavior: contain;
   transform: translateY(100%);
-  transition: transform 0.22s ease;
+  transition: transform 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* The grab handle every phone sheet carries. */
+html[data-layout="phone"] .sidebar::before {
+  content: "";
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 10px);
+  left: 50%;
+  width: 36px;
+  height: 4px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: var(--border);
 }
 html[data-layout="phone"] body.drawer-open .sidebar {
   transform: none;
@@ -1322,29 +1344,6 @@ html[data-layout="phone"] .scrim[hidden] {
 }
 html[data-layout="phone"] .tree-row {
   min-height: 44px;
-}
-
-.mobile-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 30;
-  display: flex;
-  gap: 6px;
-  padding: 6px max(8px, env(safe-area-inset-right))
-    calc(6px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
-  background: var(--bg-raised);
-  border-top: 1px solid var(--border);
-}
-.mobile-bar .tool {
-  flex: 1 1 0;
-  min-height: 48px;
-  font-size: 18px;
-}
-.mobile-bar .tool:first-child {
-  flex: 1.6 1 0;
-  font-size: 15px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -3,6 +3,7 @@ import { fetchPr, fetchFiles } from "./core/github";
 import { parsePrUrl } from "./core/lib";
 import { buildTree, displayOrder } from "./core/filetree";
 import { loadReviewCore } from "./core/reviewCore";
+import { attachSheetDrag } from "./core/sheetDrag";
 import { openReview, setWorkerSignedIn, startReviewWorker } from "./core/reviewClient";
 import type { RenderSession } from "./core/renderSession";
 import { usePrefs } from "./hooks/usePrefs";
@@ -67,6 +68,13 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.layout = layout;
   }, [layout]);
+
+  // On phones the file list is a full-height sheet: drag it down to close.
+  useEffect(() => {
+    if (layout !== "phone" || !drawerOpen) return;
+    const sheet = document.querySelector<HTMLElement>(".sidebar");
+    return sheet ? attachSheetDrag(sheet, closeDrawer) : undefined;
+  }, [layout, drawerOpen, closeDrawer]);
 
   // Reflect the theme choice on <html> so the CSS palette switches.
   useEffect(() => {
@@ -214,7 +222,6 @@ export function App() {
             layout={layout}
             onNavigate={closeDrawer}
             onShowTree={openDrawer}
-            onFiles={() => setDrawerOpen((v) => !v)}
           />
         )}
       </main>

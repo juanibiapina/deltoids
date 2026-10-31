@@ -8,7 +8,8 @@ and renders a GitHub pull request as a scope-expanded diff with the
 
 `src/core/` holds the DOM-free logic, `src/components/` and `src/hooks/` the
 React UI, and `worker/` the backend. `public/deltoids_wasm.wasm` is the
-engine, a gitignored build product.
+engine and `public/deltoids_review.wasm` the shared review core
+(`crates/deltoids-review`), both gitignored build products.
 
 ## Dev / build / test
 
@@ -18,6 +19,8 @@ npm install
 # Build the engine once (needs wasi-sdk; see crates/deltoids-wasm/AGENTS.md):
 DEST="$PWD/public/deltoids_wasm.wasm" \
   WASI_SDK=/path/to/wasi-sdk ../crates/deltoids-wasm/build-wasm.sh
+npm run core       # build the review core (needs the wasm32-unknown-unknown target);
+                   # dev, dev:api, build, and test run it first
 npm run dev        # http://localhost:5173 (dev Clerk key from ZeroVault)
 npm run dev:api    # build + Worker on http://localhost:8787, with sign-in
 npm run build      # tsc --noEmit && vite build -> reviewer/dist/ (needs the key)
@@ -139,9 +142,12 @@ ZeroVault token and runs `wrangler deploy`. The repo holds no Cloudflare secret.
 - A theme switch must not fetch from GitHub again. Fetching (`loadSides`) is
   separate from the pure `renderSides`, and `RenderSession` re-renders from
   the sides it holds.
-- The `index.html` preload of `/deltoids_wasm.wasm` (`as="fetch"` +
-  `crossorigin`) must match the `compileStreaming` request in
-  `core/engine.ts`. Otherwise the engine downloads twice.
+- The `index.html` preloads of `/deltoids_wasm.wasm` and
+  `/deltoids_review.wasm` (`as="fetch"` + `crossorigin`) must match the
+  `compileStreaming` requests in `core/engine.ts` and `core/reviewCore.ts`.
+  Otherwise each module downloads twice.
+- `openReview` awaits `loadReviewCore()` before `buildTree`, so the review
+  view and its children can call the core synchronously.
 - The diff selection lives in `ReviewView` state. The tree library's
   controlled `expandedIds` was rejected: collapsing a directory also folds
   its descendants, out of sync with the prop.

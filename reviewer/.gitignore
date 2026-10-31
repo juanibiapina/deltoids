@@ -4,6 +4,8 @@ dist/
 
 # Built wasm engine (produced by crates/deltoids-wasm/build-wasm.sh)
 /public/deltoids_wasm.wasm
+# Built review core (produced by crates/deltoids-review/build-wasm.sh)
+/public/deltoids_review.wasm
 
 # Secrets come from ZeroVault; never a real file
 .dev.vars

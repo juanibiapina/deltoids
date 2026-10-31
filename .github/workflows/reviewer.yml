@@ -12,6 +12,7 @@ on:
     paths:
       - 'reviewer/**'
       - 'crates/deltoids/**'
+      - 'crates/deltoids-review/**'
       - 'crates/deltoids-wasm/**'
       - '.github/workflows/reviewer.yml'
   pull_request:
@@ -19,6 +20,7 @@ on:
     paths:
       - 'reviewer/**'
       - 'crates/deltoids/**'
+      - 'crates/deltoids-review/**'
       - 'crates/deltoids-wasm/**'
       - '.github/workflows/reviewer.yml'
   workflow_dispatch:
@@ -43,10 +45,12 @@ jobs:
       # The tree-sitter C grammars need a wasi-libc sysroot to compile for wasm,
       # supplied by wasi-sdk. The result is written to reviewer/public/ and then
       # bundled into the Vite build below.
-      - name: Install Rust (wasm32-wasip1)
+      # wasm32-wasip1 for the engine; wasm32-unknown-unknown for the review
+      # core, which `npm test` builds through its `pretest` script.
+      - name: Install Rust (wasm targets)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-wasip1, wasm32-unknown-unknown
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

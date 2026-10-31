@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchPr, fetchFiles } from "./core/github";
 import { parsePrUrl } from "./core/lib";
 import { buildTree, displayOrder } from "./core/filetree";
+import { loadReviewCore } from "./core/reviewCore";
 import { openReview, setWorkerSignedIn, startReviewWorker } from "./core/reviewClient";
 import type { RenderSession } from "./core/renderSession";
 import { usePrefs } from "./hooks/usePrefs";
@@ -96,6 +97,7 @@ export function App() {
       const [pr, files] = await Promise.all([
         fetchPr(ref, viaWorker),
         fetchFiles(ref, viaWorker),
+        loadReviewCore(),
       ]);
       if (id !== requestId.current) return;
       const order = displayOrder(

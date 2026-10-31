@@ -518,6 +518,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "deltoids",
+ "deltoids-review",
  "git2",
  "globset",
  "jiff",
@@ -537,6 +538,10 @@ dependencies = [
  "ureq",
  "url",
 ]
+
+[[package]]
+name = "deltoids-review"
+version = "0.18.0"
 
 [[package]]
 name = "deltoids-wasm"

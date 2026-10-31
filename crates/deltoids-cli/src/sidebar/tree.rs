@@ -1,5 +1,7 @@
-//! Tree-building axis: turn the flat file list into a sorted, collapsed
-//! path tree and walk it into renderable [`Row`]s.
+//! Tree-building axis: the sidebar's rows, built by the shared
+//! [`deltoids_review::tree`].
+
+use deltoids_review::tree::{self, TreeRow};
 
 use super::Root;
 use super::status::{SidebarFile, display_path};
@@ -29,124 +31,26 @@ pub(super) enum Row {
     },
 }
 
-/// Internal tree node used during construction. Collapsed into [`Row`]s
-/// during a depth-first walk.
-#[derive(Debug)]
-struct Node {
-    /// Directory segment (or file name for leaves). Empty at the root.
-    name: String,
-    /// `Some(file_index)` when this node is a leaf; `None` for directories.
-    file_index: Option<usize>,
-    /// Children sorted by name (directories and files interleaved).
-    children: Vec<Node>,
-}
-
-impl Node {
-    fn new_dir(name: String) -> Self {
-        Self {
-            name,
-            file_index: None,
-            children: Vec::new(),
-        }
-    }
-}
-
-/// Build a tree from the file paths, then walk it to produce [`Row`]s.
-///
-/// Tree building rule (matches lazygit's default `mixed` order):
-///
-/// 1. Split each file's display path on `/`; insert the leaf as a child
-///    of the deepest directory.
-/// 2. Sort each directory's children alphabetically by name, with
-///    directories and files interleaved (no dir-vs-file tiebreak).
-/// 3. Collapse single-child directory chains: if a directory has
-///    exactly one child and that child is a directory, fold the child's
-///    name into the parent's label and continue collapsing.
-///
+/// Build the sidebar rows for `files` with [`deltoids_review::tree::rows`].
 /// Files whose `hidden[file_index]` is `true` are left out, and so are
 /// directories left without files; row file indices stay those of `files`.
 pub(super) fn build_rows(files: &[SidebarFile<'_>], hidden: &[bool]) -> Vec<Row> {
-    let mut root = Node::new_dir(String::new());
-
-    for (file_index, file) in files.iter().enumerate() {
-        if hidden.get(file_index).copied().unwrap_or(false) {
-            continue;
-        }
-        let path = display_path(file.file);
-        insert_path(&mut root, path, file_index);
-    }
-
-    sort_tree(&mut root);
-
-    let mut rows = Vec::new();
-    walk(&root, 0, &mut rows);
-    rows
-}
-
-fn insert_path(root: &mut Node, path: &str, file_index: usize) {
-    let mut current = root;
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let Some((leaf, dirs)) = segments.split_last() else {
-        return;
-    };
-    for segment in dirs {
-        let position = current
-            .children
-            .iter()
-            .position(|child| child.file_index.is_none() && child.name == *segment);
-        let index = match position {
-            Some(idx) => idx,
-            None => {
-                current.children.push(Node::new_dir(segment.to_string()));
-                current.children.len() - 1
-            }
-        };
-        current = &mut current.children[index];
-    }
-    current.children.push(Node {
-        name: leaf.to_string(),
-        file_index: Some(file_index),
-        children: Vec::new(),
-    });
-}
-
-fn sort_tree(node: &mut Node) {
-    node.children.sort_by(|a, b| a.name.cmp(&b.name));
-    for child in &mut node.children {
-        sort_tree(child);
-    }
-}
-
-fn walk(node: &Node, depth: usize, out: &mut Vec<Row>) {
-    // Root node: emit children directly (no header for the empty root).
-    if node.name.is_empty() && node.file_index.is_none() {
-        for child in &node.children {
-            walk(child, depth, out);
-        }
-        return;
-    }
-
-    if let Some(file_index) = node.file_index {
-        out.push(Row::File {
-            file_index,
-            name: node.name.clone(),
-            depth,
-        });
-        return;
-    }
-
-    // Directory: collapse single-child directory chains into a combined label.
-    let mut label = format!("{}/", node.name);
-    let mut current = node;
-    while current.children.len() == 1 && current.children[0].file_index.is_none() {
-        current = &current.children[0];
-        label.push_str(&current.name);
-        label.push('/');
-    }
-    out.push(Row::Dir { label, depth });
-    for child in &current.children {
-        walk(child, depth + 1, out);
-    }
+    let shown = files
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !hidden.get(*index).copied().unwrap_or(false))
+        .map(|(index, file)| (index, display_path(file.file)));
+    tree::rows(shown)
+        .into_iter()
+        .map(|row| match row {
+            TreeRow::Dir { label, depth } => Row::Dir { label, depth },
+            TreeRow::File { index, name, depth } => Row::File {
+                file_index: index,
+                name,
+                depth,
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

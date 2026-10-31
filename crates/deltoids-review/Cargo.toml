@@ -1,0 +1,17 @@
+[package]
+name = "deltoids-review"
+version.workspace = true
+edition.workspace = true
+description = "Review logic shared by the deltoids TUI and the browser PR reviewer"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+# `rlib` for the TUI; `cdylib` for the browser module built by
+# `build-wasm.sh`.
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[lints]
+workspace = true

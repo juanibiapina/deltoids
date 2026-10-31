@@ -18,10 +18,17 @@ async function swipe(page: Page, dx: number): Promise<void> {
     const box = pane.getBoundingClientRect();
     const x = box.left + box.width / 2;
     const y = box.top + box.height / 2;
-    const touch = (clientX: number) =>
-      new Touch({ identifier: 1, target: pane, clientX, clientY: y });
-    pane.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(x)], changedTouches: [touch(x)] }));
-    pane.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [], changedTouches: [touch(x + dx)] }));
+    // WebKit has no Touch constructor, so plain events carry the touch lists
+    // React reads.
+    const send = (type: string, touches: object[], changed: object[]) => {
+      const event = new Event(type, { bubbles: true });
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: changed });
+      pane.dispatchEvent(event);
+    };
+    const at = (clientX: number) => ({ identifier: 1, target: pane, clientX, clientY: y });
+    send("touchstart", [at(x)], [at(x)]);
+    send("touchend", [], [at(x + dx)]);
   }, dx);
 }
 

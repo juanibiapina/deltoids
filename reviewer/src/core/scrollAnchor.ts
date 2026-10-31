@@ -4,13 +4,16 @@
 // (`overflow-anchor`), but Safari does not, so the scroller turns native
 // anchoring off and uses this everywhere.
 //
-// The anchor is the first row-level element at the top edge of the
+// The anchor is the first row-level element at or below the top edge of the
 // scroller, remembered with its card and a key (`kind + line number`) that
-// survives the card's HTML being replaced. A ResizeObserver on the content
+// survives the card's HTML being replaced. A card still loading has no such
+// element, so the search moves down the viewport past it: its growth then
+// shifts the anchor below, and the correction cancels it. A ResizeObserver on the content
 // fires after layout and before paint, so the correction lands in the same
 // frame as the change.
 
 const STABLE = ".row, .gap, .breadcrumb, .lineno, .file-head, .file-rename, .notice";
+const SCAN_STEP_PX = 16;
 
 interface Anchor {
   el: HTMLElement;
@@ -37,13 +40,21 @@ export function attachScrollAnchor(scroller: HTMLElement, content: HTMLElement):
   let anchor: Anchor | null = null;
   const top = () => scroller.getBoundingClientRect().top;
 
-  const pick = () => {
-    const rect = scroller.getBoundingClientRect();
-    const hits = document.elementsFromPoint(rect.left + rect.width / 3, rect.top + 1);
-    for (const hit of hits) {
+  const stableAt = (x: number, y: number): HTMLElement | null => {
+    for (const hit of document.elementsFromPoint(x, y)) {
       if (!scroller.contains(hit)) continue;
       const el = (hit as HTMLElement).closest<HTMLElement>(STABLE);
-      if (!el || getComputedStyle(el).position === "sticky") continue;
+      if (el && getComputedStyle(el).position !== "sticky") return el;
+    }
+    return null;
+  };
+
+  const pick = () => {
+    const rect = scroller.getBoundingClientRect();
+    const x = rect.left + rect.width / 3;
+    for (let y = rect.top + 1; y < rect.bottom; y += SCAN_STEP_PX) {
+      const el = stableAt(x, y);
+      if (!el) continue;
       const card = el.closest<HTMLElement>(".file");
       anchor = {
         el,

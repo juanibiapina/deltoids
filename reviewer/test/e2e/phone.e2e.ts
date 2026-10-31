@@ -26,9 +26,9 @@ async function swipe(page: Page, dx: number): Promise<void> {
 }
 
 test("the file list fills the screen and a pick shows that file", async ({ page }) => {
-  const box = (await page.locator(".sidebar").boundingBox())!;
-  expect(box.y).toBeLessThanOrEqual(1);
-  expect(box.height).toBeGreaterThanOrEqual(page.viewportSize()!.height - 1);
+  const sheet = page.locator(".sidebar");
+  await expect.poll(async () => (await sheet.boundingBox())!.y).toBeLessThanOrEqual(0.5);
+  expect((await sheet.boundingBox())!.height).toBeGreaterThanOrEqual(page.viewportSize()!.height - 1);
   await tree(page).getByText("file03.ts").click();
   await expect(tree(page)).not.toBeInViewport();
   await expect(shownPath(page)).toHaveText("src/file03.ts");

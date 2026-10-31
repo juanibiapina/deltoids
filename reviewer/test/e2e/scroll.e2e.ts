@@ -14,20 +14,23 @@ async function openAllFiles(page: Page): Promise<void> {
   await expect(page.locator(".file:not([hidden]) .row").first()).toBeVisible({ timeout: 20_000 });
 }
 
-// The element at the top edge of the scroller, tagged so it can be found
-// again, and its distance from that edge.
+// The first row or file header at or below the top edge of the scroller (a
+// card still loading has neither, so the search moves past it), tagged so it
+// can be found again, and its distance from that edge.
 async function markTop(page: Page): Promise<number> {
   return page.evaluate((selector) => {
     const scroller = document.querySelector<HTMLElement>(selector)!;
     const box = scroller.getBoundingClientRect();
-    for (const el of document.elementsFromPoint(box.left + box.width / 3, box.top + 1)) {
-      const row = el.closest<HTMLElement>(".row, .file-head");
-      if (row && scroller.contains(row)) {
-        row.dataset.mark = "top";
-        return row.getBoundingClientRect().top - box.top;
+    for (let y = box.top + 1; y < box.bottom; y += 16) {
+      for (const el of document.elementsFromPoint(box.left + box.width / 3, y)) {
+        const row = el.closest<HTMLElement>(".row, .file-head");
+        if (row && scroller.contains(row)) {
+          row.dataset.mark = "top";
+          return row.getBoundingClientRect().top - box.top;
+        }
       }
     }
-    throw new Error("no row at the top of the scroller");
+    throw new Error("no row in the scroller");
   }, SCROLLER);
 }
 
@@ -50,16 +53,9 @@ test("cards loading above the reading position do not move the text", async ({ p
   await page.locator(SCROLLER).evaluate((el) => {
     el.scrollTop = el.scrollHeight * 0.6;
   });
-  const cardHead = await page.evaluate((selector) => {
-    const scroller = document.querySelector<HTMLElement>(selector)!;
-    const box = scroller.getBoundingClientRect();
-    const heads = [...scroller.querySelectorAll<HTMLElement>(".file:not([hidden]) .file-head")];
-    const head = heads.find((h) => h.getBoundingClientRect().top >= box.top)!;
-    head.dataset.mark = "top";
-    return head.getBoundingClientRect().top - box.top;
-  }, SCROLLER);
+  const before = await markTop(page);
   await settle(page);
-  expect(Math.abs((await markedOffset(page)) - cardHead)).toBeLessThan(1);
+  expect(Math.abs((await markedOffset(page)) - before)).toBeLessThan(1);
 });
 
 test("a theme switch keeps the text still", async ({ page }) => {

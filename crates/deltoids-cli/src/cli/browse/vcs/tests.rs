@@ -572,17 +572,13 @@ fn discard_uses_git_checkout_filters() {
 #[test]
 fn conflicts_reject_the_complete_selection_before_any_writes() {
     let dir = fixture();
-    let repo = git2::Repository::open(dir.path()).unwrap();
-    let mut index = repo.index().unwrap();
-    let entries: Vec<_> = (1..=3)
-        .map(|_| index.get_path(Path::new("a.txt"), 0).unwrap())
-        .collect();
-    index.remove_path(Path::new("a.txt")).unwrap();
-    for (stage, mut entry) in (1..=3).zip(entries) {
-        entry.flags = (entry.flags & !0x3000) | (stage << 12);
-        index.add(&entry).unwrap();
+    let repo = crate::test_git::TestRepo::open(dir.path());
+    let id = repo.rev(":a.txt");
+    let mut info = format!("0 {}\ta.txt\n", "0".repeat(40));
+    for stage in 1..=3 {
+        info.push_str(&format!("100644 {id} {stage}\ta.txt\n"));
     }
-    index.write().unwrap();
+    repo.run(&["update-index", "--index-info"], info.as_bytes(), &[]);
     fs::write(dir.path().join("other.txt"), "keep\n").unwrap();
     assert!(discard(dir.path(), targets(&["other.txt", "a.txt"])).is_err());
     assert!(toggle_stage(dir.path(), targets(&["other.txt", "a.txt"])).is_err());
@@ -593,5 +589,5 @@ fn conflicts_reject_the_complete_selection_before_any_writes() {
             .any(|p| p == "other.txt")
     );
     assert!(dir.path().join("other.txt").exists());
-    assert!(repo.index().unwrap().has_conflicts());
+    assert!(!repo.git(&["ls-files", "-u"]).is_empty());
 }

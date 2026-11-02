@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn fixture(paths: &[&str]) -> (TempDir, git2::Repository) {
+fn fixture(paths: &[&str]) -> (TempDir, TestRepo) {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo(dir.path());
     for path in paths {
@@ -25,11 +25,11 @@ fn fixture(paths: &[&str]) -> (TempDir, git2::Repository) {
 fn live(dir: &Path) -> FilesMode {
     let vcs = Vcs::discover_at(dir).unwrap();
     // Keep content resolution independent of the process cwd shared by parallel tests.
-    let raw = git2::Repository::open(dir).unwrap();
+    let raw = TestRepo::open(dir);
     for status in vcs.repo().working_tree_snapshot().unwrap().stages {
         for path in status.paths {
             if let Ok(bytes) = fs::read(dir.join(path)) {
-                raw.blob(&bytes).unwrap();
+                raw.blob(&bytes);
             }
         }
     }
@@ -110,11 +110,8 @@ fn sidebar_a_stages_outside_the_selected_directory_and_refreshes_without_notific
             "edited\n"
         );
     }
-    let repo = git2::Repository::open(dir.path()).unwrap();
-    assert_eq!(
-        repo.index().unwrap().write_tree().unwrap(),
-        repo.head().unwrap().peel_to_tree().unwrap().id()
-    );
+    let repo = TestRepo::open(dir.path());
+    assert_eq!(repo.git(&["write-tree"]), repo.rev("HEAD^{tree}"));
 }
 
 #[test]
@@ -126,13 +123,8 @@ fn sidebar_a_uses_fresh_status_even_when_the_sidebar_is_empty() {
     Mode::handle_key(&mut mode, KeyCode::Char('a'), 20);
     finish(&mut mode);
     refresh(&mut mode);
-    let repo = git2::Repository::open(dir.path()).unwrap();
-    let entry = repo
-        .index()
-        .unwrap()
-        .get_path(Path::new("a.txt"), 0)
-        .unwrap();
-    assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"edited\n");
+    let repo = TestRepo::open(dir.path());
+    assert_eq!(repo.show(":a.txt"), b"edited\n");
 }
 
 #[test]
@@ -160,12 +152,7 @@ fn sidebar_space_then_space_toggles_staging_without_watcher_events() {
     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
     finish(&mut mode);
     refresh(&mut mode);
-    let entry = repo
-        .index()
-        .unwrap()
-        .get_path(Path::new("a.txt"), 0)
-        .unwrap();
-    assert_eq!(repo.find_blob(entry.id).unwrap().content(), b"original\n");
+    assert_eq!(repo.show(":a.txt"), b"original\n");
     assert!(mode.model.stages["a.txt"].is_unstaged());
     assert_eq!(
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -494,11 +481,7 @@ fn cancelling_preparation_does_not_reopen_the_menu_or_write() {
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "edited\n"
     );
-    let index = repo.index().unwrap();
-    let blob = repo
-        .find_blob(index.get_path(Path::new("a.txt"), 0).unwrap().id)
-        .unwrap();
-    assert_eq!(blob.content(), b"original\n");
+    assert_eq!(repo.show(":a.txt"), b"original\n");
 }
 
 #[test]
@@ -584,7 +567,7 @@ fn space_latency_probe() {
     for path in &paths {
         fs::write(dir.path().join(path), &content).unwrap();
     }
-    repo.blob(content.as_bytes()).unwrap();
+    repo.blob(content.as_bytes());
     let mut mode = live(dir.path());
     let start = Instant::now();
     Mode::handle_key(&mut mode, KeyCode::Char(' '), 20);
@@ -614,7 +597,7 @@ fn files_content_reload_probe() {
     let mut mode = live(dir.path());
     let edited = content.replacen("value = 2", "value = 3", 1);
     fs::write(dir.path().join(&paths[0]), &edited).unwrap();
-    repo.blob(edited.as_bytes()).unwrap();
+    repo.blob(edited.as_bytes());
     let start = Instant::now();
     assert!(
         mode.reload(
@@ -686,7 +669,7 @@ fn numbered(lines: usize) -> String {
 
 /// `a.txt` with a staged edit on line 2 and an unstaged edit on line 11,
 /// plus `b.txt` with an unstaged edit only.
-fn dual_fixture() -> (TempDir, git2::Repository) {
+fn dual_fixture() -> (TempDir, TestRepo) {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo(dir.path());
     fs::write(dir.path().join("a.txt"), numbered(12)).unwrap();
@@ -798,13 +781,8 @@ fn staging_more_of_a_file_that_keeps_both_columns_rebuilds_both_panes() {
     let index_text = numbered(12)
         .replace("line 2\n", "line 2 staged\n")
         .replace("line 6\n", "line 6 middle\n");
-    let blob = repo.blob(index_text.as_bytes()).unwrap();
-    let mut index = repo.index().unwrap();
-    let mut entry = index.get_path(Path::new("a.txt"), 0).unwrap();
-    entry.id = blob;
-    entry.file_size = index_text.len() as u32;
-    index.add(&entry).unwrap();
-    index.write().unwrap();
+    let blob = repo.blob(index_text.as_bytes());
+    repo.set_index("a.txt", &blob);
 
     mode.reload(
         Viewport {
@@ -959,10 +937,7 @@ impl Counter {
 
 fn write_and_store(dir: &Path, path: &str, text: &str) {
     fs::write(dir.join(path), text).unwrap();
-    git2::Repository::open(dir)
-        .unwrap()
-        .blob(text.as_bytes())
-        .unwrap();
+    TestRepo::open(dir).blob(text.as_bytes());
 }
 
 fn reload_now(mode: &mut FilesMode) {
@@ -1171,7 +1146,7 @@ fn edited_txt(changed: &[usize]) -> String {
         .collect()
 }
 
-fn txt_repo(changed: &[usize]) -> (TempDir, git2::Repository) {
+fn txt_repo(changed: &[usize]) -> (TempDir, TestRepo) {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo(dir.path());
     fs::write(dir.path().join("a.txt"), numbered(100)).unwrap();

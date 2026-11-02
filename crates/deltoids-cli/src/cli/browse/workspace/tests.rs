@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use git2::{Repository, Signature, Time};
 
 use deltoids::Theme;
 use ratatui::style::Modifier;
@@ -15,6 +14,7 @@ use crate::cli::browse::test_screen::{
 };
 #[cfg(unix)]
 use crate::cli::browse::vcs::test_support::{fixture as but_fixture, stub_but};
+use crate::test_git::TestRepo;
 
 /// A repo on `main` with two commits, a `feature` branch forked from
 /// the first with one commit of its own, and a staged edit on `main`.
@@ -25,8 +25,7 @@ use crate::cli::browse::vcs::test_support::{fixture as but_fixture, stub_but};
 /// feature: add greeting -> add feature
 fn fixture() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    let repo = Repository::init(dir.path()).unwrap();
-    repo.set_head("refs/heads/main").unwrap();
+    let repo = TestRepo::init(dir.path());
     commit(
         dir.path(),
         &repo,
@@ -34,7 +33,7 @@ fn fixture() -> tempfile::TempDir {
         "add greeting",
         100,
     );
-    let first = repo.head().unwrap().peel_to_commit().unwrap();
+    let first = repo.rev("HEAD");
     commit(
         dir.path(),
         &repo,
@@ -42,10 +41,8 @@ fn fixture() -> tempfile::TempDir {
         "shout greeting",
         300,
     );
-    repo.branch("feature", &first, false).unwrap();
-    repo.set_head("refs/heads/feature").unwrap();
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-        .unwrap();
+    repo.git(&["branch", "feature", &first]);
+    repo.git(&["checkout", "-q", "-f", "feature"]);
     commit(
         dir.path(),
         &repo,
@@ -53,15 +50,13 @@ fn fixture() -> tempfile::TempDir {
         "add feature",
         200,
     );
-    repo.set_head("refs/heads/main").unwrap();
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-        .unwrap();
+    repo.git(&["checkout", "-q", "-f", "main"]);
     fs::write(
         dir.path().join("greet.rs"),
         "fn greet() {\n    println!(\"Hi\");\n}\n",
     )
     .unwrap();
-    stage_all(&repo);
+    repo.stage_all();
     dir
 }
 
@@ -71,37 +66,21 @@ fn fixture() -> tempfile::TempDir {
 fn edit_unstaged(dir: &Path) {
     let text = "fn greet() {\n    println!(\"Hey\");\n}\n";
     fs::write(dir.join("greet.rs"), text).unwrap();
-    Repository::open(dir)
-        .unwrap()
-        .blob(text.as_bytes())
-        .unwrap();
+    TestRepo::open(dir).blob(text.as_bytes());
 }
 
-fn stage_all(repo: &Repository) -> git2::Oid {
-    let mut index = repo.index().unwrap();
-    index
-        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-        .unwrap();
-    index.write().unwrap();
-    index.write_tree().unwrap()
-}
-
-fn commit(dir: &Path, repo: &Repository, files: &[(&str, &str)], msg: &str, seconds: i64) {
+fn commit(dir: &Path, repo: &TestRepo, files: &[(&str, &str)], msg: &str, seconds: i64) {
     for (path, text) in files {
         fs::write(dir.join(path), text).unwrap();
     }
-    let tree = repo.find_tree(stage_all(repo)).unwrap();
-    let sig = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(seconds, 0)).unwrap();
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
-        .unwrap();
+    repo.stage_all();
+    repo.commit_at(msg, seconds);
 }
 
 /// [`fixture`] with its staged edit committed: a clean working tree.
 fn clean_fixture() -> tempfile::TempDir {
     let dir = fixture();
-    let repo = Repository::open(dir.path()).unwrap();
+    let repo = TestRepo::open(dir.path());
     commit(dir.path(), &repo, &[], "say hi", 400);
     dir
 }
@@ -299,7 +278,7 @@ fn committing_every_change_hides_files_and_focuses_branches() {
     press(&mut workspace, &[KeyCode::Enter]);
     assert!(right_focused(&mut workspace));
 
-    let repo = Repository::open(dir.path()).unwrap();
+    let repo = TestRepo::open(dir.path());
     commit(dir.path(), &repo, &[], "say hi", 400);
     reload(&mut workspace);
 
@@ -656,7 +635,7 @@ fn enter_on_a_branch_lists_its_commits_and_enter_reviews_one_in_files() {
 /// subject and a body, so its review has details to show.
 fn explained_fixture(body: &str) -> tempfile::TempDir {
     let dir = fixture();
-    let repo = Repository::open(dir.path()).unwrap();
+    let repo = TestRepo::open(dir.path());
     let message = format!("explain the change\n\n{body}\n");
     commit(
         dir.path(),
@@ -669,8 +648,8 @@ fn explained_fixture(body: &str) -> tempfile::TempDir {
 }
 
 fn head_short(dir: &Path) -> String {
-    let repo = Repository::open(dir).unwrap();
-    let id = repo.revparse_single("HEAD").unwrap().id().to_string();
+    let repo = TestRepo::open(dir);
+    let id = repo.rev("HEAD");
     id[..7].to_string()
 }
 
@@ -746,8 +725,8 @@ fn a_review_is_the_only_tab_until_esc_returns_to_the_reviewed_row() {
 }
 
 fn feature_tip(dir: &Path) -> String {
-    let repo = Repository::open(dir).unwrap();
-    let id = repo.revparse_single("feature").unwrap().id().to_string();
+    let repo = TestRepo::open(dir);
+    let id = repo.rev("feature");
     id[..7].to_string()
 }
 
@@ -875,10 +854,9 @@ fn a_reload_picks_up_new_commits_and_branches() {
     let mut workspace = workspace(dir.path());
     show(&mut workspace, '2');
     assert!(!right_text(&mut workspace).contains("say hi"));
-    let repo = Repository::open(dir.path()).unwrap();
+    let repo = TestRepo::open(dir.path());
     commit(dir.path(), &repo, &[], "say hi", 400);
-    let head = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.branch("fresh", &head, false).unwrap();
+    repo.git(&["branch", "fresh"]);
 
     let viewport = Viewport {
         height: PANE_HEIGHT,
@@ -1031,8 +1009,8 @@ fn the_cursor_skips_rows_that_are_not_branches_or_commits() {
 /// `but status` lists its one commit, by its real id.
 #[cfg(unix)]
 fn feature_status(dir: &Path) -> std::path::PathBuf {
-    let repo = Repository::open(dir).unwrap();
-    let feature = repo.revparse_single("feature").unwrap().id().to_string();
+    let repo = TestRepo::open(dir);
+    let feature = repo.rev("feature");
     let branch = status_branch("fe", "feature", &[("abcd", &feature, "add feature")]);
     write_status(dir, &[&[branch]])
 }
@@ -1041,8 +1019,8 @@ fn feature_status(dir: &Path) -> std::path::PathBuf {
 /// [`status_branch`]es, top first, all resting on `feature`'s parent.
 #[cfg(unix)]
 fn write_status(dir: &Path, stacks: &[&[String]]) -> std::path::PathBuf {
-    let repo = Repository::open(dir).unwrap();
-    let base = repo.revparse_single("feature~1").unwrap().id();
+    let repo = TestRepo::open(dir);
+    let base = repo.rev("feature~1");
     let stacks: Vec<String> = stacks
         .iter()
         .enumerate()
@@ -1142,25 +1120,8 @@ fn double_clicking_a_workspace_branch_reviews_it_in_files() {
 /// Commit `files` on top of `branch` without touching the working tree,
 /// and move `branch` to the new commit.
 #[cfg(unix)]
-fn commit_on(repo: &Repository, branch: &str, files: &[(&str, &str)], msg: &str) -> String {
-    let parent = repo
-        .revparse_single(branch)
-        .unwrap()
-        .peel_to_commit()
-        .unwrap();
-    let mut builder = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
-    for (path, text) in files {
-        let blob = repo.blob(text.as_bytes()).unwrap();
-        builder.insert(path, blob, 0o100_644).unwrap();
-    }
-    let tree = repo.find_tree(builder.write().unwrap()).unwrap();
-    let sig = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(400, 0)).unwrap();
-    let id = repo
-        .commit(None, &sig, &sig, msg, &tree, &[&parent])
-        .unwrap();
-    repo.reference(&format!("refs/heads/{branch}"), id, true, "test")
-        .unwrap();
-    id.to_string()
+fn commit_on(repo: &TestRepo, branch: &str, files: &[(&str, &str)], msg: &str) -> String {
+    repo.commit_files_on(branch, files, msg, 400)
 }
 
 /// One `but status` branch: its CLI ID, name, and commits newest first
@@ -1189,10 +1150,9 @@ fn status_branch(cli_id: &str, name: &str, commits: &[(&str, &str, &str)]) -> St
 /// `feature.rs`), and `empty` with no commits. `parked` is unapplied.
 #[cfg(unix)]
 fn stacked_status(dir: &Path) -> std::path::PathBuf {
-    let repo = Repository::open(dir).unwrap();
-    let feature = repo.revparse_single("feature").unwrap().id().to_string();
-    let tip = repo.find_commit(feature.parse().unwrap()).unwrap();
-    repo.branch("upper", &tip, false).unwrap();
+    let repo = TestRepo::open(dir);
+    let feature = repo.rev("feature");
+    repo.git(&["branch", "upper", &feature]);
     let draft = commit_on(&repo, "upper", &[("upper.rs", "draft\n")], "draft upper");
     let last = commit_on(
         &repo,

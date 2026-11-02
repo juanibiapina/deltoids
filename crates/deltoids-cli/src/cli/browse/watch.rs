@@ -254,32 +254,18 @@ pub(super) fn is_git_internal(path: &Path) -> bool {
 mod tests {
     use super::*;
 
-    /// Init a repo at `dir` with a committable identity configured.
-    fn init_repo(dir: &Path) -> git2::Repository {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        repo
+    use crate::test_git::TestRepo;
+
+    fn init_repo(dir: &Path) -> TestRepo {
+        TestRepo::init(dir)
     }
 
-    fn stage_all(repo: &git2::Repository) {
-        let mut index = repo.index().unwrap();
-        index
-            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-            .unwrap();
-        index.write().unwrap();
+    fn stage_all(repo: &TestRepo) {
+        repo.stage_all();
     }
 
-    fn commit_index(repo: &git2::Repository, msg: &str) {
-        let mut index = repo.index().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = repo.signature().unwrap();
-        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        let parents: Vec<&git2::Commit> = parent.iter().collect();
-        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
-            .unwrap();
+    fn commit_index(repo: &TestRepo, msg: &str) {
+        repo.commit(msg);
     }
 
     #[test]
@@ -461,11 +447,7 @@ mod tests {
         let git_repo = init_repo(dir.path());
         let repo = git::Repo::discover_at(dir.path()).unwrap();
         let watcher = spawn_workdir_watcher(&repo, None).unwrap().unwrap();
-        git_repo
-            .config()
-            .unwrap()
-            .set_bool("core.filemode", false)
-            .unwrap();
+        git_repo.git(&["config", "core.filemode", "false"]);
         wait_for_relevant_change(&repo, &watcher.receiver());
     }
 
@@ -479,13 +461,11 @@ mod tests {
         stage_all(&git_repo);
         commit_index(&git_repo, "initial");
         let linked = dir.path().join("linked");
-        let _worktree = git_repo.worktree("linked", &linked, None).unwrap();
+        git_repo.git(&["worktree", "add", "-q", linked.to_str().unwrap()]);
         let repo = git::Repo::discover_at(&linked).unwrap();
         let watcher = spawn_workdir_watcher(&repo, None).unwrap().unwrap();
-        let oid = git_repo.head().unwrap().target().unwrap();
-        git_repo
-            .reference("refs/heads/another", oid, true, "probe")
-            .unwrap();
+        let oid = git_repo.rev("HEAD");
+        git_repo.git(&["update-ref", "refs/heads/another", &oid]);
         wait_for_relevant_change(&repo, &watcher.receiver());
     }
     /// A fake Rust language server for `root` that watches its `.rs`

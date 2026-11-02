@@ -6,9 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use git2::{Repository, Status, StatusOptions};
+use deltoids::git::Repo;
+use gix::ObjectId;
 
 use super::DiscardKind;
+
+const SUBMODULE: u32 = 0o160000;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Change {
@@ -21,15 +24,15 @@ struct Change {
 #[derive(Debug, PartialEq, Eq)]
 struct FileState {
     path: PathBuf,
-    index: Option<(git2::Oid, u32)>,
-    worktree: Option<(u32, Option<git2::Oid>)>,
+    index: Option<(ObjectId, u32)>,
+    worktree: Option<(u32, Option<ObjectId>)>,
 }
 
 /// The changes of one selection, as read before a write. Comparing two
 /// reads tells whether the selection changed in between.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct State {
-    head: Option<git2::Oid>,
+    head: Option<ObjectId>,
     changes: Vec<Change>,
     files: Vec<FileState>,
 }
@@ -66,17 +69,18 @@ pub(super) fn toggle_stage_all(workdir: &Path) -> Result<String, String> {
 }
 
 fn stage_changes(repo: &Repository, state: &State) -> Result<(), String> {
-    let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
-    let index = repo.index().map_err(message)?;
+    let index = repo.index()?;
     let paths: BTreeSet<_> = state
         .changes
         .iter()
         .filter(|c| c.unstaged)
         .flat_map(|c| c.paths.iter())
-        .filter(|p| index.get_path(p, 0).is_some() || workdir.join(p).symlink_metadata().is_ok())
+        .filter(|p| {
+            index_entry(&index, p).is_some() || repo.workdir.join(p).symlink_metadata().is_ok()
+        })
         .cloned()
         .collect();
-    git(workdir, &["add", "-A"], &paths)
+    git(&repo.workdir, &["add", "-A"], &paths)
 }
 
 pub(super) fn read_selection(workdir: &Path, targets: &[PathBuf]) -> Result<State, String> {
@@ -125,23 +129,57 @@ pub(super) fn discard(workdir: &Path, state: &State, kind: DiscardKind) -> Resul
     apply(&open(workdir)?, state, kind)
 }
 
-fn open(workdir: &Path) -> Result<Repository, String> {
-    Repository::open(workdir).map_err(message)
+/// The repository a write acts on: `gix` for index and tree lookups,
+/// and the library's [`Repo`] for the staging columns.
+struct Repository {
+    git: gix::Repository,
+    status: Repo,
+    workdir: PathBuf,
 }
 
-fn head(repo: &Repository) -> Result<Option<git2::Tree<'_>>, String> {
-    match repo.head() {
-        Ok(reference) => reference.peel_to_tree().map(Some).map_err(message),
-        Err(e)
-            if matches!(
-                e.code(),
-                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(e) => Err(message(e)),
+impl Repository {
+    fn index(&self) -> Result<gix::worktree::Index, String> {
+        self.git.index_or_empty().map_err(message)
     }
+
+    /// `HEAD`'s tree, or `None` before the first commit.
+    fn head(&self) -> Result<Option<gix::Tree<'_>>, String> {
+        if self.git.head().map_err(message)?.is_unborn() {
+            return Ok(None);
+        }
+        self.git.head_tree().map(Some).map_err(message)
+    }
+}
+
+fn open(workdir: &Path) -> Result<Repository, String> {
+    let git = gix::open(workdir).map_err(message)?;
+    let workdir = git
+        .workdir()
+        .ok_or("Git actions require a working tree")?
+        .to_owned();
+    let status = Repo::discover_at(&workdir).ok_or("Not a git repository")?;
+    Ok(Repository {
+        git,
+        status,
+        workdir,
+    })
+}
+
+/// The stage-0 index entry at `path`: its id and mode bits.
+fn index_entry(index: &gix::index::State, path: &Path) -> Option<(ObjectId, u32)> {
+    let path = gix::path::into_bstr(path).ok()?;
+    let entry = index.entry_by_path(path.as_ref())?;
+    Some((entry.id, entry.mode.bits()))
+}
+
+/// The entry at `path` in `tree`: its id and mode bits.
+fn tree_entry(tree: &gix::Tree<'_>, path: &Path) -> Option<(ObjectId, u32)> {
+    let entry = tree.lookup_entry_by_path(path).ok()??;
+    Some((entry.object_id(), entry.mode().value().into()))
+}
+
+fn blob_id(data: &[u8]) -> Result<ObjectId, String> {
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, data).map_err(message)
 }
 
 fn read(repo: &Repository, targets: &[PathBuf], capture_content: bool) -> Result<State, String> {
@@ -155,98 +193,59 @@ fn read_scope(
 ) -> Result<State, String> {
     let targets: Option<HashSet<&Path>> =
         targets.map(|paths| paths.iter().map(PathBuf::as_path).collect());
-    let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
-    let mut options = StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-    let statuses = repo.statuses(Some(&mut options)).map_err(message)?;
+    let index = repo.index()?;
+    let selected = |paths: &[&Path]| {
+        targets
+            .as_ref()
+            .is_none_or(|targets| paths.iter().any(|path| targets.contains(path)))
+    };
+    let conflicted = index.entries().iter().any(|entry| {
+        entry.stage() != gix::index::entry::Stage::Unconflicted
+            && gix::path::from_bstr(entry.path(&index)).is_ok_and(|path| selected(&[path.as_ref()]))
+    });
+    if conflicted {
+        return Err("Resolve merge conflicts before staging or discarding files".into());
+    }
     let mut changes = Vec::new();
-    for entry in statuses.iter() {
-        let deltas = [entry.head_to_index(), entry.index_to_workdir()];
-        if targets.as_ref().is_some_and(|targets| {
-            !deltas
-                .iter()
-                .flatten()
-                .flat_map(|delta| [delta.old_file(), delta.new_file()])
-                .filter_map(|file| file.path())
-                .any(|path| targets.contains(path))
-        }) {
+    for status in repo.status.working_tree_status()? {
+        let paths: Vec<PathBuf> = status.paths.iter().map(PathBuf::from).collect();
+        if !selected(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>()) {
             continue;
         }
-        let names: BTreeSet<_> = deltas
-            .iter()
-            .flatten()
-            .flat_map(|delta| [delta.old_file(), delta.new_file()])
-            .filter_map(|file| file.path().map(PathBuf::from))
-            .collect();
-        let submodule = deltas
-            .iter()
-            .flatten()
-            .flat_map(|delta| [delta.old_file(), delta.new_file()])
-            .any(|file| file.mode() == git2::FileMode::Commit);
-        let flags = entry.status();
-        if flags.contains(Status::CONFLICTED) {
-            return Err("Resolve merge conflicts before staging or discarding files".into());
-        }
-        if submodule {
-            return Err("Submodule actions are not supported".into());
-        }
-        let display_path = deltas
-            .iter()
-            .flatten()
-            .flat_map(|delta| [delta.old_file(), delta.new_file()])
-            .filter_map(|file| file.path().map(PathBuf::from))
-            .next_back()
-            .ok_or("Git status has no file path")?;
+        let display_path = paths.last().cloned().ok_or("Git status has no file path")?;
         changes.push(Change {
             display_path,
-            paths: names,
-            staged: flags.intersects(
-                Status::INDEX_NEW
-                    | Status::INDEX_MODIFIED
-                    | Status::INDEX_DELETED
-                    | Status::INDEX_RENAMED
-                    | Status::INDEX_TYPECHANGE,
-            ),
-            unstaged: flags.intersects(
-                Status::WT_NEW
-                    | Status::WT_MODIFIED
-                    | Status::WT_DELETED
-                    | Status::WT_RENAMED
-                    | Status::WT_TYPECHANGE,
-            ),
+            paths: paths.into_iter().collect(),
+            staged: status.staged.is_some(),
+            unstaged: status.unstaged.is_some(),
         });
     }
     changes.sort_by(|a, b| a.paths.cmp(&b.paths));
-    let index = repo.index().map_err(message)?;
-    let tree = head(repo)?;
+    let tree = repo.head()?;
     let mut files = Vec::new();
     for path in changes
         .iter()
         .flat_map(|c| &c.paths)
         .collect::<BTreeSet<_>>()
     {
-        validate_path(workdir, path)?;
-        let entry = index.get_path(path, 0);
-        if entry.as_ref().is_some_and(|e| e.mode == 0o160000)
+        validate_path(&repo.workdir, path)?;
+        let entry = index_entry(&index, path);
+        if entry.is_some_and(|(_, mode)| mode == SUBMODULE)
             || tree
                 .as_ref()
-                .and_then(|t| t.get_path(path).ok())
-                .is_some_and(|e| e.filemode() == 0o160000)
+                .and_then(|t| tree_entry(t, path))
+                .is_some_and(|(_, mode)| mode == SUBMODULE)
         {
             return Err("Submodule actions are not supported".into());
         }
         files.push(FileState {
             path: path.clone(),
-            index: entry.map(|e| (e.id, e.mode)),
-            worktree: worktree_state(&workdir.join(path), capture_content)?,
+            index: entry,
+            worktree: worktree_state(&repo.workdir.join(path), capture_content)?,
         });
     }
     Ok(State {
-        head: tree.map(|t| t.id()),
+        head: tree.map(|t| t.id),
         changes,
         files,
     })
@@ -281,7 +280,7 @@ fn validate_path(workdir: &Path, path: &Path) -> Result<(), String> {
 fn worktree_state(
     path: &Path,
     capture_content: bool,
-) -> Result<Option<(u32, Option<git2::Oid>)>, String> {
+) -> Result<Option<(u32, Option<ObjectId>)>, String> {
     let metadata = match path.symlink_metadata() {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -290,13 +289,7 @@ fn worktree_state(
     if metadata.file_type().is_symlink() {
         let hash = if capture_content {
             let target = fs::read_link(path).map_err(|e| e.to_string())?;
-            Some(
-                git2::Oid::hash_object(
-                    git2::ObjectType::Blob,
-                    target.as_os_str().as_encoded_bytes(),
-                )
-                .map_err(message)?,
-            )
+            Some(blob_id(target.as_os_str().as_encoded_bytes())?)
         } else {
             None
         };
@@ -312,11 +305,10 @@ fn worktree_state(
     };
     #[cfg(not(unix))]
     let mode = u32::from(metadata.permissions().readonly());
-    // hash_file streams raw bytes without checkout filters or an ODB write.
+    // Raw bytes, without checkout filters or an ODB write.
     let hash = capture_content
-        .then(|| git2::Oid::hash_file(git2::ObjectType::Blob, path))
-        .transpose()
-        .map_err(message)?;
+        .then(|| blob_id(&fs::read(path).map_err(|e| e.to_string())?))
+        .transpose()?;
     Ok(Some((mode, hash)))
 }
 
@@ -325,12 +317,12 @@ fn paths(state: &State) -> BTreeSet<PathBuf> {
 }
 
 fn reset_index(repo: &Repository, paths: &BTreeSet<PathBuf>) -> Result<(), String> {
-    let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
-    let tree = head(repo)?;
+    let workdir = &repo.workdir;
+    let tree = repo.head()?;
     let (tracked, added): (BTreeSet<_>, BTreeSet<_>) = paths
         .iter()
         .cloned()
-        .partition(|p| tree.as_ref().is_some_and(|t| t.get_path(p).is_ok()));
+        .partition(|p| tree.as_ref().is_some_and(|t| tree_entry(t, p).is_some()));
     git(workdir, &["restore", "--source=HEAD", "--staged"], &tracked)?;
     git(
         workdir,
@@ -340,14 +332,14 @@ fn reset_index(repo: &Repository, paths: &BTreeSet<PathBuf>) -> Result<(), Strin
 }
 
 fn apply(repo: &Repository, state: &State, kind: DiscardKind) -> Result<(), String> {
-    let workdir = repo.workdir().ok_or("Git actions require a working tree")?;
+    let workdir = &repo.workdir;
     let all_paths = paths(state);
-    let tree = head(repo)?;
-    let index = repo.index().map_err(message)?;
+    let tree = repo.head()?;
+    let index = repo.index()?;
     let (restore, remove): (BTreeSet<_>, BTreeSet<_>) =
         all_paths.into_iter().partition(|p| match kind {
-            DiscardKind::All => tree.as_ref().is_some_and(|t| t.get_path(p).is_ok()),
-            DiscardKind::Unstaged => index.get_path(p, 0).is_some(),
+            DiscardKind::All => tree.as_ref().is_some_and(|t| tree_entry(t, p).is_some()),
+            DiscardKind::Unstaged => index_entry(&index, p).is_some(),
         });
     match kind {
         DiscardKind::All => {
@@ -394,6 +386,6 @@ fn git(workdir: &Path, args: &[&str], paths: &BTreeSet<PathBuf>) -> Result<(), S
     }
 }
 
-fn message(error: git2::Error) -> String {
-    error.message().to_string()
+fn message(error: impl std::fmt::Display) -> String {
+    error.to_string()
 }

@@ -1,26 +1,48 @@
 use super::*;
-use git2::{BranchType, Oid, Signature, Time};
+/// Run `git args` as Ada Lovelace at `seconds` since the epoch.
+fn as_ada(repo: &Fixture, seconds: i64, args: &[&str], input: &[u8]) -> String {
+    let date = format!("@{seconds} +0000");
+    repo.git_with(
+        args,
+        input,
+        &[
+            ("GIT_AUTHOR_NAME", "Ada Lovelace"),
+            ("GIT_AUTHOR_EMAIL", "ada@example.com"),
+            ("GIT_COMMITTER_NAME", "Ada Lovelace"),
+            ("GIT_COMMITTER_EMAIL", "ada@example.com"),
+            ("GIT_AUTHOR_DATE", &date),
+            ("GIT_COMMITTER_DATE", &date),
+        ],
+    )
+}
 
 /// Write `files` into the working tree, stage them, and commit on `HEAD`
 /// at `seconds` since the epoch, so recency ordering is deterministic.
-fn commit_at(dir: &Path, repo: &Repository, files: &[(&str, &str)], msg: &str, seconds: i64) {
+fn commit_at(dir: &Path, repo: &Fixture, files: &[(&str, &str)], msg: &str, seconds: i64) {
     for (path, text) in files {
         fs::write(dir.join(path), text).unwrap();
     }
     stage_all(repo);
-    let mut index = repo.index().unwrap();
-    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-    let sig = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(seconds, 0)).unwrap();
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
-        .unwrap();
+    let args = [
+        "commit",
+        "-q",
+        "--allow-empty",
+        "--cleanup=verbatim",
+        "-m",
+        msg,
+    ];
+    as_ada(repo, seconds, &args, b"");
 }
 
-fn checkout_new_branch(repo: &Repository, name: &str) {
-    let head = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.branch(name, &head, false).unwrap();
-    repo.set_head(&format!("refs/heads/{name}")).unwrap();
+/// Create branch `name` at `HEAD` and point `HEAD` at it, leaving the
+/// index and working tree alone.
+fn checkout_new_branch(repo: &Fixture, name: &str) {
+    repo.git(&["branch", name]);
+    set_head(repo, name);
+}
+
+fn set_head(repo: &Fixture, branch: &str) {
+    repo.git(&["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")]);
 }
 
 #[test]
@@ -28,13 +50,13 @@ fn local_branches_list_the_checked_out_branch_first_then_by_recency() {
     let dir = tempfile::tempdir().unwrap();
     let raw = init_repo(dir.path());
     commit_at(dir.path(), &raw, &[("a.txt", "a\n")], "first", 100);
-    let main = raw.head().unwrap().shorthand().unwrap().to_string();
+    let main = raw.branch();
     checkout_new_branch(&raw, "older");
     commit_at(dir.path(), &raw, &[("a.txt", "b\n")], "older work", 200);
-    raw.set_head(&format!("refs/heads/{main}")).unwrap();
+    set_head(&raw, &main);
     checkout_new_branch(&raw, "newer");
     commit_at(dir.path(), &raw, &[("a.txt", "c\n")], "newer work", 300);
-    raw.set_head(&format!("refs/heads/{main}")).unwrap();
+    set_head(&raw, &main);
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let branches = repo.local_branches().unwrap();
@@ -52,13 +74,8 @@ fn local_branches_leave_out_remote_tracking_branches() {
     let dir = tempfile::tempdir().unwrap();
     let raw = init_repo(dir.path());
     commit_at(dir.path(), &raw, &[("a.txt", "a\n")], "first", 100);
-    let head = raw.head().unwrap().target().unwrap();
-    raw.reference("refs/remotes/origin/feature", head, false, "test")
-        .unwrap();
-    assert!(
-        raw.find_branch("origin/feature", BranchType::Remote)
-            .is_ok()
-    );
+    let head = raw.rev("HEAD");
+    raw.git(&["update-ref", "refs/remotes/origin/feature", &head]);
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let branches = repo.local_branches().unwrap();
@@ -88,7 +105,7 @@ fn commits_walk_a_branch_newest_first() {
         "second\n\nWith a body.\n",
         200,
     );
-    let branch = raw.head().unwrap().shorthand().unwrap().to_string();
+    let branch = raw.branch();
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let commits = repo.commits(&branch, 10).unwrap();
@@ -117,7 +134,7 @@ fn commits_stop_at_the_limit() {
             100 + n,
         );
     }
-    let branch = raw.head().unwrap().shorthand().unwrap().to_string();
+    let branch = raw.branch();
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let commits = repo.commits(&branch, 2).unwrap();
@@ -127,31 +144,27 @@ fn commits_stop_at_the_limit() {
 }
 
 /// Commit `HEAD`'s tree on `parents` at `seconds`, moving no ref.
-fn commit_on(repo: &Repository, parents: &[Oid], msg: &str, seconds: i64) -> Oid {
-    let tree = repo.head().unwrap().peel_to_tree().unwrap();
-    let sig = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(seconds, 0)).unwrap();
-    let parents: Vec<_> = parents
-        .iter()
-        .map(|id| repo.find_commit(*id).unwrap())
-        .collect();
-    let parents: Vec<_> = parents.iter().collect();
-    repo.commit(None, &sig, &sig, msg, &tree, &parents).unwrap()
+fn commit_on(repo: &Fixture, parents: &[&str], msg: &str, seconds: i64) -> String {
+    let mut args = vec!["commit-tree", "HEAD^{tree}", "-m", msg];
+    for parent in parents {
+        args.extend(["-p", parent]);
+    }
+    as_ada(repo, seconds, &args, b"")
 }
 
 /// A branch `merged` whose two lines of work interleave in time:
 /// `base` 100, `side 1` 200, `main 2` 300, `side 3` 400, `main 4` 500,
 /// and the merge 600.
-fn interleaved_merge(dir: &Path) -> Repository {
+fn interleaved_merge(dir: &Path) -> Fixture {
     let raw = init_repo(dir);
     commit_at(dir, &raw, &[("a.txt", "a\n")], "base", 100);
-    let base = raw.head().unwrap().target().unwrap();
-    let side1 = commit_on(&raw, &[base], "side 1", 200);
-    let main2 = commit_on(&raw, &[base], "main 2", 300);
-    let side3 = commit_on(&raw, &[side1], "side 3", 400);
-    let main4 = commit_on(&raw, &[main2], "main 4", 500);
-    let merge = commit_on(&raw, &[main4, side3], "merge", 600);
-    raw.reference("refs/heads/merged", merge, false, "test")
-        .unwrap();
+    let base = raw.rev("HEAD");
+    let side1 = commit_on(&raw, &[&base], "side 1", 200);
+    let main2 = commit_on(&raw, &[&base], "main 2", 300);
+    let side3 = commit_on(&raw, &[&side1], "side 3", 400);
+    let main4 = commit_on(&raw, &[&main2], "main 4", 500);
+    let merge = commit_on(&raw, &[&main4, &side3], "merge", 600);
+    raw.git(&["update-ref", "refs/heads/merged", &merge]);
     raw
 }
 
@@ -205,7 +218,7 @@ fn commit_patch_diffs_against_the_first_parent_with_full_blob_hashes() {
         "second",
         200,
     );
-    let id = raw.head().unwrap().target().unwrap().to_string();
+    let id = raw.rev("HEAD");
     // Uncommitted edits never leak into a commit's patch.
     fs::write(dir.path().join("a.txt"), "dirty\n").unwrap();
 
@@ -217,12 +230,8 @@ fn commit_patch_diffs_against_the_first_parent_with_full_blob_hashes() {
     assert!(patch.contains("diff --git a/b.txt b/b.txt"), "{patch}");
     assert!(patch.contains("new file mode"), "{patch}");
     assert!(!patch.contains("dirty"), "{patch}");
-    let before = raw
-        .revparse_single("HEAD~1:a.txt")
-        .unwrap()
-        .id()
-        .to_string();
-    let after = raw.revparse_single("HEAD:a.txt").unwrap().id().to_string();
+    let before = raw.rev("HEAD~1:a.txt");
+    let after = raw.rev("HEAD:a.txt");
     assert!(
         patch.contains(&format!("index {before}..{after}")),
         "{patch}"
@@ -234,7 +243,7 @@ fn commit_patch_of_a_root_commit_adds_every_file() {
     let dir = tempfile::tempdir().unwrap();
     let raw = init_repo(dir.path());
     commit_at(dir.path(), &raw, &[("a.txt", "one\n")], "first", 100);
-    let id = raw.head().unwrap().target().unwrap().to_string();
+    let id = raw.rev("HEAD");
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let patch = repo.commit_patch(&id).unwrap();
@@ -303,8 +312,8 @@ fn tree_patch_takes_any_revision() {
     assert!(repo.tree_patch("nope", &tip).is_err());
 }
 
-fn commit_id(repo: &Repository) -> String {
-    repo.head().unwrap().target().unwrap().to_string()
+fn commit_id(repo: &Fixture) -> String {
+    repo.rev("HEAD")
 }
 
 #[test]
@@ -314,27 +323,24 @@ fn commits_after_stop_at_the_base_even_past_a_merge() {
     commit_at(dir.path(), &raw, &[("a.txt", "a\n")], "old", 100);
     commit_at(dir.path(), &raw, &[("a.txt", "b\n")], "base", 200);
     let base = commit_id(&raw);
-    let main = raw.head().unwrap().shorthand().unwrap().to_string();
+    let main = raw.branch();
     checkout_new_branch(&raw, "feature");
     commit_at(dir.path(), &raw, &[("f.txt", "f\n")], "feature work", 300);
     // A merge whose second parent is an ancestor of the base.
-    let old = raw
-        .revparse_single("HEAD~2")
-        .unwrap()
-        .peel_to_commit()
-        .unwrap();
-    let head = raw.head().unwrap().peel_to_commit().unwrap();
-    let sig = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(400, 0)).unwrap();
-    raw.commit(
-        Some("HEAD"),
-        &sig,
-        &sig,
+    let (head, old) = (raw.rev("HEAD"), raw.rev("HEAD~2"));
+    let args = [
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        &head,
+        "-p",
+        &old,
+        "-m",
         "merge old",
-        &head.tree().unwrap(),
-        &[&head, &old],
-    )
-    .unwrap();
-    raw.set_head(&format!("refs/heads/{main}")).unwrap();
+    ];
+    let merge = as_ada(&raw, 400, &args, b"");
+    raw.git(&["update-ref", "HEAD", &merge]);
+    set_head(&raw, &main);
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let summaries =
@@ -354,56 +360,65 @@ fn commits_after_stop_at_the_base_even_past_a_merge() {
     );
 }
 
+/// `mktree` lines for `files`, each a blob at the root.
+fn blob_entries(repo: &Fixture, files: &[(&str, &str)]) -> String {
+    files
+        .iter()
+        .map(|(path, text)| {
+            let blob = repo.git_with(&["hash-object", "-w", "--stdin"], text.as_bytes(), &[]);
+            format!("100644 blob {blob}\t{path}\n")
+        })
+        .collect()
+}
+
+fn mktree(repo: &Fixture, listing: &str) -> String {
+    repo.git_with(&["mktree"], listing.as_bytes(), &[])
+}
+
 /// A tree of `files`, each a path at the root and its text.
-fn tree_of(repo: &Repository, files: &[(&str, &str)]) -> Oid {
-    let mut builder = repo.treebuilder(None).unwrap();
-    for (path, text) in files {
-        let blob = repo.blob(text.as_bytes()).unwrap();
-        builder.insert(path, blob, 0o100644).unwrap();
-    }
-    builder.write().unwrap()
+fn tree_of(repo: &Fixture, files: &[(&str, &str)]) -> String {
+    mktree(repo, &blob_entries(repo, files))
 }
 
 /// The tree GitButler writes for a conflicted commit: `top` at the root,
 /// `resolved` as `.auto-resolution`, one side, and the conflict list.
-fn conflicted_tree(repo: &Repository, top: &[(&str, &str)], resolved: &[(&str, &str)]) -> Oid {
-    let base = repo.find_tree(tree_of(repo, top)).unwrap();
-    let mut builder = repo.treebuilder(Some(&base)).unwrap();
+fn conflicted_tree(repo: &Fixture, top: &[(&str, &str)], resolved: &[(&str, &str)]) -> String {
     let auto = tree_of(repo, resolved);
     let side = tree_of(repo, &[("a.txt", "theirs\n")]);
-    let list = repo.blob(b"ourEntries = [\"a.txt\"]\n").unwrap();
-    builder.insert(".auto-resolution", auto, 0o040000).unwrap();
-    builder.insert(".conflict-side-0", side, 0o040000).unwrap();
-    builder.insert(".conflict-files", list, 0o100644).unwrap();
-    builder.write().unwrap()
+    let mut listing = blob_entries(repo, top);
+    listing.push_str(&format!("040000 tree {auto}\t.auto-resolution\n"));
+    listing.push_str(&format!("040000 tree {side}\t.conflict-side-0\n"));
+    let list = repo.git_with(
+        &["hash-object", "-w", "--stdin"],
+        b"ourEntries = [\"a.txt\"]\n",
+        &[],
+    );
+    listing.push_str(&format!("100644 blob {list}\t.conflict-files\n"));
+    mktree(repo, &listing)
 }
 
 /// Write a commit of `tree` on `parent`, with `header` (a `name value`
 /// line) after the committer when given, and return its id.
 fn commit_tree(
-    repo: &Repository,
-    tree: Oid,
-    parent: Option<Oid>,
+    repo: &Fixture,
+    tree: String,
+    parent: Option<&str>,
     message: &str,
     header: Option<&str>,
 ) -> String {
-    let sig = Signature::new("Ada Lovelace", "ada@example.com", &Time::new(100, 0)).unwrap();
-    let tree = repo.find_tree(tree).unwrap();
-    let parent = parent.map(|id| repo.find_commit(id).unwrap());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-    let buffer = repo
-        .commit_create_buffer(&sig, &sig, message, &tree, &parents)
-        .unwrap();
-    let mut text = buffer.as_str().unwrap().to_string();
-    if let Some(header) = header {
-        let end = text.find("\n\n").unwrap();
-        text.insert_str(end, &format!("\n{header}"));
+    let mut text = format!("tree {tree}\n");
+    if let Some(parent) = parent {
+        text.push_str(&format!("parent {parent}\n"));
     }
-    repo.odb()
-        .unwrap()
-        .write(git2::ObjectType::Commit, text.as_bytes())
-        .unwrap()
-        .to_string()
+    text.push_str("author Ada Lovelace <ada@example.com> 100 +0000\n");
+    text.push_str("committer Ada Lovelace <ada@example.com> 100 +0000\n");
+    if let Some(header) = header {
+        text.push_str(&format!("{header}\n"));
+    }
+    text.push('\n');
+    text.push_str(message);
+    let args = ["hash-object", "-t", "commit", "-w", "--stdin"];
+    repo.git_with(&args, text.as_bytes(), &[])
 }
 
 const CONFLICTED: &str = "[conflict] change\n\nGitButler-Conflict: This is a GitButler-managed conflicted commit.\n   It keeps more trees.\n";
@@ -420,13 +435,7 @@ fn commit_patch_of_a_gitbutler_conflicted_commit_shows_its_auto_resolution() {
         None,
     );
     let tree = conflicted_tree(&raw, &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    let id = commit_tree(
-        &raw,
-        tree,
-        Some(Oid::from_str(&base).unwrap()),
-        CONFLICTED,
-        None,
-    );
+    let id = commit_tree(&raw, tree, Some(base.as_str()), CONFLICTED, None);
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let patch = repo.commit_patch(&id).unwrap();
@@ -445,13 +454,7 @@ fn commit_patch_on_a_gitbutler_conflicted_parent_diffs_against_its_auto_resoluti
     let parent = commit_tree(&raw, tree, None, CONFLICTED, None);
     let files = [("a.txt", "two\n"), ("b.txt", "new\n")];
     let child = tree_of(&raw, &files);
-    let id = commit_tree(
-        &raw,
-        child,
-        Some(Oid::from_str(&parent).unwrap()),
-        "child",
-        None,
-    );
+    let id = commit_tree(&raw, child, Some(parent.as_str()), "child", None);
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let patch = repo.commit_patch(&id).unwrap();
@@ -474,13 +477,7 @@ fn tree_patch_to_a_gitbutler_conflicted_tip_shows_its_auto_resolution() {
         None,
     );
     let tree = conflicted_tree(&raw, &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    let tip = commit_tree(
-        &raw,
-        tree,
-        Some(Oid::from_str(&base).unwrap()),
-        CONFLICTED,
-        None,
-    );
+    let tip = commit_tree(&raw, tree, Some(base.as_str()), CONFLICTED, None);
 
     let repo = Repo::discover_at(dir.path()).unwrap();
     let patch = repo.tree_patch(&format!("{tip}^"), &tip).unwrap();
@@ -501,7 +498,7 @@ fn a_gitbutler_conflicted_header_marks_a_conflicted_commit() {
         None,
     );
     let tree = conflicted_tree(&raw, &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    let parent = Some(Oid::from_str(&base).unwrap());
+    let parent = Some(base.as_str());
     let id = commit_tree(&raw, tree, parent, "change", Some("gitbutler-conflicted 1"));
 
     let repo = Repo::discover_at(dir.path()).unwrap();
@@ -523,7 +520,7 @@ fn a_conflict_subject_alone_shows_the_tree_as_committed() {
         None,
     );
     let tree = conflicted_tree(&raw, &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    let parent = Some(Oid::from_str(&base).unwrap());
+    let parent = Some(base.as_str());
     let id = commit_tree(&raw, tree, parent, "[conflict] change", None);
 
     let repo = Repo::discover_at(dir.path()).unwrap();

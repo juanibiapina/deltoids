@@ -1,11 +1,11 @@
 //! Read-only history: local branches, the commits reachable from one, and
 //! the patch a commit introduces.
 
-use std::collections::{BinaryHeap, HashSet};
+use gix::ObjectId;
+use gix::bstr::ByteSlice;
 
-use git2::{BranchType, DiffFindOptions, DiffFormat, DiffOptions, Oid, Repository};
-
-use super::Repo;
+use super::diff::{self, Overlay};
+use super::{Error, Repo, patch};
 
 /// One local branch, as a branch list shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,21 +38,30 @@ pub struct Commit {
 impl Repo {
     /// Every local branch: the checked-out one first, the rest by the
     /// time of their tip commit, newest first. Empty before the first
-    /// commit.
+    /// commit. A branch whose ref or tip cannot be read is left out.
     pub fn local_branches(&self) -> Result<Vec<Branch>, String> {
-        let error = |e: git2::Error| format!("failed to list branches: {e}");
+        self.read_branches()
+            .map_err(|e| format!("failed to list branches: {e}"))
+    }
+
+    fn read_branches(&self) -> Result<Vec<Branch>, Error> {
+        let head = self.repo.head_name().ok().flatten();
         let mut branches = Vec::new();
-        for entry in self.0.branches(Some(BranchType::Local)).map_err(error)? {
-            let (branch, _) = entry.map_err(error)?;
-            let Some(name) = branch.name().map_err(error)? else {
+        for mut reference in self.repo.references()?.local_branches()?.flatten() {
+            let Ok(name) = reference.name().shorten().to_str().map(str::to_string) else {
                 continue;
             };
-            let tip = branch.get().peel_to_commit().map_err(error)?;
+            let is_head = head
+                .as_ref()
+                .is_some_and(|h| h.as_ref() == reference.name());
+            let Ok(tip) = reference.peel_to_commit() else {
+                continue;
+            };
             branches.push(Branch {
-                name: name.to_string(),
-                head: branch.is_head(),
-                summary: tip.summary().ok().flatten().unwrap_or_default().to_string(),
-                time: tip.time().seconds(),
+                name,
+                head: is_head,
+                summary: tip.message()?.summary().to_str_lossy().into_owned(),
+                time: tip.time()?.seconds,
             });
         }
         branches.sort_by(|a, b| {
@@ -70,6 +79,7 @@ impl Repo {
     /// `limit`, whatever the size of the history.
     pub fn commits(&self, rev: &str, limit: usize) -> Result<Vec<Commit>, String> {
         self.walk(rev, None, limit)
+            .map_err(|e| format!("failed to read commits of {rev}: {e}"))
     }
 
     /// [`Self::commits`] stopping at `base`: the commits reachable from
@@ -81,46 +91,29 @@ impl Repo {
         rev: &str,
         limit: usize,
     ) -> Result<Vec<Commit>, String> {
-        let base = self
-            .0
-            .revparse_single(base)
-            .and_then(|object| object.peel_to_commit())
-            .ok()
-            .map(|commit| commit.id());
+        let base = self.commit_id(base).ok();
         self.walk(rev, base, limit)
+            .map_err(|e| format!("failed to read commits of {rev}: {e}"))
     }
 
-    fn walk(&self, rev: &str, base: Option<Oid>, limit: usize) -> Result<Vec<Commit>, String> {
-        let error = |e: git2::Error| format!("failed to read commits of {rev}: {e}");
-        let hidden = |id: Oid| {
-            base.is_some_and(|base| {
-                id == base || self.0.graph_descendant_of(base, id).unwrap_or(false)
-            })
-        };
-        let start = self
-            .0
-            .revparse_single(rev)
-            .and_then(|object| object.peel_to_commit())
-            .map_err(error)?;
-        if hidden(start.id()) {
-            return Ok(Vec::new());
-        }
-        let mut seen = HashSet::from([start.id()]);
-        let mut queue = BinaryHeap::from([(start.time().seconds(), start.id())]);
+    fn commit_id(&self, rev: &str) -> Result<ObjectId, Error> {
+        let object = self.repo.rev_parse_single(rev)?.object()?;
+        Ok(object.peel_to_commit()?.id)
+    }
+
+    fn walk(&self, rev: &str, base: Option<ObjectId>, limit: usize) -> Result<Vec<Commit>, Error> {
+        let start = self.commit_id(rev)?;
+        let walk = self
+            .repo
+            .rev_walk([start])
+            .with_hidden(base)
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                Default::default(),
+            ))
+            .all()?;
         let mut commits = Vec::new();
-        while commits.len() < limit {
-            let Some((_, id)) = queue.pop() else {
-                break;
-            };
-            let commit = self.0.find_commit(id).map_err(error)?;
-            for parent in commit
-                .parent_ids()
-                .filter(|id| seen.insert(*id) && !hidden(*id))
-            {
-                let time = self.0.find_commit(parent).map_err(error)?.time();
-                queue.push((time.seconds(), parent));
-            }
-            commits.push(commit_of(&commit));
+        for info in walk.take(limit) {
+            commits.push(commit_of(&info?.object()?)?);
         }
         Ok(commits)
     }
@@ -131,15 +124,16 @@ impl Repo {
     /// database. A GitButler conflicted commit, on either side, is
     /// diffed by its auto-resolved tree, as GitButler shows it.
     pub fn commit_patch(&self, id: &str) -> Result<String, String> {
-        let error = |e: git2::Error| format!("failed to diff commit {id}: {e}");
-        let oid = Oid::from_str(id).map_err(error)?;
-        let commit = self.0.find_commit(oid).map_err(error)?;
-        let tree = shown_tree(&self.0, &commit).map_err(error)?;
-        let parent = match commit.parent(0) {
-            Ok(parent) => Some(shown_tree(&self.0, &parent).map_err(error)?),
-            Err(_) => None,
+        let read = || -> Result<String, Error> {
+            let commit = self.repo.find_commit(ObjectId::from_hex(id.as_bytes())?)?;
+            let tree = shown_tree(&self.repo, &commit)?;
+            let parent = match commit.parent_ids().next() {
+                Some(parent) => Some(shown_tree(&self.repo, &self.repo.find_commit(parent)?)?),
+                None => None,
+            };
+            print_patch(&self.repo, parent, tree)
         };
-        print_patch(&self.0, parent.as_ref(), &tree).map_err(error)
+        read().map_err(|e| format!("failed to diff commit {id}: {e}"))
     }
 
     /// The patch from revision `base`'s tree to revision `tip`'s: the
@@ -147,37 +141,30 @@ impl Repo {
     /// [`Self::commit_patch`] gives, GitButler conflicted commits
     /// included.
     pub fn tree_patch(&self, base: &str, tip: &str) -> Result<String, String> {
-        let error = |e: git2::Error| format!("failed to diff {base}..{tip}: {e}");
-        let tree = |rev: &str| {
-            let object = self.0.revparse_single(rev)?;
-            match object.peel_to_commit() {
-                Ok(commit) => shown_tree(&self.0, &commit),
-                Err(_) => object.peel_to_tree(),
+        let tree = |rev: &str| -> Result<ObjectId, Error> {
+            let object = self.repo.rev_parse_single(rev)?.object()?;
+            match object.kind {
+                gix::object::Kind::Commit => shown_tree(&self.repo, &object.into_commit()),
+                _ => Ok(object.peel_to_tree()?.id),
             }
         };
-        let old = tree(base).map_err(error)?;
-        let new = tree(tip).map_err(error)?;
-        print_patch(&self.0, Some(&old), &new).map_err(error)
+        let read = || print_patch(&self.repo, Some(tree(base)?), tree(tip)?);
+        read().map_err(|e| format!("failed to diff {base}..{tip}: {e}"))
     }
 }
 
-fn commit_of(commit: &git2::Commit<'_>) -> Commit {
-    let id = commit.id().to_string();
-    let author = commit.author();
-    Commit {
+fn commit_of(commit: &gix::Commit<'_>) -> Result<Commit, Error> {
+    let id = commit.id.to_string();
+    let author = commit.author()?;
+    Ok(Commit {
         short_id: id[..7].to_string(),
         id,
-        summary: commit
-            .summary()
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-            .to_string(),
-        message: commit.message().unwrap_or_default().to_string(),
-        author: author.name().unwrap_or_default().to_string(),
-        email: author.email().unwrap_or_default().to_string(),
-        time: author.when().seconds(),
-    }
+        summary: commit.message()?.summary().to_str_lossy().into_owned(),
+        message: commit.message_raw()?.to_str_lossy().into_owned(),
+        author: author.name.to_str_lossy().into_owned(),
+        email: author.email.to_str_lossy().into_owned(),
+        time: author.time()?.seconds,
+    })
 }
 
 /// The tree `commit` shows: its `.auto-resolution` subtree when
@@ -189,54 +176,54 @@ fn commit_of(commit: &git2::Commit<'_>) -> Commit {
 /// entries next to the files. Those entries are whole copies of the
 /// repository, so diffing the raw tree would list every file several
 /// times over. Without an `.auto-resolution` entry the raw tree is shown.
-fn shown_tree<'r>(
-    repo: &'r Repository,
-    commit: &git2::Commit<'r>,
-) -> Result<git2::Tree<'r>, git2::Error> {
-    let tree = commit.tree()?;
+fn shown_tree(repo: &gix::Repository, commit: &gix::Commit<'_>) -> Result<ObjectId, Error> {
+    let tree = commit.tree_id()?.detach();
     if !has_conflict_metadata(commit) {
         return Ok(tree);
     }
-    let resolved = tree.get_name(".auto-resolution").map(|entry| entry.id());
-    match resolved {
-        Some(id) => repo.find_tree(id),
-        None => Ok(tree),
-    }
+    let resolved = repo
+        .find_tree(tree)?
+        .find_entry(".auto-resolution")
+        .map(|entry| entry.object_id());
+    Ok(resolved.unwrap_or(tree))
 }
 
-fn has_conflict_metadata(commit: &git2::Commit<'_>) -> bool {
-    let trailer = git2::message_trailers_bytes(commit.message_bytes()).is_ok_and(|trailers| {
-        trailers
-            .iter()
-            .any(|(key, _)| key.eq_ignore_ascii_case(b"GitButler-Conflict"))
-    });
-    let header = commit
-        .header_field_bytes("gitbutler-conflicted")
-        .ok()
-        .and_then(|value| std::str::from_utf8(&value).ok()?.trim().parse::<u64>().ok())
+fn has_conflict_metadata(commit: &gix::Commit<'_>) -> bool {
+    let Ok(decoded) = commit.decode() else {
+        return false;
+    };
+    let trailer =
+        trailers(decoded.message).any(|(key, _)| key.eq_ignore_ascii_case(b"GitButler-Conflict"));
+    let header = decoded
+        .extra_headers()
+        .find("gitbutler-conflicted")
+        .and_then(|value| value.to_str().ok()?.trim().parse::<u64>().ok())
         .is_some();
     trailer || header
 }
 
+/// `Key: value` lines of a message's last paragraph, as git trailers.
+/// A message without a body has none.
+fn trailers(message: &gix::bstr::BStr) -> impl Iterator<Item = (&[u8], &[u8])> {
+    let text = message.trim_end();
+    let paragraph = text.rfind(b"\n\n").map_or(&[][..], |i| &text[i + 2..]);
+    paragraph.lines().filter_map(|line| {
+        let colon = line.find_byte(b':')?;
+        let key = line[..colon].trim();
+        let valid = !key.is_empty()
+            && key
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_');
+        valid.then(|| (key, line[colon + 1..].trim()))
+    })
+}
+
 fn print_patch(
-    repo: &Repository,
-    old: Option<&git2::Tree<'_>>,
-    new: &git2::Tree<'_>,
-) -> Result<String, git2::Error> {
-    let mut opts = DiffOptions::new();
-    opts.include_typechange(true).id_abbrev(40);
-    let mut diff = repo.diff_tree_to_tree(old, Some(new), Some(&mut opts))?;
-    let mut find = DiffFindOptions::new();
-    find.renames(true);
-    diff.find_similar(Some(&mut find))?;
-    let mut out = String::new();
-    diff.print(DiffFormat::Patch, |_, _, line| {
-        // Content lines need their origin prefix; headers already include it.
-        if matches!(line.origin(), '+' | '-' | ' ') {
-            out.push(line.origin());
-        }
-        out.push_str(&String::from_utf8_lossy(line.content()));
-        true
-    })?;
-    Ok(out)
+    repo: &gix::Repository,
+    old: Option<ObjectId>,
+    new: ObjectId,
+) -> Result<String, Error> {
+    let overlay = Overlay::new();
+    let changes = diff::tree_changes(repo, old, new)?;
+    patch::write(&changes, |side| diff::content(repo, &overlay, side))
 }

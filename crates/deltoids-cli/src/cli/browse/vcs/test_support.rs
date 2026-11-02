@@ -25,14 +25,11 @@ pub(in crate::cli::browse) fn branch(name: &str) -> Branch {
 /// Record a GitButler target in the repository's config at `dir`, as
 /// `but` does when it adopts a repository. `HEAD` stays where it is.
 pub(in crate::cli::browse) fn adopt(dir: &Path) {
-    git2::Repository::open(dir)
-        .unwrap()
-        .config()
-        .unwrap()
-        .open_level(git2::ConfigLevel::Local)
-        .unwrap()
-        .set_str("gitbutler.project.targetRef", "refs/remotes/origin/main")
-        .unwrap();
+    crate::test_git::TestRepo::open(dir).git(&[
+        "config",
+        "gitbutler.project.targetRef",
+        "refs/remotes/origin/main",
+    ]);
 }
 
 /// A recorded fixture's path.

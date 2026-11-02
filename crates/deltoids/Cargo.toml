@@ -9,12 +9,12 @@ homepage.workspace = true
 description.workspace = true
 
 [dependencies]
-git2 = { version = "0.21", optional = true }
+gix = { version = "0.90", optional = true, default-features = false, features = ["status", "blob-diff", "attributes", "excludes", "revision", "index", "dirwalk", "parallel", "sha1"] }
 ratatui = { version = "0.30", optional = true }
 toml = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
-gix-imara-diff = { version = "0.2", features = ["unified_diff"] }
+gix-imara-diff = { version = "0.3", features = ["unified_diff"] }
 # Syntax and theme assets come from two-face's embedded syntect dumps on every
 # target; only the regex engine differs: oniguruma on native, fancy-regex on
 # wasm. Keep the base dep engine-free so wasm never pulls the C oniguruma build.
@@ -113,8 +113,9 @@ lang-toml = ["dep:tree-sitter-toml-ng"]
 lang-typescript = ["dep:tree-sitter-typescript"]
 lang-yaml = ["dep:tree-sitter-yaml"]
 # Resolve before/after content for a `parse::FileDiff` from a git
-# repository's object database (uses libgit2 via the `git2` crate).
-blob-resolve = ["dep:git2"]
+# repository's object database, and read the working tree and history
+# (pure Rust, through `gix`).
+blob-resolve = ["dep:gix"]
 # Render `Hunk`s and headers as ratatui `Line<'static>` values for use in
 # the scrolling TUI.
 ratatui = ["dep:ratatui"]

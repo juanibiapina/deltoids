@@ -1,5 +1,5 @@
-//! The GitButler adapter. Reads the workspace through git2 like the git
-//! adapter, and asks the `but` CLI (its `--json` output) for everything
+//! The GitButler adapter. Reads the workspace through `deltoids::git`
+//! like the git adapter, and asks the `but` CLI (its `--json` output) for everything
 //! GitButler owns: the workspace `but status` shows, which branches
 //! exist outside it, and the IDs its writes take.
 

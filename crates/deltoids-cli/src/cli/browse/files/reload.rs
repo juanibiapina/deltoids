@@ -88,11 +88,10 @@ pub(super) enum ReloadOutcome {
 /// Deduplicates on patch text and sidebar staging status. A notification
 /// that changes neither skips the model/view rebuild.
 ///
-/// A working-tree diff races on-disk churn: a file can change size mid-diff
-/// (the libgit2 Filesystem error) or between the diff and content
-/// resolution (a hash mismatch → missing blob). Both are transient and
-/// self-correct, so this returns [`ReloadOutcome::Failed`] rather than an
-/// error, leaving `model`/`last_input` untouched for the next tick to
+/// A working-tree diff races on-disk churn: a file can change between the
+/// diff and content resolution (a hash mismatch → missing blob). That is
+/// transient and self-corrects, so this returns [`ReloadOutcome::Failed`]
+/// rather than an error, leaving `model`/`last_input` untouched for the next tick to
 /// retry.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reload_working_tree(
@@ -591,19 +590,13 @@ mod tests {
     #[test]
     fn staging_refreshes_sidebar_status_when_patch_is_unchanged() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = git2::Repository::init(dir.path()).unwrap();
+        let raw = crate::test_git::TestRepo::init(dir.path());
         std::fs::write(dir.path().join("file.txt"), "before\n").unwrap();
-        let mut index = raw.index().unwrap();
-        index.add_path(std::path::Path::new("file.txt")).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = raw.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        raw.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-            .unwrap();
+        raw.stage_all();
+        raw.commit("initial");
 
         std::fs::write(dir.path().join("file.txt"), "after\n").unwrap();
-        raw.blob(b"after\n").unwrap();
+        raw.blob(b"after\n");
         let vcs = Vcs::discover_at(dir.path()).unwrap();
         let repo = vcs.repo();
         let patch = repo.working_tree_diff().unwrap();
@@ -616,9 +609,7 @@ mod tests {
         let patches = Patches::net(&patch);
         assert!(compute_reload(&vcs, &patches, &model).unwrap().is_none());
 
-        index.read(true).unwrap();
-        index.add_path(std::path::Path::new("file.txt")).unwrap();
-        index.write().unwrap();
+        raw.git(&["add", "file.txt"]);
         let Update::Staging(stages) = compute_reload(&vcs, &patches, &model).unwrap().unwrap()
         else {
             panic!("staging must not rebuild the diff model");

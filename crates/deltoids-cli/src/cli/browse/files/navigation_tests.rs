@@ -899,7 +899,7 @@ fn border(state: &mut FilesMode) -> String {
 /// resolution does not depend on the process cwd shared by parallel
 /// tests, as the interaction tests do.
 fn store_blobs(dir: &std::path::Path) {
-    let raw = git2::Repository::open(dir).unwrap();
+    let raw = crate::test_git::TestRepo::open(dir);
     let vcs = Vcs::discover_at(dir).unwrap();
     let stages = vcs.repo().working_tree_snapshot().unwrap().stages;
     for bytes in stages
@@ -907,7 +907,7 @@ fn store_blobs(dir: &std::path::Path) {
         .flat_map(|status| status.paths)
         .filter_map(|path| fs::read(dir.join(path)).ok())
     {
-        raw.blob(&bytes).unwrap();
+        raw.blob(&bytes);
     }
 }
 

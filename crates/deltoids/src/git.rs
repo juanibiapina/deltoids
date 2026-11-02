@@ -1,28 +1,41 @@
-//! Lightweight wrappers over `git2` used by the [`content`](crate::content)
-//! module to resolve before/after content for diff hunks.
+//! Read access to a git repository through `gix`: blobs for the
+//! [`content`](crate::content) module, plus the working-tree snapshot,
+//! history, and ignore and attribute lookups the TUI uses.
 //!
 //! Available only when the `blob-resolve` cargo feature is enabled.
 
-use std::path::Path;
-use std::time::Duration;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
-use git2::{
-    AttrCheckFlags, AttrValue, DiffFindOptions, DiffFormat, DiffOptions, ObjectType, Oid,
-    Repository, Status, StatusOptions,
-};
+use gix::bstr::{BStr, ByteSlice};
 
-/// A discovered git repository, used to look up blobs by hash.
-pub struct Repo(Repository);
+/// A discovered git repository.
+pub struct Repo {
+    repo: gix::Repository,
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+    /// Working-tree texts the last snapshot read, by blob id, so
+    /// [`Repo::blob_filtered`] resolves a snapshot's worktree sides from
+    /// the bytes its diff used.
+    worktree_texts: RefCell<HashMap<gix::ObjectId, String>>,
+}
 
+mod diff;
 mod history;
+mod patch;
 mod snapshot;
 
 pub use history::{Branch, Commit};
 
+type Error = Box<dyn std::error::Error + Send + Sync>;
+
 /// Patch and staging columns from one working-tree enumeration.
 ///
-/// Reads HEAD and the index once per attempt; concurrent filesystem writes
-/// can still race content reads. No index changes are written by this read.
+/// Reads HEAD and the index once. Each changed working-tree file is read
+/// once, and those bytes feed both its hash and its hunks. No index
+/// changes are written by this read.
 #[derive(Debug, PartialEq, Eq)]
 pub struct WorkingTreeSnapshot {
     /// HEAD → worktree for every changed file.
@@ -68,41 +81,54 @@ pub struct FileStageStatus {
 impl Repo {
     /// Discover git repository from current directory.
     pub fn discover() -> Option<Self> {
-        Repository::discover(".").ok().map(Repo)
+        Self::discover_at(&std::env::current_dir().ok()?)
     }
 
     /// Discover a git repository starting from `path`, walking up to find
     /// the enclosing `.git`. Same as [`Repo::discover`] but anchored at an
     /// explicit path instead of the process working directory.
+    ///
+    /// The path is canonicalized first, so [`Self::workdir`],
+    /// [`Self::git_dir`], and [`Self::common_dir`] are absolute and free
+    /// of symlinks and `..`, matching the paths filesystem watchers
+    /// report.
     pub fn discover_at(path: &Path) -> Option<Self> {
-        Repository::discover(path).ok().map(Repo)
+        let path = std::fs::canonicalize(path).ok()?;
+        let repo = gix::discover(path).ok()?;
+        let canonical = |dir: &Path| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+        Some(Repo {
+            git_dir: canonical(repo.git_dir()),
+            common_dir: canonical(repo.common_dir()),
+            repo,
+            worktree_texts: RefCell::default(),
+        })
     }
 
     /// The repository's working directory, or `None` for a bare repo.
     /// The review watcher watches this tree for changes.
     pub fn workdir(&self) -> Option<&Path> {
-        self.0.workdir()
+        self.repo.workdir()
     }
 
     /// Directory containing this worktree's HEAD and index.
     pub fn git_dir(&self) -> &Path {
-        self.0.path()
+        &self.git_dir
     }
 
     /// Directory containing shared refs and repository configuration.
     pub fn common_dir(&self) -> &Path {
-        self.0.commondir()
+        &self.common_dir
     }
 
     /// The value of `name` in the repository's own config, ignoring global
-    /// and system config.
+    /// and system config. Reads the file on every call, so a value another
+    /// process wrote since [`Self::discover_at`] shows up.
     pub fn local_config_string(&self, name: &str) -> Option<String> {
-        let config = self.0.config().ok()?;
-        config
-            .open_level(git2::ConfigLevel::Local)
-            .ok()?
-            .get_string(name)
-            .ok()
+        let path = self.common_dir.join("config");
+        let file =
+            gix::config::File::from_path_no_includes(path, gix::config::Source::Local).ok()?;
+        file.string(name)
+            .map(|value| value.to_str_lossy().into_owned())
     }
 
     /// A fingerprint of `HEAD` and every ref's name and target. Two equal
@@ -111,19 +137,20 @@ impl Repo {
     pub fn refs_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        let mut hash_ref = |reference: &git2::Reference<'_>| {
-            reference.name_bytes().hash(&mut hasher);
-            reference.symbolic_target_bytes().hash(&mut hasher);
-            reference
-                .target()
-                .map(|oid| oid.to_string())
-                .hash(&mut hasher);
+        let mut hash_ref = |reference: &gix::Reference<'_>| {
+            reference.name().as_bstr().hash(&mut hasher);
+            match reference.target() {
+                gix::refs::TargetRef::Object(id) => (0u8, id.as_bytes()).hash(&mut hasher),
+                gix::refs::TargetRef::Symbolic(name) => (1u8, name.as_bstr()).hash(&mut hasher),
+            }
         };
-        if let Ok(head) = self.0.find_reference("HEAD") {
+        if let Ok(head) = self.repo.find_reference("HEAD") {
             hash_ref(&head);
         }
-        if let Ok(references) = self.0.references() {
-            for reference in references.flatten() {
+        if let Ok(references) = self.repo.references()
+            && let Ok(all) = references.all()
+        {
+            for reference in all.flatten() {
                 hash_ref(&reference);
             }
         }
@@ -134,81 +161,103 @@ impl Repo {
     /// working tree or a workdir-relative path.
     ///
     /// Gitignored files never appear in [`Repo::working_tree_diff`], so a
-    /// change to one must not trigger a reload. Respects nested
-    /// `.gitignore`, `.git/info/exclude`, and global excludes. Returns
-    /// `false` on any error (fail open: never miss a real change).
+    /// change to one must not trigger a reload. A path inside an ignored
+    /// directory counts as ignored. Respects nested `.gitignore`,
+    /// `.git/info/exclude`, and global excludes. Returns `false` on any
+    /// error (fail open: never miss a real change).
     pub fn is_ignored(&self, path: &Path) -> bool {
-        // libgit2 wants a workdir-relative path; map absolute paths down.
-        let rel = match self.0.workdir() {
-            Some(workdir) => path.strip_prefix(workdir).unwrap_or(path),
-            None => path,
+        let Some(workdir) = self.repo.workdir() else {
+            return false;
         };
-        self.0.is_path_ignored(rel).unwrap_or(false)
+        let Some(rel) = relative_to(workdir, path) else {
+            return false;
+        };
+        let Ok(index) = self.repo.index_or_empty() else {
+            return false;
+        };
+        let Ok(mut excludes) = self.repo.excludes(
+            &index,
+            None,
+            gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+        ) else {
+            return false;
+        };
+        let mut ancestors: Vec<&Path> = rel
+            .ancestors()
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        ancestors.reverse();
+        let leaf = ancestors.len().saturating_sub(1);
+        ancestors.iter().enumerate().any(|(depth, ancestor)| {
+            let is_dir = depth < leaf || workdir.join(ancestor).is_dir();
+            let mode = if is_dir {
+                gix::index::entry::Mode::DIR
+            } else {
+                gix::index::entry::Mode::FILE
+            };
+            excludes
+                .at_path(ancestor, Some(mode))
+                .is_ok_and(|platform| platform.is_excluded())
+        })
     }
 
     /// Whether `path` (workdir-relative) names a content filter driver
     /// through the `filter` attribute, as git-crypt and transcrypt set.
     ///
-    /// libgit2 diffs the stored (cleaned) bytes of such files, so its
+    /// A diff compares the stored (cleaned) bytes of such files, so its
     /// binary verdict can disagree with what git shows through the
     /// filter. Returns `false` when the attribute is unset, unspecified,
     /// or the lookup fails.
     pub fn has_content_filter(&self, path: &str) -> bool {
-        self.0
-            .get_attr_bytes(Path::new(path), "filter", AttrCheckFlags::FILE_THEN_INDEX)
-            .ok()
-            .is_some_and(|value| matches!(AttrValue::always_bytes(value), AttrValue::Bytes(_)))
+        let Ok(index) = self.repo.index_or_empty() else {
+            return false;
+        };
+        let Ok(mut attributes) = self.repo.attributes_only(
+            &index,
+            gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+        ) else {
+            return false;
+        };
+        let mut outcome = attributes.selected_attribute_matches(["filter"]);
+        let Ok(platform) = attributes.at_path(path, Some(gix::index::entry::Mode::FILE)) else {
+            return false;
+        };
+        platform.matching_attributes(&mut outcome);
+        outcome
+            .iter_selected()
+            .any(|m| matches!(m.assignment.state, gix::attrs::StateRef::Value(_)))
     }
 
     /// Full working-tree-equivalent text of the blob named by `hash`, with
-    /// git content filters applied (clean/smudge, e.g. git-crypt
-    /// decryption), as `git cat-file --filters --path=<path> <hash>`
-    /// produces. `path` is a workdir-relative path used to resolve which
-    /// filter applies.
+    /// git's checkout conversions applied (filter drivers such as
+    /// git-crypt, `ident`, line endings, `working-tree-encoding`), as
+    /// `git cat-file --filters --path=<path> <hash>` produces. `path` is a
+    /// workdir-relative path used to resolve which conversions apply.
     ///
-    /// A blob a checkout writes unchanged is read in process. Only a path
-    /// a checkout transforms (see [`Self::checkout_transforms`]) shells
-    /// out to the git CLI, which runs the external filter processes
-    /// libgit2 cannot.
+    /// A working-tree text the last [`Self::working_tree_snapshot`] read
+    /// resolves as it was read, without conversions.
     ///
-    /// Returns `None` if the hash is null, git is unavailable, the blob is
-    /// not in the ODB, the command fails, or the result is not valid
-    /// UTF-8. Failing soft lets callers fall through to other resolution
-    /// paths.
+    /// Returns `None` if the hash is null, the blob is not in the ODB, a
+    /// filter fails, or the result is not valid UTF-8. Failing soft lets
+    /// callers fall through to other resolution paths.
     pub fn blob_filtered(&self, hash: &str, path: &str) -> Option<String> {
         if is_null_hash(hash) {
             return None;
         }
-        if self.checkout_transforms(path) {
-            return cat_file_filtered(self.0.workdir()?, hash, path);
+        if let Ok(id) = gix::ObjectId::from_hex(hash.as_bytes())
+            && let Some(text) = self.worktree_texts.borrow().get(&id)
+        {
+            return Some(text.clone());
         }
-        let blob = self.0.revparse_single(hash).ok()?.peel_to_blob().ok()?;
-        String::from_utf8(blob.content().to_vec()).ok()
-    }
-
-    /// Whether a checkout of `path` can write bytes other than the blob's:
-    /// a `filter`, `ident`, or `working-tree-encoding` attribute, an
-    /// `eol=crlf` attribute, `core.autocrlf=true`, or `core.eol=crlf`.
-    fn checkout_transforms(&self, path: &str) -> bool {
-        let attr = |name| {
-            let value = self
-                .0
-                .get_attr_bytes(Path::new(path), name, AttrCheckFlags::FILE_THEN_INDEX)
-                .ok()
-                .flatten();
-            AttrValue::always_bytes(value)
-        };
-        let set = |name| !matches!(attr(name), AttrValue::Unspecified | AttrValue::False);
-        let config = self.0.config().ok();
-        let config_str = |name| config.as_ref()?.get_string(name).ok();
-        set("filter")
-            || set("ident")
-            || set("working-tree-encoding")
-            || matches!(attr("eol"), AttrValue::Bytes(b"crlf"))
-            || config
-                .as_ref()
-                .is_some_and(|c| c.get_bool("core.autocrlf").unwrap_or(false))
-            || config_str("core.eol").is_some_and(|eol| eol.eq_ignore_ascii_case("crlf"))
+        let id = self.repo.rev_parse_single(hash).ok()?.detach();
+        let blob = self.repo.find_blob(id).ok()?;
+        let (mut pipeline, _) = self.repo.filter_pipeline(None).ok()?;
+        let mut converted = pipeline
+            .convert_to_worktree(&blob.data, path.into(), Default::default())
+            .ok()?;
+        let mut out = Vec::new();
+        converted.read_to_end(&mut out).ok()?;
+        String::from_utf8(out).ok()
     }
 
     /// Unified diff of the working tree against `HEAD`, as patch text
@@ -222,208 +271,61 @@ impl Repo {
     /// addition.
     ///
     /// A file whose type changed (regular ↔ symlink ↔ submodule) is
-    /// reported as a single `typechange` delta (via `include_typechange`)
-    /// rather than the delete + add pair libgit2 emits by default, so a
-    /// type change shows as one `old → new` row matching
-    /// `working_tree_status` (which reports `TypeChanged`).
-    ///
-    /// Retries the transient libgit2 Filesystem race: a working-tree file
-    /// can change size between the diff plan (which records each file's
-    /// size) and the lazy content load (which re-stats and refuses to emit
-    /// a mismatched file, raising a `Filesystem`-class error). A fresh diff
-    /// re-stats the tree, so a bounded retry lands in a quiet moment for
-    /// the common single-save-mid-diff case. A non-race error, or an
-    /// exhausted retry budget, maps to one boundary message.
+    /// reported as a single typechange entry with old and new modes.
     pub fn working_tree_diff(&self) -> Result<String, String> {
-        retry_worktree_read(|| self.diff_once(), "failed to compute working-tree diff")
+        self.read_snapshot()
+            .map(|snapshot| snapshot.patch)
+            .map_err(|e| format!("failed to compute working-tree diff: {e}"))
     }
 
     /// Read the net patch and both staging columns with one workdir scan.
     ///
-    /// Filesystem races retry the entire snapshot with the same bounded
-    /// budget as [`Self::working_tree_diff`]. Other failures return an error
-    /// so callers can retain the last complete view.
+    /// A `HEAD` that fails to resolve (other than an unborn branch) is an
+    /// error, so callers can retain the last complete view.
     pub fn working_tree_snapshot(&self) -> Result<WorkingTreeSnapshot, String> {
-        retry_worktree_read(
-            || snapshot::read(&self.0),
-            "failed to read working-tree snapshot",
-        )
+        self.read_snapshot()
+            .map_err(|e| format!("failed to read working-tree snapshot: {e}"))
     }
 
-    /// One working-tree diff pass: peel `HEAD`, diff against the working
-    /// tree + index, coalesce renames, and print the patch. Returns the
-    /// raw [`git2::Error`] so [`Repo::working_tree_diff`] can inspect its
-    /// class and retry only the transient Filesystem race.
-    fn diff_once(&self) -> Result<String, git2::Error> {
-        let head_tree = match self.0.head() {
-            Ok(head) => Some(head.peel_to_tree()?),
-            // Unborn HEAD (no commits yet): diff against an empty tree.
-            Err(_) => None,
-        };
-
-        let mut opts = working_tree_diff_options();
-        let diff = self
-            .0
-            .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))?;
-        print_working_tree_patch(diff)
+    /// Read a snapshot and keep its working-tree texts for
+    /// [`Self::blob_filtered`].
+    fn read_snapshot(&self) -> Result<WorkingTreeSnapshot, Error> {
+        let (snapshot, overlay) = snapshot::read(&self.repo)?;
+        let texts = overlay
+            .into_iter()
+            .filter_map(|(id, data)| Some((id, String::from_utf8(data).ok()?)))
+            .collect();
+        *self.worktree_texts.borrow_mut() = texts;
+        Ok(snapshot)
     }
 
     /// Per-file staging status for the working tree, mirroring
     /// `git status --porcelain` XY codes. Each path is workdir-relative,
-    /// matching the paths in [`Repo::working_tree_diff`].
-    ///
-    /// Splits git2's `Status` bitflags into two columns: the `INDEX_*`
-    /// flags (HEAD → index) become the `staged` column, the `WT_*` flags
-    /// (index → workdir) become the `unstaged` column. Untracked files
-    /// report `unstaged: Some(Untracked)` with `staged: None`. Rename
-    /// detection is enabled for both columns so a staged/worktree rename
-    /// reports `Renamed` rather than a delete + add pair.
+    /// matching the paths in [`Repo::working_tree_diff`]. Rename
+    /// detection runs in both columns, and untracked files can be rename
+    /// targets, so a moved file reports `Renamed` rather than a delete
+    /// and an add.
     pub fn working_tree_status(&self) -> Result<Vec<FileStageStatus>, String> {
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .renames_head_to_index(true)
-            .renames_index_to_workdir(true);
-
-        let statuses = self
-            .0
-            .statuses(Some(&mut opts))
-            .map_err(|e| format!("failed to read status: {e}"))?;
-
-        let mut out = Vec::new();
-        for entry in statuses.iter() {
-            let flags = entry.status();
-            let staged = staged_change(flags);
-            let unstaged = unstaged_change(flags);
-            if staged.is_none() && unstaged.is_none() {
-                continue;
-            }
-            // Prefer the post-image path so renames join to the diff by
-            // their new name (the diff's `new_path`); fall back to the
-            // entry path.
-            let Some(path) = entry_new_path(&entry) else {
-                continue;
-            };
-            let paths = [entry.head_to_index(), entry.index_to_workdir()]
-                .into_iter()
-                .flatten()
-                .flat_map(|delta| [delta.old_file(), delta.new_file()])
-                .filter_map(|file| file.path().map(|p| p.to_string_lossy().into_owned()))
-                .collect();
-            out.push(FileStageStatus {
-                path,
-                paths,
-                staged,
-                unstaged,
-            });
-        }
-        Ok(out)
+        snapshot::stages(&self.repo).map_err(|e| format!("failed to read status: {e}"))
     }
 }
 
-fn retry_worktree_read<T>(
-    mut read: impl FnMut() -> Result<T, git2::Error>,
-    context: &str,
-) -> Result<T, String> {
-    const MAX_ATTEMPTS: usize = 4;
-    for attempt in 1..=MAX_ATTEMPTS {
-        let error = match read() {
-            Ok(value) => return Ok(value),
-            Err(error) => error,
-        };
-        // A fresh enumeration retries lazy-content size races.
-        if error.class() != git2::ErrorClass::Filesystem || attempt == MAX_ATTEMPTS {
-            return Err(format!("{context}: {error}"));
-        }
-        std::thread::sleep(Duration::from_millis(attempt as u64));
+/// `path` relative to `workdir`. An absolute `path` may name the tree
+/// through a symlink (`/var` for `/private/var` on macOS), so its deepest
+/// existing ancestor is resolved first. `None` outside the tree.
+fn relative_to(workdir: &Path, path: &Path) -> Option<std::path::PathBuf> {
+    if !path.is_absolute() {
+        return Some(path.to_owned());
     }
-    unreachable!("the last attempt returns its result")
-}
-
-fn working_tree_diff_options() -> DiffOptions {
-    let mut opts = DiffOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
-        .include_typechange(true);
-    opts
-}
-
-fn print_working_tree_patch(mut diff: git2::Diff<'_>) -> Result<String, git2::Error> {
-    // Explicit rename detection keeps the patch independent of diff.renames.
-    let mut find = DiffFindOptions::new();
-    find.renames(true);
-    diff.find_similar(Some(&mut find))?;
-    let mut out = String::new();
-    diff.print(DiffFormat::Patch, |_, _, line| {
-        // Content lines need their origin prefix; headers already include it.
-        if matches!(line.origin(), '+' | '-' | ' ') {
-            out.push(line.origin());
-        }
-        if let Ok(text) = std::str::from_utf8(line.content()) {
-            out.push_str(text);
-        }
-        true
-    })?;
-    Ok(out)
-}
-
-/// Workdir-relative path of a status entry, preferring the post-image
-/// (`new_file`) path from whichever delta exists so a rename reports its
-/// new name. Falls back to the entry's own path.
-fn entry_new_path(entry: &git2::StatusEntry<'_>) -> Option<String> {
-    let from_delta = entry
-        .head_to_index()
-        .or_else(|| entry.index_to_workdir())
-        .and_then(|delta| {
-            delta
-                .new_file()
-                .path()
-                .map(|p| p.to_string_lossy().into_owned())
-        });
-    from_delta.or_else(|| entry.path().ok().map(str::to_string))
-}
-
-/// Map the `INDEX_*` (staged column) bits of a [`Status`] to a
-/// [`StageChange`], or `None` when nothing is staged.
-fn staged_change(flags: Status) -> Option<StageChange> {
-    // Check RENAMED before MODIFIED: a content-changed rename sets both
-    // INDEX_RENAMED and INDEX_MODIFIED, and git porcelain reports it as
-    // `R` (the rename wins).
-    if flags.contains(Status::INDEX_NEW) {
-        Some(StageChange::Added)
-    } else if flags.contains(Status::INDEX_RENAMED) {
-        Some(StageChange::Renamed)
-    } else if flags.contains(Status::INDEX_MODIFIED) {
-        Some(StageChange::Modified)
-    } else if flags.contains(Status::INDEX_DELETED) {
-        Some(StageChange::Deleted)
-    } else if flags.contains(Status::INDEX_TYPECHANGE) {
-        Some(StageChange::TypeChanged)
-    } else {
-        None
+    if let Ok(rel) = path.strip_prefix(workdir) {
+        return Some(rel.to_owned());
     }
-}
-
-/// Map the `WT_*` (worktree column) bits of a [`Status`] to a
-/// [`StageChange`], or `None` when the worktree matches the index.
-/// `WT_NEW` (an untracked file) maps to [`StageChange::Untracked`].
-fn unstaged_change(flags: Status) -> Option<StageChange> {
-    // Check RENAMED before MODIFIED for the same reason as the staged
-    // column: a content-changed rename sets both bits and reports as `R`.
-    if flags.contains(Status::WT_NEW) {
-        Some(StageChange::Untracked)
-    } else if flags.contains(Status::WT_RENAMED) {
-        Some(StageChange::Renamed)
-    } else if flags.contains(Status::WT_MODIFIED) {
-        Some(StageChange::Modified)
-    } else if flags.contains(Status::WT_DELETED) {
-        Some(StageChange::Deleted)
-    } else if flags.contains(Status::WT_TYPECHANGE) {
-        Some(StageChange::TypeChanged)
-    } else {
-        None
-    }
+    let ancestor = path.ancestors().find(|a| a.exists())?;
+    let real = ancestor
+        .canonicalize()
+        .ok()?
+        .join(path.strip_prefix(ancestor).ok()?);
+    real.strip_prefix(workdir).ok().map(Path::to_owned)
 }
 
 /// Check if hash represents "no file" (all zeros).
@@ -436,7 +338,7 @@ pub fn is_null_hash(hash: &str) -> bool {
 /// Accepts full (40-char) and abbreviated hashes. Returns `false` if
 /// hashing fails or the hashes don't match.
 pub fn blob_hash_matches(content: &str, expected: &str) -> bool {
-    let Ok(oid) = Oid::hash_object(ObjectType::Blob, content.as_bytes()) else {
+    let Ok(oid) = blob_id(content.as_bytes()) else {
         return false;
     };
     let oid_str = oid.to_string();
@@ -447,28 +349,18 @@ pub fn blob_hash_matches(content: &str, expected: &str) -> bool {
     }
 }
 
-/// Run `git cat-file --filters --path=<path> <hash>` in `workdir` and
-/// return its stdout as UTF-8 text. This is the one external git-CLI
-/// shell-out in the library; it stays private so the process dependency
-/// (argv, exit status, stderr, decoding) never leaks past
-/// [`Repo::blob_filtered`].
-///
-/// Returns `None` when git cannot be spawned, exits non-zero (blob
-/// missing, bad path), or emits non-UTF-8 bytes (a genuinely binary
-/// blob).
-fn cat_file_filtered(workdir: &Path, hash: &str, path: &str) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("cat-file")
-        .arg("--filters")
-        .arg(format!("--path={path}"))
-        .arg(hash)
-        .current_dir(workdir)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+/// The git blob id of `data`, as `git hash-object` computes it without
+/// filters.
+fn blob_id(data: &[u8]) -> Result<gix::ObjectId, Error> {
+    Ok(gix::objs::compute_hash(
+        gix::hash::Kind::Sha1,
+        gix::objs::Kind::Blob,
+        data,
+    )?)
+}
+
+fn path_str(path: &BStr) -> String {
+    path.to_str_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -480,55 +372,87 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    /// Init a repo at `dir` with a committable identity configured.
-    fn init_repo(dir: &Path) -> Repository {
-        let repo = Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
+    /// A test repository driven through the git CLI, with the user's
+    /// global and system configuration shut out.
+    struct Fixture {
+        dir: std::path::PathBuf,
+    }
+
+    impl Fixture {
+        /// Run `git args` with `input` on stdin, asserting success, and
+        /// return its trimmed stdout.
+        fn git_with(&self, args: &[&str], input: &[u8], env: &[(&str, &str)]) -> String {
+            use std::io::Write;
+            let mut child = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&self.dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .envs(env.iter().copied())
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(input).unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            self.git_with(args, b"", &[])
+        }
+
+        /// The full id `spec` resolves to.
+        fn rev(&self, spec: &str) -> String {
+            self.git(&["rev-parse", spec])
+        }
+
+        /// The checked-out branch's short name.
+        fn branch(&self) -> String {
+            self.git(&["symbolic-ref", "--short", "HEAD"])
+        }
+    }
+
+    /// Init a repo at `dir`.
+    fn init_repo(dir: &Path) -> Fixture {
+        let repo = Fixture {
+            dir: dir.to_path_buf(),
+        };
+        repo.git(&["init", "-q", "-b", "main"]);
         repo
     }
 
-    /// Stage everything under the working tree and write the index.
-    fn stage_all(repo: &Repository) {
-        let mut index = repo.index().unwrap();
-        index
-            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-            .unwrap();
-        index.write().unwrap();
+    /// Stage every change under the working tree, deletions included.
+    fn stage_all(repo: &Fixture) {
+        repo.git(&["add", "-A"]);
     }
 
     /// Commit the current index as a new commit on `HEAD`.
-    fn commit_index(repo: &Repository, msg: &str) {
-        let mut index = repo.index().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = repo.signature().unwrap();
-        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        let parents: Vec<&git2::Commit> = parent.iter().collect();
-        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
-            .unwrap();
+    fn commit_index(repo: &Fixture, msg: &str) {
+        repo.git(&["commit", "-q", "--allow-empty", "-m", msg]);
     }
 
-    /// Run `git` in `dir` via the CLI, asserting success. Needed for
-    /// operations that must run external content filters (clean/smudge),
-    /// which libgit2 does not apply.
-    fn git_cli(dir: &Path, args: &[&str]) -> std::process::Output {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@t.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t.com")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        out
+    /// Open the [`Repo`] at `dir`.
+    fn open(dir: &Path) -> Repo {
+        Repo::discover_at(dir).unwrap()
+    }
+
+    /// Run `git args` in `dir`, asserting success.
+    fn git_cli(dir: &Path, args: &[&str]) -> String {
+        Fixture {
+            dir: dir.to_path_buf(),
+        }
+        .git(args)
     }
 
     /// Set up a repo at `dir` with a reversible `rot13` content filter
@@ -546,8 +470,7 @@ mod tests {
         fs::write(dir.join(path), plaintext).unwrap();
         git_cli(dir, &["add", "-A"]);
         git_cli(dir, &["commit", "-qm", "init"]);
-        let out = git_cli(dir, &["rev-parse", &format!("HEAD:{path}")]);
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
+        git_cli(dir, &["rev-parse", &format!("HEAD:{path}")])
     }
 
     #[test]
@@ -560,7 +483,7 @@ mod tests {
 
         fs::write(dir.path().join("a.txt"), "world\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(patch.contains("a.txt"), "missing path in: {patch}");
         assert!(patch.contains("index "), "missing index header in: {patch}");
@@ -569,23 +492,16 @@ mod tests {
     }
 
     #[test]
-    fn working_tree_diff_retries_size_check_race() {
+    fn working_tree_snapshot_survives_files_rewritten_in_place() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        // A writer thread rewrites one file with a varying length while the
-        // main thread repeatedly diffs. The writer is paced slower than the
-        // retry backoff window (1+2+3 ms), so a diff that races a write
-        // deterministically retries into a quiet gap. The guarantee under
-        // test is that the bounded retry hides the transient Filesystem
-        // race; the hard "TUI stays alive" guarantee lives in the reload
-        // tests, not here.
-        //
-        // The writer replaces the file by rename. libgit2 memory-maps a
-        // working-tree file to hash it, so truncating that file in place
-        // makes the hashing read past the new end and the process dies of
-        // SIGBUS. A rename leaves the mapped inode intact and still changes
-        // the size between the diff plan and the content load.
+        // A writer thread truncates and rewrites one file with a varying
+        // length, as an editor saving in place does, while the main thread
+        // reads snapshots. Every read must succeed: the scan reads each
+        // file into memory, so a write mid-read can only change the bytes
+        // it sees. (libgit2 memory-mapped the file and died of SIGBUS when
+        // a truncate landed mid-read.)
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
@@ -593,32 +509,22 @@ mod tests {
         commit_index(&repo, "init");
 
         let path = dir.path().join("a.txt");
-        let staging = dir.path().join(".git").join("a.txt.next");
         let stop = Arc::new(AtomicBool::new(false));
         let stop_writer = stop.clone();
         let writer = std::thread::spawn(move || {
             let mut n = 0usize;
             while !stop_writer.load(Ordering::Relaxed) {
-                // Vary the byte length so the recorded size and the
-                // reload-time size can disagree (the race condition).
-                let body = "x".repeat(n % 64);
-                fs::write(&staging, format!("{body}\n")).unwrap();
-                fs::rename(&staging, &path).unwrap();
+                let body = "x".repeat(n % 64 * 1024);
+                fs::write(&path, format!("{body}\n")).unwrap();
                 n += 1;
-                std::thread::sleep(Duration::from_millis(20));
             }
         });
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
-        for _ in 0..30 {
-            let patch = wrapper.working_tree_diff();
-            let snapshot = wrapper.working_tree_snapshot();
-            assert!(
-                patch.is_ok() && snapshot.is_ok(),
-                "paced writer must not surface the Filesystem race: patch={:?}, snapshot={:?}",
-                patch.err(),
-                snapshot.err()
-            );
+        let wrapper = open(dir.path());
+        for _ in 0..50 {
+            if let Err(error) = wrapper.working_tree_snapshot() {
+                panic!("a write in place must not fail the snapshot: {error}");
+            }
         }
 
         stop.store(true, Ordering::Relaxed);
@@ -637,7 +543,7 @@ mod tests {
         fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(
             patch.contains("+staged"),
@@ -655,7 +561,7 @@ mod tests {
 
         fs::write(dir.path().join("new.txt"), "brand new\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(
             patch.contains("new.txt"),
@@ -682,7 +588,7 @@ mod tests {
 
         fs::write(dir.path().join("bin"), b"\x00\x03\x04").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(
             patch.contains("Binary files ") && patch.contains(" differ"),
@@ -707,7 +613,7 @@ mod tests {
         stage_all(&repo);
         commit_index(&repo, "init");
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         assert_eq!(wrapper.working_tree_diff().unwrap(), "");
     }
 
@@ -717,7 +623,7 @@ mod tests {
         init_repo(dir.path());
         fs::write(dir.path().join("a.txt"), "first\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(patch.contains("a.txt"), "missing path in: {patch}");
         assert!(patch.contains("+first"), "missing added line in: {patch}");
@@ -739,7 +645,7 @@ mod tests {
         fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(
             patch.contains("rename from old.txt"),
@@ -773,7 +679,7 @@ mod tests {
         .unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         assert!(
             patch.contains("rename from old.txt"),
@@ -804,11 +710,11 @@ mod tests {
         std::os::unix::fs::symlink("target.txt", dir.path().join("f.txt")).unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
 
-        // One diff block for f.txt (a single typechange delta), not the
-        // delete + add pair libgit2 emits by default.
+        // One diff block for f.txt (a single typechange delta), not a
+        // delete + add pair.
         let blocks = patch.matches("diff --git a/f.txt b/f.txt").count();
         assert_eq!(blocks, 1, "expected one f.txt block in: {patch}");
         assert!(
@@ -827,8 +733,7 @@ mod tests {
 
     /// Build an outer repo at `dir` with a submodule `sub` pinned at an
     /// older commit, then bump the working-tree checkout to a newer commit
-    /// so the outer tree shows an unstaged submodule commit bump. Uses the
-    /// git CLI throughout (libgit2 cannot `submodule add`).
+    /// so the outer tree shows an unstaged submodule commit bump.
     fn setup_submodule_bump(dir: &Path) {
         let mut src_name = dir.file_name().unwrap().to_os_string();
         src_name.push("_sub_src");
@@ -838,10 +743,7 @@ mod tests {
         fs::write(src.join("file.txt"), "v1\n").unwrap();
         git_cli(&src, &["add", "-A"]);
         git_cli(&src, &["commit", "-qm", "sub v1"]);
-        let v1 = String::from_utf8(git_cli(&src, &["rev-parse", "HEAD"]).stdout)
-            .unwrap()
-            .trim()
-            .to_string();
+        let v1 = git_cli(&src, &["rev-parse", "HEAD"]);
         fs::write(src.join("file.txt"), "v2\n").unwrap();
         git_cli(&src, &["add", "-A"]);
         git_cli(&src, &["commit", "-qm", "sub v2"]);
@@ -872,7 +774,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         setup_submodule_bump(dir.path());
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
 
         // The submodule delta carries the `160000` gitlink mode on the
@@ -912,7 +814,7 @@ mod tests {
         fs::write(dir.path().join("f.txt"), "now regular\n").unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
 
         let blocks = patch.matches("diff --git a/f.txt b/f.txt").count();
@@ -943,7 +845,7 @@ mod tests {
         fs::write(dir.path().join("new.txt"), "brand new\n").unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "new.txt").expect("new.txt in status");
         assert_eq!(s.staged, Some(StageChange::Added));
@@ -960,7 +862,7 @@ mod tests {
 
         fs::write(dir.path().join("a.txt"), "world\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "a.txt").expect("a.txt in status");
         assert_eq!(s.staged, None);
@@ -980,7 +882,7 @@ mod tests {
         stage_all(&repo);
         fs::write(dir.path().join("a.txt"), "staged then edited\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "a.txt").expect("a.txt in status");
         assert_eq!(s.staged, Some(StageChange::Modified));
@@ -997,7 +899,7 @@ mod tests {
 
         fs::write(dir.path().join("new.txt"), "brand new\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "new.txt").expect("new.txt in status");
         assert_eq!(s.staged, None);
@@ -1015,7 +917,7 @@ mod tests {
         fs::remove_file(dir.path().join("a.txt")).unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "a.txt").expect("a.txt in status");
         assert_eq!(s.staged, Some(StageChange::Deleted));
@@ -1035,7 +937,7 @@ mod tests {
         fs::rename(dir.path().join("old.txt"), dir.path().join("new.txt")).unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "new.txt").expect("new.txt in status");
         assert_eq!(s.staged, Some(StageChange::Renamed));
@@ -1063,7 +965,7 @@ mod tests {
         .unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let statuses = wrapper.working_tree_status().unwrap();
         let s = status_of(&statuses, "new.txt").expect("new.txt in status");
         assert_eq!(s.staged, Some(StageChange::Renamed));
@@ -1077,7 +979,7 @@ mod tests {
         stage_all(&repo);
         commit_index(&repo, "init");
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         assert!(wrapper.working_tree_status().unwrap().is_empty());
     }
 
@@ -1089,7 +991,7 @@ mod tests {
         stage_all(&repo);
         commit_index(&repo, "init");
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         assert!(wrapper.is_ignored(&dir.path().join("node_modules/x.js")));
         assert!(wrapper.is_ignored(Path::new("node_modules/x.js")));
         assert!(!wrapper.is_ignored(&dir.path().join("src/main.rs")));
@@ -1112,7 +1014,7 @@ mod tests {
         fs::write(dir.path().join("a.txt"), "world\n").unwrap();
         stage_all(&repo);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         let parsed = GitDiff::parse(&patch);
         assert_eq!(parsed.files.len(), 1);
@@ -1131,25 +1033,23 @@ mod tests {
     fn working_tree_diff_of_filtered_file_carries_resolvable_hashes() {
         use crate::parse::GitDiff;
 
-        // The TUI feeds libgit2's `working_tree_diff` (not the git CLI)
-        // through content resolution. libgit2 cannot run an external clean
-        // filter, so for an unstaged change to a filtered file it hashes
-        // the working tree as plaintext: old_hash = the committed
-        // ("encrypted") ODB blob, new_hash = the plaintext hash. Both
-        // sides are then resolvable — old via `blob_filtered`, new via the
-        // working-tree read whose plaintext hashes to new_hash.
+        // The TUI feeds `working_tree_diff` (not the git CLI) through
+        // content resolution. For an unstaged change to a filtered file the
+        // working tree is hashed as read, without filters: old_hash = the
+        // committed ("encrypted") ODB blob, new_hash = the plaintext hash.
+        // Both sides are then resolvable — old via `blob_filtered`, new via
+        // the working-tree read whose plaintext hashes to new_hash.
         let dir = tempfile::tempdir().unwrap();
         let old_hash = commit_filtered(dir.path(), "secret.txt", "hello\nworld\n");
         fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let patch = wrapper.working_tree_diff().unwrap();
         let parsed = GitDiff::parse(&patch);
         assert_eq!(parsed.files.len(), 1);
         let file = &parsed.files[0];
 
-        // old side resolves to plaintext through the filter. libgit2 may
-        // abbreviate the hash; it names the committed ODB blob either way.
+        // old side resolves to plaintext through the filter.
         let parsed_old = file.old_hash.as_deref().expect("old_hash present");
         assert!(
             old_hash.starts_with(parsed_old),
@@ -1159,9 +1059,8 @@ mod tests {
             wrapper.blob_filtered(parsed_old, "secret.txt").as_deref(),
             Some("hello\nworld\n")
         );
-        // new side is the plaintext working-tree hash (libgit2 applied no
-        // external filter), so the working-tree plaintext verifies against
-        // it.
+        // new side is the plaintext working-tree hash, so the
+        // working-tree plaintext verifies against it.
         let new_hash = file.new_hash.as_deref().expect("new_hash present");
         assert!(
             blob_hash_matches("hello\nplanet\n", new_hash),
@@ -1184,8 +1083,7 @@ mod tests {
         fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
         git_cli(dir.path(), &["add", "secret.txt"]);
         git_cli(dir.path(), &["commit", "-qm", "change"]);
-        let out = git_cli(dir.path(), &["rev-parse", "HEAD:secret.txt"]);
-        let new_hash = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        let new_hash = git_cli(dir.path(), &["rev-parse", "HEAD:secret.txt"]);
 
         // Model git's textconv view: plaintext hunks, ciphertext index
         // hashes.
@@ -1202,7 +1100,7 @@ mod tests {
         let parsed = GitDiff::parse(&diff);
         assert_eq!(parsed.files.len(), 1);
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         let resolved = content::retrieve(&parsed.files[0], Some(&wrapper));
         match (resolved.before, resolved.after) {
             (SideContent::Resolved(before), SideContent::Resolved(after)) => {
@@ -1239,7 +1137,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hash = commit_filtered(dir.path(), "secret.txt", "hello world\n");
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         // The ODB blob is the rot13-cleaned ciphertext; blob_filtered runs
         // the smudge filter to recover the working-tree plaintext.
         assert_eq!(
@@ -1256,11 +1154,9 @@ mod tests {
         stage_all(&repo);
         commit_index(&repo, "init");
 
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        let tree = head.tree().unwrap();
-        let hash = tree.get_name("plain.txt").unwrap().id().to_string();
+        let hash = repo.rev("HEAD:plain.txt");
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         // On a non-filtered file, cat-file --filters is byte-identical to
         // the raw blob content (no clean/smudge transform applied).
         assert_eq!(
@@ -1278,13 +1174,10 @@ mod tests {
         fs::write(dir.path().join("auto.txt"), "one\ntwo\n").unwrap();
         git_cli(dir.path(), &["add", "-A"]);
         git_cli(dir.path(), &["commit", "-qm", "init"]);
-        let hash = |path: &str| {
-            let out = git_cli(dir.path(), &["rev-parse", &format!("HEAD:{path}")]);
-            String::from_utf8(out.stdout).unwrap().trim().to_string()
-        };
+        let hash = |path: &str| git_cli(dir.path(), &["rev-parse", &format!("HEAD:{path}")]);
         let (crlf, auto) = (hash("crlf.txt"), hash("auto.txt"));
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         assert_eq!(
             wrapper.blob_filtered(&crlf, "crlf.txt").as_deref(),
             Some("one\r\ntwo\r\n")
@@ -1294,7 +1187,7 @@ mod tests {
             Some("one\ntwo\n")
         );
         git_cli(dir.path(), &["config", "core.autocrlf", "true"]);
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         assert_eq!(
             wrapper.blob_filtered(&auto, "auto.txt").as_deref(),
             Some("one\r\ntwo\r\n")
@@ -1309,7 +1202,7 @@ mod tests {
         let hash = commit_filtered(dir.path(), "secret.txt", "hello world\n");
         let abbrev = &hash[..7];
 
-        let wrapper = Repo(Repository::open(dir.path()).unwrap());
+        let wrapper = open(dir.path());
         assert_eq!(
             wrapper.blob_filtered(abbrev, "secret.txt").as_deref(),
             Some("hello world\n")

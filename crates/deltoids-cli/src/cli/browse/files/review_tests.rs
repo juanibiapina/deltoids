@@ -370,28 +370,17 @@ fn hunk_headers_show_the_role_and_an_attention_dot_at_the_right_edge() {
 /// the id of each.
 fn two_commits() -> (tempfile::TempDir, String, String) {
     let dir = tempfile::tempdir().unwrap();
-    let repo = git2::Repository::init(dir.path()).unwrap();
-    let sig = git2::Signature::now("Ada", "ada@example.com").unwrap();
-    let mut parent: Option<git2::Oid> = None;
+    let repo = crate::test_git::TestRepo::init(dir.path());
     let mut ids = Vec::new();
     for text in ["fn a() {}\n", "fn a() { b() }\n"] {
-        let blob = repo.blob(text.as_bytes()).unwrap();
-        let mut src = repo.treebuilder(None).unwrap();
-        src.insert("a.rs", blob, 0o100_644).unwrap();
-        let src = src.write().unwrap();
-        let mut root = repo.treebuilder(None).unwrap();
-        root.insert("src", src, 0o040_000).unwrap();
-        let tree = repo.find_tree(root.write().unwrap()).unwrap();
-        let parents: Vec<git2::Commit> = parent
-            .map(|id| repo.find_commit(id).unwrap())
-            .into_iter()
-            .collect();
-        let parents: Vec<&git2::Commit> = parents.iter().collect();
-        let id = repo
-            .commit(Some("HEAD"), &sig, &sig, "edit", &tree, &parents)
-            .unwrap();
-        parent = Some(id);
-        ids.push(id.to_string());
+        let blob = repo.blob(text.as_bytes());
+        repo.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{blob},src/a.rs"),
+        ]);
+        ids.push(repo.commit("edit"));
     }
     let second = ids.pop().unwrap();
     let first = ids.pop().unwrap();

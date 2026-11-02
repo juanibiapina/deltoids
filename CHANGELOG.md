@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: panes no longer draw a box around themselves. Each pane has a title row with its name, badges, and footer, with a line under it, and one line divides the side panel from the main view. Messages such as lookup results show at the bottom right of the diff.
 - TUI: the file list shows one status letter per file instead of a staged and an unstaged column. The letter is green when all of the file's changes are staged, amber when some are, and red when none are, and the Files title counts the files with staged changes.
+- TUI and library: git repositories are read with gix, in pure Rust, instead of libgit2. Reading the working tree is about twice as fast in large repositories, and building deltoids no longer needs libgit2.
+- TUI: a file moved or renamed without staging shows as a rename in the diff, as it already did in the file list. A file removed from the index and created again shows as one modification.
+- TUI: commits with the same timestamp are listed in the order `git log` uses.
+- Library: `git::Repo::working_tree_diff` returns an error when `HEAD` is damaged, as `working_tree_snapshot` does, instead of diffing against an empty tree.
 
 ### Removed
 
@@ -25,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reviewer: clicking a file in the tree shows it again after Ctrl+wheel moved to another file. Before, the click did nothing.
 - TUI: custom commands, such as an `e` bound to an editor, run on the selected file in a commit or branch review. Before, they did nothing there.
+- TUI: saving a file while the TUI reads the working tree no longer crashes it with a bus error (SIGBUS).
 
 ## [0.18.0] - 2026-10-27
 

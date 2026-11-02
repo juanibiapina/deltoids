@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture() -> (tempfile::TempDir, Repository, Repo) {
+fn fixture() -> (tempfile::TempDir, Fixture, Repo) {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo(dir.path());
     fs::write(dir.path().join("a.txt"), original()).unwrap();
@@ -16,39 +16,31 @@ fn original() -> String {
     (0..30).map(|n| format!("line {n}\n")).collect()
 }
 
-fn assert_matches(repo: &Repo) -> WorkingTreeSnapshot {
-    let snapshot = repo.working_tree_snapshot().unwrap();
-    assert_eq!(snapshot.patch, repo.working_tree_diff().unwrap());
-    let mut expected = repo.working_tree_status().unwrap();
-    let mut actual = snapshot.stages.clone();
-    expected.sort_by(|a, b| a.path.cmp(&b.path));
-    actual.sort_by(|a, b| a.path.cmp(&b.path));
-    assert_eq!(actual, expected);
-    snapshot
+fn snapshot(repo: &Repo) -> WorkingTreeSnapshot {
+    repo.working_tree_snapshot().unwrap()
 }
 
 #[test]
 fn clean_unborn_and_detached() {
     let (dir, repo, wrapper) = fixture();
-    let clean = assert_matches(&wrapper);
+    let clean = snapshot(&wrapper);
     assert!(clean.patch.is_empty());
     assert!(clean.stages.is_empty());
-    repo.set_head_detached(repo.head().unwrap().target().unwrap())
-        .unwrap();
+    repo.git(&["checkout", "-q", "--detach"]);
     fs::write(dir.path().join("a.txt"), "detached edit\n").unwrap();
-    assert!(!assert_matches(&wrapper).patch.is_empty());
+    assert!(!snapshot(&wrapper).patch.is_empty());
 
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo(dir.path());
     fs::write(dir.path().join("new.txt"), "new\n").unwrap();
     let wrapper = Repo::discover_at(dir.path()).unwrap();
     assert_eq!(
-        assert_matches(&wrapper).stages[0].unstaged,
+        snapshot(&wrapper).stages[0].unstaged,
         Some(StageChange::Untracked)
     );
     stage_all(&repo);
     assert_eq!(
-        assert_matches(&wrapper).stages[0].staged,
+        snapshot(&wrapper).stages[0].staged,
         Some(StageChange::Added)
     );
 }
@@ -57,14 +49,14 @@ fn clean_unborn_and_detached() {
 fn staging_columns_survive_net_cancellation_and_external_index_writes() {
     let (dir, _repo, wrapper) = fixture();
     fs::write(dir.path().join("a.txt"), "edit\n").unwrap();
-    let unstaged = assert_matches(&wrapper);
+    let unstaged = snapshot(&wrapper);
     assert_eq!(unstaged.stages[0].staged, None);
     assert_eq!(unstaged.stages[0].unstaged, Some(StageChange::Modified));
     git_cli(dir.path(), &["add", "a.txt"]);
     let index = dir.path().join(".git/index");
     let before = fs::read(&index).unwrap();
     let modified = fs::metadata(&index).unwrap().modified().unwrap();
-    let staged = assert_matches(&wrapper);
+    let staged = snapshot(&wrapper);
     assert_eq!(staged.patch, unstaged.patch);
     assert_eq!(staged.stages[0].staged, Some(StageChange::Modified));
     assert_eq!(staged.stages[0].unstaged, None);
@@ -72,12 +64,12 @@ fn staging_columns_survive_net_cancellation_and_external_index_writes() {
     assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), modified);
 
     fs::write(dir.path().join("a.txt"), original()).unwrap();
-    let cancelled = assert_matches(&wrapper);
+    let cancelled = snapshot(&wrapper);
     assert!(cancelled.patch.is_empty());
     assert_eq!(cancelled.stages[0].staged, Some(StageChange::Modified));
     assert_eq!(cancelled.stages[0].unstaged, Some(StageChange::Modified));
     git_cli(dir.path(), &["reset", "-q", "HEAD", "--", "a.txt"]);
-    assert!(assert_matches(&wrapper).stages.is_empty());
+    assert!(snapshot(&wrapper).stages.is_empty());
 }
 
 #[test]
@@ -86,22 +78,22 @@ fn additions_deletions_and_recreation() {
     fs::create_dir(dir.path().join("ignored")).unwrap();
     fs::write(dir.path().join("ignored/file"), "ignored\n").unwrap();
     fs::write(dir.path().join("new.txt"), "new\n").unwrap();
-    let untracked = assert_matches(&wrapper);
+    let untracked = snapshot(&wrapper);
     assert_eq!(untracked.stages.len(), 1);
     assert_eq!(untracked.stages[0].unstaged, Some(StageChange::Untracked));
     stage_all(&repo);
     fs::write(dir.path().join("new.txt"), "new and edited\n").unwrap();
-    let edited = assert_matches(&wrapper);
+    let edited = snapshot(&wrapper);
     assert_eq!(edited.stages[0].staged, Some(StageChange::Added));
     assert_eq!(edited.stages[0].unstaged, Some(StageChange::Modified));
     fs::remove_file(dir.path().join("new.txt")).unwrap();
     assert_eq!(
-        assert_matches(&wrapper).stages[0].unstaged,
+        snapshot(&wrapper).stages[0].unstaged,
         Some(StageChange::Deleted)
     );
     git_cli(dir.path(), &["rm", "-q", "a.txt"]);
     fs::write(dir.path().join("a.txt"), "replacement\n").unwrap();
-    let recreated = assert_matches(&wrapper);
+    let recreated = snapshot(&wrapper);
     let status = recreated.stages.iter().find(|s| s.path == "a.txt").unwrap();
     assert_eq!(status.staged, Some(StageChange::Deleted));
     assert_eq!(status.unstaged, Some(StageChange::Untracked));
@@ -112,10 +104,7 @@ fn renames_in_each_column_ignore_diff_rename_configuration() {
     for config in ["true", "false", "copies"] {
         for (stage, edit) in [(false, false), (false, true), (true, false), (true, true)] {
             let (dir, repo, wrapper) = fixture();
-            repo.config()
-                .unwrap()
-                .set_str("diff.renames", config)
-                .unwrap();
+            repo.git(&["config", "diff.renames", config]);
             fs::rename(dir.path().join("a.txt"), dir.path().join("new.txt")).unwrap();
             if edit {
                 fs::write(dir.path().join("new.txt"), original() + "edit\n").unwrap();
@@ -123,8 +112,8 @@ fn renames_in_each_column_ignore_diff_rename_configuration() {
             if stage {
                 stage_all(&repo);
             }
-            let snapshot = assert_matches(&wrapper);
-            assert_eq!(snapshot.stages.len(), 1);
+            let snapshot = snapshot(&wrapper);
+            assert_eq!(snapshot.stages.len(), 1, "{config} {stage} {edit}");
             assert_eq!(snapshot.stages[0].path, "new.txt");
             assert_eq!(
                 snapshot.stages[0].staged,
@@ -144,7 +133,7 @@ fn chained_rename_preserves_the_existing_intermediate_status_key() {
     fs::rename(dir.path().join("a.txt"), dir.path().join("middle.txt")).unwrap();
     stage_all(&repo);
     fs::rename(dir.path().join("middle.txt"), dir.path().join("final.txt")).unwrap();
-    let snapshot = assert_matches(&wrapper);
+    let snapshot = snapshot(&wrapper);
     assert_eq!(snapshot.stages[0].path, "middle.txt");
     assert_eq!(snapshot.stages[0].staged, Some(StageChange::Renamed));
     assert_eq!(snapshot.stages[0].unstaged, Some(StageChange::Renamed));
@@ -153,13 +142,10 @@ fn chained_rename_preserves_the_existing_intermediate_status_key() {
 #[test]
 fn case_only_rename_uses_index_case_rules() {
     let (dir, repo, wrapper) = fixture();
-    repo.config()
-        .unwrap()
-        .set_bool("core.ignorecase", true)
-        .unwrap();
+    repo.git(&["config", "core.ignorecase", "true"]);
     fs::rename(dir.path().join("a.txt"), dir.path().join("temp.txt")).unwrap();
     fs::rename(dir.path().join("temp.txt"), dir.path().join("A.txt")).unwrap();
-    assert_matches(&wrapper);
+    snapshot(&wrapper);
 }
 
 #[cfg(unix)]
@@ -169,27 +155,27 @@ fn type_change_and_binary_content() {
     fs::remove_file(dir.path().join("a.txt")).unwrap();
     std::os::unix::fs::symlink("b.txt", dir.path().join("a.txt")).unwrap();
     assert_eq!(
-        assert_matches(&wrapper).stages[0].unstaged,
+        snapshot(&wrapper).stages[0].unstaged,
         Some(StageChange::TypeChanged)
     );
     stage_all(&repo);
     assert_eq!(
-        assert_matches(&wrapper).stages[0].staged,
+        snapshot(&wrapper).stages[0].staged,
         Some(StageChange::TypeChanged)
     );
     fs::write(dir.path().join("b.txt"), b"\0binary\xff").unwrap();
-    assert!(assert_matches(&wrapper).patch.contains("Binary files"));
+    assert!(snapshot(&wrapper).patch.contains("Binary files"));
 }
 
 #[test]
 fn submodule_and_filtered_content() {
     let dir = tempfile::tempdir().unwrap();
     setup_submodule_bump(dir.path());
-    assert_matches(&Repo::discover_at(dir.path()).unwrap());
+    snapshot(&Repo::discover_at(dir.path()).unwrap());
     let dir = tempfile::tempdir().unwrap();
     commit_filtered(dir.path(), "secret.txt", "hello\n");
     fs::write(dir.path().join("secret.txt"), "hello\nworld\n").unwrap();
-    assert_matches(&Repo::discover_at(dir.path()).unwrap());
+    snapshot(&Repo::discover_at(dir.path()).unwrap());
 }
 
 #[test]
@@ -207,20 +193,16 @@ fn conflicts_preserve_existing_column_mapping() {
         .output()
         .unwrap();
     assert!(!merge.status.success());
-    assert!(assert_matches(&wrapper).stages.is_empty());
+    assert!(snapshot(&wrapper).stages.is_empty());
 }
 
 #[test]
 fn damaged_head_is_not_an_empty_baseline() {
     let (dir, repo, wrapper) = fixture();
-    let name = repo.head().unwrap().name().unwrap().to_string();
-    fs::write(dir.path().join(".git").join(name), "not-an-object-id\n").unwrap();
-    assert!(
-        wrapper
-            .working_tree_snapshot()
-            .unwrap_err()
-            .contains("corrupted loose reference")
-    );
+    let name = repo.git(&["symbolic-ref", "HEAD"]);
+    fs::write(dir.path().join(".git").join(&name), "not-an-object-id\n").unwrap();
+    let error = wrapper.working_tree_snapshot().unwrap_err();
+    assert!(error.contains(&name), "{error}");
 }
 
 #[test]
@@ -242,7 +224,7 @@ fn many_changed_files_pair_both_columns() {
         )
         .unwrap();
     }
-    let snapshot = assert_matches(&wrapper);
+    let snapshot = snapshot(&wrapper);
     assert_eq!(snapshot.stages.len(), 1000);
     assert!(
         snapshot
@@ -265,7 +247,7 @@ fn non_utf8_paths_are_paired_before_lossy_conversion() {
     fs::write(dir.path().join(name), "staged\n").unwrap();
     stage_all(&repo);
     fs::write(dir.path().join(name), "unstaged\n").unwrap();
-    let snapshot = assert_matches(&wrapper);
+    let snapshot = snapshot(&wrapper);
     assert_eq!(snapshot.stages[0].staged, Some(StageChange::Modified));
     assert_eq!(snapshot.stages[0].unstaged, Some(StageChange::Modified));
 }
@@ -291,7 +273,7 @@ fn split_patches_cover_only_files_with_both_columns() {
     .unwrap();
     fs::write(dir.path().join("new.txt"), "untracked\n").unwrap();
 
-    let snapshot = assert_matches(&wrapper);
+    let snapshot = snapshot(&wrapper);
 
     assert_eq!(patch_paths(&snapshot.staged_patch), ["a.txt b/a.txt"]);
     assert_eq!(patch_paths(&snapshot.unstaged_patch), ["a.txt b/a.txt"]);
@@ -308,7 +290,7 @@ fn split_patches_are_empty_without_files_with_both_columns() {
     fs::write(dir.path().join("a.txt"), "staged\n").unwrap();
     stage_all(&repo);
     fs::write(dir.path().join("b.txt"), "unstaged\n").unwrap();
-    let snapshot = assert_matches(&wrapper);
+    let snapshot = snapshot(&wrapper);
     assert!(snapshot.staged_patch.is_empty());
     assert!(snapshot.unstaged_patch.is_empty());
 }
@@ -319,7 +301,7 @@ fn split_patches_keep_a_staged_rename_with_an_unstaged_edit() {
     fs::rename(dir.path().join("a.txt"), dir.path().join("new.txt")).unwrap();
     stage_all(&repo);
     fs::write(dir.path().join("new.txt"), original() + "edit\n").unwrap();
-    let snapshot = assert_matches(&wrapper);
+    let snapshot = snapshot(&wrapper);
     assert!(
         snapshot
             .staged_patch

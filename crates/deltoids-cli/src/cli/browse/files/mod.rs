@@ -2734,7 +2734,7 @@ mod tests {
         stage_all(&raw);
         commit_index(&raw, "initial");
         std::fs::write(dir.path().join("a.txt"), "after\n").unwrap();
-        raw.blob(b"after\n").unwrap();
+        raw.blob(b"after\n");
         let wrapper = Vcs::discover_at(dir.path()).unwrap();
         let (input, model) = FilesMode::try_model(&wrapper).unwrap();
         let theme = theme();
@@ -2759,14 +2759,14 @@ mod tests {
         stage_all(&raw);
         commit_index(&raw, "initial");
         std::fs::write(dir.path().join("a.txt"), "after\n").unwrap();
-        raw.blob(b"after\n").unwrap();
+        raw.blob(b"after\n");
         let wrapper = Vcs::discover_at(dir.path()).unwrap();
         let (input, model) = FilesMode::try_model(&wrapper).unwrap();
         let stages = model.stages.clone();
         let theme = theme();
         let mut mode = FilesMode::new(model, input.clone(), Some(wrapper), &theme, 80);
-        let reference = raw.head().unwrap().name().unwrap().to_string();
-        let path = raw.path().join(reference);
+        let reference = raw.git(&["symbolic-ref", "HEAD"]);
+        let path = raw.git_dir().join(reference);
         let original = std::fs::read(&path).unwrap();
         std::fs::write(&path, "not-an-object-id\n").unwrap();
         assert!(!mode.reload(reload_vp(), &theme).unwrap());
@@ -2785,7 +2785,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "before\n").unwrap();
         stage_all(&raw);
         commit_index(&raw, "initial");
-        let path = raw.path().join(raw.head().unwrap().name().unwrap());
+        let path = raw.git_dir().join(raw.git(&["symbolic-ref", "HEAD"]));
         let original = std::fs::read(&path).unwrap();
         std::fs::write(&path, "not-an-object-id\n").unwrap();
         let wrapper = Vcs::discover_at(dir.path()).unwrap();

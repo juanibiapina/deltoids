@@ -23,7 +23,7 @@ pub struct SidebarFile<'a> {
 
 /// Sidebar-facing mirror of `deltoids::git::FileStageStatus`: the two
 /// staging columns of a file. Kept as a sidebar type so this module
-/// stays free of the `git2` dependency; `files/model.rs` maps the git
+/// stays free of git types; `files/model.rs` maps the git
 /// value into this one when building the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageStatus {

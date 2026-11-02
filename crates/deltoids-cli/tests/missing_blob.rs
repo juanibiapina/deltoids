@@ -13,28 +13,44 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use git2::{IndexAddOption, Oid, Repository, Signature};
 use tempfile::tempdir;
+
+/// Run `git args` in `dir` with `input` on stdin, asserting success, and
+/// return its trimmed stdout.
+fn git(dir: &Path, args: &[&str], input: &str) -> String {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
 
 /// Initialise a git repo at `path` containing a single committed file.
 /// Returns the blob hash for the committed file.
 fn init_repo_with_file(path: &Path, file_name: &str, content: &str) -> String {
-    let repo = Repository::init(path).unwrap();
+    git(path, &["init", "-q"], "");
     std::fs::write(path.join(file_name), content).unwrap();
-    let mut index = repo.index().unwrap();
-    index
-        .add_all([file_name], IndexAddOption::DEFAULT, None)
-        .unwrap();
-    index.write().unwrap();
-    let tree_id = index.write_tree().unwrap();
-    let tree = repo.find_tree(tree_id).unwrap();
-    let sig = Signature::now("test", "test@example.com").unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-        .unwrap();
-    tree.get_path(Path::new(file_name))
-        .unwrap()
-        .id()
-        .to_string()
+    git(path, &["add", file_name], "");
+    git(path, &["commit", "-q", "-m", "init"], "");
+    git(path, &["rev-parse", &format!("HEAD:{file_name}")], "")
 }
 
 fn run_deltoids(cwd: &Path, stdin: &str) -> Output {
@@ -124,9 +140,7 @@ fn succeeds_for_working_tree_diff_with_synthetic_hash() {
     // hash that `git diff` would produce: the git-blob hash of the
     // current working-tree content.
     std::fs::write(path.join("hello.txt"), updated).unwrap();
-    let new_hash = Oid::hash_object(git2::ObjectType::Blob, updated.as_bytes())
-        .unwrap()
-        .to_string();
+    let new_hash = git(path, &["hash-object", "--stdin"], updated);
     assert_ne!(old_hash, new_hash);
 
     let diff = format!(

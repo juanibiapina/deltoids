@@ -655,8 +655,8 @@ pub(super) fn resolve(
 }
 
 /// Plaintext for both sides of a binary-flagged file whose path has a
-/// content filter. libgit2 cannot run the filter and judges the stored
-/// (e.g. encrypted) bytes; `git diff` shows the filtered text. Returns
+/// content filter. The patch judges the stored (e.g. encrypted) bytes;
+/// `git diff` shows the filtered text. Returns
 /// `None` when the file has no filter, a side cannot be resolved, or the
 /// plaintext itself looks binary.
 fn filtered_text(file: &FileDiff, repo: &git::Repo) -> Option<(String, String)> {
@@ -877,7 +877,7 @@ mod tests {
 
     /// Commit `secret.txt` behind a reversible content filter whose
     /// stored form starts with a NUL byte, like git-crypt's
-    /// `\0GITCRYPT\0` header, so libgit2 judges the stored blob binary.
+    /// `\0GITCRYPT\0` header, so the patch judges the stored blob binary.
     fn commit_nul_filtered(dir: &std::path::Path, plaintext: &str) {
         git_cli(dir, &["init", "-q"]);
         git_cli(dir, &["config", "filter.nul.clean", "printf '\\000'; cat"]);
@@ -899,9 +899,7 @@ mod tests {
     /// Build the working model for `dir`, keeping working-tree content
     /// resolvable without depending on the process cwd.
     fn working_model(dir: &std::path::Path) -> Model {
-        let raw = git2::Repository::open(dir).unwrap();
-        raw.blob(&std::fs::read(dir.join("secret.txt")).unwrap())
-            .unwrap();
+        crate::test_git::TestRepo::open(dir).blob(&std::fs::read(dir.join("secret.txt")).unwrap());
         let repo = git::Repo::discover_at(dir).unwrap();
         build_working_model(&split(repo.working_tree_snapshot().unwrap()), &repo).unwrap()
     }
@@ -950,10 +948,15 @@ mod tests {
         commit_nul_filtered(dir.path(), "hello\nworld\n");
         std::fs::write(dir.path().join("secret.txt"), "hello\nplanet\n").unwrap();
 
-        // The working-tree plaintext is neither in the ODB nor readable
-        // from the process cwd, so the after side cannot be resolved.
+        // The working-tree plaintext is not in the ODB, not readable from
+        // the process cwd, and not kept by this second repo handle, which
+        // read no snapshot, so the after side cannot be resolved.
+        let snapshot = git::Repo::discover_at(dir.path())
+            .unwrap()
+            .working_tree_snapshot()
+            .unwrap();
         let repo = git::Repo::discover_at(dir.path()).unwrap();
-        let model = build_working_model(&split(repo.working_tree_snapshot().unwrap()), &repo)
+        let model = build_working_model(&split(snapshot), &repo)
             .expect("unresolvable filtered file must not error");
         let (_, body) = secret_body(&model);
 
@@ -1024,8 +1027,8 @@ mod tests {
         let worktree = staged.replace("line 11\n", "line 11 unstaged\n");
         std::fs::write(dir.path().join("a.txt"), &worktree).unwrap();
         std::fs::write(dir.path().join("b.txt"), "b edited\n").unwrap();
-        repo.blob(worktree.as_bytes()).unwrap();
-        repo.blob(b"b edited\n").unwrap();
+        repo.blob(worktree.as_bytes());
+        repo.blob(b"b edited\n");
 
         let wrapper = git::Repo::discover_at(dir.path()).unwrap();
         let model = build_working_model(&split(wrapper.working_tree_snapshot().unwrap()), &wrapper)

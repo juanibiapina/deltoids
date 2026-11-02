@@ -2,32 +2,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use deltoids::git::StageChange;
-use git2::{Repository, Signature};
 use tempfile::TempDir;
 
 #[cfg(unix)]
 use super::super::test_support::stub_but;
 use super::super::test_support::{adopt, but_log, fixture};
 use super::super::{Base, Columns, DiscardKind, Vcs, Writer};
+use crate::test_git::TestRepo;
 
-fn commit_all(repo: &Repository, message: &str) {
-    let mut index = repo.index().unwrap();
-    index
-        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
-        .unwrap();
-    index.write().unwrap();
-    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-    let sig = Signature::now("Test", "test@example.com").unwrap();
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<_> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
-        .unwrap();
+fn commit_all(repo: &TestRepo, message: &str) {
+    repo.stage_all();
+    repo.commit(message);
 }
 
 /// A repository with one commit holding `files`.
-fn repo_with(files: &[&str]) -> (TempDir, Repository) {
+fn repo_with(files: &[&str]) -> (TempDir, TestRepo) {
     let dir = tempfile::tempdir().unwrap();
-    let repo = Repository::init(dir.path()).unwrap();
+    let repo = TestRepo::init(dir.path());
     for file in files {
         fs::write(dir.path().join(file), format!("{file}\n")).unwrap();
     }
@@ -37,21 +28,18 @@ fn repo_with(files: &[&str]) -> (TempDir, Repository) {
 
 /// Move `HEAD` onto a GitButler workspace branch at the current commit,
 /// as `but` does once it applies a second branch.
-fn enter_workspace(repo: &Repository) {
-    adopt(repo.workdir().unwrap());
+fn enter_workspace(repo: &TestRepo) {
+    adopt(repo.dir());
     move_to_workspace_branch(repo);
 }
 
-fn move_to_workspace_branch(repo: &Repository) {
-    let head = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.branch("gitbutler/workspace", &head, true).unwrap();
-    repo.set_head("refs/heads/gitbutler/workspace").unwrap();
+fn move_to_workspace_branch(repo: &TestRepo) {
+    repo.git(&["branch", "-f", "gitbutler/workspace"]);
+    repo.set_head("gitbutler/workspace");
 }
 
-fn stage(repo: &Repository, path: &str) {
-    let mut index = repo.index().unwrap();
-    index.add_path(Path::new(path)).unwrap();
-    index.write().unwrap();
+fn stage(repo: &TestRepo, path: &str) {
+    repo.git(&["add", "--", path]);
 }
 
 #[test]
@@ -66,11 +54,8 @@ fn a_workspace_shows_one_column_of_changes_against_head() {
     fs::write(dir.path().join("gone.txt"), "gone\n").unwrap();
     stage(&repo, "gone.txt");
     fs::remove_file(dir.path().join("gone.txt")).unwrap();
-    let mut index = repo.index().unwrap();
-    index.remove_path(Path::new("renamed.txt")).unwrap();
     fs::rename(dir.path().join("renamed.txt"), dir.path().join("moved.txt")).unwrap();
-    index.add_path(Path::new("moved.txt")).unwrap();
-    index.write().unwrap();
+    repo.git(&["add", "--", "renamed.txt", "moved.txt"]);
 
     let working = Vcs::discover_at(dir.path())
         .unwrap()
@@ -140,7 +125,7 @@ fn staging_in_a_workspace_leaves_the_index_alone() {
     enter_workspace(&repo);
     fs::write(dir.path().join("a.txt"), "edit\n").unwrap();
     fs::write(dir.path().join("new.txt"), "new\n").unwrap();
-    let index_before = fs::read(repo.path().join("index")).unwrap();
+    let index_before = fs::read(repo.git_dir().join("index")).unwrap();
     let writer = Writer::at(dir.path());
 
     let one = writer.toggle_stage(vec![PathBuf::from("a.txt")]).unwrap();
@@ -148,7 +133,10 @@ fn staging_in_a_workspace_leaves_the_index_alone() {
 
     assert!(one.contains("no staging"), "{one}");
     assert!(all.contains("no staging"), "{all}");
-    assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+    assert_eq!(
+        fs::read(repo.git_dir().join("index")).unwrap(),
+        index_before
+    );
 }
 
 #[test]
@@ -194,17 +182,14 @@ fn a_discard_read_before_entering_a_workspace_is_refused() {
 /// The refs `but-status-stacks.json` and `but-branch-list.json` name:
 /// four applied branches, a parked local one, and one that only exists
 /// on `origin`.
-fn workspace_with_branches() -> (TempDir, Repository) {
+fn workspace_with_branches() -> (TempDir, TestRepo) {
     let (dir, repo) = repo_with(&["a.txt"]);
-    let head = repo.head().unwrap().peel_to_commit().unwrap();
     for name in ["empty", "top-feature", "base-feature", "side", "parked"] {
-        repo.branch(name, &head, false).unwrap();
+        repo.git(&["branch", name]);
     }
-    repo.remote("origin", "https://example.com/repo.git")
-        .unwrap();
-    repo.reference("refs/remotes/origin/remote-only", head.id(), false, "test")
-        .unwrap();
-    drop(head);
+    repo.git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+    let head = repo.rev("HEAD");
+    repo.git(&["update-ref", "refs/remotes/origin/remote-only", &head]);
     enter_workspace(&repo);
     (dir, repo)
 }
@@ -305,8 +290,7 @@ fn the_workspace_runs_but_again_only_after_a_ref_moves() {
     vcs.overview();
     assert_eq!(but_log(stubs.path()), ["status", "branch list"]);
 
-    let head = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.branch("new-branch", &head, false).unwrap();
+    repo.git(&["branch", "new-branch"]);
     vcs.overview();
     assert_eq!(
         but_log(stubs.path()),
@@ -323,14 +307,7 @@ fn the_workspace_is_read_again_after_gitbutler_lets_go_and_adopts_again() {
     let mut vcs = stubbed(dir.path(), stubs.path(), "but-status.json");
     vcs.overview();
 
-    Repository::open(dir.path())
-        .unwrap()
-        .config()
-        .unwrap()
-        .open_level(git2::ConfigLevel::Local)
-        .unwrap()
-        .remove("gitbutler.project.targetRef")
-        .unwrap();
+    TestRepo::open(dir.path()).git(&["config", "--unset", "gitbutler.project.targetRef"]);
     assert_eq!(vcs.overview().label, "Local branches");
     adopt(dir.path());
     vcs.overview();
@@ -356,8 +333,7 @@ fn a_workspace_without_but_reports_it_in_place_of_branches() {
 #[test]
 fn a_plain_repository_lists_local_branches() {
     let (dir, repo) = repo_with(&["a.txt"]);
-    let head = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.branch("other", &head, false).unwrap();
+    repo.git(&["branch", "other"]);
     let mut vcs = Vcs::discover_at(dir.path()).unwrap();
     vcs.but = "/nonexistent/but".into();
 

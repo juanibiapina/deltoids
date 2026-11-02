@@ -580,6 +580,12 @@ mod tests {
         // test is that the bounded retry hides the transient Filesystem
         // race; the hard "TUI stays alive" guarantee lives in the reload
         // tests, not here.
+        //
+        // The writer replaces the file by rename. libgit2 memory-maps a
+        // working-tree file to hash it, so truncating that file in place
+        // makes the hashing read past the new end and the process dies of
+        // SIGBUS. A rename leaves the mapped inode intact and still changes
+        // the size between the diff plan and the content load.
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo(dir.path());
         fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
@@ -587,6 +593,7 @@ mod tests {
         commit_index(&repo, "init");
 
         let path = dir.path().join("a.txt");
+        let staging = dir.path().join(".git").join("a.txt.next");
         let stop = Arc::new(AtomicBool::new(false));
         let stop_writer = stop.clone();
         let writer = std::thread::spawn(move || {
@@ -595,7 +602,8 @@ mod tests {
                 // Vary the byte length so the recorded size and the
                 // reload-time size can disagree (the race condition).
                 let body = "x".repeat(n % 64);
-                let _ = fs::write(&path, format!("{body}\n"));
+                fs::write(&staging, format!("{body}\n")).unwrap();
+                fs::rename(&staging, &path).unwrap();
                 n += 1;
                 std::thread::sleep(Duration::from_millis(20));
             }

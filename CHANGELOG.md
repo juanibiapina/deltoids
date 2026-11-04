@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Library: the `deltoids-jev` crate asks TypeSafe's Jev model what role each hunk plays and how much attention it needs, so other apps can show the TUI's review guidance.
 - TUI: press `Enter` on your checked-out branch to review all the commits it adds since its base as one diff.
 
 ### Changed

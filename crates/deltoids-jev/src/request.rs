@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 
 use super::paths::never_sent;
-use super::{ChangeSet, ChangeStatus, ChangedFile, ChangedHunk, HunkKey, JevRequest, Judgments};
+use super::{ChangeStatus, ChangedFile, ChangedHunk, HunkKey, JevRequest, Judgments};
 
 const MODEL: &str = "jev-latest";
 const MAX_CHANGED_LINES: usize = 40;
@@ -86,9 +86,9 @@ const ATTENTION_LEVELS: [&str; 3] = [
     "Critical: touches security, data loss, concurrency, money, migrations, or a public interface",
 ];
 
-pub(crate) fn pending_requests(changes: &ChangeSet, known: &Judgments) -> Vec<JevRequest> {
+pub(crate) fn pending_requests(files: &[ChangedFile], known: &Judgments) -> Vec<JevRequest> {
     let mut entries = Vec::new();
-    for file in &changes.files {
+    for file in files {
         if never_sent(&file.path) {
             continue;
         }
@@ -103,8 +103,7 @@ pub(crate) fn pending_requests(changes: &ChangeSet, known: &Judgments) -> Vec<Je
             }
         }
     }
-    let all: Vec<FileLine> = changes
-        .files
+    let all: Vec<FileLine> = files
         .iter()
         .map(|file| FileLine {
             path: file.path.clone(),
@@ -115,7 +114,7 @@ pub(crate) fn pending_requests(changes: &ChangeSet, known: &Judgments) -> Vec<Je
         Overview::All(Arc::new(all))
     } else {
         Overview::Own {
-            total: changes.files.len(),
+            total: files.len(),
             statuses: Arc::new(
                 all.into_iter()
                     .map(|line| (line.path, line.status))

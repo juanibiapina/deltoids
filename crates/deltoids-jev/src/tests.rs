@@ -1,5 +1,37 @@
 use super::*;
 
+/// A change as the tests build it.
+struct ChangeSet {
+    files: Vec<ChangedFile>,
+}
+
+/// A file's note with "not judged" as the default, so tests compare
+/// whole rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FileNote {
+    tag: Option<&'static str>,
+    attention: Option<Attention>,
+    low: bool,
+}
+
+fn pending_requests(changes: &ChangeSet, known: &Judgments) -> Vec<JevRequest> {
+    super::pending_requests(&changes.files, known)
+}
+
+fn file_notes(changes: &ChangeSet, known: &Judgments) -> Vec<FileNote> {
+    known
+        .file_notes(&changes.files)
+        .into_iter()
+        .map(|note| {
+            note.map_or_else(FileNote::default, |note| FileNote {
+                tag: Some(note.tag),
+                attention: note.attention,
+                low: note.low,
+            })
+        })
+        .collect()
+}
+
 fn file(path: &str, hunks: Vec<ChangedHunk>) -> ChangedFile {
     ChangedFile {
         path: path.to_string(),
@@ -73,7 +105,11 @@ const SHY: &str = "SHY ";
 /// A stand-in for Jev: answers every question in `request` with the
 /// role and attention `judge` gives the hunk's first added line.
 fn answer(request: &JevRequest, judge: impl Fn(&str) -> (&'static str, f64)) -> String {
-    let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    answer_body(&request.body, judge)
+}
+
+fn answer_body(body: &str, judge: impl Fn(&str) -> (&'static str, f64)) -> String {
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
     let mut answers = serde_json::Map::new();
     for (id, hunk) in body["state"]["hunks"].as_object().unwrap() {
         let first_added = hunk["diff"]
@@ -399,21 +435,42 @@ fn change_from_patch(patch: &str) -> ChangeSet {
     }
 }
 
-const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/judgments/fixtures");
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures");
+
+/// A real POST, for recording fixtures.
+fn ureq_post(post: Post<'_>) -> Result<Reply, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut response = agent
+        .post(post.url)
+        .header("Authorization", post.authorization)
+        .header("Content-Type", "application/json")
+        .send(post.body)
+        .map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|error| error.to_string())?;
+    Ok(Reply { status, body })
+}
 
 /// Record real Jev answers for every fixture patch. Run with
 /// `TYPESAFE_API_KEY` set:
-/// `cargo test -p deltoids-cli --lib record_jev_fixtures -- --ignored`.
+/// `cargo test -p deltoids-jev record_jev_fixtures -- --ignored`.
 #[test]
 #[ignore = "calls the TypeSafe API"]
 fn record_jev_fixtures() {
-    let key = jev::key_from_env().expect("TYPESAFE_API_KEY");
+    let key = std::env::var("TYPESAFE_API_KEY").expect("TYPESAFE_API_KEY");
     for name in ["79b6841", "914b576", "agent-files"] {
         let patch = std::fs::read_to_string(format!("{FIXTURES}/{name}.diff")).unwrap();
         let changes = change_from_patch(&patch);
         let requests = pending_requests(&changes, &Judgments::default());
         assert_eq!(requests.len(), 1, "{name}: one request per fixture");
-        let response = jev::send(&key, &requests[0]).unwrap();
+        let response = transport::send(&key, &requests[0], &ureq_post).unwrap();
         std::fs::write(format!("{FIXTURES}/{name}.jev.json"), response).unwrap();
     }
 }
@@ -704,19 +761,114 @@ fn every_role_question_names_the_hunk_file_path() {
 #[test]
 fn the_transport_tells_too_large_requests_from_other_failures() {
     assert_eq!(
-        jev::outcome(
-            400,
-            r#"{"detail":{"error_type":"max_tokens_exceeded"}}"#.into()
-        ),
+        transport::outcome(Reply {
+            status: 400,
+            body: r#"{"detail":{"error_type":"max_tokens_exceeded"}}"#.into()
+        }),
         Err(SendError::TooLarge)
     );
     assert_eq!(
-        jev::outcome(401, String::new()),
-        Err(SendError::Failed(
-            "Jev rejected the key in TYPESAFE_API_KEY".into()
-        ))
+        transport::outcome(Reply {
+            status: 401,
+            body: String::new()
+        }),
+        Err(SendError::Failed("Jev rejected the API key".into()))
     );
-    assert_eq!(jev::outcome(200, "{}".into()), Ok("{}".to_string()));
+    assert_eq!(
+        transport::outcome(Reply {
+            status: 200,
+            body: "{}".into()
+        }),
+        Ok("{}".to_string())
+    );
+}
+
+#[test]
+fn asking_posts_to_jev_with_the_key_and_records_its_answers() {
+    let files = vec![
+        file("src/a.rs", vec![hunk(&["fn a() {}"])]),
+        file("tests/a.rs", vec![hunk(&["#[test]"])]),
+        file("Cargo.lock", vec![hunk(&["version"])]),
+    ];
+    let mut known = Judgments::default();
+    let post = |post: Post<'_>| {
+        assert_eq!(post.url, "https://api.typesafe.ai/v1/systemone");
+        assert_eq!(post.authorization, "Bearer k");
+        let body = answer_body(post.body, |line| match line {
+            "#[test]" => ("test", 0.1),
+            _ => ("core", 1.0),
+        });
+        Ok(Reply { status: 200, body })
+    };
+
+    let answers = known.pending(&files).unwrap().ask("k", &post);
+
+    assert_eq!(known.add(answers), Ok(()));
+    assert!(known.pending(&files).is_none());
+    assert_eq!(
+        known.file_notes(&files),
+        [
+            Some(Note {
+                tag: "core",
+                attention: Some(Attention::Careful),
+                low: false
+            }),
+            Some(Note {
+                tag: "test",
+                attention: Some(Attention::Straightforward),
+                low: true
+            }),
+            Some(Note {
+                tag: "lockfile",
+                attention: None,
+                low: true
+            }),
+        ]
+    );
+    assert_eq!(
+        known.note("tests/a.rs", &hunk(&["#[test]"])).map(|n| n.tag),
+        Some("test")
+    );
+}
+
+#[test]
+fn a_busy_jev_is_asked_again() {
+    let files = vec![file("src/a.rs", vec![hunk(&["fn a() {}"])])];
+    let mut known = Judgments::default();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let post = |post: Post<'_>| {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Ok(Reply {
+                status: 429,
+                body: String::new(),
+            });
+        }
+        let body = answer_body(post.body, |_| ("core", 1.0));
+        Ok(Reply { status: 200, body })
+    };
+
+    let answers = known.pending(&files).unwrap().ask("k", &post);
+
+    assert_eq!(known.add(answers), Ok(()));
+    assert_eq!(calls.into_inner(), 2);
+}
+
+#[test]
+fn a_rejected_key_is_reported_and_leaves_every_hunk_pending() {
+    let files = vec![file("src/a.rs", vec![hunk(&["fn a() {}"])])];
+    let mut known = Judgments::default();
+    let post = |_: Post<'_>| {
+        Ok(Reply {
+            status: 401,
+            body: String::new(),
+        })
+    };
+
+    let answers = known.pending(&files).unwrap().ask("k", &post);
+
+    assert_eq!(known.add(answers), Err("Jev rejected the API key".into()));
+    assert!(known.pending(&files).is_some());
+    assert_eq!(known.file_notes(&files), [None]);
 }
 
 #[test]

@@ -589,6 +589,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "deltoids",
+ "deltoids-jev",
  "deltoids-review",
  "gix",
  "globset",
@@ -608,6 +609,15 @@ dependencies = [
  "unicode-width",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "deltoids-jev"
+version = "0.19.0"
+dependencies = [
+ "deltoids",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

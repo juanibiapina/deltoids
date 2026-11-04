@@ -6,6 +6,7 @@ This is a Rust workspace for a diff toolkit: an ANSI diff pager, a scrolling TUI
 
 - `crates/deltoids`: the diff library, with tree-sitter scope context. Its optional features are documented in `crates/deltoids/Cargo.toml`.
 - `crates/deltoids-cli`: the single `deltoids` binary, with the subcommands `pager` (ANSI diff filter) and `tui` (scrolling TUI). Cargo-dist publishes one homebrew formula and one shell installer for this crate.
+- `crates/deltoids-jev`: review guidance from TypeSafe's Jev model, shared by the TUI and GitButler's GPUI client. The caller passes the HTTP POST.
 - `crates/deltoids-review`: review logic shared by the TUI and `reviewer/` (file tree rows, overview cells). The reviewer loads it as a small wasm module that `npm run core` builds. Put logic that both UIs need here instead of porting it to TypeScript.
 - `crates/deltoids-wasm`: the WebAssembly build of the engine for `reviewer/`. Before you change files under `crates/deltoids-wasm/`, read `crates/deltoids-wasm/AGENTS.md`.
 - `crates/tests`: cross-crate integration tests (CLI surface, pager).
@@ -27,7 +28,7 @@ cargo install --path crates/deltoids-cli  # installs the `deltoids` binary
 
 - `crates/deltoids/tests/diff_cases/`: the diff-case suite (see Diff cases).
 - `crates/deltoids/tests/grammar_off.rs`: checks the `lang-<name>` fallback with `--no-default-features`.
-- `crates/deltoids-cli/src/judgments/fixtures/`: recorded patches and Jev answers. Re-record them with `cargo test -p deltoids-cli --lib record_jev_fixtures -- --ignored`.
+- `crates/deltoids-jev/fixtures/`: recorded patches and Jev answers. Re-record them with `cargo test -p deltoids-jev record_jev_fixtures -- --ignored`.
 
 ## Diff cases (start here when changing the diff engine)
 

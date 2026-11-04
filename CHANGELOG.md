@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-04
+
 ### Added
 
 - Reviewer: on small screens, a review opens on the file tree. Swipe left or right over the diff to move to the next or previous file, and swipe right on the first file to return to the tree. Marking a file as viewed moves on to the next file ([#22](https://github.com/juanibiapina/deltoids/issues/22)).

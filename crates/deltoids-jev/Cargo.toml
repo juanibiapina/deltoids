@@ -1,0 +1,22 @@
+[package]
+name = "deltoids-jev"
+version.workspace = true
+edition.workspace = true
+description = "Review guidance from TypeSafe's Jev model: what role each hunk of a change plays and how much attention it needs"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# Only its diff types, which a change converts from; callers pick the grammars.
+deltoids = { path = "../deltoids", default-features = false }
+serde_json = "1"
+
+[dev-dependencies]
+deltoids = { path = "../deltoids" }
+# Records real Jev answers in the ignored `record_jev_fixtures` test.
+ureq = "3.4.2"
+
+[lints]
+workspace = true

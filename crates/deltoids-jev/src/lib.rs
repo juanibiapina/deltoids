@@ -1,5 +1,11 @@
-//! Jev judgments of a change: ask Jev what role each hunk plays and how
-//! much attention it needs, and summarize the answers per file.
+//! Review guidance from TypeSafe's Jev model: what role each hunk of a
+//! change plays and how much attention it needs, summarized per file.
+//!
+//! [`Judgments`] remembers every answer, keyed by a hunk's path and
+//! changed lines, so a reload asks only about new hunks. Asking goes
+//! through [`Questions::ask`], which takes the HTTP POST as a function:
+//! this crate owns the endpoint, the request bodies and their size
+//! budgets, retries, and what each response means.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -7,27 +13,26 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use deltoids::LineKind;
 use serde_json::{Map, Value};
 
-pub(crate) mod jev;
 mod paths;
 mod request;
+mod transport;
 
 use paths::{is_lockfile_path, never_sent};
-pub(crate) use request::pending_requests;
+use request::pending_requests;
 #[cfg(test)]
-pub(crate) use request::{STATE_BUDGET_CHARS, TOTAL_BUDGET_CHARS};
+use request::{STATE_BUDGET_CHARS, TOTAL_BUDGET_CHARS};
+pub use transport::{Post, Reply};
 
-pub(crate) struct ChangeSet {
-    pub(crate) files: Vec<ChangedFile>,
-}
-
-pub(crate) struct ChangedFile {
-    pub(crate) path: String,
-    pub(crate) status: ChangeStatus,
-    pub(crate) hunks: Vec<ChangedHunk>,
+/// A changed file as Jev sees it: its path, how it changed, and its hunks.
+#[derive(Debug, Clone)]
+pub struct ChangedFile {
+    pub path: String,
+    pub status: ChangeStatus,
+    pub hunks: Vec<ChangedHunk>,
 }
 
 impl ChangedFile {
-    pub(crate) fn from_diff(path: &str, status: ChangeStatus, diff: &deltoids::Diff) -> Self {
+    pub fn from_diff(path: &str, status: ChangeStatus, diff: &deltoids::Diff) -> Self {
         let hunks = diff.hunks().iter().map(ChangedHunk::from_hunk).collect();
         Self {
             path: path.to_string(),
@@ -46,21 +51,25 @@ fn lines_of(hunk: &deltoids::Hunk, kind: LineKind) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChangeStatus {
+pub enum ChangeStatus {
     Added,
     Modified,
     Deleted,
     Renamed,
 }
 
-pub(crate) struct ChangedHunk {
-    pub(crate) scope: Vec<String>,
-    pub(crate) removed: Vec<String>,
-    pub(crate) added: Vec<String>,
+/// A hunk as Jev sees it: the names of the scopes it changes, outermost
+/// first, and its removed and added lines without their line endings.
+/// Its path and changed lines identify its judgment; the scope does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedHunk {
+    pub scope: Vec<String>,
+    pub removed: Vec<String>,
+    pub added: Vec<String>,
 }
 
 impl ChangedHunk {
-    fn from_hunk(hunk: &deltoids::Hunk) -> Self {
+    pub fn from_hunk(hunk: &deltoids::Hunk) -> Self {
         Self {
             scope: hunk
                 .ancestors
@@ -75,7 +84,7 @@ impl ChangedHunk {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Role {
+enum Role {
     Core,
     Refactor,
     Config,
@@ -144,26 +153,25 @@ const CRITICAL_PROBABILITY: f64 = 0.3;
 /// the probability Jev gives the critical level; `breaking` is the
 /// probability that the hunk breaks code or users outside its package.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Judgment {
-    pub(crate) role: Role,
-    pub(crate) role_confidence: f64,
-    pub(crate) attention: f64,
-    pub(crate) critical: f64,
-    pub(crate) breaking: f64,
+struct Judgment {
+    role: Role,
+    attention: f64,
+    critical: f64,
+    breaking: f64,
 }
 
 impl Judgment {
-    pub(crate) fn note(&self) -> FileNote {
+    fn note(&self) -> Note {
         let tag = self.role.name();
-        FileNote {
-            tag: Some(tag),
+        Note {
+            tag,
             attention: Some(self.level()),
             low: matches!(tag, "test" | "comments" | "imports"),
         }
     }
 
     /// A hunk that breaks callers is critical whatever its score.
-    pub(crate) fn level(&self) -> Attention {
+    fn level(&self) -> Attention {
         if self.breaking >= BREAKING_THRESHOLD || self.critical >= CRITICAL_PROBABILITY {
             Attention::Critical
         } else if self.attention >= 0.5 {
@@ -175,31 +183,87 @@ impl Judgment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Attention {
+pub enum Attention {
     Straightforward,
     Careful,
     Critical,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct FileNote {
-    pub(crate) tag: Option<&'static str>,
-    pub(crate) attention: Option<Attention>,
-    pub(crate) low: bool,
+/// What a hunk or a file shows: the kind of change, as `core` or
+/// `lockfile`, how much attention it needs, and whether it is of low value
+/// to a reviewer (tests, comment-only and import-only changes, lockfiles).
+/// A lockfile is tagged without asking Jev and has no attention level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Note {
+    pub tag: &'static str,
+    pub attention: Option<Attention>,
+    pub low: bool,
 }
 
+/// Every judgment Jev has given, by hunk.
 #[derive(Default)]
-pub(crate) struct Judgments(HashMap<HunkKey, Judgment>);
+pub struct Judgments(HashMap<HunkKey, Judgment>);
 
 impl Judgments {
-    pub(crate) fn of(&self, path: &str, hunk: &deltoids::Hunk) -> Option<&Judgment> {
-        self.0
-            .get(&HunkKey::of(path, &ChangedHunk::from_hunk(hunk)))
+    /// What Jev said about `hunk` of the file at `path`, once it has.
+    pub fn note(&self, path: &str, hunk: &ChangedHunk) -> Option<Note> {
+        self.0.get(&HunkKey::of(path, hunk)).map(Judgment::note)
+    }
+
+    /// One note per file, `None` until Jev judged any of its hunks. A file
+    /// shows its judged hunk with the highest attention level, then score,
+    /// the first one on a tie.
+    pub fn file_notes(&self, files: &[ChangedFile]) -> Vec<Option<Note>> {
+        file_notes(files, self)
+    }
+
+    /// The questions about the hunks of `files` Jev has not answered yet,
+    /// `None` when there are none. Lockfiles and generated files are never
+    /// asked about.
+    pub fn pending(&self, files: &[ChangedFile]) -> Option<Questions> {
+        let requests = pending_requests(files, self);
+        (!requests.is_empty()).then_some(Questions(requests))
+    }
+
+    /// Record every valid answer. On failure, the first error says why,
+    /// worded for people; the hunks it left out stay pending.
+    pub fn add(&mut self, answers: Answers) -> Result<(), String> {
+        let mut first_error = None;
+        for (request, reply) in answers.0 {
+            let absorbed = reply
+                .and_then(|body| absorb(self, &request, &body).map_err(|error| error.to_string()));
+            if let Err(error) = absorbed {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 }
 
+/// Questions about hunks Jev has not judged, packed into requests that fit
+/// its token limits.
+pub struct Questions(Vec<JevRequest>);
+
+impl Questions {
+    /// Ask Jev with `key`, sending each request through `post`, all at once
+    /// on threads of their own. Blocks until every request is answered or
+    /// has failed. Retries while TypeSafe is busy, and halves a request Jev
+    /// rejects as too large.
+    pub fn ask(
+        self,
+        key: &str,
+        post: &(dyn Fn(Post<'_>) -> Result<Reply, String> + Sync),
+    ) -> Answers {
+        let send = |request: &JevRequest| transport::send(key, request, post);
+        Answers(send_all(&send, self.0))
+    }
+}
+
+/// Jev's replies to [`Questions`], for [`Judgments::add`].
+pub struct Answers(Vec<(JevRequest, Result<String, String>)>);
+
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum AbsorbError {
+enum AbsorbError {
     Malformed,
     Missing(usize),
 }
@@ -214,11 +278,7 @@ impl std::fmt::Display for AbsorbError {
 }
 
 /// Records every valid answer, even when it returns an error.
-pub(crate) fn absorb(
-    known: &mut Judgments,
-    request: &JevRequest,
-    response: &str,
-) -> Result<(), AbsorbError> {
+fn absorb(known: &mut Judgments, request: &JevRequest, response: &str) -> Result<(), AbsorbError> {
     let response: Value = serde_json::from_str(response).map_err(|_| AbsorbError::Malformed)?;
     let answers = response
         .get("answers")
@@ -245,7 +305,6 @@ fn judgment(answers: &Map<String, Value>, id: &str) -> Option<Judgment> {
     let breaking = answers.get(&format!("breaking_{id}"))?;
     Some(Judgment {
         role: Role::parse(role.get("choice")?.as_str()?)?,
-        role_confidence: role.get("confidence")?.as_f64()?,
         attention: attention.get("score")?.as_f64()?,
         critical: attention.get("probabilities")?.get("2")?.as_f64()?,
         breaking: breaking.get("noul")?.as_f64()?,
@@ -254,7 +313,7 @@ fn judgment(answers: &Map<String, Value>, id: &str) -> Option<Judgment> {
 
 /// Path plus changed lines, so it survives line shifts and reloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct HunkKey(u64);
+struct HunkKey(u64);
 
 impl HunkKey {
     fn of(path: &str, hunk: &ChangedHunk) -> Self {
@@ -266,24 +325,21 @@ impl HunkKey {
     }
 }
 
-pub(crate) struct JevRequest {
-    pub(crate) body: String,
-    pub(crate) hunks: Vec<HunkKey>,
+struct JevRequest {
+    body: String,
+    hunks: Vec<HunkKey>,
     parts: request::Parts,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SendError {
+enum SendError {
     TooLarge,
     Failed(String),
 }
 
 /// A request Jev rejects as too large is halved until it fits; a single
 /// hunk that still does not fit gets an error reply.
-pub(crate) fn send_all<F>(
-    send: &F,
-    requests: Vec<JevRequest>,
-) -> Vec<(JevRequest, Result<String, String>)>
+fn send_all<F>(send: &F, requests: Vec<JevRequest>) -> Vec<(JevRequest, Result<String, String>)>
 where
     F: Fn(&JevRequest) -> Result<String, SendError> + Sync,
 {
@@ -317,22 +373,19 @@ where
     }
 }
 
-/// A file shows its judged hunk with the highest attention level, then
-/// score, the first one on a tie.
-pub(crate) fn file_notes(changes: &ChangeSet, known: &Judgments) -> Vec<FileNote> {
-    changes
-        .files
+fn file_notes(files: &[ChangedFile], known: &Judgments) -> Vec<Option<Note>> {
+    files
         .iter()
         .map(|file| {
             if is_lockfile_path(&file.path) {
-                return FileNote {
-                    tag: Some("lockfile"),
+                return Some(Note {
+                    tag: "lockfile",
                     attention: None,
                     low: true,
-                };
+                });
             }
             if never_sent(&file.path) {
-                return FileNote::default();
+                return None;
             }
             let mut best: Option<&Judgment> = None;
             for judgment in file
@@ -345,7 +398,7 @@ pub(crate) fn file_notes(changes: &ChangeSet, known: &Judgments) -> Vec<FileNote
                     best = Some(judgment);
                 }
             }
-            best.map_or_else(FileNote::default, Judgment::note)
+            best.map(Judgment::note)
         })
         .collect()
 }

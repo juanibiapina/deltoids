@@ -28,8 +28,8 @@ fn four_files() -> FilesMode {
 /// hunks under `tests/` are routine tests, and every other hunk is a
 /// routine refactor.
 pub(super) fn fake_jev(core_path: &'static str) -> review::Sender {
-    std::sync::Arc::new(move |request: &crate::judgments::JevRequest| {
-        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    std::sync::Arc::new(move |post: deltoids_jev::Post<'_>| {
+        let body: serde_json::Value = serde_json::from_str(post.body).unwrap();
         let mut answers = serde_json::Map::new();
         for (id, hunk) in body["state"]["hunks"].as_object().unwrap() {
             let file = hunk["file"].as_str().unwrap();
@@ -53,15 +53,19 @@ pub(super) fn fake_jev(core_path: &'static str) -> review::Sender {
             );
             answers.insert(format!("breaking_{id}"), serde_json::json!({ "noul": 0.0 }));
         }
-        Ok(serde_json::json!({ "answers": answers }).to_string())
+        Ok(deltoids_jev::Reply {
+            status: 200,
+            body: serde_json::json!({ "answers": answers }).to_string(),
+        })
     })
 }
 
 fn failing_jev() -> review::Sender {
-    std::sync::Arc::new(|_: &crate::judgments::JevRequest| {
-        Err(crate::judgments::SendError::Failed(
-            "Jev rejected the key in TYPESAFE_API_KEY".to_string(),
-        ))
+    std::sync::Arc::new(|_: deltoids_jev::Post<'_>| {
+        Ok(deltoids_jev::Reply {
+            status: 401,
+            body: String::new(),
+        })
     })
 }
 
@@ -139,7 +143,7 @@ fn a_failed_jev_call_leaves_the_rows_untagged() {
 
     assert_eq!(
         state.status.as_deref(),
-        Some("Jev unavailable: Jev rejected the key in TYPESAFE_API_KEY")
+        Some("Jev unavailable: Jev rejected the API key")
     );
     assert!(sidebar_texts(&state).contains(&"  M a.rs +1 -1".to_string()));
 }
@@ -209,8 +213,8 @@ fn import_and_core_hunks() -> FilesMode {
         before,
         after,
     };
-    let jev: review::Sender = std::sync::Arc::new(|request: &crate::judgments::JevRequest| {
-        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+    let jev: review::Sender = std::sync::Arc::new(|post: deltoids_jev::Post<'_>| {
+        let body: serde_json::Value = serde_json::from_str(post.body).unwrap();
         let mut answers = serde_json::Map::new();
         for (id, hunk) in body["state"]["hunks"].as_object().unwrap() {
             let diff = hunk["diff"].as_str().unwrap();
@@ -232,7 +236,10 @@ fn import_and_core_hunks() -> FilesMode {
             );
             answers.insert(format!("breaking_{id}"), serde_json::json!({ "noul": 0.0 }));
         }
-        Ok(serde_json::json!({ "answers": answers }).to_string())
+        Ok(deltoids_jev::Reply {
+            status: 200,
+            body: serde_json::json!({ "answers": answers }).to_string(),
+        })
     });
     let mut state = with_jev(&[file], jev);
     wait_for_review(&mut state);
@@ -406,11 +413,10 @@ fn snapshot_view(
     let sent = std::sync::Arc::new(AtomicUsize::new(0));
     let counter = sent.clone();
     let jev = fake_jev("src/a.rs");
-    let sender: review::Sender =
-        std::sync::Arc::new(move |request: &crate::judgments::JevRequest| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            jev(request)
-        });
+    let sender: review::Sender = std::sync::Arc::new(move |post: deltoids_jev::Post<'_>| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        jev(post)
+    });
     let review = review::Review::with_sender(sender);
     let mut panel = SnapshotPanel::new(dir.to_path_buf(), snapshot, Some(review));
     let deadline = Instant::now() + Duration::from_secs(5);

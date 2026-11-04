@@ -28,7 +28,7 @@ mouse gestures.
 ## Panels
 
 The layout follows lazygit. The side panels share the left
-column as tabs: the column shows one panel at a time, and its border
+column as tabs: the column shows one panel at a time, and its title row
 lists every tab. The main view on the right shows what the side panel
 selects.
 
@@ -73,8 +73,10 @@ position when a refresh only changes other files.
 
 ## Stage and discard
 
-The Files panel shows each file's status as `git status` does. A file
-can have staged and unstaged changes at the same time. Press `s` in the
+The Files panel shows one status letter per file. The letter is green
+when all of the file's changes are staged, amber when some are, and red
+when none are. The Files title counts the files with staged changes. A
+file can have staged and unstaged changes at the same time. Press `s` in the
 Files panel, or `Tab` in the diff, to switch between the two.
 
 | Key | Action in the Files panel |

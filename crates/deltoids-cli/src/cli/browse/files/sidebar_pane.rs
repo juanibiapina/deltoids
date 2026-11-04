@@ -335,7 +335,6 @@ mod tests {
             tag: "core",
             level: 1,
             low: false,
-            breaking: false,
         };
         let sidebar = noted(&["a.rs", "much_longer_name.rs"], note);
 
@@ -354,7 +353,6 @@ mod tests {
             tag: "core",
             level: 1,
             low: false,
-            breaking: false,
         };
         let sidebar = noted(&["a_really_long_file_name.rs"], note);
 

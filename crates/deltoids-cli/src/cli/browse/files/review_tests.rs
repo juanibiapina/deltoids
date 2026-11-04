@@ -46,7 +46,10 @@ pub(super) fn fake_jev(core_path: &'static str) -> review::Sender {
             );
             answers.insert(
                 format!("attention_{id}"),
-                serde_json::json!({ "score": attention }),
+                serde_json::json!({
+                    "score": attention,
+                    "probabilities": { "2": (attention - 1.0_f64).max(0.0) },
+                }),
             );
             answers.insert(format!("breaking_{id}"), serde_json::json!({ "noul": 0.0 }));
         }
@@ -222,7 +225,10 @@ fn import_and_core_hunks() -> FilesMode {
             );
             answers.insert(
                 format!("attention_{id}"),
-                serde_json::json!({ "score": attention }),
+                serde_json::json!({
+                    "score": attention,
+                    "probabilities": { "2": (attention - 1.0_f64).max(0.0) },
+                }),
             );
             answers.insert(format!("breaking_{id}"), serde_json::json!({ "noul": 0.0 }));
         }

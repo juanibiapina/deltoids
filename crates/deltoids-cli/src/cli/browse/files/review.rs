@@ -143,7 +143,6 @@ fn row_note(note: FileNote) -> Option<RowNote> {
         tag: note.tag?,
         level,
         low: note.low,
-        breaking: note.breaking,
     })
 }
 

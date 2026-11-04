@@ -133,13 +133,22 @@ impl Role {
 /// commits; 0.5 also caught crate-internal changes.
 const BREAKING_THRESHOLD: f64 = 0.6;
 
-/// `attention` runs from 0 (straightforward) to 2 (critical); `breaking` is the
+/// A hunk is critical when Jev puts this much probability on the critical
+/// level. The score averages the levels, so a hunk rated 48% critical and
+/// 51% careful scores 1.47. On the recorded fixtures, the three hunks Jev
+/// leaned critical on scored 0.48 to 0.54 here and every other hunk 0.04
+/// or less.
+const CRITICAL_PROBABILITY: f64 = 0.3;
+
+/// `attention` runs from 0 (straightforward) to 2 (critical); `critical` is
+/// the probability Jev gives the critical level; `breaking` is the
 /// probability that the hunk breaks code or users outside its package.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Judgment {
     pub(crate) role: Role,
     pub(crate) role_confidence: f64,
     pub(crate) attention: f64,
+    pub(crate) critical: f64,
     pub(crate) breaking: f64,
 }
 
@@ -148,9 +157,19 @@ impl Judgment {
         let tag = self.role.name();
         FileNote {
             tag: Some(tag),
-            attention: Some(Attention::of(self.attention)),
+            attention: Some(self.level()),
             low: matches!(tag, "test" | "comments" | "imports"),
-            breaking: self.breaking >= BREAKING_THRESHOLD,
+        }
+    }
+
+    /// A hunk that breaks callers is critical whatever its score.
+    pub(crate) fn level(&self) -> Attention {
+        if self.breaking >= BREAKING_THRESHOLD || self.critical >= CRITICAL_PROBABILITY {
+            Attention::Critical
+        } else if self.attention >= 0.5 {
+            Attention::Careful
+        } else {
+            Attention::Straightforward
         }
     }
 }
@@ -162,22 +181,11 @@ pub(crate) enum Attention {
     Critical,
 }
 
-impl Attention {
-    fn of(score: f64) -> Self {
-        match score {
-            score if score < 0.5 => Self::Straightforward,
-            score if score < 1.5 => Self::Careful,
-            _ => Self::Critical,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FileNote {
     pub(crate) tag: Option<&'static str>,
     pub(crate) attention: Option<Attention>,
     pub(crate) low: bool,
-    pub(crate) breaking: bool,
 }
 
 #[derive(Default)]
@@ -239,6 +247,7 @@ fn judgment(answers: &Map<String, Value>, id: &str) -> Option<Judgment> {
         role: Role::parse(role.get("choice")?.as_str()?)?,
         role_confidence: role.get("confidence")?.as_f64()?,
         attention: attention.get("score")?.as_f64()?,
+        critical: attention.get("probabilities")?.get("2")?.as_f64()?,
         breaking: breaking.get("noul")?.as_f64()?,
     })
 }
@@ -308,8 +317,8 @@ where
     }
 }
 
-/// A file shows its judged hunk with the highest attention, the first
-/// one on a tie.
+/// A file shows its judged hunk with the highest attention level, then
+/// score, the first one on a tie.
 pub(crate) fn file_notes(changes: &ChangeSet, known: &Judgments) -> Vec<FileNote> {
     changes
         .files
@@ -320,26 +329,23 @@ pub(crate) fn file_notes(changes: &ChangeSet, known: &Judgments) -> Vec<FileNote
                     tag: Some("lockfile"),
                     attention: None,
                     low: true,
-                    breaking: false,
                 };
             }
             if never_sent(&file.path) {
                 return FileNote::default();
             }
-            let judged: Vec<&Judgment> = file
+            let mut best: Option<&Judgment> = None;
+            for judgment in file
                 .hunks
                 .iter()
                 .filter_map(|hunk| known.0.get(&HunkKey::of(&file.path, hunk)))
-                .collect();
-            let mut best: Option<&Judgment> = None;
-            for judgment in &judged {
-                if best.is_none_or(|b| judgment.attention > b.attention) {
+            {
+                let rank = |j: &Judgment| (j.level(), j.attention);
+                if best.is_none_or(|b| rank(judgment) > rank(b)) {
                     best = Some(judgment);
                 }
             }
-            let mut note = best.map_or_else(FileNote::default, Judgment::note);
-            note.breaking = judged.iter().any(|j| j.breaking >= BREAKING_THRESHOLD);
-            note
+            best.map_or_else(FileNote::default, Judgment::note)
         })
         .collect()
 }

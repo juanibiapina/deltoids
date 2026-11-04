@@ -132,8 +132,6 @@ pub struct RowNote {
     pub tag: &'static str,
     pub level: u8,
     pub low: bool,
-    /// Drawn as `!` after the tag.
-    pub breaking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1368,28 +1366,7 @@ mod tests {
     }
 
     fn note(tag: &'static str, level: u8, low: bool) -> Option<RowNote> {
-        Some(RowNote {
-            tag,
-            level,
-            low,
-            breaking: false,
-        })
-    }
-
-    #[test]
-    fn a_breaking_note_ends_its_tag_with_a_bang() {
-        let diffs = [fd("src/api.rs")];
-        let files = counted_files(&diffs);
-        let mut sidebar = Sidebar::build_with_icons(&files, &theme(), IconMode::Off);
-
-        sidebar.update_notes(&[Some(RowNote {
-            tag: "core",
-            level: 2,
-            low: false,
-            breaking: true,
-        })]);
-
-        assert_eq!(note_texts(&sidebar), [None, Some("core! ●".to_string())]);
+        Some(RowNote { tag, level, low })
     }
 
     fn note_texts(sidebar: &Sidebar) -> Vec<Option<String>> {

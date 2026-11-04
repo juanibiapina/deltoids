@@ -197,11 +197,7 @@ pub fn render_note(
             .bg(rgb_to_color(theme.selection_bg))
             .add_modifier(Modifier::BOLD);
     }
-    let tag = if note.breaking {
-        format!("{}!", note.tag)
-    } else {
-        note.tag.to_string()
-    };
+    let tag = note.tag.to_string();
     let tag_style = if muted_tag {
         base.fg(rgb_to_color(theme.muted))
     } else {

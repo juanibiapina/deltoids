@@ -64,6 +64,11 @@ fn one_request_asks_role_and_attention_for_every_hunk_but_lockfiles() {
 /// with `EDGE`, just under the threshold (0.59).
 const BREAK: &str = "BREAK ";
 const EDGE: &str = "EDGE ";
+/// A hunk whose first added line starts with this is 30% critical; with
+/// `SHY`, 29%. Other hunks are fully critical when their score reaches
+/// 1.5 and not critical below it.
+const LEAN: &str = "LEAN ";
+const SHY: &str = "SHY ";
 
 /// A stand-in for Jev: answers every question in `request` with the
 /// role and attention `judge` gives the hunk's first added line.
@@ -78,6 +83,15 @@ fn answer(request: &JevRequest, judge: impl Fn(&str) -> (&'static str, f64)) -> 
             .find_map(|line| line.strip_prefix('+'))
             .unwrap_or("");
         let (role, attention) = judge(first_added);
+        let critical = if first_added.starts_with(LEAN) {
+            0.3
+        } else if first_added.starts_with(SHY) {
+            0.29
+        } else if attention >= 1.5 {
+            1.0
+        } else {
+            0.0
+        };
         answers.insert(
             format!("role_{id}"),
             serde_json::json!({
@@ -93,7 +107,7 @@ fn answer(request: &JevRequest, judge: impl Fn(&str) -> (&'static str, f64)) -> 
                 "type": "score",
                 "score": attention,
                 "legend": {},
-                "probabilities": {},
+                "probabilities": { "2": critical },
                 "confidence": 0.8,
             }),
         );
@@ -589,6 +603,26 @@ fn recorded_notes(name: &str) -> Vec<(String, Option<&'static str>)> {
         .collect()
 }
 
+/// The signal fix's three terminal hunks score 1.47 to 1.54; Jev gives
+/// each about even odds of critical.
+#[test]
+fn recorded_answers_mark_every_hunk_jev_leans_critical_on() {
+    let patch = std::fs::read_to_string(format!("{FIXTURES}/79b6841.diff")).unwrap();
+    let response = std::fs::read_to_string(format!("{FIXTURES}/79b6841.jev.json")).unwrap();
+    let changes = change_from_patch(&patch);
+    let mut known = Judgments::default();
+    let request = pending_requests(&changes, &known).remove(0);
+    absorb(&mut known, &request, &response).unwrap();
+
+    let critical = known
+        .0
+        .values()
+        .filter(|judgment| judgment.level() == Attention::Critical)
+        .count();
+
+    assert_eq!(critical, 3);
+}
+
 #[test]
 fn recorded_answers_tag_the_signal_fix() {
     let notes = recorded_notes("79b6841");
@@ -686,27 +720,65 @@ fn the_transport_tells_too_large_requests_from_other_failures() {
 }
 
 #[test]
-fn a_breaking_hunk_marks_its_file_even_when_another_hunk_sets_the_tag() {
+fn a_breaking_hunk_is_critical_and_tags_its_file() {
     let changes = ChangeSet {
         files: vec![
             file(
                 "src/api.rs",
-                vec![hunk(&["BREAK pub fn gone() {}"]), hunk(&["fn core() {}"])],
+                vec![hunk(&["fn core() {}"]), hunk(&["BREAK pub fn gone() {}"])],
             ),
             file("src/edge.rs", vec![hunk(&["EDGE pub fn maybe() {}"])]),
-            file("src/plain.rs", vec![hunk(&["fn plain() {}"])]),
         ],
     };
     let known = judged(&changes, |line| match line {
-        "fn core() {}" => ("core", 1.8),
-        _ => ("refactor", 1.0),
+        "fn core() {}" => ("core", 1.3),
+        _ => ("removal", 1.0),
     });
 
     let notes = file_notes(&changes, &known);
 
-    assert_eq!((notes[0].tag, notes[0].breaking), (Some("core"), true));
-    assert!(!notes[1].breaking);
-    assert!(!notes[2].breaking);
+    assert_eq!(
+        (notes[0].tag, notes[0].attention),
+        (Some("removal"), Some(Attention::Critical))
+    );
+    assert_eq!(notes[1].attention, Some(Attention::Careful));
+}
+
+#[test]
+fn a_hunk_leaning_critical_is_critical_below_the_critical_score() {
+    let changes = ChangeSet {
+        files: vec![
+            file("src/lean.rs", vec![hunk(&["LEAN fn a() {}"])]),
+            file("src/shy.rs", vec![hunk(&["SHY fn b() {}"])]),
+        ],
+    };
+    let known = judged(&changes, |_| ("core", 1.2));
+
+    let levels: Vec<_> = file_notes(&changes, &known)
+        .iter()
+        .map(|note| note.attention)
+        .collect();
+
+    assert_eq!(
+        levels,
+        [Some(Attention::Critical), Some(Attention::Careful)]
+    );
+}
+
+#[test]
+fn an_attention_answer_without_the_critical_probability_is_missing() {
+    let changes = ChangeSet {
+        files: vec![file("src/a.rs", vec![hunk(&["a"])])],
+    };
+    let mut known = Judgments::default();
+    let request = pending_requests(&changes, &known).remove(0);
+    let mut answers: serde_json::Value =
+        serde_json::from_str(&answer(&request, |_| ("core", 1.0))).unwrap();
+    answers["answers"]["attention_h0"]["probabilities"] = serde_json::json!({});
+
+    let result = absorb(&mut known, &request, &answers.to_string());
+
+    assert_eq!(result, Err(AbsorbError::Missing(1)));
 }
 
 #[test]

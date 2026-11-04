@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI and library: git repositories are read with gix, in pure Rust, instead of libgit2. Reading the working tree is about twice as fast in large repositories, and building deltoids no longer needs libgit2.
 - TUI: a file moved or renamed without staging shows as a rename in the diff, as it already did in the file list. A file removed from the index and created again shows as one modification.
 - TUI: commits with the same timestamp are listed in the order `git log` uses.
+- TUI: a change that breaks callers gets a red attention dot instead of a `!` after its tag, and more changes that Jev rates as possibly critical get a red dot.
 - Library: `git::Repo::working_tree_diff` returns an error when `HEAD` is damaged, as `working_tree_snapshot` does, instead of diffing against an empty tree.
 
 ### Removed

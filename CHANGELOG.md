@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI: in a git repository, the checked-out branch shows the commits it adds since it forked from `origin/HEAD`, `origin/main`, `main`, or its upstream, and how far that target has moved on.
 - TUI: unapplied GitButler branches show the age of their last commit.
 
+### Fixed
+
+- TUI: moving from a summary to a file before the summary finished drawing no longer leaves the diff saying `Rendering…`.
+
 ## [0.19.0] - 2026-11-04
 
 ### Added

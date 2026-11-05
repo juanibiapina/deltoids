@@ -219,7 +219,7 @@ mod tests {
     use crossterm::event::{MouseButton, MouseEventKind};
 
     use crate::cli::browse::comments::{CommentAnchor, LineSide};
-    use crate::cli::browse::mode::Mode;
+    use crate::cli::browse::mode::{DrawBudget, Mode};
     use crate::cli::browse::test_screen::{self, LEFT, PANE_HEIGHT};
 
     use super::super::FilesMode;
@@ -308,6 +308,40 @@ mod tests {
         assert!(rows[notes + 1].contains("line 1"), "{}", rows[notes + 1]);
         let (logo, _) = row_with(&rows, "logo.png");
         assert!(rows[logo + 1].contains("binary"), "{}", rows[logo + 1]);
+    }
+
+    #[test]
+    fn leaving_a_summary_before_it_finishes_leaves_no_rendering_notice() {
+        let many: Vec<ResolvedFile> = (0..12)
+            .map(|n| {
+                rust(
+                    &format!("src/f{n:02}.rs"),
+                    "fn f() {}\n",
+                    "fn f() { g(); }\n",
+                )
+            })
+            .collect();
+        let mut state = on_src(make_state(&many));
+        state.visible_diff_window(DrawBudget::Fast);
+        assert!(state.sidebar.select_file_index(0, 20));
+        state.snap_diff_to_selected_file();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            state.visible_diff_window(DrawBudget::Fast);
+            Mode::background(&mut state, true);
+            if !state.unstaged.pending() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "render did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        let footer = state.unstaged.footer().expect("the file's diff");
+        assert!(!footer.contains("Rendering"), "{footer}");
     }
 
     /// A left press on pane row `y`.

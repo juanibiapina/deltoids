@@ -904,6 +904,7 @@ impl DiffPane {
             hide_low: labels.hide_low,
             view: WindowView::Diffs,
         };
+        self.idle_except(BlockKind::Diff, key.epoch, model, spec.order, theme);
         let same_selection = self
             .window_key
             .as_ref()
@@ -1003,14 +1004,17 @@ impl DiffPane {
             width,
             syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
         };
-        self.cache
-            .request(epoch, model, self.column, spec.order, None, None, theme);
-        let (wanted, idle) = if summary {
-            (&mut self.definitions, &mut self.outline)
+        let shown = if summary {
+            BlockKind::Definitions
         } else {
-            (&mut self.outline, &mut self.definitions)
+            BlockKind::Outline
         };
-        idle.request(epoch, model, self.column, spec.order, None, None, theme);
+        self.idle_except(shown, epoch, model, spec.order, theme);
+        let wanted = if summary {
+            &mut self.definitions
+        } else {
+            &mut self.outline
+        };
         wanted.request(
             epoch,
             model,
@@ -1062,6 +1066,29 @@ impl DiffPane {
         self.file_starts.clear();
         self.set_window(rows, true);
         self.window_key = Some(key);
+    }
+
+    /// Release the demand of every cache but the `shown` one, so a view
+    /// off screen neither keeps rendering nor reports rows as pending.
+    fn idle_except(
+        &mut self,
+        shown: BlockKind,
+        epoch: CacheEpoch,
+        model: &Model,
+        order: &[usize],
+        theme: &Theme,
+    ) {
+        let column = self.column;
+        let caches = [
+            (BlockKind::Diff, &mut self.cache),
+            (BlockKind::Definitions, &mut self.definitions),
+            (BlockKind::Outline, &mut self.outline),
+        ];
+        for (kind, cache) in caches {
+            if kind != shown {
+                cache.request(epoch, model, column, order, None, None, theme);
+            }
+        }
     }
 
     /// Where opening window row `row` goes, for a summary or definitions

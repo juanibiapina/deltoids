@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix `.h` files getting no scope context: C headers now diff as C and C++ headers as C++.
 - TUI: moving from a summary to a file before the summary finished drawing no longer leaves the diff saying `Rendering…`.
 
 ## [0.19.0] - 2026-11-04

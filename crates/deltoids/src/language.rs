@@ -681,9 +681,7 @@ impl Language {
     /// modelines. The path is never read from disk. A language whose grammar
     /// is left out is not detected.
     pub(crate) fn detect(path: &str, source: &str) -> Option<Self> {
-        let syntax_set = detection_syntax_set();
-        detect_syntax_by_path(syntax_set, path)
-            .or_else(|| detect_syntax_by_first_line(syntax_set, source))
+        detect_syntax(path, source)
             .and_then(Self::from_syntax)
             .filter(|language| language.grammar().is_some())
     }
@@ -691,10 +689,7 @@ impl Language {
     /// Detect the syntect syntax name (the highlight key), independent of
     /// tree-sitter support. The path is never read from disk.
     pub fn detect_highlight_name(path: &str, source: &str) -> Option<String> {
-        let syntax_set = detection_syntax_set();
-        detect_syntax_by_path(syntax_set, path)
-            .or_else(|| detect_syntax_by_first_line(syntax_set, source))
-            .map(|syntax| syntax.name.clone())
+        detect_syntax(path, source).map(|syntax| syntax.name.clone())
     }
 
     /// The tree-sitter grammar for this language, when its `lang-*` feature is on.
@@ -1368,6 +1363,58 @@ fn detection_syntax_set() -> &'static SyntaxSet {
     DETECTION_SYNTAX_SET.get_or_init(crate::config::bundled_syntax_set)
 }
 
+fn detect_syntax(path: &str, source: &str) -> Option<&'static SyntaxReference> {
+    let syntax_set = detection_syntax_set();
+    if is_header(path) {
+        return syntax_set.find_syntax_by_name(header_syntax_name(source));
+    }
+    detect_syntax_by_path(syntax_set, path)
+        .or_else(|| detect_syntax_by_first_line(syntax_set, source))
+}
+
+fn is_header(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("h"))
+}
+
+const OBJECTIVE_C_LINE_STARTS: &[&str] = &[
+    "@interface",
+    "@implementation",
+    "@protocol",
+    "@class",
+    "@property",
+    "#import",
+];
+
+const CPP_LINE_STARTS: &[&str] = &[
+    "namespace ",
+    "class ",
+    "template<",
+    "template <",
+    "using namespace ",
+    "public:",
+    "private:",
+    "protected:",
+];
+
+fn header_syntax_name(source: &str) -> &'static str {
+    let starts_with_any = |starts: &[&str]| {
+        source
+            .lines()
+            .map(str::trim_start)
+            .any(|line| starts.iter().any(|start| line.starts_with(start)))
+    };
+    if starts_with_any(OBJECTIVE_C_LINE_STARTS) {
+        "Objective-C"
+    } else if starts_with_any(CPP_LINE_STARTS) || source.contains("std::") {
+        "C++"
+    } else {
+        "C"
+    }
+}
+
 fn detect_syntax_by_path<'a>(syntax_set: &'a SyntaxSet, path: &str) -> Option<&'a SyntaxReference> {
     let path = Path::new(path);
     let file_name = path
@@ -1431,6 +1478,42 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    fn header(source: &str) -> (Option<&'static str>, Option<String>) {
+        (
+            Language::detect("queue.h", source).map(Language::id),
+            Language::detect_highlight_name("queue.h", source),
+        )
+    }
+
+    #[test]
+    fn detects_c_headers() {
+        let source = "#include <stddef.h>\n\nstruct queue {\n    size_t head;\n};\n";
+        assert_eq!(header(source), (Some("c"), Some("C".to_string())));
+    }
+
+    #[test]
+    fn detects_cpp_headers() {
+        let source = "#pragma once\n\nnamespace store {\n  class Queue {\n   public:\n    void push();\n  };\n}\n";
+        assert_eq!(header(source), (Some("cpp"), Some("C++".to_string())));
+        let source = "#include <vector>\n\nstd::vector<int> ids();\n";
+        assert_eq!(header(source), (Some("cpp"), Some("C++".to_string())));
+    }
+
+    #[test]
+    fn leaves_objective_c_headers_unsupported() {
+        let source = "#import <Foundation/Foundation.h>\n\n@interface Queue : NSObject\n@end\n";
+        assert_eq!(header(source), (None, Some("Objective-C".to_string())));
+    }
+
+    #[test]
+    fn treats_empty_and_upper_case_headers_as_c() {
+        assert_eq!(header(""), (Some("c"), Some("C".to_string())));
+        assert_eq!(
+            Language::detect("QUEUE.H", "struct queue;\n").map(Language::id),
+            Some("c")
+        );
     }
 
     #[test]

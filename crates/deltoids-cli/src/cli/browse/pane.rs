@@ -173,9 +173,34 @@ pub(crate) fn draw_scrollbar(
     focused: bool,
     theme: &Theme,
 ) {
-    let body = body(area);
+    if area.width == 0 {
+        return;
+    }
+    let x = area.right() - 1;
+    draw_scrollbar_beside(
+        frame,
+        body(area),
+        x,
+        content_length,
+        position,
+        focused,
+        theme,
+    );
+}
+
+/// [`draw_scrollbar`] for a list drawn into `body`, a part of a pane,
+/// with the scrollbar in column `x` beside it.
+pub(crate) fn draw_scrollbar_beside(
+    frame: &mut Frame<'_>,
+    body: Rect,
+    x: u16,
+    content_length: usize,
+    position: usize,
+    focused: bool,
+    theme: &Theme,
+) {
     let viewport = body.height as usize;
-    if content_length <= viewport.max(1) || area.width == 0 {
+    if content_length <= viewport.max(1) {
         return;
     }
     let color = pane_border_color(focused, theme);
@@ -195,7 +220,7 @@ pub(crate) fn draw_scrollbar(
         .position(position.min(max_scroll))
         .viewport_content_length(viewport);
     let column = Rect {
-        x: area.right() - 1,
+        x,
         width: 1,
         ..body
     };

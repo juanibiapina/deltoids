@@ -20,7 +20,7 @@ Set `TYPESAFE_API_KEY` in the environment that runs `deltoids`:
 export TYPESAFE_API_KEY=...
 ```
 
-Without the key, the Files panel shows no guidance.
+Without the key, the file list shows no guidance.
 
 <Note>
   With the key set, deltoids sends the changed hunks to TypeSafe. It
@@ -30,7 +30,7 @@ Without the key, the Files panel shows no guidance.
 
 ## Tags and dots
 
-Each file in the Files panel gets a tag at its right edge and, when it
+Each file in the file list gets a tag at its right edge and, when it
 needs attention, a dot. A file shows the tag and dot of its hunk that
 needs the most attention. Each hunk header in the diff shows its own tag
 and dot.
@@ -58,7 +58,7 @@ straightforward change gets no dot.
 ## Hide low-value changes
 
 deltoids mutes the names of tests, comment-only changes, import-only
-changes, and lockfiles in the Files panel.
+changes, and lockfiles in the file list.
 
 | Key | Action |
 | --- | --- |

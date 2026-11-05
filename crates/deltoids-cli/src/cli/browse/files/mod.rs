@@ -58,6 +58,7 @@ use super::double_click::DoubleClick;
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
 use super::pane;
 use super::panel;
+use super::status::{ListArea, Section};
 use super::vcs::{PendingDiscard, Vcs};
 
 mod action_menu;
@@ -168,6 +169,8 @@ pub(super) struct FilesMode {
     focus: Focus,
     /// Last-drawn pane rects, used for mouse hit-testing.
     sidebar_rect: Rect,
+    /// The sidebar's rows at the last draw.
+    sidebar_body: Rect,
     diff_rect: Rect,
     /// Translates fanned-out mouse-wheel events into proportional motion.
     wheel: WheelScroll<Focus>,
@@ -379,6 +382,29 @@ impl FilesMode {
         Some(repo.workdir().unwrap_or(repo.git_dir()).to_path_buf())
     }
 
+    /// A note after the changes section's `[uncommitted]` header when it
+    /// lists no files: why not.
+    pub(super) fn section_note(&self) -> Option<&'static str> {
+        if self.startup_pending {
+            Some("(loading…)")
+        } else if self.unstaged.shows_error() {
+            Some("(failed to read)")
+        } else if self.model.files.is_empty() {
+            Some("(no changes)")
+        } else {
+            None
+        }
+    }
+
+    /// The filter badge, while low-value files are hidden.
+    pub(super) fn section_badges(&self, theme: &Theme) -> Vec<ratatui::text::Span<'static>> {
+        if self.hide_low {
+            vec![panel::filter_flag(theme)]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Whether there is nothing to show: no changes, no repository, and
     /// neither a startup still loading nor a build error.
     pub(super) fn is_clean(&self) -> bool {
@@ -439,6 +465,7 @@ impl FilesMode {
             sidebar,
             focus: Focus::Sidebar,
             sidebar_rect: Rect::default(),
+            sidebar_body: Rect::default(),
             diff_rect: Rect::default(),
             wheel: WheelScroll::new(),
             comments: CommentStore::default(),
@@ -715,7 +742,7 @@ impl FilesMode {
             .map(|error| format!("Jev unavailable: {error}"));
         self.refresh_guidance();
         if self.hide_low {
-            let height = pane::body_height(self.sidebar_rect);
+            let height = self.sidebar_body.height as usize;
             self.rebuild_sidebar(height);
         } else {
             self.sidebar.update_notes(&self.guidance.rows);
@@ -1405,9 +1432,9 @@ fn handle_mouse(state: &mut FilesMode, mouse: MouseEvent, height: usize) -> AppC
             state.focus = target;
             match target {
                 Focus::Sidebar => {
-                    let rect = state.sidebar_rect;
-                    let content_y = mouse.row.saturating_sub(pane::body(rect).y) as usize;
-                    let content_x = mouse.column.saturating_sub(pane::body(rect).x) as usize;
+                    let body = state.sidebar_body;
+                    let content_y = mouse.row.saturating_sub(body.y) as usize;
+                    let content_x = mouse.column.saturating_sub(body.x) as usize;
                     let clicked = state.sidebar.scroll() + content_y;
                     if state.sidebar.click(clicked, content_x, height) {
                         state.snap_diff_to_selected_file();
@@ -1508,7 +1535,7 @@ impl Mode for FilesMode {
     ) {
         let (sidebar_focused, diff_focused) =
             (self.focus == Focus::Sidebar, self.focus == Focus::Diff);
-        let (title, _) = panel::tab_strip(std::slice::from_ref(&self.label), 0, theme);
+        let title = panel::panel_title(&self.label);
         panel::Panel::draw_side(self, frame, left, title, sidebar_focused, theme);
         self.draw_diff(frame, right, theme, budget, diff_focused);
     }
@@ -1635,6 +1662,52 @@ impl Mode for FilesMode {
     }
 }
 
+/// The changes section of the Status panel: the file tree.
+impl Section for FilesMode {
+    fn list_rows(&self) -> usize {
+        self.sidebar.row_count()
+    }
+
+    fn draw_list(&mut self, frame: &mut ratatui::Frame<'_>, list: ListArea, theme: &Theme) {
+        self.sidebar_rect = list.body;
+        self.sidebar_body = list.body;
+        self.sidebar.reveal_selected(list.body.height as usize);
+        let rows = sidebar_pane::SidebarRows {
+            body: list.body,
+            scrollbar_x: list.scrollbar_x,
+            highlight: list.cursor_here,
+            focused: list.focused,
+        };
+        sidebar_pane::draw_sidebar_rows(frame, rows, &self.sidebar, theme);
+    }
+
+    fn footer(&self, theme: &Theme) -> Option<ratatui::text::Line<'static>> {
+        sidebar_pane::sidebar_footer(&self.sidebar, theme)
+    }
+
+    fn has_selectable(&self) -> bool {
+        self.sidebar.row_count() > 0
+    }
+
+    fn at_edge(&self, down: bool) -> bool {
+        let selected = self.sidebar.selected();
+        if down {
+            selected + 1 >= self.sidebar.row_count()
+        } else {
+            selected == 0
+        }
+    }
+
+    fn enter(&mut self, from_top: bool, height: usize) {
+        if from_top {
+            self.sidebar.top(height);
+        } else {
+            self.sidebar.bottom(height);
+        }
+        self.snap_diff_to_selected_file();
+    }
+}
+
 impl panel::Panel for FilesMode {
     fn label(&self) -> String {
         self.label.clone()
@@ -1649,6 +1722,7 @@ impl panel::Panel for FilesMode {
         theme: &Theme,
     ) {
         self.sidebar_rect = area;
+        self.sidebar_body = pane::body(area);
         self.sidebar.reveal_selected(pane::body_height(area));
         let badges = if self.hide_low {
             vec![panel::filter_flag(theme)]

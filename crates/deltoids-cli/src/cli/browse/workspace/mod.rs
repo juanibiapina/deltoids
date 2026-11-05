@@ -1,96 +1,47 @@
-//! The root mode the shell drives: lazygit's layout.
+//! The root mode the shell drives: lazygit's layout with one side panel.
 //!
-//! The left column shows one of two side panels at full height, as tabs:
-//! its title row lists every shown panel's tab, the current one in the
-//! focus colour. The right pane is the main view, showing whatever the current
-//! side panel drives:
+//! The left column shows the Status panel ([`StatusPanel`]): the
+//! uncommitted changes above the branches and their commits, drawn like
+//! `but status`. The right pane is the main view, showing what the
+//! selection drives. While a review of a commit or a branch is open, the
+//! review takes the left column ([`SnapshotPanel`]); `Esc` closes it and
+//! returns to the Status panel, still on the reviewed row.
 //!
-//! 1. Files: the working-tree file tree; main shows its diff. While a
-//!    review of a commit or a branch is open, the review's files and
-//!    diff instead ([`SnapshotPanel`]); `Esc` on the panel closes it.
-//! 2. Branches: the local branches, or a GitButler workspace drawn like
-//!    `but status`. Main shows the selected branch's log or commit's
-//!    diff. Drills down into a branch's commits (main: the selected
-//!    commit's diff). `Enter` on a commit, or on an applied GitButler
-//!    branch, opens its review in Files.
-//!
-//! Files has a tab only while the working tree has changes (or is still
-//! loading, or failed to build) or a review is open; otherwise Branches
-//! is the only tab and keeps focus. When changes appear on a clean tree,
-//! Files comes back as the current tab, focused. While a review is open it is the
-//! only tab: `Esc` closes it and returns to Branches, still on the
-//! reviewed row.
-//!
-//! Focus is on the current side panel or on the main view.
-//! `Tab`/`Shift+Tab` and a click on a tab's name
-//! switch side panels. `Enter` on a file focuses its diff, a click
-//! focuses the half under the pointer, and `Esc` leaves the main view.
-//! Every other key, `Tab` in the main view included, goes to the current
-//! panel, which owns both of its halves through the [`Panel`] seam.
+//! Focus is on the side panel or on the main view. `Enter` on a file
+//! focuses its diff, a click focuses the half under the pointer, and
+//! `Esc` leaves the main view. Every other key goes to the shown panel,
+//! which owns both of its halves through the [`Panel`] seam.
 //!
 //! The working tree is the one watched source. A reload rebuilds its
-//! diff and re-reads the branches.
+//! diff and re-reads the branches. Changes that appear on a clean tree
+//! take the cursor and focus.
 
 use std::ffi::OsString;
-use std::ops::Range;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
 
 use deltoids::Theme;
-use deltoids::render_tui::rgb_to_color;
 
 use super::files::{FilesMode, SnapshotPanel};
 use super::history::History;
 use super::mode::{AppCommand, BackgroundWork, DrawBudget, Mode, Viewport};
 use super::pane;
-use super::panel::{Panel, panel_title, tab_strip};
+use super::panel::{Panel, panel_title};
+use super::status::StatusPanel;
 use super::vcs::Vcs;
 use super::watch::ChangeReceiver;
 
-/// The side panels, top to bottom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Side {
-    Files,
-    Branches,
-}
-
-impl Side {
-    const ALL: [Side; 2] = [Side::Files, Side::Branches];
-
-    fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|&side| side == self)
-            .expect("listed")
-    }
-
-    /// The panel `step` places down the column, wrapping around.
-    fn step(self, step: isize) -> Self {
-        let len = Self::ALL.len() as isize;
-        Self::ALL[(self.index() as isize + step).rem_euclid(len) as usize]
-    }
-}
-
 pub(super) struct Workspace {
-    files: FilesMode,
-    /// A review shown in the Files panel in place of `files`.
+    status: StatusPanel,
+    /// A review shown in the left column in place of `status`.
     review: Option<SnapshotPanel>,
-    branches: Option<History>,
-    /// The side panel that drives the main view.
-    side: Side,
     main_focused: bool,
     side_rect: Rect,
-    /// Each shown tab's columns on the side panel's title row.
-    tab_hits: Vec<(Side, Range<u16>)>,
     main_rect: Rect,
-    /// The `but` program the branches panel runs, when not the one on
-    /// `PATH`.
+    /// The `but` program the branches run, when not the one on `PATH`.
     but: Option<OsString>,
 }
 
@@ -100,135 +51,69 @@ impl Workspace {
     }
 
     fn with_but(files: FilesMode, but: Option<OsString>) -> Self {
-        let mut workspace = Self {
-            files,
+        let branches = open_branches(&files, but.clone());
+        Self {
+            status: StatusPanel::new(files, branches),
             review: None,
-            branches: None,
-            side: Side::Files,
             main_focused: false,
             side_rect: Rect::default(),
-            tab_hits: Vec::new(),
             main_rect: Rect::default(),
             but,
-        };
-        workspace.open_repository();
-        workspace.settle_focus();
-        workspace
-    }
-
-    /// Open the branches panel on the working tree's repository; without
-    /// one it says so.
-    fn open_repository(&mut self) {
-        let but = self.but.clone();
-        let servers = self.files.servers();
-        self.branches = self
-            .files
-            .repo_dir()
-            .and_then(|dir| Vcs::discover_at(&dir))
-            .map(|vcs| match but {
-                Some(program) => vcs.with_but(program),
-                None => vcs,
-            })
-            .map(|vcs| History::branches(vcs).with_servers(servers));
-    }
-
-    fn panel(&mut self, side: Side) -> Option<&mut dyn Panel> {
-        match side {
-            Side::Files => Some(match &mut self.review {
-                Some(review) => review as &mut dyn Panel,
-                None => &mut self.files,
-            }),
-            Side::Branches => self.branches.as_mut().map(|h| h as &mut dyn Panel),
         }
     }
 
-    fn panel_ref(&self, side: Side) -> Option<&dyn Panel> {
-        match side {
-            Side::Files => Some(match &self.review {
-                Some(review) => review as &dyn Panel,
-                None => &self.files,
-            }),
-            Side::Branches => self.branches.as_ref().map(|h| h as &dyn Panel),
+    fn panel(&mut self) -> &mut dyn Panel {
+        match &mut self.review {
+            Some(review) => review,
+            None => &mut self.status,
         }
     }
 
-    fn shows(&self, side: Side) -> bool {
-        match side {
-            Side::Files => self.review.is_some() || !self.files.is_clean(),
-            Side::Branches => self.review.is_none(),
+    fn panel_ref(&self) -> &dyn Panel {
+        match &self.review {
+            Some(review) => review,
+            None => &self.status,
         }
     }
 
-    /// Replace the startup placeholder with the built working tree and
-    /// open on Files, or on Branches when the tree is clean.
+    /// Replace the startup placeholder with the built working tree.
     fn adopt_files(&mut self, files: FilesMode) {
-        self.files = files;
-        self.open_repository();
-        self.focus(Side::Files, false);
+        let branches = open_branches(&files, self.but.clone());
+        self.status.replace(files, branches);
+        self.focus(false);
     }
 
-    /// Give `side` focus, on its side panel or its main view. A hidden
-    /// panel hands focus to the other side panel, which then shows.
-    fn focus(&mut self, side: Side, main: bool) {
-        let (side, main) = if self.shows(side) {
-            (side, main)
-        } else {
-            (side.step(1), false)
-        };
-        self.side = side;
+    /// Give focus to the shown panel's side (`false`) or its main view.
+    fn focus(&mut self, main: bool) {
         self.main_focused = main;
-        if let Some(panel) = self.panel(side) {
-            panel.focus_main(main);
-        }
+        self.panel().focus_main(main);
     }
 
-    /// Hand a key to the current panel, then follow any focus move it
+    /// Hand a key to the shown panel, then follow any focus move it
     /// made on its own.
     fn forward_key(&mut self, key: KeyCode, height: usize) -> AppCommand {
-        let side = self.side;
-        let Some(panel) = self.panel(side) else {
-            return AppCommand::Continue;
-        };
-        let command = panel.handle_key(key, height);
-        self.main_focused = panel.main_focused();
-        if side == Side::Branches {
-            self.open_review();
-        }
+        let command = self.panel().handle_key(key, height);
+        self.main_focused = self.panel().main_focused();
+        self.open_review();
         command
     }
 
-    /// Show the review the branches panel asked for in the Files panel
-    /// and focus it. The review already open stays, comments and all,
-    /// when it shows the same snapshot.
+    /// Show the review the branches asked for and focus it. The review
+    /// already open stays, comments and all, when it shows the same
+    /// snapshot.
     fn open_review(&mut self) {
-        let Some(snapshot) = self
-            .branches
-            .as_mut()
-            .and_then(History::take_review_request)
-        else {
+        let Some(snapshot) = self.status.take_review_request() else {
             return;
         };
         if !self.review.as_ref().is_some_and(|r| r.shows(&snapshot)) {
-            let Some(dir) = self.files.repo_dir() else {
+            let changes = self.status.changes();
+            let Some(dir) = changes.repo_dir() else {
                 return;
             };
-            let review = SnapshotPanel::review(dir, snapshot).with_servers(self.files.servers());
-            self.set_review(Some(review));
+            let review = SnapshotPanel::review(dir, snapshot).with_servers(changes.servers());
+            self.review = Some(review);
         }
-        self.focus(Side::Files, false);
-    }
-
-    /// Show `review` in the Files panel, or the working tree for `None`.
-    fn set_review(&mut self, review: Option<SnapshotPanel>) {
-        self.review = review;
-        self.settle_focus();
-    }
-
-    /// Move focus off a panel that is no longer shown.
-    fn settle_focus(&mut self) {
-        if !self.shows(self.side) {
-            self.focus(self.side, self.main_focused);
-        }
+        self.focus(false);
     }
 
     /// Inner height of the half with focus; `main` is the main view's.
@@ -236,55 +121,33 @@ impl Workspace {
         if self.main_focused {
             main
         } else {
-            inner_height(self.side_rect)
+            pane::body_height(self.side_rect)
         }
     }
+}
 
-    /// The side panel whose tab sits under `position`.
-    fn tab_at(&self, position: Position) -> Option<Side> {
-        if position.y != self.side_rect.y || position.x >= self.side_rect.right() {
-            return None;
-        }
-        self.tab_hits
-            .iter()
-            .find(|(_, columns)| columns.contains(&position.x))
-            .map(|&(side, _)| side)
-    }
-
-    /// The tab strip titling the side panel, recording where each tab
-    /// lands for clicks.
-    fn tab_title(&mut self, area: Rect, theme: &Theme) -> Line<'static> {
-        let shown: Vec<Side> = Side::ALL.into_iter().filter(|&s| self.shows(s)).collect();
-        let tabs: Vec<String> = shown
-            .iter()
-            .map(|&side| {
-                self.panel_ref(side)
-                    .map_or_else(|| "Local branches".to_string(), Panel::label)
-            })
-            .collect();
-        let current = shown.iter().position(|&s| s == self.side).unwrap_or(0);
-        let (title, ranges) = tab_strip(&tabs, current, theme);
-        let left = pane::body(area).x;
-        self.tab_hits = shown
-            .into_iter()
-            .zip(ranges)
-            .map(|(side, columns)| (side, left + columns.start..left + columns.end))
-            .collect();
-        title
-    }
+/// The branches of the working tree's repository; `None` outside one.
+fn open_branches(files: &FilesMode, but: Option<OsString>) -> Option<History> {
+    let servers = files.servers();
+    files
+        .repo_dir()
+        .and_then(|dir| Vcs::discover_at(&dir))
+        .map(|vcs| match but {
+            Some(program) => vcs.with_but(program),
+            None => vcs,
+        })
+        .map(|vcs| History::branches(vcs).with_servers(servers))
 }
 
 impl Mode for Workspace {
     fn background(&mut self, active: bool) -> BackgroundWork {
         // Unfocused or behind a review, edits still reach the servers.
-        self.files.poll_servers();
-        let mut work = BackgroundWork::default();
-        for side in Side::ALL {
-            if let Some(panel) = self.panel(side) {
-                let panel_work = panel.background(active);
-                work.changed |= panel_work.changed;
-                work.pending |= panel_work.pending;
-            }
+        self.status.changes().poll_servers();
+        let mut work = self.status.background(active);
+        if let Some(review) = self.review.as_mut() {
+            let more = review.background(active);
+            work.changed |= more.changed;
+            work.pending |= more.pending;
         }
         work
     }
@@ -303,19 +166,11 @@ impl Mode for Workspace {
     ) {
         self.side_rect = left;
         self.main_rect = right;
-        let (current, main_focused) = (self.side, self.main_focused);
-        let title = self.tab_title(left, theme);
-        match self.panel(current) {
-            Some(panel) => panel.draw_side(frame, left, title, !main_focused, theme),
-            None => draw_no_repository(frame, left, title, !main_focused, theme),
-        }
-        match self.panel(current) {
-            Some(panel) => panel.draw_main(frame, right, main_focused, theme, budget),
-            None => {
-                let title = panel_title("Log");
-                draw_no_repository(frame, right, title, main_focused, theme);
-            }
-        }
+        let main_focused = self.main_focused;
+        let panel = self.panel();
+        let title = panel_title(&panel.label());
+        panel.draw_side(frame, left, title, !main_focused, theme);
+        panel.draw_main(frame, right, main_focused, theme, budget);
     }
 
     fn handle_key_event(&mut self, key: KeyEvent, height: usize) -> AppCommand {
@@ -323,12 +178,8 @@ impl Mode for Workspace {
             return self.handle_key(key.code, height);
         }
         let height = self.focused_height(height);
-        let side = self.side;
-        let Some(panel) = self.panel(side) else {
-            return AppCommand::Continue;
-        };
-        let command = panel.handle_key_event(key, height);
-        self.main_focused = panel.main_focused();
+        let command = self.panel().handle_key_event(key, height);
+        self.main_focused = self.panel().main_focused();
         command
     }
 
@@ -337,19 +188,12 @@ impl Mode for Workspace {
         if self.captures_text_input() {
             return self.forward_key(key, height);
         }
-        let side = self.side;
         match key {
-            KeyCode::Esc if self.panel(side).is_some_and(|panel| panel.escape()) => {}
-            KeyCode::Esc if self.main_focused => self.focus(side, false),
+            KeyCode::Esc if self.panel().escape() => {}
+            KeyCode::Esc if self.main_focused => self.focus(false),
             KeyCode::Esc if self.review.is_some() => {
-                self.set_review(None);
-                self.focus(Side::Branches, false);
-            }
-            KeyCode::Tab if !self.main_focused => {
-                self.focus(side.step(1), false);
-            }
-            KeyCode::BackTab if !self.main_focused => {
-                self.focus(side.step(-1), false);
+                self.review = None;
+                self.focus(false);
             }
             _ => return self.forward_key(key, height),
         }
@@ -357,114 +201,89 @@ impl Mode for Workspace {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        self.panel_ref(self.side)
-            .is_some_and(|panel| panel.reserves_key(key))
+        self.panel_ref().reserves_key(key)
     }
 
     fn take_refresh_request(&mut self) -> bool {
-        self.files.take_refresh_request()
+        self.status.changes_mut().take_refresh_request()
     }
 
     fn captures_text_input(&self) -> bool {
-        self.panel_ref(self.side)
-            .is_some_and(|panel| panel.captures_text_input())
+        self.panel_ref().captures_text_input()
     }
 
     fn report_copy(&mut self, result: Result<(), String>) {
-        let side = self.side;
-        if let Some(panel) = self.panel(side) {
-            panel.report_copy(result);
-        }
+        self.panel().report_copy(result);
     }
 
-    /// A click on a tab's name shows and focuses its side panel. Any
-    /// other click focuses the half under the pointer; the event then
-    /// goes to the panel that owns that half. The wheel scrolls whatever
-    /// is under the pointer without moving focus.
+    /// A click focuses the half under the pointer; the event then goes
+    /// to the shown panel. The wheel scrolls whatever is under the
+    /// pointer without moving focus.
     fn handle_mouse(&mut self, mouse: MouseEvent, height: usize) -> AppCommand {
         if self.captures_text_input() {
             return AppCommand::Continue;
         }
         let position = Position::new(mouse.column, mouse.row);
         let click = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
-        if click && let Some(side) = self.tab_at(position) {
-            self.focus(side, false);
-            return AppCommand::Continue;
-        }
-        let (side, panel_height) = if self.main_rect.contains(position) {
+        let panel_height = if self.main_rect.contains(position) {
             if click {
-                self.focus(self.side, true);
+                self.focus(true);
             }
-            (self.side, height)
+            height
         } else if self.side_rect.contains(position) {
             if click {
-                self.focus(self.side, false);
+                self.focus(false);
             }
-            (self.side, inner_height(self.side_rect))
+            pane::body_height(self.side_rect)
         } else if mouse.kind == MouseEventKind::Moved {
-            (self.side, height)
+            height
         } else {
             return AppCommand::Continue;
         };
-        let command = self.panel(side).map_or(AppCommand::Continue, |panel| {
-            panel.handle_mouse(mouse, panel_height)
-        });
-        if side == Side::Branches {
-            self.open_review();
-        }
+        let command = self.panel().handle_mouse(mouse, panel_height);
+        self.open_review();
         command
     }
 
     fn watch(&mut self) -> Result<Option<ChangeReceiver>, String> {
-        self.files.watch()
+        self.status.changes_mut().watch()
     }
 
     fn should_reload(&self, paths: &[PathBuf]) -> bool {
-        self.files.should_reload(paths)
+        self.status.changes().should_reload(paths)
     }
 
     fn retry_reload(&self) -> bool {
-        self.files.retry_reload()
+        self.status.changes().retry_reload()
     }
 
     /// Rebuild the working tree's diff and re-read the branches. Commits
     /// and branches move with the working tree (a commit empties the
     /// index), so this always asks for a frame. Changes on a clean tree
-    /// bring Files back and focus it.
+    /// take the cursor and focus.
     fn reload(&mut self, viewport: Viewport, theme: &Theme) -> Result<bool, String> {
-        let files_hidden = !self.shows(Side::Files);
-        let changed = self.files.reload(viewport, theme)?;
-        if let Some(branches) = &mut self.branches {
-            branches.refresh();
-        }
-        if files_hidden && self.shows(Side::Files) {
-            self.focus(Side::Files, false);
+        let was_clean = self.status.changes().is_clean();
+        let changed = self.status.changes_mut().reload(viewport, theme)?;
+        let branches = match self.status.branches_mut() {
+            Some(branches) => {
+                branches.refresh();
+                true
+            }
+            None => false,
+        };
+        if self.review.is_none() && was_clean && !self.status.changes().is_clean() {
+            self.status.focus_changes();
+            self.main_focused = false;
         } else {
-            self.settle_focus();
+            self.status.settle();
+            self.main_focused = self.panel().main_focused();
         }
-        Ok(changed || self.branches.is_some())
+        Ok(changed || branches)
     }
 
     fn selected_path(&self) -> Option<PathBuf> {
-        self.panel_ref(self.side)
-            .and_then(|panel| panel.selected_path())
+        self.panel_ref().selected_path()
     }
-}
-
-fn inner_height(area: Rect) -> usize {
-    pane::body_height(area)
-}
-
-fn draw_no_repository(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    title: Line<'static>,
-    focused: bool,
-    theme: &Theme,
-) {
-    let body = pane::draw(frame, area, pane::Chrome::new(title, focused), theme);
-    let muted = Style::default().fg(rgb_to_color(theme.muted));
-    frame.render_widget(Paragraph::new("Not a git repository.").style(muted), body);
 }
 
 #[cfg(test)]

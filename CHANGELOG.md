@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TUI: press `Enter` on your checked-out branch to review all the commits it adds since its base as one diff.
+
+### Changed
+
+- TUI: one Status panel replaces the Files and Branches tabs. It reads like `but status`: uncommitted changes on top, then your branch with its commits down to the common base, then your other branches. `j`/`k` move across both, and `Tab` jumps between them.
+- TUI: in a git repository, the checked-out branch shows the commits it adds since it forked from `origin/HEAD`, `origin/main`, `main`, or its upstream, and how far that target has moved on.
+- TUI: unapplied GitButler branches show the age of their last commit.
+
 ## [0.19.0] - 2026-11-04
 
 ### Added

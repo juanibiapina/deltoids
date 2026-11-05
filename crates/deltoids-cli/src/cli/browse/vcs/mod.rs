@@ -63,25 +63,23 @@ pub(in crate::cli::browse) struct WorkingTree {
     pub(in crate::cli::browse) columns: Columns,
 }
 
-/// What the branches panel shows: its title and the repository's
-/// branches, shaped like `but status` in a GitButler workspace.
-pub(in crate::cli::browse) struct Overview {
-    /// "Local branches" or "Workspace".
-    pub(in crate::cli::browse) label: &'static str,
-    pub(in crate::cli::browse) content: Result<OverviewContent, String>,
-}
+/// How many commits a stacked git branch lists inline.
+const INLINE_COMMITS: usize = 200;
 
-/// The branches and, in a GitButler workspace, the stacks and base
-/// `but status` lists.
+/// The branches as `but status` draws them: stacks of branches with
+/// their commits, closed by the common base, then the other branches.
+/// In git the one stack is the checked-out branch, when it has a base.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::cli::browse) struct OverviewContent {
-    /// Applied stacks in `but status` order; `None` in plain git.
-    pub(in crate::cli::browse) stacks: Option<Vec<Stack>>,
-    /// The common base of the applied stacks; `None` in plain git.
+    /// Applied stacks in `but status` order; the checked-out branch in
+    /// git.
+    pub(in crate::cli::browse) stacks: Vec<Stack>,
+    /// The common base of the stacks.
     pub(in crate::cli::browse) base: Option<Base>,
-    /// Every local branch in git; the unapplied local branches in
-    /// GitButler.
+    /// The other local branches: the unapplied ones in GitButler.
     pub(in crate::cli::browse) others: Vec<Branch>,
+    /// The heading over `others`.
+    pub(in crate::cli::browse) others_heading: &'static str,
 }
 
 /// Branches stacked on each other, top of the stack first.
@@ -102,6 +100,8 @@ pub(in crate::cli::browse) struct StatusCommit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::cli::browse) struct Base {
     pub(in crate::cli::browse) id: String,
+    /// The branch the stacks merge into, shortened: `origin/main`.
+    pub(in crate::cli::browse) target: Option<String>,
     /// `YYYY-MM-DD`.
     pub(in crate::cli::browse) date: String,
     pub(in crate::cli::browse) summary: String,
@@ -121,9 +121,11 @@ pub(in crate::cli::browse) struct Branch {
     pub(in crate::cli::browse) summary: String,
     /// Time of the tip commit, in seconds since the epoch.
     pub(in crate::cli::browse) time: i64,
-    /// The branch's own commits, newest first, when `but status` lists
+    /// The branch's own commits, newest first, when a stack lists
     /// them; empty otherwise.
     pub(in crate::cli::browse) commits: Vec<StatusCommit>,
+    /// Whether the stack lists only the newest of the branch's commits.
+    pub(in crate::cli::browse) truncated: bool,
     /// The ref [`Vcs::commits`] walks.
     rev: String,
     /// Where [`Vcs::commits`] stops: the workspace's base in GitButler.
@@ -182,40 +184,100 @@ impl Vcs {
         })
     }
 
-    /// What the branches panel shows. GitButler's costs two `but` runs,
-    /// so it is read again only after a ref moves or GitButler adopts the
-    /// repository again.
-    pub(in crate::cli::browse) fn overview(&mut self) -> Overview {
+    /// What the branches section shows. GitButler's costs two `but`
+    /// runs, so it is read again only after a ref moves or GitButler
+    /// adopts the repository again.
+    pub(in crate::cli::browse) fn overview(&mut self) -> Result<OverviewContent, String> {
         match self.backend() {
             Backend::Git => self.local_overview(),
             Backend::GitButler => self.workspace_overview(),
         }
     }
 
-    fn local_overview(&mut self) -> Overview {
+    /// The checked-out branch as a stack of its commits since its base
+    /// ([`git::Repo::branch_base`]), and the other local branches below.
+    /// Without a base, every local branch in one list.
+    fn local_overview(&mut self) -> Result<OverviewContent, String> {
         self.workspace_cache = None;
-        Overview {
-            label: "Local branches",
-            content: self.repo.local_branches().map(|branches| OverviewContent {
-                others: branches
-                    .into_iter()
-                    .map(|branch| Branch {
-                        id: None,
-                        rev: format!("refs/heads/{}", branch.name),
-                        name: branch.name,
-                        current: branch.head,
-                        summary: branch.summary,
-                        time: branch.time,
-                        commits: Vec::new(),
-                        base: None,
-                    })
-                    .collect(),
+        let mut others: Vec<Branch> = self
+            .repo
+            .local_branches()?
+            .into_iter()
+            .map(|branch| Branch {
+                id: None,
+                rev: format!("refs/heads/{}", branch.name),
+                name: branch.name,
+                current: branch.head,
+                summary: branch.summary,
+                time: branch.time,
+                commits: Vec::new(),
+                truncated: false,
+                base: None,
+            })
+            .collect();
+        let found = self.repo.branch_base().ok().flatten();
+        let Some(found) = found else {
+            return Ok(OverviewContent {
+                others,
+                others_heading: "branches",
                 ..OverviewContent::default()
+            });
+        };
+        let mut current = match others.iter().position(|branch| branch.current) {
+            Some(index) => others.remove(index),
+            None => self.detached_head()?,
+        };
+        let mut commits =
+            self.repo
+                .commits_after(&found.commit.id, &current.rev, INLINE_COMMITS + 1)?;
+        current.truncated = commits.len() > INLINE_COMMITS;
+        commits.truncate(INLINE_COMMITS);
+        current.commits = commits
+            .into_iter()
+            .map(|commit| StatusCommit {
+                id: commit.short_id.clone(),
+                commit,
+            })
+            .collect();
+        current.base = Some(found.commit.id.clone());
+        Ok(OverviewContent {
+            stacks: vec![Stack {
+                branches: vec![current],
+            }],
+            base: Some(Base {
+                date: date_of(found.commit.time),
+                id: found.commit.id,
+                target: Some(found.target),
+                summary: found.commit.summary,
+                behind: found.behind,
             }),
-        }
+            others,
+            others_heading: "branches",
+        })
     }
 
-    fn workspace_overview(&mut self) -> Overview {
+    /// `HEAD` as a branch row, when no branch is checked out.
+    fn detached_head(&self) -> Result<Branch, String> {
+        let tip = self
+            .repo
+            .commits("HEAD", 1)?
+            .into_iter()
+            .next()
+            .ok_or("HEAD has no commit")?;
+        Ok(Branch {
+            id: None,
+            name: format!("HEAD detached at {}", tip.short_id),
+            current: true,
+            summary: tip.summary,
+            time: tip.time,
+            commits: Vec::new(),
+            truncated: false,
+            rev: "HEAD".into(),
+            base: None,
+        })
+    }
+
+    fn workspace_overview(&mut self) -> Result<OverviewContent, String> {
         let fingerprint = self.repo.refs_fingerprint();
         let fresh = self
             .workspace_cache
@@ -226,10 +288,7 @@ impl Vcs {
             self.workspace_cache = Some((fingerprint, content));
         }
         let (_, content) = self.workspace_cache.as_ref().expect("filled above");
-        Overview {
-            label: "Workspace",
-            content: content.clone(),
-        }
+        content.clone()
     }
 
     /// `but status` for the stacks and base, `but branch list` for the
@@ -239,7 +298,6 @@ impl Vcs {
         let applied: HashSet<&str> = content
             .stacks
             .iter()
-            .flatten()
             .flat_map(|stack| &stack.branches)
             .map(|branch| branch.name.as_str())
             .collect();
@@ -248,11 +306,17 @@ impl Vcs {
             .filter(|branch| !applied.contains(branch.name.as_str()))
             .collect();
         content.others = others;
+        content.others_heading = "unapplied";
+        if let Some(base) = content.base.as_mut() {
+            base.target = self
+                .repo
+                .local_config_string("gitbutler.project.targetRef")
+                .map(|target| short_ref(&target));
+        }
         let base = content.base.as_ref().map(|base| base.id.clone());
         let stacked = content
             .stacks
             .iter_mut()
-            .flatten()
             .flat_map(|stack| &mut stack.branches);
         for branch in stacked.chain(&mut content.others) {
             branch.base = base.clone();
@@ -293,6 +357,29 @@ impl Vcs {
             .map(|kind| kind.choice(backend, false))
             .collect()
     }
+}
+
+/// `origin/main` for `refs/remotes/origin/main`.
+fn short_ref(full: &str) -> String {
+    full.strip_prefix("refs/remotes/")
+        .or_else(|| full.strip_prefix("refs/heads/"))
+        .unwrap_or(full)
+        .to_string()
+}
+
+/// `YYYY-MM-DD` of `seconds` since the epoch, in UTC.
+fn date_of(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// What a discard throws away.

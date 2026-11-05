@@ -17,6 +17,7 @@ pub(in crate::cli::browse) fn branch(name: &str) -> Branch {
         summary: String::new(),
         time: 0,
         commits: Vec::new(),
+        truncated: false,
         base: None,
         rev: format!("refs/heads/{name}"),
     }

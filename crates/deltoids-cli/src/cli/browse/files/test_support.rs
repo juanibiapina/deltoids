@@ -126,6 +126,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         sidebar,
         focus: Focus::Sidebar,
         sidebar_rect: Rect::default(),
+        sidebar_body: Rect::default(),
         diff_rect: Rect::default(),
         wheel: WheelScroll::new(),
         comments: CommentStore::default(),
@@ -160,6 +161,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
 pub(super) fn make_state_with_rects(files: &[ResolvedFile]) -> FilesMode {
     let mut state = make_state(files);
     state.sidebar_rect = Rect::new(0, 0, 38, 20);
+    state.sidebar_body = crate::cli::browse::pane::body(state.sidebar_rect);
     state.diff_rect = Rect::new(38, 0, 82, 20);
     state
 }

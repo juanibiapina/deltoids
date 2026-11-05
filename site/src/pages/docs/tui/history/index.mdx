@@ -6,28 +6,38 @@ description: "Browse branches and commits in the deltoids TUI, and review a comm
 
 # Commits and branches
 
-## Branches panel
+## Branches
 
-The Local branches panel lists your local branches. Press `Tab` to show
-it, or click its tab. Press `Enter` on a branch to list its commits. Select a commit to preview it in the main view. The preview
-reads like `git show`: the commit id, author, date, and message, above
-the diff of every file that the commit changes. Press `Esc` to go back to
-the branch list.
+The branches sit below the changed files in the Status panel, drawn like
+`but status`. Your checked-out branch comes first, with the commits it
+adds since its common base. The base is where your branch forks from the
+first of these that exists: `origin/HEAD`, `origin/main`,
+`origin/master`, a local `main` or `master`, or the branch's upstream.
+When the target has moved on, a row shows how many commits it is ahead.
+Your other local branches follow under `branches`. Without a base, all
+local branches are listed together.
+
+Select a commit to preview it in the main view. The preview reads like
+`git show`: the commit id, author, date, and message, above the diff of
+every file that the commit changes. Press `Enter` on another branch to
+list its commits over the whole column, and `Esc` to go back.
 
 ## Review a commit
 
-Press `Enter` on a commit, or double-click it, to open it in the Files
-panel. The review uses the same diff as the working tree, with
+Press `Enter` on a commit, or double-click it, to open it in place of
+the Status panel. The review uses the same diff as the working tree, with
 [review guidance](/docs/tui/guidance/), [comments](/docs/tui/comments/),
 and [code navigation](/docs/tui/navigation/). A review is read-only, so
 stage and discard are off.
 
 The file tree starts with a row for the commit. Select that row to see
-the commit id, author, date, and full message in the main view. While
-you review, the review is the only tab in the left column.
+the commit id, author, date, and full message in the main view.
 
-Press `Esc` to close the review and go back to the Branches panel, still
-on the reviewed commit. Press `Tab` to see the working tree again.
+Press `Esc` to close the review and go back to the Status panel, still
+on the reviewed commit.
+
+Press `Enter` on your checked-out branch to review all the commits it
+adds since its base as one diff, the way a pull request shows them.
 
 ## GitButler
 
@@ -35,13 +45,13 @@ deltoids gives every repository that GitButler manages a GitButler view.
 This includes single-branch mode, where no `gitbutler/workspace` branch
 exists.
 
-- The Branches panel becomes a Workspace panel. It shows each stack's
-  branches with their commits, like `but status`, and ends at the common
-  base. A branch's log stops at the base.
+- The Status panel shows each stack's branches with their commits, like
+  `but status`, and ends at the common base. A branch's log stops at the
+  base.
 - Unapplied branches are listed below the stacks. Press `Enter` on an
   unapplied branch to list its commits.
 - Press `Enter` on an applied branch to review all its commits as one
   diff. The file tree then starts with a row that shows each commit's id,
   author, date, and message.
-- The Files panel shows all uncommitted changes in one column. Discard
+- The changed files show all uncommitted changes in one column. Discard
   goes through `but`, so `but undo` brings the changes back.

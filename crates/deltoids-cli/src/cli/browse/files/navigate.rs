@@ -1119,7 +1119,7 @@ fn diff_height(state: &FilesMode) -> usize {
 }
 
 fn sidebar_height(state: &FilesMode) -> usize {
-    super::pane::body_height(state.sidebar_rect).max(1)
+    (state.sidebar_body.height as usize).max(1)
 }
 
 // ---------------------------------------------------------------------------

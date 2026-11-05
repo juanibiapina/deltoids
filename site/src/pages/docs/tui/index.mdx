@@ -15,7 +15,7 @@ the same. When a diff is piped into `deltoids`, it runs as a
 
 <Image
   src={tuiShot}
-  alt="The deltoids TUI: the Files and Local branches panels on the left, a scope-expanded Rust diff with review tags on the right"
+  alt="The deltoids TUI: the Status panel on the left, a scope-expanded Rust diff with review tags on the right"
   widths={[720, 1080, 1440]}
   sizes="(min-width: 900px) 720px, 100vw"
   format="webp"
@@ -27,20 +27,21 @@ mouse gestures.
 
 ## Panels
 
-The layout follows lazygit. The side panels share the left
-column as tabs: the column shows one panel at a time, and its title row
-lists every tab. The main view on the right shows what the side panel
-selects.
+The layout follows lazygit. The Status panel on the left reads like
+`but status`. It shows the changed files in the working tree under
+`[uncommitted]`, then your branch and its commits down to the common
+base, then your other branches. See
+[Commits and branches](/docs/tui/history/). The main view on the right
+shows what the Status panel selects: the diff of a file, a summary of a
+directory or commit, the log of a branch, or a commit.
 
-| Panel | Shows |
-| --- | --- |
-| Files | The changed files in the working tree. The tab hides when the tree has no changes and no review is open, and comes back as the current tab when changes appear. |
-| Local branches | Your branches and their commits. See [Commits and branches](/docs/tui/history/). |
-| Main view | The diff of the selected file, a summary of the selected directory or commit, the log of a branch, or a commit. |
+`j` and `k` move from the last file to the first branch and back. When
+changes appear on a clean working tree, the cursor moves to the first
+of them.
 
 | Key | Action |
 | --- | --- |
-| `Tab` / `Shift+Tab` | Next or previous side panel tab |
+| `Tab` / `Shift+Tab` | Jump between the changes and the branches |
 | `Enter` | Open a file's diff, a branch, or a commit |
 | `Esc` | Back out, or close a review |
 | `j` / `k` | Move in a list, or between diff lines |
@@ -73,20 +74,21 @@ position when a refresh only changes other files.
 
 ## Stage and discard
 
-The Files panel shows one status letter per file. The letter is green
-when all of the file's changes are staged, amber when some are, and red
-when none are. The Files title counts the files with staged changes. A
-file can have staged and unstaged changes at the same time. Press `s` in the
-Files panel, or `Tab` in the diff, to switch between the two.
+The Status panel shows one status letter per changed file. The letter
+is green when all of the file's changes are staged, amber when some are,
+and red when none are. The panel's title row counts the files with
+staged changes. A file can have staged and unstaged changes at the same
+time. Press `s` on a file, or `Tab` in the diff, to switch between the
+two.
 
-| Key | Action in the Files panel |
+| Key | Action on the changed files |
 | --- | --- |
 | `Space` | Stage or unstage the selected file or directory |
 | `a` | Stage or unstage all files |
 | `d` | Discard the changes of the selected file or directory |
 | `Enter` | Fold or unfold a directory |
 
-In a GitButler workspace, the Files panel shows all uncommitted changes
+In a GitButler workspace, the Status panel shows all uncommitted changes
 in one column, and discard goes through `but`. Run `but undo` to get
 discarded changes back.
 
@@ -102,8 +104,8 @@ language has no scope support.
 | `z` | Expand the hunk under the cursor one scope level, up to the whole file |
 | `x` | Shrink it back |
 
-In the Files panel, `z` and `x` act on every hunk of the selected file
-or directory.
+On the changed files, `z` and `x` act on every hunk of the selected
+file or directory.
 
 ## Appearance
 
@@ -117,7 +119,6 @@ or drag the divider. To set a default theme, see
 | Gesture | Action |
 | --- | --- |
 | Click | Focus the panel under the pointer |
-| Click a tab | Show its side panel |
 | Click a file | Select it |
 | Click `▶` / `▼` | Fold or unfold a directory |
 | Click a diff line | Move the cursor there |

@@ -35,7 +35,106 @@ pub struct Commit {
     pub time: i64,
 }
 
+/// Where the checked-out branch forks from the branch it will merge
+/// into, as a stack view shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchBase {
+    /// The ref the base came from, shortened: `origin/main`.
+    pub target: String,
+    /// The merge base of `HEAD` and `target`.
+    pub commit: Commit,
+    /// Commits `target` has past the base.
+    pub behind: usize,
+}
+
+/// How many commits [`Repo::branch_base`] counts behind before it stops.
+const BEHIND_CAP: usize = 10_000;
+
 impl Repo {
+    /// The base of the checked-out branch: its merge base with the first
+    /// target that resolves, of `origin/HEAD`, `origin/main`,
+    /// `origin/master`, a local `main` or `master` other than the
+    /// checked-out branch, and the branch's upstream. `None` when `HEAD`
+    /// is unborn or no target shares history with it.
+    pub fn branch_base(&self) -> Result<Option<BranchBase>, String> {
+        self.read_branch_base()
+            .map_err(|e| format!("failed to find the branch base: {e}"))
+    }
+
+    fn read_branch_base(&self) -> Result<Option<BranchBase>, Error> {
+        let Ok(head) = self.repo.head_id() else {
+            return Ok(None);
+        };
+        let head = head.detach();
+        for target in self.base_targets() {
+            let Ok(mut reference) = self.repo.find_reference(target.as_str()) else {
+                continue;
+            };
+            let Ok(tip) = reference.peel_to_commit() else {
+                continue;
+            };
+            let tip = tip.id;
+            let Some(base) = self.repo.merge_base(head, tip).ok().flatten() else {
+                continue;
+            };
+            let base = base.detach();
+            let behind = self
+                .repo
+                .rev_walk([tip])
+                .with_hidden([base])
+                .all()?
+                .take(BEHIND_CAP)
+                .count();
+            return Ok(Some(BranchBase {
+                target: shorten(&target),
+                commit: commit_of(&self.repo.find_commit(base)?)?,
+                behind,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Full ref names to try as the base's target, best first.
+    fn base_targets(&self) -> Vec<String> {
+        let head = self
+            .repo
+            .head_name()
+            .ok()
+            .flatten()
+            .map(|name| name.as_bstr().to_str_lossy().into_owned());
+        let mut targets = Vec::new();
+        if let Ok(origin_head) = self.repo.find_reference("refs/remotes/origin/HEAD")
+            && let Some(name) = origin_head.target().try_name()
+        {
+            targets.push(name.as_bstr().to_str_lossy().into_owned());
+        }
+        targets.push("refs/remotes/origin/main".into());
+        targets.push("refs/remotes/origin/master".into());
+        for local in ["refs/heads/main", "refs/heads/master"] {
+            if head.as_deref() != Some(local) {
+                targets.push(local.into());
+            }
+        }
+        if let Some(upstream) = head.as_deref().and_then(|head| self.upstream_of(head)) {
+            targets.push(upstream);
+        }
+        targets
+    }
+
+    /// The tracking ref of local branch `head` (`refs/heads/<name>`),
+    /// from its `branch.<name>.remote` and `.merge` config.
+    fn upstream_of(&self, head: &str) -> Option<String> {
+        let name = head.strip_prefix("refs/heads/")?;
+        let remote = self.local_config_string(&format!("branch.{name}.remote"))?;
+        let merge = self.local_config_string(&format!("branch.{name}.merge"))?;
+        let branch = merge.strip_prefix("refs/heads/")?;
+        Some(if remote == "." {
+            format!("refs/heads/{branch}")
+        } else {
+            format!("refs/remotes/{remote}/{branch}")
+        })
+    }
+
     /// Every local branch: the checked-out one first, the rest by the
     /// time of their tip commit, newest first. Empty before the first
     /// commit. A branch whose ref or tip cannot be read is left out.
@@ -151,6 +250,15 @@ impl Repo {
         let read = || print_patch(&self.repo, Some(tree(base)?), tree(tip)?);
         read().map_err(|e| format!("failed to diff {base}..{tip}: {e}"))
     }
+}
+
+/// `origin/main` for `refs/remotes/origin/main`, `main` for
+/// `refs/heads/main`.
+fn shorten(full: &str) -> String {
+    full.strip_prefix("refs/remotes/")
+        .or_else(|| full.strip_prefix("refs/heads/"))
+        .unwrap_or(full)
+        .to_string()
 }
 
 fn commit_of(commit: &gix::Commit<'_>) -> Result<Commit, Error> {

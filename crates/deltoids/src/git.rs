@@ -27,7 +27,7 @@ mod history;
 mod patch;
 mod snapshot;
 
-pub use history::{Branch, Commit};
+pub use history::{Branch, BranchBase, Commit};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 

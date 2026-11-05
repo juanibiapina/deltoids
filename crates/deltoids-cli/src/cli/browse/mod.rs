@@ -1,10 +1,10 @@
 //! The scrolling TUI opened by `deltoids tui`.
 //!
-//! A lazygit-style layout: side panels shown one at a time as tabs of
-//! the left column (the working-tree files of [`files::FilesMode`] and
-//! the local branches of [`history::History`]) and the main view on the
-//! right. [`workspace::Workspace`] lays them out and routes input; each
-//! panel sits behind [`panel::Panel`].
+//! A lazygit-style layout: the Status panel in the left column
+//! ([`status::StatusPanel`]: the working-tree files of
+//! [`files::FilesMode`] above the branches of [`history::History`]) and
+//! the main view on the right. [`workspace::Workspace`] lays them out
+//! and routes input; each panel sits behind [`panel::Panel`].
 //!
 //! ## Module layout
 //!
@@ -63,6 +63,7 @@ mod pane;
 mod panel;
 mod scroll;
 mod sidebar_width;
+mod status;
 mod suspend;
 mod syntax_badge;
 mod terminal;
@@ -812,10 +813,7 @@ fn draw_loading(frame: &mut ratatui::Frame<'_>, left: Rect, right: Rect, theme: 
     pane::draw(
         frame,
         left,
-        pane::Chrome::new(
-            panel::tab_strip(&["Loading".to_string()], 0, theme).0,
-            false,
-        ),
+        pane::Chrome::new(panel::panel_title("Loading"), false),
         theme,
     );
     let body = pane::draw(

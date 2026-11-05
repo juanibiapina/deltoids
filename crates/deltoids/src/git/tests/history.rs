@@ -529,3 +529,106 @@ fn a_conflict_subject_alone_shows_the_tree_as_committed() {
     assert!(patch.contains("b/.auto-resolution/a.txt"), "{patch}");
     assert!(!patch.contains("-one\n+two\n"), "{patch}");
 }
+
+/// A repo whose `main` has `base` then, on `origin/main` only, `ahead`;
+/// HEAD is `feature`, forked at `base` with one commit of its own.
+fn forked(dir: &Path) -> (Fixture, String) {
+    let raw = init_repo(dir);
+    commit_at(dir, &raw, &[("a.txt", "a\n")], "base", 100);
+    let base = commit_id(&raw);
+    let main = raw.branch();
+    commit_at(dir, &raw, &[("a.txt", "b\n")], "ahead", 200);
+    raw.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    raw.git(&["update-ref", &format!("refs/heads/{main}"), &base]);
+    checkout_new_branch(&raw, "feature");
+    raw.git(&["reset", "-q", "--hard", &base]);
+    commit_at(dir, &raw, &[("f.txt", "f\n")], "feature work", 300);
+    (raw, base)
+}
+
+#[test]
+fn branch_base_is_the_merge_base_with_origin_main_and_counts_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_raw, base) = forked(dir.path());
+
+    let repo = Repo::discover_at(dir.path()).unwrap();
+    let found = repo.branch_base().unwrap().unwrap();
+
+    assert_eq!(found.target, "origin/main");
+    assert_eq!(found.commit.id, base);
+    assert_eq!(found.behind, 1);
+}
+
+#[test]
+fn branch_base_follows_origin_head_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (raw, base) = forked(dir.path());
+    raw.git(&["update-ref", "refs/remotes/origin/trunk", &base]);
+    raw.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/trunk",
+    ]);
+
+    let repo = Repo::discover_at(dir.path()).unwrap();
+    let found = repo.branch_base().unwrap().unwrap();
+
+    assert_eq!(found.target, "origin/trunk");
+    assert_eq!(found.behind, 0);
+}
+
+#[test]
+fn branch_base_falls_back_to_a_local_main() {
+    let dir = tempfile::tempdir().unwrap();
+    let (raw, base) = forked(dir.path());
+    raw.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    raw.git(&["branch", "-m", &raw_main(&raw), "main"]);
+
+    let repo = Repo::discover_at(dir.path()).unwrap();
+    let found = repo.branch_base().unwrap().unwrap();
+
+    assert_eq!(found.target, "main");
+    assert_eq!(found.commit.id, base);
+}
+
+#[test]
+fn branch_base_falls_back_to_the_upstream() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = init_repo(dir.path());
+    commit_at(dir.path(), &raw, &[("a.txt", "a\n")], "pushed", 100);
+    let pushed = commit_id(&raw);
+    raw.git(&["branch", "-m", &raw.branch(), "work"]);
+    raw.git(&["update-ref", "refs/remotes/up/work", &pushed]);
+    raw.git(&["config", "branch.work.remote", "up"]);
+    raw.git(&["config", "branch.work.merge", "refs/heads/work"]);
+    commit_at(dir.path(), &raw, &[("a.txt", "b\n")], "unpushed", 200);
+
+    let repo = Repo::discover_at(dir.path()).unwrap();
+    let found = repo.branch_base().unwrap().unwrap();
+
+    assert_eq!(found.target, "up/work");
+    assert_eq!(found.commit.id, pushed);
+}
+
+#[test]
+fn branch_base_is_none_without_a_target_or_a_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = init_repo(dir.path());
+    let repo = Repo::discover_at(dir.path()).unwrap();
+    assert_eq!(repo.branch_base().unwrap(), None);
+
+    commit_at(dir.path(), &raw, &[("a.txt", "a\n")], "only", 100);
+    raw.git(&["branch", "-m", &raw.branch(), "work"]);
+    let repo = Repo::discover_at(dir.path()).unwrap();
+    assert_eq!(repo.branch_base().unwrap(), None);
+}
+
+/// The name `init_repo` gave the first branch.
+fn raw_main(raw: &Fixture) -> String {
+    let branches = raw.git(&["branch", "--format=%(refname:short)"]);
+    branches
+        .lines()
+        .find(|name| *name != "feature")
+        .unwrap()
+        .to_string()
+}

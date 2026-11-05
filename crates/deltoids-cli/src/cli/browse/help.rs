@@ -36,7 +36,7 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
     HelpSection {
         title: "Panels",
         rows: &[
-            ("Tab / Shift+Tab", "next / previous side panel"),
+            ("Tab / Shift+Tab", "jump between changes and branches"),
             ("Enter", "open a file's diff, a branch, or a commit"),
             ("Esc", "back out / close review"),
         ],
@@ -60,7 +60,7 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         ],
     },
     HelpSection {
-        title: "Files sidebar",
+        title: "Uncommitted changes",
         rows: &[
             ("Enter", "fold / unfold directory"),
             ("Space", "stage / unstage selection"),
@@ -101,7 +101,6 @@ pub(super) const MOUSE_SECTION: HelpSection = HelpSection {
     title: "Mouse",
     rows: &[
         ("Click", "focus the panel under the pointer"),
-        ("Click a tab", "show its side panel"),
         ("Click a file", "select it"),
         ("Click ▶ / ▼", "fold / unfold a directory"),
         ("Click a diff line", "move the cursor there"),

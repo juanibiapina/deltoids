@@ -1,21 +1,20 @@
-//! The branches panel, in the spirit of lazygit's.
+//! The branches section of the Status panel.
 //!
-//! [`History`] shows what [`Vcs::overview`] gives: the local branches,
-//! the current one first, or a GitButler workspace's branches drawn like
-//! `but status` (stacks of branches with their commits, closed by the
-//! common base) with the unapplied branches below
-//! ([`tree`]). Uncommitted files
-//! stay in the Files panel. The cursor stops on branches and commits. On
+//! [`History`] shows what [`Vcs::overview`] gives, drawn like `but
+//! status` ([`tree`]): stacks of branches with their commits, closed by
+//! the common base, then the other branches. In git the one stack is the
+//! checked-out branch. The uncommitted changes sit above it in the
+//! Status panel. The cursor stops on branches and commits. On
 //! a branch the main view shows its log; on a commit, a preview that
 //! reads like `git show` (header, message, every file's diff), built as a
 //! read-only [`SnapshotPanel`]. `Enter` on a commit asks the workspace
-//! to review it in the Files panel, and `Enter` on an applied GitButler
-//! branch asks for a review of all its commits as one diff
-//! ([`History::take_review_request`]). `Enter` on any other branch lists
-//! the branch's commits in the same panel, newest first and loaded a page
-//! at a time, and the main view previews the selected commit's diff.
-//! `Esc` steps back up to the branches, keeping the selection. A double
-//! click on a branch or commit does what `Enter` does on it.
+//! to review it, and `Enter` on a stacked branch asks for a review of
+//! all its commits as one diff ([`History::take_review_request`]).
+//! `Enter` on any other branch lists the branch's commits over the
+//! whole column, newest first and loaded a page at a time, and the main
+//! view previews the selected commit's diff. `Esc` steps back up to the
+//! branches, keeping the selection. A double click on a branch or commit
+//! does what `Enter` does on it.
 //!
 //! The lists are a snapshot; [`History::refresh`] re-reads them and keeps
 //! each selection on the same branch or commit.
@@ -38,6 +37,7 @@ use super::files::{Snapshot, SnapshotPanel};
 use super::mode::{AppCommand, BackgroundWork, DrawBudget};
 use super::pane;
 use super::panel::{Panel, panel_title};
+use super::status::{self, Section};
 use super::vcs::{Branch, Vcs};
 
 mod cursor;
@@ -114,21 +114,10 @@ impl CommitList {
     }
 }
 
-/// A list pane's frame: its title, footer, whether it has focus, and
-/// whether the cursor's row is highlighted.
-struct Chrome {
-    title: Line<'static>,
-    footer: Option<Line<'static>>,
-    focused: bool,
-    highlight: bool,
-}
-
 pub(super) struct History {
     vcs: Vcs,
     screen: Screen,
     main_focused: bool,
-    /// The branches screen's title.
-    label: &'static str,
     tree: Result<Tree, String>,
     branch_cursor: Cursor,
     /// Each branch's log for the branches screen's main view.
@@ -144,7 +133,8 @@ pub(super) struct History {
     /// Seconds since the epoch at the last read; commit ages count from
     /// here.
     now: i64,
-    side_rect: Rect,
+    /// The list's rows at the last draw, for clicks.
+    list_body: Rect,
     main_rect: Rect,
     /// Language servers commit previews navigate with.
     servers: Option<(crate::lsp::Lsp, std::path::PathBuf)>,
@@ -163,14 +153,12 @@ impl History {
 
     /// The branches panel.
     pub(super) fn branches(mut vcs: Vcs) -> Self {
-        let overview = vcs.overview();
-        let tree = overview.content.map(Tree::new);
+        let tree = vcs.overview().map(Tree::new);
         let mut branch_cursor = Cursor::default();
         if let Ok(tree) = &tree {
             branch_cursor.selected = tree.snap(0, true);
         }
         Self {
-            label: overview.label,
             tree,
             vcs,
             screen: Screen::Branches,
@@ -183,7 +171,7 @@ impl History {
             review_request: None,
             double_click: DoubleClick::default(),
             now: now(),
-            side_rect: Rect::default(),
+            list_body: Rect::default(),
             main_rect: Rect::default(),
             servers: None,
         }
@@ -196,9 +184,7 @@ impl History {
         self.now = now();
         let row = self.branch_cursor.selected;
         let key = self.tree.as_ref().ok().and_then(|tree| tree.key(row));
-        let overview = self.vcs.overview();
-        self.label = overview.label;
-        self.tree = overview.content.map(Tree::new);
+        self.tree = self.vcs.overview().map(Tree::new);
         if let Ok(tree) = &self.tree {
             self.branch_cursor.selected = key
                 .and_then(|key| tree.find(&key))
@@ -278,18 +264,24 @@ impl History {
         self.screen = Screen::Commits;
     }
 
-    /// `Enter` on a branch: an applied GitButler branch, whose commits the
-    /// tree lists, asks for a review of all of them; any other lists its
+    /// `Enter` on a branch: a stacked branch whose commits the tree lists
+    /// in full asks for a review of all of them; any other lists its
     /// commits.
     fn open_branch(&mut self) {
         let Some(branch) = self.selected_branch() else {
             return;
         };
-        if branch.id.is_some() {
+        let stacked = branch.id.is_some() || !branch.commits.is_empty();
+        if stacked && !branch.truncated {
             self.review_request = Snapshot::of_branch(branch);
         } else {
             self.open_branch_commits();
         }
+    }
+
+    /// Whether a branch's commit list covers the whole column.
+    pub(super) fn drilled_in(&self) -> bool {
+        self.screen == Screen::Commits
     }
 
     /// `Enter` on the selected row: a commit asks for its review, and a
@@ -359,21 +351,17 @@ impl History {
         )
     }
 
-    fn draw_branches(&mut self, frame: &mut Frame<'_>, area: Rect, chrome: Chrome, theme: &Theme) {
-        let now = self.now;
-        let (rows, highlight) = match &self.tree {
+    /// The tree's rows and whether the cursor's row can be highlighted,
+    /// or the message in their place.
+    fn tree_rows(&self, theme: &Theme) -> (Result<Vec<Line<'static>>, String>, bool) {
+        match &self.tree {
             Ok(tree) if tree.len() == 0 => (Err("No branches.".to_string()), false),
             Ok(tree) => (
-                Ok(tree.lines(now, theme)),
+                Ok(tree.lines(self.now, theme)),
                 tree.is_selectable(self.branch_cursor.selected),
             ),
             Err(err) => (Err(err.clone()), false),
-        };
-        let chrome = Chrome {
-            highlight,
-            ..chrome
-        };
-        draw_list(frame, area, chrome, rows, &mut self.branch_cursor, theme);
+        }
     }
 
     fn draw_commits(
@@ -394,13 +382,16 @@ impl History {
             Ok(commits) => Ok(commits.iter().map(|c| commit_row(c, now, theme)).collect()),
             Err(err) => Err(err.clone()),
         };
-        let chrome = Chrome {
-            title,
-            footer,
-            focused,
+        let chrome = pane::Chrome::new(title, focused).footer(footer);
+        let body = pane::draw(frame, area, chrome, theme);
+        let area = ListArea {
+            body,
+            scrollbar_x: area.right().saturating_sub(1),
             highlight: true,
+            focused,
         };
-        draw_list(frame, area, chrome, rows, &mut list.cursor, theme);
+        draw_rows(frame, area, rows, &mut list.cursor, theme);
+        self.list_body = body;
     }
 
     fn draw_branch_log(&mut self, frame: &mut Frame<'_>, area: Rect, focused: bool, theme: &Theme) {
@@ -456,7 +447,7 @@ impl History {
     /// Select the list row under a click in the side panel. Returns the
     /// row it selected, or `None` when the click hit nothing selectable.
     fn click_row(&mut self, row: u16) -> Option<usize> {
-        let inner = pane::body(self.side_rect);
+        let inner = self.list_body;
         if row < inner.y || row >= inner.bottom() {
             return None;
         }
@@ -493,11 +484,60 @@ impl History {
     }
 }
 
+/// The branches section of the Status panel: the tree.
+impl Section for History {
+    fn list_rows(&self) -> usize {
+        self.tree.as_ref().map_or(1, |tree| tree.len().max(1))
+    }
+
+    fn draw_list(&mut self, frame: &mut Frame<'_>, list: status::ListArea, theme: &Theme) {
+        self.list_body = list.body;
+        let (rows, highlight) = self.tree_rows(theme);
+        let area = ListArea {
+            body: list.body,
+            scrollbar_x: list.scrollbar_x,
+            highlight: highlight && list.cursor_here,
+            focused: list.focused,
+        };
+        draw_rows(frame, area, rows, &mut self.branch_cursor, theme);
+    }
+
+    fn footer(&self, theme: &Theme) -> Option<Line<'static>> {
+        self.tree_commit()
+            .map(|c| commit_footer(c, self.now, theme))
+    }
+
+    fn has_selectable(&self) -> bool {
+        self.tree
+            .as_ref()
+            .is_ok_and(|tree| (0..tree.len()).any(|row| tree.is_selectable(row)))
+    }
+
+    fn at_edge(&self, down: bool) -> bool {
+        let row = self.branch_cursor.selected;
+        self.tree.as_ref().map_or(true, |tree| {
+            if down {
+                !tree.has_selectable_after(row)
+            } else {
+                !tree.has_selectable_before(row)
+            }
+        })
+    }
+
+    fn enter(&mut self, from_top: bool, _height: usize) {
+        if let Ok(tree) = &self.tree {
+            let start = if from_top { 0 } else { tree.len() };
+            self.branch_cursor.selected = tree.snap(start, from_top);
+            self.log_scroll = 0;
+        }
+    }
+}
+
 impl Panel for History {
     fn label(&self) -> String {
         match (self.screen, &self.commits) {
             (Screen::Commits, Some(list)) => list.label.clone(),
-            _ => self.label.to_string(),
+            _ => "Branches".to_string(),
         }
     }
 
@@ -509,16 +549,16 @@ impl Panel for History {
         focused: bool,
         theme: &Theme,
     ) {
-        self.side_rect = area;
         match self.screen {
             Screen::Branches => {
-                let chrome = Chrome {
-                    title,
-                    footer: None,
+                let body = pane::draw(frame, area, pane::Chrome::new(title, focused), theme);
+                let list = status::ListArea {
+                    body,
+                    scrollbar_x: area.right().saturating_sub(1),
+                    cursor_here: true,
                     focused,
-                    highlight: true,
                 };
-                self.draw_branches(frame, area, chrome, theme);
+                self.draw_list(frame, list, theme);
             }
             Screen::Commits => self.draw_commits(frame, area, title, focused, theme),
         }
@@ -651,19 +691,30 @@ fn now() -> i64 {
         .map_or(0, |elapsed| elapsed.as_secs() as i64)
 }
 
-/// Draw a list pane: `rows`, or a muted message in their place, with the
-/// cursor's row highlighted across the full width.
-fn draw_list(
+/// Where a list draws: its rows, its scrollbar's column, whether the
+/// cursor's row is highlighted, and whether its pane has focus.
+struct ListArea {
+    body: Rect,
+    scrollbar_x: u16,
+    highlight: bool,
+    focused: bool,
+}
+
+/// Draw `rows` into a list's body, or a muted message in their place,
+/// with the cursor's row highlighted across the full width.
+fn draw_rows(
     frame: &mut Frame<'_>,
-    area: Rect,
-    chrome: Chrome,
+    area: ListArea,
     rows: Result<Vec<Line<'static>>, String>,
     cursor: &mut Cursor,
     theme: &Theme,
 ) {
-    let focused = chrome.focused;
-    let frame_chrome = pane::Chrome::new(chrome.title, focused).footer(chrome.footer);
-    let body = pane::draw(frame, area, frame_chrome, theme);
+    let ListArea {
+        body,
+        scrollbar_x,
+        highlight,
+        focused,
+    } = area;
     let rows = match rows {
         Ok(rows) => rows,
         Err(message) => {
@@ -680,7 +731,7 @@ fn draw_list(
         .iter()
         .zip(visible.clone())
         .map(|(row, index)| {
-            if index != cursor.selected || !chrome.highlight {
+            if index != cursor.selected || !highlight {
                 return row.clone();
             }
             let mut row = row.clone().patch_style(selected_bg);
@@ -690,7 +741,15 @@ fn draw_list(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), body);
-    pane::draw_scrollbar(frame, area, rows.len(), cursor.selected, focused, theme);
+    pane::draw_scrollbar_beside(
+        frame,
+        body,
+        scrollbar_x,
+        rows.len(),
+        cursor.selected,
+        focused,
+        theme,
+    );
 }
 
 /// `  2d * main`: the tip's age, a star on the current branch.

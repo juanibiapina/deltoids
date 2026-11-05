@@ -208,11 +208,10 @@ fn a_workspace_overview_holds_what_but_status_lists() {
     let stubs = tempfile::tempdir().unwrap();
     let mut vcs = stubbed(dir.path(), stubs.path(), "but-status-stacks.json");
 
-    let overview = vcs.overview();
+    let content = vcs.overview().unwrap();
 
-    assert_eq!(overview.label, "Workspace");
-    let content = overview.content.unwrap();
-    let stacks = content.stacks.as_deref().unwrap();
+    assert_eq!(content.others_heading, "unapplied");
+    let stacks = &content.stacks;
     let names: Vec<Vec<(Option<&str>, &str)>> = stacks
         .iter()
         .map(|stack| {
@@ -259,6 +258,7 @@ fn a_workspace_overview_holds_what_but_status_lists() {
         content.base,
         Some(Base {
             id: "3917b63b1afceb59f7c748f6bfe40c5c8bceeb93".into(),
+            target: Some("origin/main".into()),
             date: "2026-10-14".into(),
             summary: "init".into(),
             behind: 0,
@@ -273,7 +273,7 @@ fn the_base_carries_upstream_lag() {
     let stubs = tempfile::tempdir().unwrap();
     let mut vcs = stubbed(dir.path(), stubs.path(), "but-status-upstream.json");
 
-    let base = vcs.overview().content.unwrap().base.unwrap();
+    let base = vcs.overview().unwrap().base.unwrap();
 
     assert_eq!(base.behind, 1);
 }
@@ -285,13 +285,13 @@ fn the_workspace_runs_but_again_only_after_a_ref_moves() {
     let stubs = tempfile::tempdir().unwrap();
     let mut vcs = stubbed(dir.path(), stubs.path(), "but-status-stacks.json");
 
-    vcs.overview();
+    let _ = vcs.overview();
     fs::write(dir.path().join("a.txt"), "edit\n").unwrap();
-    vcs.overview();
+    let _ = vcs.overview();
     assert_eq!(but_log(stubs.path()), ["status", "branch list"]);
 
     repo.git(&["branch", "new-branch"]);
-    vcs.overview();
+    let _ = vcs.overview();
     assert_eq!(
         but_log(stubs.path()),
         ["status", "branch list", "status", "branch list"]
@@ -305,12 +305,12 @@ fn the_workspace_is_read_again_after_gitbutler_lets_go_and_adopts_again() {
     adopt(dir.path());
     let stubs = tempfile::tempdir().unwrap();
     let mut vcs = stubbed(dir.path(), stubs.path(), "but-status.json");
-    vcs.overview();
+    let _ = vcs.overview();
 
     TestRepo::open(dir.path()).git(&["config", "--unset", "gitbutler.project.targetRef"]);
-    assert_eq!(vcs.overview().label, "Local branches");
+    assert_eq!(vcs.overview().unwrap().others_heading, "branches");
     adopt(dir.path());
-    vcs.overview();
+    let _ = vcs.overview();
 
     assert_eq!(
         but_log(stubs.path()),
@@ -325,7 +325,7 @@ fn a_workspace_without_but_reports_it_in_place_of_branches() {
     let mut vcs = Vcs::discover_at(dir.path()).unwrap();
     vcs.but = "/nonexistent/but".into();
 
-    let error = vcs.overview().content.unwrap_err();
+    let error = vcs.overview().unwrap_err();
 
     assert!(error.contains("not found"), "{error}");
 }
@@ -337,15 +337,49 @@ fn a_plain_repository_lists_local_branches() {
     let mut vcs = Vcs::discover_at(dir.path()).unwrap();
     vcs.but = "/nonexistent/but".into();
 
-    let overview = vcs.overview();
+    let content = vcs.overview().unwrap();
 
-    assert_eq!(overview.label, "Local branches");
-    let content = overview.content.unwrap();
-    assert_eq!(content.stacks, None);
+    assert_eq!(content.others_heading, "branches");
+    assert!(content.stacks.is_empty(), "no base, so no stack");
     assert_eq!(content.base, None);
     assert_eq!(content.others.len(), 2);
     assert!(content.others[0].current);
     assert_eq!(vcs.commits(&content.others[1], 10).unwrap().len(), 1);
+}
+
+#[test]
+fn a_plain_repository_stacks_the_checked_out_branch_on_its_base() {
+    let (dir, repo) = repo_with(&["a.txt"]);
+    let base = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    let main = repo.git(&["branch", "--show-current"]).trim().to_string();
+    repo.git(&["update-ref", "refs/remotes/origin/main", &base]);
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    fs::write(dir.path().join("f.txt"), "f\n").unwrap();
+    repo.git(&["add", "f.txt"]);
+    repo.git(&["commit", "-q", "-m", "feature work"]);
+    let mut vcs = Vcs::discover_at(dir.path()).unwrap();
+
+    let content = vcs.overview().unwrap();
+
+    let [stack] = content.stacks.as_slice() else {
+        panic!("one stack: {:?}", content.stacks);
+    };
+    let [feature] = stack.branches.as_slice() else {
+        panic!("one branch");
+    };
+    assert_eq!(feature.name, "feature");
+    let commits: Vec<_> = feature
+        .commits
+        .iter()
+        .map(|c| c.commit.summary.as_str())
+        .collect();
+    assert_eq!(commits, ["feature work"]);
+    assert_eq!(feature.commits[0].id.len(), 7);
+    let base_row = content.base.unwrap();
+    assert_eq!(base_row.id, base);
+    assert_eq!(base_row.target.as_deref(), Some("origin/main"));
+    let others: Vec<_> = content.others.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(others, [main.as_str()]);
 }
 
 /// The files `but-status.json` lists: `a.txt` modified, `new.txt`

@@ -1,10 +1,10 @@
-//! The branches screen's rows: a flat branch list in plain git, and the
-//! workspace drawn the way `but status` draws it in GitButler.
+//! The branches section's rows, drawn the way `but status` draws them:
+//! each stack's branches with their commits, closed by the common base,
+//! then the other branches under a heading.
 //!
-//! Uncommitted files stay in the Files panel. The common base closes
-//! the applied stacks, as `but status` draws it. Only branch and commit
-//! rows can be selected; graph connectors and the base are there to
-//! read.
+//! The uncommitted changes sit above these rows in the Status panel.
+//! Only branch and commit rows can be selected; graph connectors and the
+//! base are there to read.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -33,46 +33,46 @@ enum Row {
         commit: usize,
         id_width: usize,
     },
-    /// `┊ upstream +2`: commits the upstream branch has past the base.
+    /// `┊ …`: the stack lists only the newest commits of the branch.
+    More,
+    /// `┊ origin/main +2`: commits the target has past the base.
     Upstream,
-    /// `┴ 3917b63 (common base) 2026-10-14 init`.
+    /// `┴ 3917b63 (common base, origin/main) 2026-10-14 init`.
     Base,
-    /// The heading over branches outside the workspace.
-    Unapplied,
+    /// The heading over the branches outside the stacks.
+    Heading,
 }
 
 pub(super) struct Tree {
-    /// Whether to draw `but status`; otherwise a flat branch list.
-    workspace: bool,
     /// Stacked branches top to bottom, then the others.
     branches: Vec<Branch>,
     base: Option<Base>,
+    heading: &'static str,
     rows: Vec<Row>,
 }
 
 impl Tree {
     pub(super) fn new(content: OverviewContent) -> Self {
-        let workspace = content.stacks.is_some();
         let mut tree = Self {
-            workspace,
             branches: Vec::new(),
             base: content.base,
+            heading: content.others_heading,
             rows: Vec::new(),
         };
-        if workspace {
-            for stack in content.stacks.into_iter().flatten() {
-                tree.push_stack(stack);
-            }
-            if tree.base.as_ref().is_some_and(|base| base.behind > 0) {
-                tree.rows.push(Row::Upstream);
-            }
-            if tree.base.is_some() {
-                tree.rows.push(Row::Base);
-            }
-            if !content.others.is_empty() {
+        for stack in content.stacks {
+            tree.push_stack(stack);
+        }
+        if tree.base.as_ref().is_some_and(|base| base.behind > 0) {
+            tree.rows.push(Row::Upstream);
+        }
+        if tree.base.is_some() {
+            tree.rows.push(Row::Base);
+        }
+        if !content.others.is_empty() {
+            if !tree.rows.is_empty() {
                 tree.rows.push(Row::Connector(""));
-                tree.rows.push(Row::Unapplied);
             }
+            tree.rows.push(Row::Heading);
         }
         for branch in content.others {
             tree.push_branch(branch, None);
@@ -104,7 +104,20 @@ impl Tree {
                 commit,
                 id_width,
             }));
+        if branch.truncated {
+            self.rows.push(Row::More);
+        }
         self.branches.push(branch);
+    }
+
+    /// Whether any row before `row` can be selected.
+    pub(super) fn has_selectable_before(&self, row: usize) -> bool {
+        (0..row.min(self.len())).any(|r| self.is_selectable(r))
+    }
+
+    /// Whether any row after `row` can be selected.
+    pub(super) fn has_selectable_after(&self, row: usize) -> bool {
+        (row + 1..self.len()).any(|r| self.is_selectable(r))
     }
 
     pub(super) fn len(&self) -> usize {
@@ -172,11 +185,6 @@ impl Tree {
                     let branch = &self.branches[index];
                     match notch {
                         Some(notch) => stacked_branch_line(branch, notch, &style),
-                        None if self.workspace => Line::from(vec![
-                            Span::raw("   ["),
-                            Span::raw(branch.name.clone()),
-                            Span::raw("]"),
-                        ]),
                         None => branch_row(branch, now, theme),
                     }
                 }
@@ -185,18 +193,21 @@ impl Tree {
                     commit,
                     id_width,
                 } => commit_line(&self.branches[branch].commits[commit], id_width, &style),
+                Row::More => Line::from(vec![Span::raw("┊ "), Span::styled("…", style.muted)]),
                 Row::Upstream => {
-                    let behind = self.base.as_ref().map_or(0, |base| base.behind);
+                    let (target, behind) = self.base.as_ref().map_or(("upstream", 0), |base| {
+                        (base.target.as_deref().unwrap_or("upstream"), base.behind)
+                    });
                     Line::from(vec![
                         Span::raw("┊ "),
-                        Span::styled(format!("upstream +{behind}"), style.muted),
+                        Span::styled(format!("{target} +{behind}"), style.muted),
                     ])
                 }
                 Row::Base => self
                     .base
                     .as_ref()
                     .map_or_else(Line::default, |base| base_line(base, &style)),
-                Row::Unapplied => Line::from(Span::styled("unapplied", style.muted)),
+                Row::Heading => Line::from(Span::styled(self.heading, style.muted)),
             })
             .collect()
     }
@@ -223,14 +234,18 @@ impl Styles {
 }
 
 /// `┊╭┄ to [top-feature]`, with `(no commits)` after an empty branch.
+/// A git branch has no CLI ID: `┊╭┄ [main]`.
 fn stacked_branch_line(branch: &Branch, notch: char, style: &Styles) -> Line<'static> {
-    let mut spans = vec![
-        Span::raw(format!("┊{notch}┄ ")),
-        Span::styled(branch.id.clone().unwrap_or_default(), style.cli_id),
-        Span::raw(" ["),
+    let mut spans = vec![Span::raw(format!("┊{notch}┄ "))];
+    if let Some(id) = &branch.id {
+        spans.push(Span::styled(id.clone(), style.cli_id));
+        spans.push(Span::raw(" "));
+    }
+    spans.extend([
+        Span::raw("["),
         Span::styled(branch.name.clone(), style.branch),
         Span::raw("]"),
-    ];
+    ]);
     if branch.commits.is_empty() {
         spans.push(Span::raw(" "));
         spans.push(Span::styled("(no commits)", style.muted));
@@ -238,13 +253,17 @@ fn stacked_branch_line(branch: &Branch, notch: char, style: &Styles) -> Line<'st
     Line::from(spans)
 }
 
-/// `┴ 3917b63 (common base) 2026-10-14 init`.
+/// `┴ 3917b63 (common base, origin/main) 2026-10-14 init`.
 fn base_line(base: &Base, style: &Styles) -> Line<'static> {
+    let label = match &base.target {
+        Some(target) => format!("(common base, {target})"),
+        None => "(common base)".to_string(),
+    };
     Line::from(vec![
         Span::raw("┴ "),
         Span::styled(base.id.chars().take(7).collect::<String>(), style.commit_id),
         Span::raw(" "),
-        Span::styled("(common base)", style.muted),
+        Span::styled(label, style.muted),
         Span::raw(format!(" {} ", base.date)),
         Span::raw(base.summary.clone()),
     ])
@@ -292,11 +311,13 @@ mod tests {
             commit,
         }];
         OverviewContent {
-            stacks: Some(vec![Stack {
+            stacks: vec![Stack {
                 branches: vec![top],
-            }]),
+            }],
+            others_heading: "unapplied",
             base: Some(Base {
                 id: "3917b63b1afceb59f7c748f6bfe40c5c8bceeb93".into(),
+                target: Some("origin/main".into()),
                 date: "2026-10-14".into(),
                 summary: "init".into(),
                 behind: 2,
@@ -321,7 +342,10 @@ mod tests {
 
         assert_eq!(
             lines[lines.len() - 2..],
-            ["┊ upstream +2", "┴ 3917b63 (common base) 2026-10-14 init"]
+            [
+                "┊ origin/main +2",
+                "┴ 3917b63 (common base, origin/main) 2026-10-14 init"
+            ]
         );
         assert!(!tree.is_selectable(lines.len() - 1));
     }
@@ -333,11 +357,7 @@ mod tests {
 
         let lines = Tree::new(content).lines(NOW, &Theme::default());
 
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.to_string().contains("upstream"))
-        );
+        assert!(!lines.iter().any(|line| line.to_string().contains("+0")));
     }
 
     #[test]

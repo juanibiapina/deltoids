@@ -98,6 +98,38 @@ pub(super) fn draw_sidebar(
 ) {
     let focused = chrome.focused;
     let inner = pane::draw(frame, area, chrome, theme);
+    let rows = SidebarRows {
+        body: inner,
+        scrollbar_x: area.right().saturating_sub(1),
+        highlight: true,
+        focused,
+    };
+    draw_sidebar_rows(frame, rows, sidebar, theme);
+}
+
+/// Where the sidebar's rows draw: their body, the scrollbar's column,
+/// whether the selected row is highlighted, and whether the pane has
+/// focus.
+pub(super) struct SidebarRows {
+    pub(super) body: Rect,
+    pub(super) scrollbar_x: u16,
+    pub(super) highlight: bool,
+    pub(super) focused: bool,
+}
+
+/// Draw the sidebar's rows into `rows.body`, without pane chrome.
+pub(super) fn draw_sidebar_rows(
+    frame: &mut ratatui::Frame<'_>,
+    rows: SidebarRows,
+    sidebar: &Sidebar,
+    theme: &Theme,
+) {
+    let SidebarRows {
+        body: inner,
+        scrollbar_x,
+        highlight,
+        focused,
+    } = rows;
     let viewport = inner.height as usize;
     let inner_width = inner.width as usize;
     let scroll = sidebar.scroll();
@@ -110,11 +142,15 @@ pub(super) fn draw_sidebar(
         .zip(&sidebar.row_notes()[start..end])
         .enumerate()
         .map(|(offset, (row, note))| {
-            let fill = if start + offset == sidebar.selected() {
+            let selected = start + offset == sidebar.selected();
+            let fill = if highlight && selected {
                 selected_bg
             } else {
                 Style::default()
             };
+            if selected && !highlight {
+                return with_note_at_right(&unselected(row), note.as_ref(), inner_width, fill);
+            }
             with_note_at_right(row, note.as_ref(), inner_width, fill)
         })
         .collect();
@@ -125,6 +161,7 @@ pub(super) fn draw_sidebar(
     // width so the trailing block stops just before the scrollbar.
     if let Some(rel) = sidebar.selected().checked_sub(scroll)
         && rel < visible.len()
+        && highlight
     {
         pad_selected_row(&mut visible[rel], inner_width, theme);
     }
@@ -139,7 +176,28 @@ pub(super) fn draw_sidebar(
         draw_rule(frame, inner, inner.y + offset as u16, color);
     }
 
-    pane::draw_scrollbar(frame, area, total, sidebar.selected(), focused, theme);
+    pane::draw_scrollbar_beside(
+        frame,
+        inner,
+        scrollbar_x,
+        total,
+        sidebar.selected(),
+        focused,
+        theme,
+    );
+}
+
+/// The selected row drawn as any other: without the selection's
+/// background and bold, for a list the cursor is not in.
+fn unselected(row: &Line<'static>) -> Line<'static> {
+    let mut row = row.clone();
+    for span in &mut row.spans {
+        span.style.bg = None;
+        span.style
+            .add_modifier
+            .remove(ratatui::style::Modifier::BOLD);
+    }
+    row
 }
 
 /// A `───` rule across `body` at screen row `y`.

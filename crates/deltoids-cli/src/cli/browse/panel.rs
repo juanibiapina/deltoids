@@ -1,13 +1,11 @@
-//! The `Panel` seam: one side panel of the lazygit layout, plus
-//! the main view it drives while it is the current panel.
+//! The `Panel` seam: the side panel of the lazygit layout, plus
+//! the main view it drives.
 //!
-//! [`super::workspace::Workspace`] shows the current side panel in the
-//! left column, titled with a strip of every side panel's tab
-//! ([`tab_strip`]), gives it the main view on the right, and decides
-//! which half has focus. A panel owns everything else: its state, its
+//! [`super::workspace::Workspace`] shows one panel in the left column,
+//! the Status panel or a review, gives it the main view on the right,
+//! and decides which half has focus. A panel owns everything else: its state, its
 //! keys, its mouse hit-testing, and what both halves render.
 
-use std::ops::Range;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
@@ -15,7 +13,6 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
 
 use deltoids::Theme;
 use deltoids::render_tui::rgb_to_color;
@@ -24,7 +21,7 @@ use super::mode::{AppCommand, BackgroundWork, DrawBudget};
 use crate::sidebar::{IconMode, filter_icon};
 
 pub(super) trait Panel {
-    /// The side panel's name, as its tab reads.
+    /// The side panel's name, as its title reads.
     fn label(&self) -> String;
 
     /// Draw the side panel into `area` under `title`. `focused` when
@@ -111,35 +108,6 @@ pub(crate) fn panel_title(label: &str) -> Line<'static> {
     ))
 }
 
-/// The side panels' tabs as one title: `Files  Local branches`. The
-/// `current` tab reads bold in the focus colour, the others muted. Also
-/// returns each tab's columns, counted from the title's first cell.
-pub(crate) fn tab_strip(
-    tabs: &[String],
-    current: usize,
-    theme: &Theme,
-) -> (Line<'static>, Vec<Range<u16>>) {
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    let muted = Style::default().fg(rgb_to_color(theme.muted));
-    let mut spans = Vec::new();
-    let mut ranges = Vec::with_capacity(tabs.len());
-    let mut column: u16 = 0;
-    for (index, label) in tabs.iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw(TAB_GAP));
-            column += TAB_GAP.width() as u16;
-        }
-        let style = if index == current { bold } else { muted };
-        let start = column;
-        column += label.width() as u16;
-        ranges.push(start..column);
-        spans.push(Span::styled(label.clone(), style));
-    }
-    (Line::from(spans), ranges)
-}
-
-const TAB_GAP: &str = "  ";
-
 /// The filter glyph, a badge saying a filter hides some changes.
 pub(crate) fn filter_flag(theme: &Theme) -> Span<'static> {
     Span::styled(
@@ -148,40 +116,4 @@ pub(crate) fn filter_flag(theme: &Theme) -> Span<'static> {
             .fg(rgb_to_color(theme.border_active))
             .add_modifier(Modifier::BOLD),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_tab_strip_reads_every_tab_and_mutes_all_but_the_current_one() {
-        let theme = Theme::default();
-        let tabs = ["Files".to_string(), "Local branches".to_string()];
-        let (line, ranges) = tab_strip(&tabs, 1, &theme);
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "Files  Local branches");
-        let style = |content: &str| {
-            line.spans
-                .iter()
-                .find(|s| s.content == content)
-                .unwrap()
-                .style
-        };
-        assert_eq!(style("Files").fg, Some(rgb_to_color(theme.muted)));
-        assert_eq!(style("Local branches").fg, None);
-        assert!(
-            style("Local branches")
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-        let chars: Vec<char> = text.chars().collect();
-        let tab = |range: &Range<u16>| -> String {
-            chars[range.start as usize..range.end as usize]
-                .iter()
-                .collect()
-        };
-        assert_eq!(tab(&ranges[0]), "Files");
-        assert_eq!(tab(&ranges[1]), "Local branches");
-    }
 }

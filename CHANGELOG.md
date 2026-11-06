@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix `.h` files getting no scope context: C headers now diff as C and C++ headers as C++.
 - TUI: moving from a summary to a file before the summary finished drawing no longer leaves the diff saying `Rendering…`.
 - TUI: after a terminal multiplexer such as Herdr resizes a hidden tab, the screen no longer shows shifted or doubled rows when you come back.
+- TUI: a file's tag in the Status panel no longer keeps the selection background after the cursor moves to the branches.
 
 ## [0.19.0] - 2026-11-04
 

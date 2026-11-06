@@ -149,6 +149,7 @@ pub(super) fn draw_sidebar_rows(
                 Style::default()
             };
             if selected && !highlight {
+                let note = note.as_ref().map(unselected);
                 return with_note_at_right(&unselected(row), note.as_ref(), inner_width, fill);
             }
             with_note_at_right(row, note.as_ref(), inner_width, fill)
@@ -403,6 +404,39 @@ mod tests {
             rows[1],
             format!("M much_longer_name.rs{}core ●", " ".repeat(3))
         );
+    }
+
+    #[test]
+    fn a_list_the_cursor_left_draws_its_selected_note_without_the_selection() {
+        let note = crate::sidebar::RowNote {
+            tag: "config",
+            level: 0,
+            low: false,
+        };
+        let sidebar = noted(&["a.rs", "b.rs"], note);
+        let theme = Theme::default();
+        let backend = ratatui::backend::TestBackend::new(30, 4);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let rows = SidebarRows {
+                    body: Rect::new(0, 0, 29, 4),
+                    scrollbar_x: 29,
+                    highlight: false,
+                    focused: true,
+                };
+                draw_sidebar_rows(frame, rows, &sidebar, &theme);
+            })
+            .unwrap();
+
+        let selection = rgb_to_color(theme.selection_bg);
+        let buffer = terminal.backend().buffer();
+        let tinted: Vec<_> = (0..29)
+            .filter(|&x| buffer[(x, 0)].bg == selection)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(tinted.is_empty(), "cells kept the selection: {tinted:?}");
     }
 
     #[test]

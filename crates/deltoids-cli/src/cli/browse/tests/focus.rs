@@ -206,7 +206,34 @@ fn resize_is_retained_while_hidden_and_rendered_in_full_on_return() {
     assert!(!shell.needs_redraw());
     events(&mut shell, &mut mode, vec![Event::FocusGained]);
     assert!(shell.needs_redraw());
+    assert!(shell.screen_resized);
     assert_eq!(shell.take_draw_budget(), DrawBudget::Full);
+}
+
+#[test]
+fn resize_repaints_every_cell_over_a_screen_the_host_shifted() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::widgets::Paragraph;
+
+    let text = "row 1\nrow 2\nrow 3";
+    let draw = |term: &mut Terminal<TestBackend>| {
+        term.draw(|f| f.render_widget(Paragraph::new(text), f.area()))
+            .unwrap();
+    };
+    let mut term = Terminal::new(TestBackend::new(8, 3)).unwrap();
+    draw(&mut term);
+    // The host shrinks and restores the screen between two draws,
+    // dropping the top row: every row moves up one.
+    *term.backend_mut() = TestBackend::with_lines(["row 2   ", "row 3   ", "        "]);
+
+    let mut resized = true;
+    repaint_if_resized(&mut term, &mut resized).unwrap();
+    draw(&mut term);
+
+    term.backend()
+        .assert_buffer_lines(["row 1   ", "row 2   ", "row 3   "]);
+    assert!(!resized);
 }
 
 #[test]

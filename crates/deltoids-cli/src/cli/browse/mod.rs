@@ -195,6 +195,7 @@ fn draw_frame(
     let active_theme = shell.syntax_theme.as_str();
     let refresh_error = shell.refresh_error();
     let help = shell.help.as_mut();
+    repaint_if_resized(terminal, &mut shell.screen_resized)?;
     let area = terminal
         .draw(|frame| {
             let area = frame.area();
@@ -242,6 +243,31 @@ fn draw_frame(
         height: pane::body_height(area),
         diff_width: diff_scrollbar::body_width(sidebar_width::diff_pane_width(sw, area.width)),
     })
+}
+
+/// Clear the screen and ratatui's buffers after a resize, so the next
+/// draw repaints every cell.
+///
+/// Ratatui does this itself only when the size at draw time differs from
+/// the last draw. A host may shrink the terminal and restore it between
+/// two draws, for example while the tab is hidden and the TUI skips
+/// frames. Ghostty drops the top rows on such a shrink, and a diff draw
+/// over that shifted screen leaves stale and doubled rows.
+/// `Terminal::resize` clears without the cursor query of
+/// `Terminal::clear()`.
+fn repaint_if_resized<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    resized: &mut bool,
+) -> Result<(), String> {
+    if !std::mem::take(resized) {
+        return Ok(());
+    }
+    let size = terminal
+        .size()
+        .map_err(|err| format!("failed to read screen size: {err:?}"))?;
+    terminal
+        .resize(Rect::new(0, 0, size.width, size.height))
+        .map_err(|err| format!("failed to clear screen: {err:?}"))
 }
 
 /// Apply one [`AppCommand`] bubbled up from `apply_events`, in the loop that
@@ -309,6 +335,9 @@ struct Shell {
     syntax_theme: String,
     /// One-shot: force the next frame to draw `Full`.
     force_full: bool,
+    /// The terminal was resized since the last draw, so its screen may
+    /// no longer match ratatui's buffers.
+    screen_resized: bool,
     /// Last-drawn left-column rect, for divider hit-testing.
     left_rect: Rect,
     /// The mode's change receiver, armed after the first build.
@@ -352,6 +381,7 @@ impl Shell {
             theme_picker: None,
             syntax_theme,
             force_full: false,
+            screen_resized: false,
             left_rect: Rect::default(),
             receiver: None,
             armed: false,
@@ -784,6 +814,7 @@ impl Shell {
                 AppCommand::Continue
             }
             Event::Resize(_, _) => {
+                self.screen_resized = true;
                 self.repaint = true;
                 self.force_full = true;
                 AppCommand::Continue

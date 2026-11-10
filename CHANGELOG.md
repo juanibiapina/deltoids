@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix word highlights when an edit wraps one line across several or joins several into one: only the words that changed are marked ([#29](https://github.com/juanibiapina/deltoids/issues/29)).
 - Fix `.h` files getting no scope context: C headers now diff as C and C++ headers as C++.
 - TUI: moving from a summary to a file before the summary finished drawing no longer leaves the diff saying `Rendering…`.
 - TUI: after a terminal multiplexer such as Herdr resizes a hidden tab, the screen no longer shows shifted or doubled rows when you come back.

@@ -14,6 +14,8 @@ use std::sync::OnceLock;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+mod reflow;
+
 // ---------------------------------------------------------------------------
 // Alignment cost model (matches delta's align.rs)
 // ---------------------------------------------------------------------------
@@ -529,6 +531,19 @@ pub(crate) fn compute_subhunk_emphasis_while(
         }
         if !found {
             minus_emphasis[mi] = LineEmphasis::Plain;
+        }
+    }
+
+    if !keep_going() {
+        return None;
+    }
+    if let Some((block_minus, block_plus)) = reflow::block_emphasis(minus_lines, plus_lines) {
+        let block_width = reflow::changed_width(minus_lines, &block_minus)
+            + reflow::changed_width(plus_lines, &block_plus);
+        let line_width = reflow::changed_width(minus_lines, &minus_emphasis)
+            + reflow::changed_width(plus_lines, &plus_emphasis);
+        if block_width < line_width {
+            return Some((block_minus, block_plus));
         }
     }
 
@@ -1339,5 +1354,115 @@ mod tests {
         };
 
         assert!(should_absorb_whitespace(Some(&previous), &whitespace, true));
+    }
+
+    // -----------------------------------------------------------------------
+    // Wrapped and joined lines (issue #29)
+    // -----------------------------------------------------------------------
+
+    fn marked(emphasis: &LineEmphasis, line: &str) -> String {
+        match emphasis {
+            LineEmphasis::Plain => format!("PLAIN {line}"),
+            LineEmphasis::Paired(sections) => sections
+                .iter()
+                .map(|s| match s.kind {
+                    EmphKind::Emph => format!("[{}]", s.text),
+                    EmphKind::NonEmph => s.text.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn marked_subhunk(minus: &[&str], plus: &[&str]) -> (Vec<String>, Vec<String>) {
+        let (me, pe) = compute_subhunk_emphasis(minus, plus);
+        (
+            me.iter().zip(minus).map(|(e, l)| marked(e, l)).collect(),
+            pe.iter().zip(plus).map(|(e, l)| marked(e, l)).collect(),
+        )
+    }
+
+    const ONE_LINE_CALL: &str =
+        "    commit_changes(committed_file.commit_id, committed_file.change_id.as_ref()),";
+    const WRAPPED_CALL: [&str; 5] = [
+        "    commit_changes(",
+        "        id_map,",
+        "        committed_file.commit_id,",
+        "        committed_file.change_id.as_ref(),",
+        "    ),",
+    ];
+
+    #[test]
+    fn wrapping_a_line_marks_only_the_new_tokens() {
+        let (minus, plus) = marked_subhunk(&[ONE_LINE_CALL], &WRAPPED_CALL);
+
+        assert_eq!(minus, vec![ONE_LINE_CALL.to_string()]);
+        assert_eq!(
+            plus,
+            vec![
+                "    commit_changes(",
+                "        [id_map,]",
+                "        committed_file.commit_id,",
+                "        committed_file.change_id.as_ref()[,]",
+                "    ),",
+            ]
+        );
+    }
+
+    #[test]
+    fn joining_lines_marks_only_the_removed_tokens() {
+        let (minus, plus) = marked_subhunk(&WRAPPED_CALL, &[ONE_LINE_CALL]);
+
+        assert_eq!(
+            minus,
+            vec![
+                "    commit_changes(",
+                "        [id_map,]",
+                "        committed_file.commit_id,",
+                "        committed_file.change_id.as_ref()[,]",
+                "    ),",
+            ]
+        );
+        assert_eq!(plus, vec![ONE_LINE_CALL.to_string()]);
+    }
+
+    #[test]
+    fn added_lines_after_an_edit_stay_unpaired() {
+        let (minus, plus) = marked_subhunk(
+            &["let a = 1;"],
+            &["let a = 10;", "let b = 20;", "let c = 30;"],
+        );
+
+        assert_eq!(minus, vec!["let a = [1];"]);
+        assert_eq!(
+            plus,
+            vec!["let a = [10];", "PLAIN let b = 20;", "PLAIN let c = 30;"]
+        );
+    }
+
+    #[test]
+    fn rewritten_lines_keep_line_pairing() {
+        let minus = ["let total = items.len();", "println!(\"{total}\");"];
+        let plus = [
+            "let count = entries.iter().count();",
+            "log::info!(\"{count}\");",
+            "return count;",
+        ];
+        let (_, pe) = compute_subhunk_emphasis(&minus, &plus);
+
+        assert_eq!(pe[2], LineEmphasis::Plain);
+    }
+
+    #[test]
+    fn huge_wraps_keep_line_pairing() {
+        let args: Vec<String> = (0..600).map(|i| format!("arg{i},")).collect();
+        let one_line = format!("call({})", args.join(" "));
+        let mut wrapped = vec!["call(".to_string()];
+        wrapped.extend(args.iter().map(|a| format!("    {a}")));
+        wrapped.push(")".to_string());
+        let wrapped: Vec<&str> = wrapped.iter().map(String::as_str).collect();
+
+        let (_, pe) = compute_subhunk_emphasis(&[one_line.as_str()], &wrapped);
+
+        assert_eq!(pe[0], LineEmphasis::Plain);
     }
 }

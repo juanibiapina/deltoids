@@ -1283,7 +1283,7 @@ fn gitbutler_adopting_the_repository_shows_one_uncommitted_column_and_one_discar
 }
 
 #[test]
-fn titles_say_when_f_or_shift_f_hides_low_value_changes() {
+fn titles_say_when_f_hides_low_value_changes() {
     let (dir, _) = fixture(&["src/a.txt"]);
     fs::write(dir.path().join("src/a.txt"), "edited\n").unwrap();
     let mut mode = live(dir.path());
@@ -1296,11 +1296,16 @@ fn titles_say_when_f_or_shift_f_hides_low_value_changes() {
     assert_eq!(flags(&top(&mut mode)), (false, false), "{}", top(&mut mode));
 
     Mode::handle_key(&mut mode, KeyCode::Char('f'), 20);
-    assert_eq!(flags(&top(&mut mode)), (true, false), "{}", top(&mut mode));
-
-    Mode::handle_key(&mut mode, KeyCode::Char('F'), 20);
     assert_eq!(flags(&top(&mut mode)), (true, true), "{}", top(&mut mode));
 
     Mode::handle_key(&mut mode, KeyCode::Char('f'), 20);
-    assert_eq!(flags(&top(&mut mode)), (false, true), "{}", top(&mut mode));
+    assert_eq!(flags(&top(&mut mode)), (false, false), "{}", top(&mut mode));
+}
+
+#[test]
+fn custom_commands_can_take_shift_f() {
+    let (dir, _) = fixture(&["a.txt"]);
+    let mode = live(dir.path());
+    assert!(Mode::reserves_key(&mode, KeyCode::Char('f')));
+    assert!(!Mode::reserves_key(&mode, KeyCode::Char('F')));
 }

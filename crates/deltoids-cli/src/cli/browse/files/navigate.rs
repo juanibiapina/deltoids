@@ -1249,7 +1249,7 @@ pub(super) fn border_badge_width(state: &FilesMode, index: usize, theme: &Theme)
         .iter()
         .map(|span| display_width(&span.content))
         .sum();
-    let funnel = if state.hide_low_hunks {
+    let funnel = if state.hide_low {
         display_width(filter_icon(IconMode::from_env())) + 1
     } else {
         0

@@ -205,9 +205,8 @@ pub(super) struct FilesMode {
     refresh_requested: bool,
     review: review::Review,
     guidance: review::Guidance,
+    /// Hide files and collapse hunks that Jev judged low value.
     hide_low: bool,
-    /// Collapse hunks Jev judged low value in the diff.
-    hide_low_hunks: bool,
     /// Sidebar title: "Files" for the working tree, the commit otherwise.
     label: String,
     /// A commit snapshot: no staging or discard actions.
@@ -483,7 +482,6 @@ impl FilesMode {
             review: review::Review::default(),
             guidance: review::Guidance::default(),
             hide_low: false,
-            hide_low_hunks: false,
             label: "Files".to_string(),
             read_only: false,
             commits: Vec::new(),
@@ -637,7 +635,7 @@ impl FilesMode {
         let labels = HunkLabels {
             revision: self.review.revision(),
             lookup: &lookup,
-            hide_low: self.hide_low_hunks,
+            hide_low: self.hide_low,
         };
         let files: Vec<usize> = spec
             .range
@@ -1074,10 +1072,6 @@ fn handle_mode_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCom
     }
     if key == KeyCode::Char('f') {
         state.toggle_hidden(height);
-        return AppCommand::Continue;
-    }
-    if key == KeyCode::Char('F') {
-        state.hide_low_hunks = !state.hide_low_hunks;
         return AppCommand::Continue;
     }
     if state.focus == Focus::Sidebar && key == KeyCode::Char('a') && !state.read_only {
@@ -1517,7 +1511,7 @@ impl Mode for FilesMode {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        matches!(key, KeyCode::Char('f' | 'F' | 'o'))
+        matches!(key, KeyCode::Char('f' | 'o'))
             || self.focus == Focus::Diff
                 && matches!(key, KeyCode::Char('h' | 'l' | 'r' | 'i') | KeyCode::Enter)
             || !self.read_only

@@ -255,12 +255,12 @@ fn diff_texts(state: &mut FilesMode) -> Vec<String> {
 }
 
 #[test]
-fn shift_f_collapses_low_value_hunks_and_brings_them_back() {
+fn f_collapses_low_value_hunks_and_brings_them_back() {
     let mut state = import_and_core_hunks();
     let all = diff_texts(&mut state);
     assert!(all.iter().any(|text| text.contains("use b;")), "{all:#?}");
 
-    Mode::handle_key(&mut state, KeyCode::Char('F'), 20);
+    Mode::handle_key(&mut state, KeyCode::Char('f'), 20);
     let hidden = diff_texts(&mut state);
     assert!(
         !hidden.iter().any(|text| text.contains("use b;")),
@@ -283,15 +283,16 @@ fn shift_f_collapses_low_value_hunks_and_brings_them_back() {
         "{hidden:#?}"
     );
 
-    Mode::handle_key(&mut state, KeyCode::Char('F'), 20);
+    Mode::handle_key(&mut state, KeyCode::Char('f'), 20);
     assert_eq!(diff_texts(&mut state), all);
 }
 
 #[test]
-fn shift_f_and_f_hide_independently() {
+fn f_hides_low_value_files_and_hunks_together() {
     let mut state = import_and_core_hunks();
+    let all_paths = sidebar_paths(&state);
+    let all_diff = diff_texts(&mut state);
 
-    Mode::handle_key(&mut state, KeyCode::Char('F'), 20);
     Mode::handle_key(&mut state, KeyCode::Char('f'), 20);
     assert_eq!(sidebar_paths(&state), ["src/a.txt"]);
     let hidden = diff_texts(&mut state);
@@ -301,15 +302,16 @@ fn shift_f_and_f_hide_independently() {
     );
 
     Mode::handle_key(&mut state, KeyCode::Char('f'), 20);
-    assert_eq!(diff_texts(&mut state), hidden);
+    assert_eq!(sidebar_paths(&state), all_paths);
+    assert_eq!(diff_texts(&mut state), all_diff);
 }
 
 #[test]
-fn shift_f_hides_nothing_without_jev() {
+fn f_hides_nothing_in_the_diff_without_jev() {
     let mut state = four_files();
     let all = diff_texts(&mut state);
 
-    Mode::handle_key(&mut state, KeyCode::Char('F'), 20);
+    Mode::handle_key(&mut state, KeyCode::Char('f'), 20);
 
     assert_eq!(diff_texts(&mut state), all);
 }
@@ -326,7 +328,7 @@ fn hiding_the_hunk_under_the_cursor_moves_the_cursor_to_a_shown_line() {
         .unwrap();
     state.unstaged.select_row(row);
 
-    Mode::handle_key(&mut state, KeyCode::Char('F'), 20);
+    Mode::handle_key(&mut state, KeyCode::Char('f'), 20);
     diff_texts(&mut state);
 
     let (place, _) = state.unstaged.cursor_line().unwrap();

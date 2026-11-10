@@ -55,8 +55,7 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         rows: &[
             ("s", "switch staged / unstaged diff"),
             ("o", "switch diff / definitions, or summary / diffs"),
-            ("f", "hide / show low-value files"),
-            ("F", "hide / show low-value hunks"),
+            ("f", "hide / show low-value files and hunks"),
         ],
     },
     HelpSection {

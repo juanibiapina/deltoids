@@ -1529,23 +1529,15 @@ impl DiffPane {
         diff_scrollbar::render(frame, area, &self.window, scroll, focused, theme);
     }
 
-    /// Build the diff pane's title row footer: the help hint, after a
-    /// "Rendering…" notice while visible blocks are still being drawn, or
-    /// `None` when the pane is empty. Reads the assembled window, so it is
+    /// Build the diff pane's title row footer: a "Rendering…" notice while
+    /// visible blocks are still being drawn, or `None` when the pane is
+    /// empty or fully drawn. Reads the assembled window, so it is
     /// meaningful only after [`DiffPane::assemble_window`].
     pub(super) fn footer(&self) -> Option<String> {
-        if self.window_rows() == 0 {
-            return None;
-        }
-        let progress = if self.cache.visible_pending()
+        let pending = self.cache.visible_pending()
             || self.definitions.visible_pending()
-            || self.outline.visible_pending()
-        {
-            "Rendering…  \u{00b7}  "
-        } else {
-            ""
-        };
-        Some(format!(" {progress}? help "))
+            || self.outline.visible_pending();
+        (self.window_rows() > 0 && pending).then(|| " Rendering… ".to_string())
     }
 }
 
@@ -2128,19 +2120,12 @@ mod tests {
             crate::cli::browse::test_screen::screen(&mut state).remove(0)
         };
         let kotlin = border("Main.kt");
-        assert!(kotlin.contains("Kotlin  ? help"), "{kotlin}");
+        assert!(kotlin.contains("Kotlin"), "{kotlin}");
         let docker = border("Dockerfile");
-        assert!(
-            docker.contains("Dockerfile · no scope context  ? help"),
-            "{docker}"
-        );
+        assert!(docker.contains("Dockerfile · no scope context"), "{docker}");
         let plain = border("notes.txt");
         let after_name = plain.split("notes.txt").nth(1).unwrap_or_default();
-        assert_eq!(
-            after_name.trim(),
-            "? help",
-            "plain text has no badge: {plain}"
-        );
+        assert_eq!(after_name.trim(), "", "plain text has no badge: {plain}");
     }
 
     #[test]
@@ -2241,7 +2226,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_footer_includes_help_hint() {
+    fn a_drawn_diff_has_no_footer() {
         let resolved = vec![ResolvedFile {
             file: file_diff("a.txt"),
             before: "a\n".to_string(),
@@ -2249,8 +2234,7 @@ mod tests {
         }];
         let mut state = make_state(&resolved);
         let _ = state.visible_diff_window(DrawBudget::Full);
-        let footer = state.unstaged.footer().expect("footer present");
-        assert_eq!(footer, " ? help ");
+        assert_eq!(state.unstaged.footer(), None);
     }
 
     #[test]

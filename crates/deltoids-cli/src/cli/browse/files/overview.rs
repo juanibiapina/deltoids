@@ -340,8 +340,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
-        let footer = state.unstaged.footer().expect("the file's diff");
-        assert!(!footer.contains("Rendering"), "{footer}");
+        assert_eq!(state.unstaged.footer(), None);
     }
 
     /// A left press on pane row `y`.

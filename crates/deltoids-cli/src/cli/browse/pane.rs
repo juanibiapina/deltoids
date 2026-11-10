@@ -280,8 +280,8 @@ mod tests {
     fn the_title_row_names_the_pane_and_ends_with_badges_and_footer() {
         let chrome = Chrome::new(Line::from("Diff"), true)
             .badges(vec![Span::raw("Rust")])
-            .footer(Some(Line::from("? help")));
-        assert_eq!(row(chrome, 26), "Diff         Rust ? help");
+            .footer(Some(Line::from("+1 -2 ")));
+        assert_eq!(row(chrome, 26), "Diff         Rust +1 -2 ");
     }
 
     #[test]
@@ -289,7 +289,7 @@ mod tests {
         let chrome = || {
             Chrome::new(Line::from("src/cli/browse/files/mod.rs"), true)
                 .badges(vec![Span::raw("Rust")])
-                .footer(Some(Line::from("? help")))
+                .footer(Some(Line::from("+1 -2 ")))
         };
         assert_eq!(row(chrome(), 34), "src/cli/browse/files/mod.rs Rust");
         assert_eq!(row(chrome(), 22), "src/cli/browse/ Rust");

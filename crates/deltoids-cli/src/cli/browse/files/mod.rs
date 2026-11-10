@@ -81,6 +81,7 @@ mod render;
 mod review;
 #[cfg(test)]
 mod review_tests;
+mod reviewed;
 mod sidebar_pane;
 mod snapshot;
 mod stage_panes;
@@ -92,6 +93,7 @@ use diff_pane::{DiffPane, HunkLabels, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 use model::build_model;
 use model::{Column, Model};
 use reload::{Patches, ReloadOutcome, reload_working_tree};
+pub(super) use reviewed::ReviewMarks;
 use sidebar_pane::build_sidebar;
 pub(super) use snapshot::{Snapshot, SnapshotPanel};
 use stage_panes::{PaneSpec, PaneTitle, StagePanes};
@@ -207,6 +209,8 @@ pub(super) struct FilesMode {
     guidance: review::Guidance,
     /// Hide files and collapse hunks that Jev judged low value.
     hide_low: bool,
+    /// Files marked reviewed (`v`), hidden unless shown (`V`).
+    reviewed: reviewed::ReviewedFiles,
     /// Sidebar title: "Files" for the working tree, the commit otherwise.
     label: String,
     /// A commit snapshot: no staging or discard actions.
@@ -364,6 +368,19 @@ impl FilesMode {
         }
     }
 
+    /// The session's reviewed marks, to share with another view.
+    pub(super) fn review_marks(&self) -> ReviewMarks {
+        self.reviewed.marks()
+    }
+
+    /// Mark files reviewed with `marks`, shared with another view.
+    pub(super) fn attach_review_marks(&mut self, marks: ReviewMarks) {
+        self.reviewed = reviewed::ReviewedFiles::new(marks);
+        if self.reviewed.any(&self.model) {
+            self.rebuild_sidebar(self.sidebar_body.height as usize);
+        }
+    }
+
     /// The workdir-relative path of the file under the selection: the
     /// selected file, or the first one under a selected directory. `None`
     /// on the root row or without files.
@@ -390,18 +407,40 @@ impl FilesMode {
             Some("(failed to read)")
         } else if self.model.files.is_empty() {
             Some("(no changes)")
+        } else if self.all_reviewed() {
+            Some("(all reviewed)")
         } else {
             None
         }
     }
 
-    /// The filter badge, while low-value files are hidden.
+    /// `✓ N` while N reviewed files are hidden, then the filter badge
+    /// while low-value files are hidden.
     pub(super) fn section_badges(&self, theme: &Theme) -> Vec<ratatui::text::Span<'static>> {
-        if self.hide_low {
-            vec![panel::filter_flag(theme)]
-        } else {
-            Vec::new()
+        use ratatui::style::Style;
+        use ratatui::text::Span;
+
+        let mut badges = Vec::new();
+        let reviewed = self.reviewed.hidden_count(&self.model);
+        if reviewed > 0 {
+            badges.push(Span::styled(
+                format!("\u{2713} {reviewed}"),
+                Style::default().fg(deltoids::render_tui::rgb_to_color(theme.muted)),
+            ));
         }
+        if self.hide_low {
+            if !badges.is_empty() {
+                badges.push(Span::raw(" "));
+            }
+            badges.push(panel::filter_flag(theme));
+        }
+        badges
+    }
+
+    /// Whether every changed file is hidden as reviewed.
+    fn all_reviewed(&self) -> bool {
+        let changed = self.model.changed_files();
+        changed > 0 && self.reviewed.hidden_count(&self.model) == changed
     }
 
     /// Whether there is nothing to show: no changes, no repository, and
@@ -482,6 +521,7 @@ impl FilesMode {
             review: review::Review::default(),
             guidance: review::Guidance::default(),
             hide_low: false,
+            reviewed: reviewed::ReviewedFiles::default(),
             label: "Files".to_string(),
             read_only: false,
             commits: Vec::new(),
@@ -697,11 +737,18 @@ impl FilesMode {
     }
 
     fn hidden(&self) -> Vec<bool> {
-        if self.hide_low {
-            self.guidance.low.clone()
+        let low: &[bool] = if self.hide_low {
+            &self.guidance.low
         } else {
-            Vec::new()
-        }
+            &[]
+        };
+        let reviewed = self.reviewed.hidden(&self.model);
+        (0..low.len().max(reviewed.len()))
+            .map(|index| {
+                low.get(index).copied().unwrap_or(false)
+                    || reviewed.get(index).copied().unwrap_or(false)
+            })
+            .collect()
     }
 
     fn rebuild_sidebar(&mut self, height: usize) {
@@ -709,7 +756,12 @@ impl FilesMode {
         let directory = self.sidebar.selected_directory_path();
         let file = self.sidebar.nearest_file_index();
         let folds = self.sidebar.folds();
-        self.sidebar = sidebar_pane::rebuild_sidebar(&self.sidebar, &self.model, &self.hidden());
+        self.sidebar = sidebar_pane::rebuild_sidebar(
+            &self.sidebar,
+            &self.model,
+            &self.hidden(),
+            &self.reviewed.marked(&self.model),
+        );
         self.sidebar.apply_folds(folds, height);
         let restored = directory
             .as_deref()
@@ -722,6 +774,72 @@ impl FilesMode {
         }
         self.sidebar.update_notes(&self.guidance.rows);
         self.refresh_panes();
+    }
+
+    /// `v`: mark the selection reviewed, or unmark it when it all is.
+    /// When that hides the selected file, select its neighbour.
+    fn toggle_reviewed(&mut self, height: usize) {
+        let targets = self.review_targets();
+        if targets.is_empty() {
+            return;
+        }
+        let order = self.display_order.clone();
+        let positions: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, index)| targets.contains(index))
+            .map(|(position, _)| position)
+            .collect();
+        let selected_hidden = self.focus == Focus::Sidebar
+            || self
+                .sidebar
+                .selected_file_index()
+                .is_some_and(|index| targets.contains(&index));
+        self.reviewed.toggle(&self.model, &targets);
+        self.rebuild_sidebar(height);
+        let hidden = self.hidden();
+        let visible = |index: &&usize| !hidden.get(**index).copied().unwrap_or(false);
+        if selected_hidden
+            && let (Some(&first), Some(&last)) = (positions.first(), positions.last())
+            && targets.iter().any(|&index| !visible(&&index))
+        {
+            let neighbour = order[last + 1..]
+                .iter()
+                .find(visible)
+                .or_else(|| order[..first].iter().rev().find(visible));
+            if let Some(&index) = neighbour {
+                self.sidebar.select_file_index(index, height);
+                self.refresh_panes();
+            }
+        }
+        self.snap_diff_to_selected_file();
+    }
+
+    /// The files `v` acts on: the selected file or directory's files with
+    /// the sidebar focused, the file under the diff cursor otherwise.
+    fn review_targets(&self) -> Vec<usize> {
+        match self.focus {
+            Focus::Sidebar if self.sidebar.root_selected() => Vec::new(),
+            Focus::Sidebar => self
+                .sidebar
+                .selection_display_range()
+                .map(|range| self.display_order[range].to_vec())
+                .unwrap_or_default(),
+            Focus::Diff => {
+                let column = self.shown();
+                self.pane(column)
+                    .current_file(&self.model, self.diff_rect)
+                    .into_iter()
+                    .collect()
+            }
+        }
+    }
+
+    /// `V`: show or hide the reviewed files.
+    fn toggle_reviewed_shown(&mut self, height: usize) {
+        self.reviewed.set_shown(!self.reviewed.shown());
+        self.rebuild_sidebar(height);
+        self.snap_diff_to_selected_file();
     }
 
     fn toggle_hidden(&mut self, height: usize) {
@@ -752,6 +870,9 @@ impl FilesMode {
     fn refresh_panes(&mut self) {
         self.display_order = self.sidebar.display_order();
         self.panes = StagePanes::new(&self.model, &self.display_order);
+        let all_reviewed = self.all_reviewed();
+        self.staged.set_all_reviewed(all_reviewed);
+        self.unstaged.set_all_reviewed(all_reviewed);
     }
 
     /// Show `column` and assemble its diff window, as a draw does. Empty
@@ -1049,6 +1170,18 @@ fn handle_view_key(state: &mut FilesMode, key: KeyCode, height: usize) -> bool {
     true
 }
 
+/// `f` hides low-value files and hunks; `v`/`V` mark files reviewed
+/// or show them. Reports whether `key` was one of them.
+fn handle_filter_key(state: &mut FilesMode, key: KeyCode, height: usize) -> bool {
+    match key {
+        KeyCode::Char('f') => state.toggle_hidden(height),
+        KeyCode::Char('v') => state.toggle_reviewed(height),
+        KeyCode::Char('V') => state.toggle_reviewed_shown(height),
+        _ => return false,
+    }
+    true
+}
+
 /// Handle a mode-internal key (the shell strips global bindings first).
 /// Any key but `Esc` closes the hover popup before it acts.
 fn handle_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCommand {
@@ -1070,8 +1203,7 @@ fn handle_mode_key(state: &mut FilesMode, key: KeyCode, height: usize) -> AppCom
     if handle_view_key(state, key, height) || navigate::handle_key(state, key) {
         return AppCommand::Continue;
     }
-    if key == KeyCode::Char('f') {
-        state.toggle_hidden(height);
+    if handle_filter_key(state, key, height) {
         return AppCommand::Continue;
     }
     if state.focus == Focus::Sidebar && key == KeyCode::Char('a') && !state.read_only {
@@ -1329,7 +1461,10 @@ fn clear_comments(state: &mut FilesMode) -> AppCommand {
 }
 
 fn working_tree_review(state: &FilesMode) -> Option<(String, usize)> {
-    let sections = state.model.sections(&state.display_order);
+    let shown: std::collections::HashSet<usize> = state.display_order.iter().copied().collect();
+    let mut order = state.display_order.clone();
+    order.extend((0..state.model.changed_files()).filter(|index| !shown.contains(index)));
+    let sections = state.model.sections(&order);
     review_text("", &state.comments, &sections)
 }
 
@@ -1511,7 +1646,7 @@ impl Mode for FilesMode {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
-        matches!(key, KeyCode::Char('f' | 'o'))
+        matches!(key, KeyCode::Char('f' | 'v' | 'V' | 'o'))
             || self.focus == Focus::Diff
                 && matches!(key, KeyCode::Char('h' | 'l' | 'r' | 'i') | KeyCode::Enter)
             || !self.read_only
@@ -1627,7 +1762,7 @@ impl Mode for FilesMode {
         if outcome == ReloadOutcome::Rebuilt {
             self.review.request(&self.model);
             self.refresh_guidance();
-            if self.hide_low {
+            if self.hide_low || self.reviewed.any(&self.model) {
                 self.rebuild_sidebar(viewport.height);
             } else {
                 self.sidebar.update_notes(&self.guidance.rows);
@@ -1718,11 +1853,7 @@ impl panel::Panel for FilesMode {
         self.sidebar_rect = area;
         self.sidebar_body = pane::body(area);
         self.sidebar.reveal_selected(pane::body_height(area));
-        let badges = if self.hide_low {
-            vec![panel::filter_flag(theme)]
-        } else {
-            Vec::new()
-        };
+        let badges = self.section_badges(theme);
         let chrome = pane::Chrome::new(title, focused)
             .badges(badges)
             .footer(sidebar_pane::sidebar_footer(&self.sidebar, theme));

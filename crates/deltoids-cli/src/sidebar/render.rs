@@ -254,6 +254,11 @@ fn file_row_spans(
     spans.push(Span::styled(indent(depth), base));
 
     match meta.stage {
+        _ if meta.reviewed => spans.push(Span::styled(
+            "\u{2713} ".to_string(),
+            base.fg(rgb_to_color(theme.status_added))
+                .add_modifier(Modifier::BOLD),
+        )),
         // One letter for what changed; its colour says how much of it is
         // staged.
         Some(stage) => {
@@ -290,6 +295,7 @@ fn file_row_spans(
         None => name.to_string(),
     };
     let name_style = match meta.note {
+        _ if meta.reviewed => base.fg(rgb_to_color(theme.muted)),
         Some(note) if note.low => base.fg(rgb_to_color(theme.muted)),
         _ => base,
     };

@@ -33,7 +33,7 @@ use deltoids::render_tui::rgb_to_color;
 use deltoids::{Theme, git};
 
 use super::double_click::DoubleClick;
-use super::files::{Snapshot, SnapshotPanel};
+use super::files::{ReviewMarks, Snapshot, SnapshotPanel};
 use super::mode::{AppCommand, BackgroundWork, DrawBudget};
 use super::pane;
 use super::panel::{Panel, panel_title};
@@ -138,11 +138,19 @@ pub(super) struct History {
     main_rect: Rect,
     /// Language servers commit previews navigate with.
     servers: Option<(crate::lsp::Lsp, std::path::PathBuf)>,
+    /// The session's reviewed marks, shared with commit previews.
+    review_marks: ReviewMarks,
 }
 
 impl History {
     /// Navigate commit previews with `servers`, shared with the Files
     /// panel.
+    /// Mark files reviewed with `marks`, shared with the Files panel.
+    pub(super) fn with_review_marks(mut self, marks: ReviewMarks) -> Self {
+        self.review_marks = marks;
+        self
+    }
+
     pub(super) fn with_servers(
         mut self,
         servers: Option<(crate::lsp::Lsp, std::path::PathBuf)>,
@@ -174,6 +182,7 @@ impl History {
             list_body: Rect::default(),
             main_rect: Rect::default(),
             servers: None,
+            review_marks: ReviewMarks::default(),
         }
     }
 
@@ -239,8 +248,9 @@ impl History {
         let selected = Snapshot::Commit(selected);
         if !self.preview.as_ref().is_some_and(|p| p.shows(&selected)) {
             let repo_dir = self.vcs.repo().git_dir().to_path_buf();
-            let mut preview =
-                SnapshotPanel::preview(repo_dir, selected).with_servers(self.servers.clone());
+            let mut preview = SnapshotPanel::preview(repo_dir, selected)
+                .with_servers(self.servers.clone())
+                .with_review_marks(self.review_marks.clone());
             // Keys reach the preview only from the main view, where it
             // reads like `git show`.
             preview.focus_main(true);

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- TUI: press `v` to mark a file as reviewed and hide it until it changes again, and `V` to show reviewed files.
+
 ### Changed
 
 - TUI: `f` now hides low-value files and collapses low-value hunks together. `F` no longer has a built-in action, so custom keys can use it.

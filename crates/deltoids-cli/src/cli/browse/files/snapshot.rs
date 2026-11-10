@@ -24,7 +24,7 @@ use deltoids::{Theme, git};
 
 use super::model::{self, Model};
 use super::reload::Patches;
-use super::{FilesMode, review};
+use super::{FilesMode, ReviewMarks, review};
 use crate::cli::browse::diff_scrollbar;
 use crate::cli::browse::mode::{AppCommand, BackgroundWork, DrawBudget};
 use crate::cli::browse::pane;
@@ -121,6 +121,8 @@ pub(in crate::cli::browse) struct SnapshotPanel {
     diff_width: usize,
     /// Language servers the view navigates with.
     servers: Option<(crate::lsp::Lsp, PathBuf)>,
+    /// The session's reviewed marks.
+    review_marks: ReviewMarks,
     /// The checkout the snapshot's paths live in, once built: custom
     /// commands run on the selected file there.
     workdir: Option<PathBuf>,
@@ -165,8 +167,15 @@ impl SnapshotPanel {
             whole: false,
             diff_width: 0,
             servers: None,
+            review_marks: ReviewMarks::default(),
             workdir: None,
         }
+    }
+
+    /// Mark files reviewed with `marks`, shared with the Files panel.
+    pub(in crate::cli::browse) fn with_review_marks(mut self, marks: ReviewMarks) -> Self {
+        self.review_marks = marks;
+        self
     }
 
     /// Navigate the snapshot with `servers`, shared with the Files panel.
@@ -227,6 +236,7 @@ impl SnapshotPanel {
         view.read_only = true;
         view.attach_servers(self.servers.clone());
         view.show_snapshot(self.snapshot.root(), self.snapshot.commits().to_vec());
+        view.attach_review_marks(self.review_marks.clone());
         if let Some(review) = self.review.take() {
             view.review = review;
             view.start_review();

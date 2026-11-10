@@ -297,6 +297,32 @@ fn enter_on_a_call_jumps_to_its_definition_in_another_file_and_ctrl_o_returns() 
 }
 
 #[test]
+fn a_jump_into_a_reviewed_file_shows_it_and_ctrl_o_hides_it_again() {
+    let Fixture {
+        mut state,
+        dir: _dir,
+        ..
+    } = fixture(|uri| shop_server(uri));
+    let cart = state.model.index_of("src/cart.rs").unwrap();
+    state.sidebar.select_file_index(cart, PANE_HEIGHT);
+    press(&mut state, KeyCode::Char('v'));
+    let shown = |state: &FilesMode| state.display_order.contains(&cart);
+    assert!(!shown(&state));
+
+    open(&mut state, "src/main.rs");
+    cursor_to(&mut state, "src/main.rs", LineSide::New, 5);
+    press(&mut state, KeyCode::Enter);
+    assert!(shown(&state));
+    assert_eq!(
+        cursor(&state),
+        Some(("src/cart.rs".to_string(), LineSide::New, 12))
+    );
+
+    ctrl_o(&mut state);
+    assert!(!shown(&state));
+}
+
+#[test]
 fn enter_on_a_definition_lists_its_callers_instead_of_jumping_to_itself() {
     let Fixture {
         mut state,

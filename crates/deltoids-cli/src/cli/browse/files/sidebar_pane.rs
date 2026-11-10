@@ -25,9 +25,17 @@ pub(super) fn build_sidebar(model: &Model, theme: &Theme) -> Sidebar {
     sidebar
 }
 
-pub(super) fn rebuild_sidebar(sidebar: &Sidebar, model: &Model, hidden: &[bool]) -> Sidebar {
+pub(super) fn rebuild_sidebar(
+    sidebar: &Sidebar,
+    model: &Model,
+    hidden: &[bool],
+    reviewed: &[bool],
+) -> Sidebar {
     let mut sidebar = sidebar.rebuilt(&sidebar_files(model), hidden);
     mark_visited(&mut sidebar, model);
+    if reviewed.contains(&true) {
+        sidebar.set_reviewed(reviewed);
+    }
     sidebar
 }
 

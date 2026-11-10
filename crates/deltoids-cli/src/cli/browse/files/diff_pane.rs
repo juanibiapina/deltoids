@@ -726,6 +726,8 @@ pub(super) struct DiffPane {
     window_complete: bool,
     /// What the no-files render shows: the clean state or a build error.
     empty_state: EmptyPane,
+    /// The pane is empty because every file is hidden as reviewed.
+    all_reviewed: bool,
     /// The commits whose `git show` headers top the window, in order.
     header: Vec<git::Commit>,
     /// Low-value hunks are collapsed; the title says so.
@@ -758,6 +760,7 @@ impl DiffPane {
             landing: true,
             window_complete: false,
             empty_state: EmptyPane::NoChanges,
+            all_reviewed: false,
             header: Vec::new(),
             hide_low: false,
             heading: None,
@@ -852,6 +855,11 @@ impl DiffPane {
     /// Whether the no-files render shows a build error.
     pub(super) fn shows_error(&self) -> bool {
         matches!(self.empty_state, EmptyPane::Error(_))
+    }
+
+    /// Whether the no-files render says every file is hidden as reviewed.
+    pub(super) fn set_all_reviewed(&mut self, all_reviewed: bool) {
+        self.all_reviewed = all_reviewed;
     }
 
     /// Reset the no-files render to the clean "No local changes." state
@@ -1469,6 +1477,7 @@ impl DiffPane {
                 EmptyPane::NoChanges | EmptyPane::Loading => {
                     let text = match self.empty_state {
                         EmptyPane::Loading => "Loading\u{2026}",
+                        _ if self.all_reviewed => "All files reviewed.",
                         _ => "No local changes.",
                     };
                     let msg = Paragraph::new(text)

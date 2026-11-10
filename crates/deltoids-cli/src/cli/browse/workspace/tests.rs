@@ -1376,3 +1376,47 @@ fn enter_on_a_git_branch_with_a_base_reviews_its_commits() {
     assert!(review.contains("Review main"), "{review}");
     assert!(review.contains("greet.rs"), "{review}");
 }
+
+#[test]
+fn reviewed_marks_outlive_the_commit_review_they_were_made_in() {
+    let dir = clean_fixture();
+    let mut workspace = workspace(dir.path());
+    press(&mut workspace, &[KeyCode::Enter, KeyCode::Enter]);
+    assert!(panel(&mut workspace, '1').contains("greet.rs"));
+    press(&mut workspace, &[KeyCode::Char('j'), KeyCode::Char('v')]);
+    assert!(
+        title(&mut workspace).contains("✓ 1"),
+        "{}",
+        title(&mut workspace)
+    );
+
+    press(
+        &mut workspace,
+        &[KeyCode::Esc, KeyCode::Enter, KeyCode::Enter],
+    );
+    let rows = panel(&mut workspace, '1');
+    assert!(rows.contains("Commit "), "{rows}");
+    assert!(!rows.contains("greet.rs"), "{rows}");
+    assert!(
+        title(&mut workspace).contains("✓ 1"),
+        "{}",
+        title(&mut workspace)
+    );
+}
+
+#[test]
+fn a_file_reviewed_in_the_working_tree_stays_reviewed_in_its_commit() {
+    let dir = fixture();
+    let mut workspace = workspace(dir.path());
+    assert!(panel(&mut workspace, '1').contains("greet.rs"));
+    press(&mut workspace, &[KeyCode::Char('v')]);
+    assert!(!panel(&mut workspace, '1').contains("greet.rs"));
+
+    TestRepo::open(dir.path()).commit_at("say hi", 400);
+    reload(&mut workspace);
+    show(&mut workspace, '2');
+    press(&mut workspace, &[KeyCode::Enter, KeyCode::Enter]);
+    let rows = panel(&mut workspace, '1');
+    assert!(rows.contains("say hi"), "{rows}");
+    assert!(!rows.contains("greet.rs"), "{rows}");
+}

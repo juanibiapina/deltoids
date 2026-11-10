@@ -150,6 +150,11 @@ impl Model {
         self.files.len() - self.visited
     }
 
+    /// Hash of what file `index` renders; see [`content_fingerprint`].
+    pub(super) fn fingerprint(&self, index: usize) -> u64 {
+        content_fingerprint(&self.files[index])
+    }
+
     /// The index of the file shown at `path`.
     pub(super) fn index_of(&self, path: &str) -> Option<usize> {
         self.files

@@ -7,7 +7,7 @@ export const SITE = {
   domain: "deltoids.dev",
   url: "https://deltoids.dev",
   reviewUrl: "https://review.deltoids.dev",
-  version: "0.19.0",
+  version: "0.20.0",
   license: "MIT",
   tagline: "Diffs for the agentic era.",
   description:
@@ -46,9 +46,9 @@ export type ReviewFeature = {
 /** TUI feature cards in the Review section. Each links to its docs page. */
 export const REVIEW_FEATURES: ReviewFeature[] = [
   {
-    keys: "1 2 0",
+    keys: "Tab",
     title: "Panels like lazygit",
-    body: "Files and branches on the left, the diff on the right. Stage, unstage, and discard without leaving the review.",
+    body: "Changes and branches in one Status panel on the left, the diff on the right. Stage, unstage, and discard without leaving the review.",
     href: "/docs/tui/",
   },
   {

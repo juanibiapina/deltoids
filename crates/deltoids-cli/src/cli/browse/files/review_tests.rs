@@ -515,3 +515,112 @@ fn a_commit_review_points_custom_commands_at_the_working_tree_file() {
         assert_eq!(path.canonicalize().unwrap(), workdir.join("src/a.rs"));
     }
 }
+
+#[test]
+fn a_pull_request_review_shows_its_diff_under_its_number_and_title() {
+    use crate::cli::browse::panel::Panel;
+    let (dir, first, second) = two_commits();
+    let repo_dir = dir.path().to_path_buf();
+    let resolve: snapshot::Resolve = Box::new(move |_| {
+        let snapshot = Snapshot::PullRequest {
+            name: "acme/widgets#7".to_string(),
+            info: crate::pull_request::PullRequestInfo {
+                number: 7,
+                title: "Call b".to_string(),
+                author: "ada".to_string(),
+                url: "https://github.com/acme/widgets/pull/7".to_string(),
+                base: "main".to_string(),
+                head: "ada:call-b".to_string(),
+                body: "Makes `a` call `b`.".to_string(),
+            },
+            base: first,
+            tip: second,
+            commits: Vec::new(),
+        };
+        Ok((repo_dir, snapshot))
+    });
+    let review = review::Review::with_sender(fake_jev("src/a.rs"));
+    let mut panel =
+        SnapshotPanel::spawn("PR acme/widgets#7".to_string(), None, resolve, Some(review));
+    assert_eq!(panel.label(), "PR acme/widgets#7");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while panel.view().is_none() {
+        panel.adopt(&Theme::default());
+        assert!(Instant::now() < deadline, "pull request did not build");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let view = panel.view().unwrap();
+
+    assert_eq!(view.label, "PR acme/widgets#7");
+    assert!(view.read_only);
+    assert_eq!(sidebar_paths(view), ["src/a.rs"]);
+    assert!(
+        sidebar_texts(view)[0].ends_with("#7 Call b"),
+        "{:?}",
+        sidebar_texts(view)
+    );
+}
+
+#[test]
+fn a_pull_request_shows_its_description_while_its_files_load() {
+    use crate::cli::browse::panel::Panel;
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let resolve: snapshot::Resolve = Box::new(move |shown| {
+        shown(&crate::pull_request::PullRequestInfo {
+            number: 7,
+            title: "Call b".to_string(),
+            author: "ada".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+            base: "main".to_string(),
+            head: "ada:call-b".to_string(),
+            body: "Why a calls b.".to_string(),
+        });
+        let _ = released.recv();
+        Err("stopped".to_string())
+    });
+    let mut panel = SnapshotPanel::spawn("PR acme/widgets#7".to_string(), None, resolve, None);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !panel.background(true).changed {
+        assert!(Instant::now() < deadline, "the description did not come");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let backend = ratatui::backend::TestBackend::new(60, 14);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let [side, main] = ratatui::layout::Layout::horizontal([
+                ratatui::layout::Constraint::Length(20),
+                ratatui::layout::Constraint::Fill(1),
+            ])
+            .areas(frame.area());
+            panel.draw_side(
+                frame,
+                side,
+                crate::cli::browse::panel::panel_title("PR"),
+                true,
+                &Theme::default(),
+            );
+            panel.draw_main(
+                frame,
+                main,
+                false,
+                &Theme::default(),
+                crate::cli::browse::mode::DrawBudget::Full,
+            );
+        })
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    release.send(()).unwrap();
+
+    assert!(screen.contains("pull request #7"), "{screen}");
+    assert!(screen.contains("Why a calls b."), "{screen}");
+    assert!(screen.contains("Loading files"), "{screen}");
+}

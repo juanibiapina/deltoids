@@ -76,6 +76,7 @@ mod navigation_tests;
 mod overview;
 #[cfg(test)]
 mod performance_tests;
+mod pr_header;
 mod reload;
 mod render;
 mod review;
@@ -88,14 +89,15 @@ mod stage_panes;
 #[cfg(test)]
 mod test_support;
 
-use diff_pane::{DiffPane, HunkLabels, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
+use crate::pull_request::PullRequestInfo;
+use diff_pane::{DiffPane, Header, HunkLabels, SCROLL_STEP_LARGE, SCROLL_STEP_SMALL};
 #[cfg(test)]
 use model::build_model;
 use model::{Column, Model};
 use reload::{Patches, ReloadOutcome, reload_working_tree};
 pub(super) use reviewed::ReviewMarks;
 use sidebar_pane::build_sidebar;
-pub(super) use snapshot::{Snapshot, SnapshotPanel};
+pub(super) use snapshot::{Snapshot, SnapshotPanel, pull_request_label};
 use stage_panes::{PaneSpec, PaneTitle, StagePanes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -217,6 +219,8 @@ pub(super) struct FilesMode {
     read_only: bool,
     /// The commits a snapshot shows, newest first, for its header.
     commits: Vec<git::Commit>,
+    /// The pull request a snapshot shows, atop its header.
+    pull_request: Option<PullRequestInfo>,
     /// Show the whole snapshot: the commits' header and every file,
     /// whatever the sidebar selects.
     whole: bool,
@@ -525,6 +529,7 @@ impl FilesMode {
             label: "Files".to_string(),
             read_only: false,
             commits: Vec::new(),
+            pull_request: None,
             whole: false,
             file_definitions: false,
             summary_diffs: false,
@@ -583,16 +588,26 @@ impl FilesMode {
         self.commits = commits;
     }
 
-    /// Top both panes with the commits' header while the whole snapshot
-    /// or the root row shows, and with nothing otherwise.
+    /// Show `info` above the snapshot's commits: the pull request it
+    /// reviews.
+    pub(super) fn show_pull_request(&mut self, info: PullRequestInfo) {
+        self.pull_request = Some(info);
+    }
+
+    /// Top both panes with the pull request and the commits' header while
+    /// the whole snapshot or the root row shows, and with nothing
+    /// otherwise.
     fn sync_header(&mut self) {
-        let header: &[git::Commit] = if self.whole || self.sidebar.root_selected() {
-            &self.commits
+        let header = if self.whole || self.sidebar.root_selected() {
+            Header {
+                pull_request: self.pull_request.clone(),
+                commits: self.commits.clone(),
+            }
         } else {
-            &[]
+            Header::default()
         };
-        self.staged.set_header(header);
-        self.unstaged.set_header(header);
+        self.staged.set_header(&header);
+        self.unstaged.set_header(&header);
     }
 
     /// What the diff pane shows for the selection: a directory's or a
@@ -2221,6 +2236,31 @@ mod tests {
         assert!(at("finish upper") < at("draft upper"), "{rows:#?}");
         assert!(at("draft upper").is_some(), "{rows:#?}");
         assert_eq!(at("const x"), None, "{rows:#?}");
+    }
+
+    #[test]
+    fn a_pull_request_root_row_shows_its_description_above_its_commits() {
+        let mut state = make_state_with_rects(&[edited("a.rs")]);
+        let root = Root::PullRequest {
+            number: 7,
+            title: "Make a better".into(),
+        };
+        state.show_snapshot(root, vec![test_commit("2222222", "finish a")]);
+        state.show_pull_request(crate::pull_request::PullRequestInfo {
+            number: 7,
+            title: "Make a better".into(),
+            author: "ada".into(),
+            url: "https://github.com/acme/widgets/pull/7".into(),
+            base: "main".into(),
+            head: "ada:better-a".into(),
+            body: "Why **a** changes.".into(),
+        });
+
+        let rows = assembled_text(&mut state);
+        let at = |text: &str| rows.iter().position(|row| row.contains(text));
+        assert!(at("pull request #7") < at("Why a changes."), "{rows:#?}");
+        assert!(at("Why a changes.") < at("finish a"), "{rows:#?}");
+        assert!(at("finish a").is_some(), "{rows:#?}");
     }
 
     #[test]

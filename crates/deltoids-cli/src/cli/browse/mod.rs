@@ -61,6 +61,7 @@ mod history;
 mod mode;
 mod pane;
 mod panel;
+mod pull_request;
 mod scroll;
 mod sidebar_width;
 mod status;
@@ -80,6 +81,7 @@ use events::read_event_burst;
 use files::FilesMode;
 use help::{HelpKey, HelpPopup};
 use mode::{AppCommand, CustomRun, DrawBudget, Mode, Viewport};
+use pull_request::PullRequestMode;
 use sidebar_width::Preference;
 use terminal::TerminalSession;
 use theme_picker::{PickerAction, ThemePicker};
@@ -108,6 +110,25 @@ fn buffered_backend() -> CrosstermBackend<io::BufWriter<io::Stdout>> {
 
 /// Open the TUI on the working-tree diff.
 pub fn run() -> Result<(), String> {
+    // The mode starts as a cheap empty placeholder, so the loop's first
+    // iteration draws a loading frame and then builds it. Startup shows a
+    // loading state instead of a blank screen during the (possibly slow)
+    // build.
+    run_mode(|theme, width| Workspace::new(FilesMode::empty(theme, width)))
+}
+
+/// Open the TUI on pull request `pr`, read from the clone that contains
+/// `cwd` when there is one.
+pub(crate) fn run_pull_request(
+    pr: crate::pull_request::PrRef,
+    cwd: std::path::PathBuf,
+) -> Result<(), String> {
+    run_mode(|_, _| PullRequestMode::open(pr, cwd))
+}
+
+/// Run the TUI on the mode `make` returns for the theme and the starting
+/// diff width.
+fn run_mode<M: Mode>(make: impl FnOnce(&Theme, usize) -> M) -> Result<(), String> {
     let mut theme = Theme::load();
     let session = TerminalSession::enter()?;
     let backend = buffered_backend();
@@ -120,11 +141,7 @@ pub fn run() -> Result<(), String> {
     let initial_diff_width =
         diff_scrollbar::body_width(sidebar_width::diff_pane_width(sidebar_w, total_width));
 
-    // The mode starts as a cheap empty placeholder, so the loop's first
-    // iteration draws a loading frame and then builds it. Startup shows a
-    // loading state instead of a blank screen during the (possibly slow)
-    // build.
-    let mut mode = Workspace::new(FilesMode::empty(&theme, initial_diff_width));
+    let mut mode = make(&theme, initial_diff_width);
 
     let mut shell = Shell::new(sidebar_pref, total_width, theme.syntax_theme_name.clone());
     shell.commands = load_commands();

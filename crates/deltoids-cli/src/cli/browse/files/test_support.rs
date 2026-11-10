@@ -148,6 +148,7 @@ pub(super) fn make_state(files: &[ResolvedFile]) -> FilesMode {
         label: "Files".to_string(),
         read_only: false,
         commits: Vec::new(),
+        pull_request: None,
         whole: false,
         file_definitions: false,
         summary_diffs: false,

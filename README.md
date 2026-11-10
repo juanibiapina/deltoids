@@ -21,6 +21,7 @@ Hunks expand to show the enclosing function, so you always know where you are.
 - **Expanded context:** understand changes within their enclosing scope.
 - **Git and GitButler integration:** review file status and manage changes in one place.
 - **Commit and branch review:** open any commit, or a whole branch, as one diff.
+- **Pull request review:** open a GitHub pull request with `deltoids pr`, from your clone or without one.
 - **Context on demand:** grow a hunk to its enclosing class or the whole file.
 - **Review comments:** copy review notes with file and line references for coding agents.
 - **Code navigation:** jump to definitions and callers, and read a symbol's type and docs, through language servers, inside the diff and out.

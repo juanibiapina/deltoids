@@ -1,7 +1,8 @@
-//! Read-only snapshots of history: one commit, or every commit of a
-//! branch as one diff.
+//! Read-only snapshots of history: one commit, every commit of a branch
+//! as one diff, or a GitHub pull request.
 //!
-//! [`SnapshotPanel`] reads the patch, resolves both sides of every file,
+//! [`SnapshotPanel`] resolves what it shows (a pull request asks GitHub
+//! and fetches), reads the patch, resolves both sides of every file,
 //! and diffs them on a worker thread, saying `Loading…` until the build
 //! is ready. Then every [`Panel`] call goes to the snapshot's read-only
 //! [`FilesMode`]: file tree and diff, with comments and hunk reshaping
@@ -30,6 +31,7 @@ use crate::cli::browse::mode::{AppCommand, BackgroundWork, DrawBudget};
 use crate::cli::browse::pane;
 use crate::cli::browse::panel::{Panel, panel_title};
 use crate::cli::browse::vcs::Branch;
+use crate::pull_request::PullRequestInfo;
 use crate::sidebar::Root;
 
 /// What a snapshot shows.
@@ -43,6 +45,17 @@ pub(in crate::cli::browse) enum Snapshot {
         base: String,
         tip: String,
         /// The commits between, newest first.
+        commits: Vec<git::Commit>,
+    },
+    /// A pull request's diff from `base` (the merge base) to `tip` (its
+    /// head), as GitHub shows its changed files.
+    PullRequest {
+        /// `owner/repo#N`.
+        name: String,
+        info: PullRequestInfo,
+        base: String,
+        tip: String,
+        /// Its commits, newest first.
         commits: Vec<git::Commit>,
     },
 }
@@ -65,7 +78,7 @@ impl Snapshot {
     pub(in crate::cli::browse) fn commits(&self) -> &[git::Commit] {
         match self {
             Self::Commit(commit) => std::slice::from_ref(commit),
-            Self::Branch { commits, .. } => commits,
+            Self::Branch { commits, .. } | Self::PullRequest { commits, .. } => commits,
         }
     }
 
@@ -74,6 +87,7 @@ impl Snapshot {
         match self {
             Self::Commit(commit) => format!("Commit {}", commit.short_id),
             Self::Branch { name, .. } => format!("Review {name}"),
+            Self::PullRequest { name, .. } => pull_request_label(name),
         }
     }
 
@@ -88,26 +102,51 @@ impl Snapshot {
                 name: name.clone(),
                 commits: commits.len(),
             },
+            Self::PullRequest { info, .. } => Root::PullRequest {
+                number: info.number,
+                title: info.title.clone(),
+            },
         }
     }
 
     fn patch(&self, repo: &git::Repo) -> Result<String, String> {
         match self {
             Self::Commit(commit) => repo.commit_patch(&commit.id),
-            Self::Branch { base, tip, .. } => repo.tree_patch(base, tip),
+            Self::Branch { base, tip, .. } | Self::PullRequest { base, tip, .. } => {
+                repo.tree_patch(base, tip)
+            }
         }
     }
 }
 
-/// A finished build: the snapshot's model and the checkout its paths
+/// `PR owner/repo#N`.
+pub(in crate::cli::browse) fn pull_request_label(name: &str) -> String {
+    format!("PR {name}")
+}
+
+/// Work on the worker thread before the build: what to show, and the
+/// repository to read it from. May block on the network. It hands a pull
+/// request's description to the callback as soon as it has it, so the
+/// panel shows it while the rest loads.
+pub(in crate::cli::browse) type Resolve =
+    Box<dyn FnOnce(&dyn Fn(&PullRequestInfo)) -> Result<(PathBuf, Snapshot), String> + Send>;
+
+/// A finished build: the snapshot, its model, and the checkout its paths
 /// live in (`None` for a bare repository).
-type Build = Result<(Model, Option<PathBuf>), String>;
+type Build = Result<(Snapshot, Model, Option<PathBuf>), String>;
 
 /// A snapshot shown as a panel, built on a worker thread.
 pub(in crate::cli::browse) struct SnapshotPanel {
-    snapshot: Snapshot,
+    /// The panel's title, also while the snapshot resolves.
+    label: String,
+    /// What the panel shows, once known.
+    snapshot: Option<Snapshot>,
     /// The build until the view takes it.
     receiver: Option<mpsc::Receiver<Build>>,
+    /// The pull request's description, until the build comes.
+    early_receiver: Option<mpsc::Receiver<PullRequestInfo>>,
+    /// What the main view shows while the build runs.
+    early: Option<PullRequestInfo>,
     built: Option<Build>,
     view: Option<Result<FilesMode, String>>,
     /// The view was adopted since the last [`Panel::background`]: a draw
@@ -145,20 +184,42 @@ impl SnapshotPanel {
         snapshot: Snapshot,
         review: Option<review::Review>,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel();
         let job = snapshot.clone();
+        let resolve: Resolve = Box::new(move |_| Ok((repo_dir, job)));
+        Self::spawn(snapshot.label(), Some(snapshot), resolve, review)
+    }
+
+    /// A review of what `resolve` finds, titled `label` until then.
+    pub(in crate::cli::browse) fn resolving(label: String, resolve: Resolve) -> Self {
+        Self::spawn(label, None, resolve, Some(review::Review::from_env()))
+    }
+
+    pub(super) fn spawn(
+        label: String,
+        snapshot: Option<Snapshot>,
+        resolve: Resolve,
+        review: Option<review::Review>,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let (early_sender, early_receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let built = git::Repo::discover_at(&repo_dir)
-                .ok_or_else(|| "Not a git repository".to_string())
-                .and_then(|repo| {
-                    let model = model::build_snapshot_model(&job.patch(&repo)?, &repo)?;
-                    Ok((model, repo.workdir().map(Path::to_path_buf)))
-                });
+            let shown = |info: &PullRequestInfo| {
+                let _ = early_sender.send(info.clone());
+            };
+            let built = resolve(&shown).and_then(|(repo_dir, snapshot)| {
+                let repo = git::Repo::discover_at(&repo_dir)
+                    .ok_or_else(|| "Not a git repository".to_string())?;
+                let model = model::build_snapshot_model(&snapshot.patch(&repo)?, &repo)?;
+                Ok((snapshot, model, repo.workdir().map(Path::to_path_buf)))
+            });
             let _ = sender.send(built);
         });
         Self {
+            label,
             snapshot,
             receiver: Some(receiver),
+            early_receiver: Some(early_receiver),
+            early: None,
             built: None,
             view: None,
             adopted: false,
@@ -190,7 +251,7 @@ impl SnapshotPanel {
     /// Whether this panel shows `snapshot`: the same commit, or the same
     /// branch at the same commits.
     pub(in crate::cli::browse) fn shows(&self, snapshot: &Snapshot) -> bool {
-        &self.snapshot == snapshot
+        self.snapshot.as_ref() == Some(snapshot)
     }
 
     /// Show the whole snapshot, as `git show` does: its commits' header
@@ -223,19 +284,24 @@ impl SnapshotPanel {
             return;
         }
         let built = self.built.take().expect("polled above");
-        self.view = Some(built.map(|(model, workdir)| {
+        self.view = Some(built.map(|(snapshot, model, workdir)| {
             self.workdir = workdir;
-            self.build_view(model, theme)
+            let view = self.build_view(&snapshot, model, theme);
+            self.snapshot = Some(snapshot);
+            view
         }));
         self.adopted = true;
     }
 
-    fn build_view(&mut self, model: Model, theme: &Theme) -> FilesMode {
+    fn build_view(&mut self, snapshot: &Snapshot, model: Model, theme: &Theme) -> FilesMode {
         let mut view = FilesMode::new(model, Patches::default(), None, theme, self.diff_width);
-        view.label = self.snapshot.label();
+        view.label = snapshot.label();
         view.read_only = true;
         view.attach_servers(self.servers.clone());
-        view.show_snapshot(self.snapshot.root(), self.snapshot.commits().to_vec());
+        view.show_snapshot(snapshot.root(), snapshot.commits().to_vec());
+        if let Snapshot::PullRequest { info, .. } = snapshot {
+            view.show_pull_request(info.clone());
+        }
         view.attach_review_marks(self.review_marks.clone());
         if let Some(review) = self.review.take() {
             view.review = review;
@@ -265,17 +331,50 @@ impl SnapshotPanel {
     ) {
         let text = match &self.view {
             Some(Err(err)) => err.clone(),
+            _ if self.early.is_some() => "Loading files…".to_string(),
             _ => "Loading…".to_string(),
         };
         let body = pane::draw(frame, area, pane::Chrome::new(title, focused), theme);
         let muted = Style::default().fg(rgb_to_color(theme.muted));
         frame.render_widget(Paragraph::new(text).style(muted), body);
     }
+
+    /// The main view while the build runs: the pull request's header as
+    /// the root row will show it, or `Loading…` before it comes.
+    fn draw_early(&self, frame: &mut Frame<'_>, area: Rect, focused: bool, theme: &Theme) -> bool {
+        let (None | Some(Ok(_)), Some(info)) = (&self.view, &self.early) else {
+            return false;
+        };
+        let title = panel_title("Diff");
+        let body = pane::draw(frame, area, pane::Chrome::new(title, focused), theme);
+        let width = diff_scrollbar::body_area(area).width as usize;
+        let lines = super::pr_header::lines(info, width, theme);
+        frame.render_widget(Paragraph::new(lines), body);
+        true
+    }
+
+    /// Take the pull request's description if it came. Never blocks.
+    fn poll_early(&mut self) -> bool {
+        let Some(receiver) = &self.early_receiver else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok(info) => {
+                self.early = Some(info);
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.early_receiver = None;
+                false
+            }
+        }
+    }
 }
 
 impl Panel for SnapshotPanel {
     fn label(&self) -> String {
-        self.snapshot.label()
+        self.label.clone()
     }
 
     fn draw_side(
@@ -307,6 +406,10 @@ impl Panel for SnapshotPanel {
         match self.view() {
             Some(view) => view.draw_main(frame, area, focused, theme, budget),
             None => {
+                self.poll_early();
+                if self.draw_early(frame, area, focused, theme) {
+                    return;
+                }
                 let title = panel_title("Diff");
                 self.draw_message(frame, area, title, focused, theme);
             }
@@ -363,10 +466,11 @@ impl Panel for SnapshotPanel {
     /// half of one frame.
     fn background(&mut self, active: bool) -> BackgroundWork {
         if self.view.is_none() {
+            let early = self.poll_early();
             let announced = self.built.is_some();
             let ready = self.poll();
             return BackgroundWork {
-                changed: ready && !announced,
+                changed: (ready && !announced) || early,
                 pending: !ready,
             };
         }

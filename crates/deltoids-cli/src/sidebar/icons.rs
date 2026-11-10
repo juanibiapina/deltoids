@@ -49,6 +49,10 @@ pub(super) const COMMIT_GLYPH: &str = "\u{f417}";
 /// Git branch glyph, before the root row of a branch under review.
 pub(super) const BRANCH_GLYPH: &str = "\u{e725}";
 
+/// Git pull request glyph (`nf-oct-git_pull_request`), before the root
+/// row of a pull request under review.
+pub(super) const PULL_REQUEST_GLYPH: &str = "\u{f407}";
+
 /// The nerd-font symlink glyph used by the symlink change view.
 const SYMLINK_GLYPH: &str = "\u{f481}";
 

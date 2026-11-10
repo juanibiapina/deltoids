@@ -1,7 +1,7 @@
 ---
 layout: "../../../../layouts/DocsLayout.astro"
 title: "GitHub CLI"
-description: "Use deltoids as the pager for gh pr diff and other gh commands."
+description: "Review GitHub pull requests in the deltoids TUI, and use deltoids as the pager for gh."
 ---
 
 import Note from "../../../../components/docs/Note.astro";
@@ -26,3 +26,32 @@ gh config set pager 'deltoids | less -R'
 
 `gh` uses this pager for every command that pages, so reviewing a pull
 request diff picks up scope expansion without any per-command flag.
+
+## Review a pull request
+
+```bash
+deltoids pr owner/repo#123
+deltoids pr https://github.com/owner/repo/pull/123
+```
+
+This opens the pull request in the TUI as a read-only review. The top
+row shows its title, author, branches, link, and description, then its
+commits. Below it, the file tree leads to the diff from where the pull
+request branched off to its head, as GitHub's "Files changed" tab shows
+it. Comments and
+review guidance work as in a commit review.
+
+deltoids asks GitHub about the pull request through `gh`, so `gh` must
+be installed and logged in (`gh auth login`).
+
+Run it inside a clone of the repository, and deltoids reads the commits
+from that clone. It fetches the ones the clone lacks, and it changes no
+branch, ref, or file. Anywhere else, it fetches only the two commits and
+the files the diff needs into a cache under `~/.cache/deltoids`.
+
+## From another program
+
+A TUI or a script can open a review and get the terminal back
+afterwards. Run `deltoids pr <url>` in the foreground on the same
+terminal, with the repository's clone as the working directory when you
+know one. deltoids exits with status 0 when the user quits with `q`.

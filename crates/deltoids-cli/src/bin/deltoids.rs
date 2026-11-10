@@ -4,6 +4,7 @@
 //!
 //! - `pager`     ANSI diff filter for `less` / `core.pager`
 //! - `tui`       scrolling TUI over the working-tree diff
+//! - `pr`        TUI review of one GitHub pull request
 //!
 //! Default (no subcommand): if stdin is a pipe, run `pager` (so
 //! `git config core.pager 'deltoids | less -R'` keeps working). On a
@@ -14,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use deltoids_cli::cli::{pager, tui};
+use deltoids_cli::cli::{pager, pr, tui};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -42,6 +43,8 @@ enum Command {
     Pager(pager::Args),
     /// Scrolling TUI over the working-tree diff.
     Tui(tui::Args),
+    /// Review a GitHub pull request in the TUI.
+    Pr(pr::Args),
 }
 
 fn main() -> ExitCode {
@@ -49,6 +52,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::Pager(args)) => pager::run(args),
         Some(Command::Tui(args)) => tui::run(args),
+        Some(Command::Pr(args)) => pr::run(args),
         None => {
             // Smart default: a piped diff feeds the pager (preserving
             // `core.pager`); a TTY opens the unified TUI.

@@ -71,6 +71,12 @@ pub enum Root {
         name: String,
         commits: usize,
     },
+    /// The panel title names the pull request, so the row shows its
+    /// number and title.
+    PullRequest {
+        number: u64,
+        title: String,
+    },
 }
 
 /// Aggregate statistics about the resolved file set, summarised for

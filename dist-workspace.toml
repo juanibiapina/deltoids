@@ -26,3 +26,7 @@ unix-archive = ".tar.gz"
 publish-jobs = ["homebrew"]
 # Homebrew tap
 tap = "juanibiapina/homebrew-taps"
+
+[dist.github-custom-runners]
+# GitHub no longer serves the macos-14 arm64 runner that dist picks by default
+aarch64-apple-darwin = "macos-15"

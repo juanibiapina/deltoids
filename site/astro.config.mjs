@@ -19,4 +19,8 @@ export default defineConfig({
     inlineStylesheets: "always",
   },
   prefetch: false,
+  redirects: {
+    "/docs/integrations/pi/": "/docs/",
+    "/docs/integrations/claude-code/": "/docs/",
+  },
 });

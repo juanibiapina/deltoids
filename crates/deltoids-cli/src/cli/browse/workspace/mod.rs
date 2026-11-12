@@ -110,7 +110,9 @@ impl Workspace {
             let Some(dir) = changes.repo_dir() else {
                 return;
             };
-            let review = SnapshotPanel::review(dir, snapshot).with_servers(changes.servers());
+            let review = SnapshotPanel::review(dir, snapshot)
+                .with_servers(changes.servers())
+                .with_review_marks(changes.review_marks());
             self.review = Some(review);
         }
         self.focus(false);
@@ -129,6 +131,7 @@ impl Workspace {
 /// The branches of the working tree's repository; `None` outside one.
 fn open_branches(files: &FilesMode, but: Option<OsString>) -> Option<History> {
     let servers = files.servers();
+    let marks = files.review_marks();
     files
         .repo_dir()
         .and_then(|dir| Vcs::discover_at(&dir))
@@ -136,7 +139,11 @@ fn open_branches(files: &FilesMode, but: Option<OsString>) -> Option<History> {
             Some(program) => vcs.with_but(program),
             None => vcs,
         })
-        .map(|vcs| History::branches(vcs).with_servers(servers))
+        .map(|vcs| {
+            History::branches(vcs)
+                .with_servers(servers)
+                .with_review_marks(marks)
+        })
 }
 
 impl Mode for Workspace {

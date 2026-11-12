@@ -92,6 +92,20 @@ In a GitButler workspace, the Status panel shows all uncommitted changes
 in one column, and discard goes through `but`. Run `but undo` to get
 discarded changes back.
 
+## Mark files reviewed
+
+Press `v` on a file once you have read it. The file leaves the Status
+panel and the diff, and the panel's title row counts the hidden files,
+such as `✓ 2`. A mark lasts until the file changes: the next edit brings
+the file back unmarked. Staging keeps the mark. Marks last while the TUI
+is open and follow the file into any commit or branch review that shows
+the same change.
+
+| Key | Action |
+| --- | --- |
+| `v` | Mark or unmark the selected file, every file in the selected directory, or the file under the diff cursor |
+| `V` | Show or hide the reviewed files. Shown, they carry a `✓` |
+
 ## Hunk context
 
 Each hunk grows to show its enclosing function, class, or section, so you

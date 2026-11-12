@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::icons::{BRANCH_GLYPH, COMMIT_GLYPH, IconMode, dir_icon, file_icon};
+use super::icons::{BRANCH_GLYPH, COMMIT_GLYPH, IconMode, PULL_REQUEST_GLYPH, dir_icon, file_icon};
 use super::status::{ChangeKind, FileMode, FileStatus, ModeChange, StageStatus};
 use super::tree::Row;
 use super::{FileRowMeta, Root, RowNote};
@@ -99,8 +99,8 @@ pub(super) fn render_row(
     Line::from(spans)
 }
 
-/// A commit's subject, or `upper · 2 commits` for a branch, after the
-/// git glyph when icons are on.
+/// A commit's subject, `upper · 2 commits` for a branch, or `#12 title`
+/// for a pull request, after the git glyph when icons are on.
 fn root_row_spans(
     spans: &mut Vec<Span<'static>>,
     root: &Root,
@@ -127,6 +127,12 @@ fn root_row_spans(
                 ),
             )
         }
+        Root::PullRequest { number, title } => (
+            PULL_REQUEST_GLYPH,
+            Some(format!("#{number}")),
+            theme.status_added,
+            Span::styled(title.clone(), base),
+        ),
     };
     let accent = base.fg(rgb_to_color(color));
     if icons == IconMode::On {
@@ -254,6 +260,11 @@ fn file_row_spans(
     spans.push(Span::styled(indent(depth), base));
 
     match meta.stage {
+        _ if meta.reviewed => spans.push(Span::styled(
+            "\u{2713} ".to_string(),
+            base.fg(rgb_to_color(theme.status_added))
+                .add_modifier(Modifier::BOLD),
+        )),
         // One letter for what changed; its colour says how much of it is
         // staged.
         Some(stage) => {
@@ -290,6 +301,7 @@ fn file_row_spans(
         None => name.to_string(),
     };
     let name_style = match meta.note {
+        _ if meta.reviewed => base.fg(rgb_to_color(theme.muted)),
         Some(note) if note.low => base.fg(rgb_to_color(theme.muted)),
         _ => base,
     };

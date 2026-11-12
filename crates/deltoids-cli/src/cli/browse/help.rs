@@ -56,6 +56,8 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
             ("s", "switch staged / unstaged diff"),
             ("o", "switch diff / definitions, or summary / diffs"),
             ("f", "hide / show low-value files and hunks"),
+            ("v", "mark / unmark as reviewed"),
+            ("V", "hide / show reviewed files"),
         ],
     },
     HelpSection {

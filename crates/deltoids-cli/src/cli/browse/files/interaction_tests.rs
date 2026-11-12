@@ -1309,3 +1309,155 @@ fn custom_commands_can_take_shift_f() {
     assert!(Mode::reserves_key(&mode, KeyCode::Char('f')));
     assert!(!Mode::reserves_key(&mode, KeyCode::Char('F')));
 }
+
+fn shown_paths(mode: &FilesMode) -> Vec<String> {
+    mode.sidebar
+        .display_order()
+        .iter()
+        .map(|&index| display_path(&mode.model.files[index].file).to_string())
+        .collect()
+}
+
+fn side_title(mode: &mut FilesMode) -> String {
+    screen(mode, DrawBudget::Full)[0].chars().take(30).collect()
+}
+
+#[test]
+fn v_hides_the_selected_file_and_the_title_counts_it() {
+    let (dir, _) = fixture(&["a.txt", "b.txt"]);
+    for path in ["a.txt", "b.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    assert!(!side_title(&mut mode).contains("✓"));
+
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+
+    assert_eq!(shown_paths(&mode), ["b.txt"]);
+    assert_eq!(mode.selected_file(), Some("b.txt"));
+    assert!(
+        side_title(&mut mode).contains("✓ 1"),
+        "{}",
+        side_title(&mut mode)
+    );
+}
+
+#[test]
+fn v_on_a_directory_marks_its_files_and_v_on_the_rest_unmarks_them() {
+    let (dir, _) = fixture(&["src/a.txt", "src/b.txt", "z.txt"]);
+    for path in ["src/a.txt", "src/b.txt", "z.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    assert!(mode.sidebar.select_directory_path("src/", 20));
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+    assert_eq!(shown_paths(&mode), ["z.txt"]);
+
+    Mode::handle_key(&mut mode, KeyCode::Char('V'), 20);
+    assert_eq!(shown_paths(&mode), ["src/a.txt", "src/b.txt", "z.txt"]);
+    assert!(mode.sidebar.select_directory_path("src/", 20));
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('V'), 20);
+    assert_eq!(shown_paths(&mode), ["src/a.txt", "src/b.txt", "z.txt"]);
+}
+
+#[test]
+fn shift_v_shows_reviewed_files_with_a_check() {
+    let (dir, _) = fixture(&["a.txt", "b.txt"]);
+    for path in ["a.txt", "b.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('V'), 20);
+
+    assert_eq!(shown_paths(&mode), ["a.txt", "b.txt"]);
+    let rows = screen(&mut mode, DrawBudget::Full);
+    let row = |name: &str| {
+        rows.iter()
+            .map(|row| row.chars().take(30).collect::<String>())
+            .find(|row| row.contains(name))
+            .unwrap()
+    };
+    assert!(row("a.txt").contains('✓'), "{}", row("a.txt"));
+    assert!(!row("b.txt").contains('✓'), "{}", row("b.txt"));
+    assert!(!side_title(&mut mode).contains('✓'), "nothing is hidden");
+
+    Mode::handle_key(&mut mode, KeyCode::Char('V'), 20);
+    assert_eq!(shown_paths(&mode), ["b.txt"]);
+}
+
+#[test]
+fn staging_keeps_a_reviewed_file_hidden_and_an_edit_brings_it_back() {
+    let (dir, _) = fixture(&["a.txt", "b.txt"]);
+    for path in ["a.txt", "b.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+    let viewport = Viewport {
+        height: 20,
+        diff_width: 80,
+    };
+
+    TestRepo::open(dir.path()).git(&["add", "a.txt"]);
+    mode.reload(viewport, &theme()).unwrap();
+    assert!(mode.model.stages["a.txt"].is_staged());
+    assert_eq!(shown_paths(&mode), ["b.txt"]);
+
+    fs::write(dir.path().join("a.txt"), "edited again\n").unwrap();
+    mode.reload(viewport, &theme()).unwrap();
+    assert_eq!(shown_paths(&mode), ["a.txt", "b.txt"]);
+    Mode::handle_key(&mut mode, KeyCode::Char('V'), 20);
+    let rows = screen(&mut mode, DrawBudget::Full).join("\n");
+    assert!(!rows.contains('✓'), "the mark is gone: {rows}");
+}
+
+#[test]
+fn reviewing_every_file_says_so_instead_of_no_changes() {
+    let (dir, _) = fixture(&["a.txt"]);
+    fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+
+    assert_eq!(mode.section_note(), Some("(all reviewed)"));
+    assert!(!mode.is_clean());
+    let rows = screen(&mut mode, DrawBudget::Full).join("\n");
+    assert!(rows.contains("All files reviewed."), "{rows}");
+    assert!(!rows.contains("No local changes."), "{rows}");
+}
+
+#[test]
+fn y_copies_a_comment_on_a_reviewed_file_as_current() {
+    let (dir, _) = fixture(&["a.txt", "b.txt"]);
+    for path in ["a.txt", "b.txt"] {
+        fs::write(dir.path().join(path), "edited\n").unwrap();
+    }
+    let mut mode = live(dir.path());
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
+    settle(&mut mode);
+    Mode::handle_key(&mut mode, KeyCode::Char('j'), 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('c'), 20);
+    for c in "looks fine".chars() {
+        Mode::handle_key(&mut mode, KeyCode::Char(c), 20);
+    }
+    Mode::handle_key(&mut mode, KeyCode::Enter, 20);
+    Mode::handle_key(&mut mode, KeyCode::Char('v'), 20);
+    assert_eq!(shown_paths(&mode), ["b.txt"]);
+
+    let AppCommand::CopyToClipboard(text) = Mode::handle_key(&mut mode, KeyCode::Char('y'), 20)
+    else {
+        panic!("y copies");
+    };
+    assert!(text.contains("a.txt:1\n"), "{text}");
+    assert!(text.contains("looks fine"), "{text}");
+    assert!(!text.contains("(outdated)"), "{text}");
+}
+
+#[test]
+fn custom_commands_cannot_take_v_or_shift_v() {
+    let (dir, _) = fixture(&["a.txt"]);
+    let mode = live(dir.path());
+    assert!(Mode::reserves_key(&mode, KeyCode::Char('v')));
+    assert!(Mode::reserves_key(&mode, KeyCode::Char('V')));
+}

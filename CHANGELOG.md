@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `deltoids pr`, which opens a GitHub pull request for review in the TUI, with its title and description above its commits and changed files. It reads the commits from your clone when you run it in one, and fetches only what the diff needs otherwise. Other programs can run it in the foreground and get the terminal back when you quit.
+- TUI: press `v` to mark a file as reviewed and hide it until it changes again, and `V` to show reviewed files.
+
 ### Changed
 
 - TUI: `f` now hides low-value files and collapses low-value hunks together. `F` no longer has a built-in action, so custom keys can use it.

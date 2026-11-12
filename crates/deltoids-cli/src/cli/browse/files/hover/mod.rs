@@ -9,6 +9,16 @@
 
 mod markdown;
 
+/// `markdown` as lines at most `width` columns wide, as a hover shows it.
+/// Code blocks without a language stay plain.
+pub(super) fn markdown_lines(markdown: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let code = markdown::Code {
+        language: "",
+        highlight: None,
+    };
+    markdown::render(markdown, &code, width, theme)
+}
+
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

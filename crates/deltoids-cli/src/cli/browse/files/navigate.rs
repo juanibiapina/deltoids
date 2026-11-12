@@ -141,6 +141,7 @@ struct Origin {
     selection: Selection,
     column: Column,
     hide_low: bool,
+    show_reviewed: bool,
 }
 
 enum Selection {
@@ -659,8 +660,9 @@ pub(super) fn back(state: &mut FilesMode) {
     };
     let sidebar_height = sidebar_height(state);
     drop_unreachable_visits(state, &origin, sidebar_height);
-    if state.hide_low != origin.hide_low {
+    if state.hide_low != origin.hide_low || state.reviewed.shown() != origin.show_reviewed {
         state.hide_low = origin.hide_low;
+        state.reviewed.set_shown(origin.show_reviewed);
         state.rebuild_sidebar(sidebar_height);
     }
     let moved = match &origin.selection {
@@ -908,7 +910,12 @@ fn jump(state: &mut FilesMode, landing: Landing, target: CommentAnchor) {
     remember(state);
     let sidebar_height = sidebar_height(state);
     if state.hidden().get(landing.index).copied().unwrap_or(false) {
-        state.hide_low = false;
+        if state.reviewed.hidden(&state.model).get(landing.index) == Some(&true) {
+            state.reviewed.set_shown(true);
+        }
+        if state.hidden().get(landing.index) == Some(&true) {
+            state.hide_low = false;
+        }
         state.rebuild_sidebar(sidebar_height);
     }
     let shown = state
@@ -985,6 +992,7 @@ fn remember(state: &mut FilesMode) {
         selection,
         column,
         hide_low: state.hide_low,
+        show_reviewed: state.reviewed.shown(),
     };
     if state.nav.back.len() == BACK_LIMIT {
         state.nav.back.remove(0);

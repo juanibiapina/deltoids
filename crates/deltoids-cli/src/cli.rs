@@ -5,4 +5,5 @@
 
 mod browse;
 pub mod pager;
+pub mod pr;
 pub mod tui;

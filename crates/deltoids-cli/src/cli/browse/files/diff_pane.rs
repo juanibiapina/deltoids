@@ -40,8 +40,10 @@ use crate::sidebar::{
 
 use super::model::{Column, FileBody, Model};
 use super::overview;
+use super::pr_header;
 use super::render::{BlockKind, DiffCache};
 use super::stage_panes::{PaneSpec, PaneTitle};
+use crate::pull_request::PullRequestInfo;
 
 pub(super) const SCROLL_STEP_SMALL: usize = 1;
 pub(super) const SCROLL_STEP_LARGE: usize = 3;
@@ -54,6 +56,41 @@ pub(super) const SCROLL_STEP_LARGE: usize = 3;
 pub(super) struct CacheEpoch {
     pub(super) width: usize,
     pub(super) syntax_theme: &'static str,
+}
+
+/// What tops a snapshot's window above its files: the pull request it
+/// reviews, then its commits' headers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Header {
+    pub(super) pull_request: Option<PullRequestInfo>,
+    /// Newest first.
+    pub(super) commits: Vec<git::Commit>,
+}
+
+impl Header {
+    fn is_empty(&self) -> bool {
+        self.pull_request.is_none() && self.commits.is_empty()
+    }
+
+    /// What tells two headers apart in a window's key: the pull request's
+    /// page and the commits' ids.
+    fn key(&self) -> Vec<String> {
+        let pull_request = self.pull_request.iter().map(|info| info.url.clone());
+        let commits = self.commits.iter().map(|commit| commit.id.clone());
+        pull_request.chain(commits).collect()
+    }
+
+    fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let pull_request = self
+            .pull_request
+            .iter()
+            .flat_map(|info| pr_header::lines(info, width, theme));
+        let commits = self
+            .commits
+            .iter()
+            .flat_map(|commit| commit_header(commit, width, theme));
+        pull_request.chain(commits).collect()
+    }
 }
 
 /// A commit's header as `git show` prints it above the diff, ending in a
@@ -726,8 +763,10 @@ pub(super) struct DiffPane {
     window_complete: bool,
     /// What the no-files render shows: the clean state or a build error.
     empty_state: EmptyPane,
-    /// The commits whose `git show` headers top the window, in order.
-    header: Vec<git::Commit>,
+    /// The pane is empty because every file is hidden as reviewed.
+    all_reviewed: bool,
+    /// The pull request and the commits whose headers top the window.
+    header: Header,
     /// Low-value hunks are collapsed; the title says so.
     hide_low: bool,
     /// The title naming the current file, set before each render; the
@@ -758,7 +797,8 @@ impl DiffPane {
             landing: true,
             window_complete: false,
             empty_state: EmptyPane::NoChanges,
-            header: Vec::new(),
+            all_reviewed: false,
+            header: Header::default(),
             hide_low: false,
             heading: None,
             badge: Vec::new(),
@@ -821,12 +861,12 @@ impl DiffPane {
         cursor_file.or_else(|| self.top_file().map(|(file, _)| file))
     }
 
-    /// Top the window with each of `commits`' headers, scrolling with the
-    /// diff, or drop the header with none. A header shows even when the
-    /// selection has no files.
-    pub(super) fn set_header(&mut self, commits: &[git::Commit]) {
-        if self.header != commits {
-            self.header = commits.to_vec();
+    /// Top the window with `header`, scrolling with the diff, or drop the
+    /// header with an empty one. A header shows even when the selection
+    /// has no files.
+    pub(super) fn set_header(&mut self, header: &Header) {
+        if &self.header != header {
+            self.header = header.clone();
             self.window_key = None;
             self.cursor.scroll = 0;
         }
@@ -852,6 +892,11 @@ impl DiffPane {
     /// Whether the no-files render shows a build error.
     pub(super) fn shows_error(&self) -> bool {
         matches!(self.empty_state, EmptyPane::Error(_))
+    }
+
+    /// Whether the no-files render says every file is hidden as reviewed.
+    pub(super) fn set_all_reviewed(&mut self, all_reviewed: bool) {
+        self.all_reviewed = all_reviewed;
     }
 
     /// Reset the no-files render to the clean "No local changes." state
@@ -893,7 +938,7 @@ impl DiffPane {
             files: display_range
                 .clone()
                 .map(|range| spec.order[range].to_vec()),
-            header: self.header.iter().map(|commit| commit.id.clone()).collect(),
+            header: self.header.key(),
             epoch: CacheEpoch {
                 width,
                 syntax_theme: deltoids::theme_name_key(&theme.syntax_theme_name),
@@ -1031,7 +1076,7 @@ impl DiffPane {
         };
         let key = WindowKey {
             files: Some(selection.files.to_vec()),
-            header: self.header.iter().map(|commit| commit.id.clone()).collect(),
+            header: self.header.key(),
             epoch,
             blocks: cache.revision,
             comments: selection.comments.revision(),
@@ -1194,11 +1239,11 @@ impl DiffPane {
         }
     }
 
-    /// The commit header's rows, which the cursor skips; none without one.
+    /// The header's rows, which the cursor skips; none without one.
     fn header_rows(&self, width: usize, theme: &Theme) -> Vec<DiffRow> {
         self.header
-            .iter()
-            .flat_map(|commit| commit_header(commit, width, theme))
+            .lines(width, theme)
+            .into_iter()
             .map(DiffRow::plain)
             .collect()
     }
@@ -1469,6 +1514,7 @@ impl DiffPane {
                 EmptyPane::NoChanges | EmptyPane::Loading => {
                     let text = match self.empty_state {
                         EmptyPane::Loading => "Loading\u{2026}",
+                        _ if self.all_reviewed => "All files reviewed.",
                         _ => "No local changes.",
                     };
                     let msg = Paragraph::new(text)

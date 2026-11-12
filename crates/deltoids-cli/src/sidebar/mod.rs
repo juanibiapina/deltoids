@@ -71,6 +71,12 @@ pub enum Root {
         name: String,
         commits: usize,
     },
+    /// The panel title names the pull request, so the row shows its
+    /// number and title.
+    PullRequest {
+        number: u64,
+        title: String,
+    },
 }
 
 /// Aggregate statistics about the resolved file set, summarised for
@@ -158,6 +164,8 @@ pub(super) struct FileRowMeta {
     pub(super) note: Option<RowNote>,
     /// An unchanged file a jump opened, not a change.
     pub(super) visited: bool,
+    /// A change the reviewer marked as reviewed.
+    pub(super) reviewed: bool,
 }
 
 impl FileRowMeta {
@@ -171,6 +179,7 @@ impl FileRowMeta {
             extra: FileMetadata::default(),
             note: None,
             visited: false,
+            reviewed: false,
         }
     }
 }
@@ -281,6 +290,7 @@ impl Sidebar {
                         extra: file_metadata(f.file),
                         note: None,
                         visited: false,
+                        reviewed: false,
                     }
                 }
             })
@@ -351,6 +361,18 @@ impl Sidebar {
             }
         }
         self.totals.files = self.file_count() - count;
+        self.render_all();
+    }
+
+    /// Mark the files reviewed (`reviewed[file_index]`): their rows show
+    /// a check in place of the status letter.
+    pub fn set_reviewed(&mut self, reviewed: &[bool]) {
+        for (index, row) in self.rows.iter().enumerate() {
+            if let Row::File { file_index, .. } = row {
+                self.file_meta[index].reviewed =
+                    reviewed.get(*file_index).copied().unwrap_or(false);
+            }
+        }
         self.render_all();
     }
 

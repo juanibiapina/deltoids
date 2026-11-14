@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - TUI: the diff pane's title row no longer shows `? help`. Press `?` to open the help popup.
 
+### Fixed
+
+- TUI: on Linux, the file watcher no longer watches gitignored top-level directories such as `target/` or `.direnv/`, and no longer follows symlinks out of the repository. Repositories with a direnv Nix environment no longer make it watch the Nix store.
+- TUI: edits to tracked files inside ignored directories now refresh the diff.
+
 ## [0.20.0] - 2026-11-10
 
 ### Added

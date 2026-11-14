@@ -157,47 +157,31 @@ impl Repo {
         hasher.finish()
     }
 
-    /// Whether `path` is gitignored. Accepts an absolute path inside the
-    /// working tree or a workdir-relative path.
-    ///
-    /// Gitignored files never appear in [`Repo::working_tree_diff`], so a
-    /// change to one must not trigger a reload. A path inside an ignored
-    /// directory counts as ignored. Respects nested `.gitignore`,
-    /// `.git/info/exclude`, and global excludes. Returns `false` on any
-    /// error (fail open: never miss a real change).
+    /// Whether `path` is gitignored, as [`Ignores::is_ignored`] decides.
+    /// Loads the index and exclude files on every call; use
+    /// [`Repo::ignores`] to check many paths.
     pub fn is_ignored(&self, path: &Path) -> bool {
-        let Some(workdir) = self.repo.workdir() else {
-            return false;
-        };
-        let Some(rel) = relative_to(workdir, path) else {
-            return false;
-        };
-        let Ok(index) = self.repo.index_or_empty() else {
-            return false;
-        };
-        let Ok(mut excludes) = self.repo.excludes(
-            &index,
-            None,
-            gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
-        ) else {
-            return false;
-        };
-        let mut ancestors: Vec<&Path> = rel
-            .ancestors()
-            .filter(|p| !p.as_os_str().is_empty())
-            .collect();
-        ancestors.reverse();
-        let leaf = ancestors.len().saturating_sub(1);
-        ancestors.iter().enumerate().any(|(depth, ancestor)| {
-            let is_dir = depth < leaf || workdir.join(ancestor).is_dir();
-            let mode = if is_dir {
-                gix::index::entry::Mode::DIR
-            } else {
-                gix::index::entry::Mode::FILE
-            };
-            excludes
-                .at_path(ancestor, Some(mode))
-                .is_ok_and(|platform| platform.is_excluded())
+        self.ignores()
+            .is_some_and(|mut ignores| ignores.is_ignored(path))
+    }
+
+    /// The ignore rules and index as they are now, for checking many
+    /// paths. `None` for a bare repository or when either fails to load.
+    pub fn ignores(&self) -> Option<Ignores<'_>> {
+        let workdir = self.repo.workdir()?;
+        let index = self.repo.index_or_empty().ok()?;
+        let excludes = self
+            .repo
+            .excludes(
+                &index,
+                None,
+                gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+            )
+            .ok()?;
+        Some(Ignores {
+            workdir,
+            index,
+            excludes,
         })
     }
 
@@ -307,6 +291,68 @@ impl Repo {
     /// and an add.
     pub fn working_tree_status(&self) -> Result<Vec<FileStageStatus>, String> {
         snapshot::stages(&self.repo).map_err(|e| format!("failed to read status: {e}"))
+    }
+}
+
+/// A snapshot of a repository's ignore rules and index from
+/// [`Repo::ignores`]. Edits to either after the snapshot are not seen.
+pub struct Ignores<'repo> {
+    workdir: &'repo Path,
+    index: gix::worktree::Index,
+    excludes: gix::AttributeStack<'repo>,
+}
+
+impl Ignores<'_> {
+    /// Whether `path` is gitignored. Accepts an absolute path inside the
+    /// working tree or a workdir-relative path.
+    ///
+    /// Gitignored files never appear in [`Repo::working_tree_diff`], so a
+    /// change to one must not trigger a reload. A path is ignored when it
+    /// or a directory above it matches `.gitignore`,
+    /// `.git/info/exclude`, or the global excludes, and the index tracks
+    /// nothing at it: no file at a file path, and no file below a
+    /// directory path. Returns `false` on any error (fail open: never
+    /// miss a real change).
+    pub fn is_ignored(&mut self, path: &Path) -> bool {
+        let Some(rel) = relative_to(self.workdir, path) else {
+            return false;
+        };
+        let is_dir = self.workdir.join(&rel).is_dir();
+        !self.is_tracked(&rel, is_dir) && self.is_excluded(&rel, is_dir)
+    }
+
+    /// Whether `rel` or a directory above it matches an exclude pattern.
+    fn is_excluded(&mut self, rel: &Path, is_dir: bool) -> bool {
+        let mut ancestors: Vec<&Path> = rel
+            .ancestors()
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        ancestors.reverse();
+        let leaf = ancestors.len().saturating_sub(1);
+        ancestors.iter().enumerate().any(|(depth, ancestor)| {
+            let mode = if depth < leaf || is_dir {
+                gix::index::entry::Mode::DIR
+            } else {
+                gix::index::entry::Mode::FILE
+            };
+            self.excludes
+                .at_path(ancestor, Some(mode))
+                .is_ok_and(|platform| platform.is_excluded())
+        })
+    }
+
+    /// Whether the index has the file `rel`, or a file below the
+    /// directory `rel`.
+    fn is_tracked(&self, rel: &Path, is_dir: bool) -> bool {
+        let Ok(path) = gix::path::into_bstr(rel) else {
+            return false;
+        };
+        let path = gix::path::to_unix_separators_on_windows(path);
+        if is_dir {
+            self.index.path_is_directory(path.as_ref())
+        } else {
+            self.index.entry_by_path(path.as_ref()).is_some()
+        }
     }
 }
 
@@ -996,6 +1042,27 @@ mod tests {
         assert!(wrapper.is_ignored(Path::new("node_modules/x.js")));
         assert!(!wrapper.is_ignored(&dir.path().join("src/main.rs")));
         assert!(!wrapper.is_ignored(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn tracked_paths_are_never_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        fs::write(dir.path().join(".gitignore"), "vendor/\n*.log\n").unwrap();
+        fs::create_dir(dir.path().join("vendor")).unwrap();
+        fs::write(dir.path().join("vendor/lib.rs"), "lib").unwrap();
+        fs::write(dir.path().join("vendor/extra.rs"), "extra").unwrap();
+        fs::write(dir.path().join("kept.log"), "log").unwrap();
+        fs::write(dir.path().join("other.log"), "log").unwrap();
+        repo.git(&["add", "-f", ".gitignore", "vendor/lib.rs", "kept.log"]);
+        commit_index(&repo, "init");
+
+        let wrapper = open(dir.path());
+        assert!(!wrapper.is_ignored(&dir.path().join("vendor/lib.rs")));
+        assert!(!wrapper.is_ignored(&dir.path().join("vendor")));
+        assert!(!wrapper.is_ignored(&dir.path().join("kept.log")));
+        assert!(wrapper.is_ignored(&dir.path().join("vendor/extra.rs")));
+        assert!(wrapper.is_ignored(&dir.path().join("other.log")));
     }
 
     #[test]

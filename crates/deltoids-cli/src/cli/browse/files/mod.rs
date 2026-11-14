@@ -37,9 +37,7 @@
 //! - [`sidebar_pane`]: the sidebar's build, keys, render, footer.
 //! - [`reload`]: the working-tree watcher and in-place rebuild.
 
-use crate::cli::browse::watch::{
-    ChangeReceiver, ChangeWatcher, path_warrants_reload, spawn_workdir_watcher,
-};
+use crate::cli::browse::watch::{ChangeReceiver, ChangeWatcher, path_warrants_reload};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -264,7 +262,7 @@ impl FilesMode {
             .map(|root| (crate::lsp::Lsp::discover(root), root.to_path_buf()));
         // Watch before the snapshot so edits during the build stay pending.
         let files = servers.as_ref().map(|(lsp, _)| lsp.file_events());
-        let watcher = spawn_workdir_watcher(vcs.repo(), files).ok().flatten();
+        let watcher = ChangeWatcher::start(vcs.repo(), files).ok().flatten();
         let mut mode = match Self::try_model(&vcs) {
             Ok((input, model)) => Self::new(model, input, Some(vcs), theme, initial_diff_width),
             // A repo-backed build lost a race (a size-check or content
@@ -1716,7 +1714,7 @@ impl Mode for FilesMode {
             .is_some_and(ChangeWatcher::is_healthy)
         {
             let files = self.nav.file_events();
-            self._watcher = spawn_workdir_watcher(repo, files.clone())?;
+            self._watcher = ChangeWatcher::start(repo, files.clone())?;
             if let Some(watcher) = &self._watcher {
                 watcher.receiver().request_rescan();
             }

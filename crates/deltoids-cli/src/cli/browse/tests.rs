@@ -580,7 +580,9 @@ fn idle_mode_does_not_reload_and_rescan_work_is_consumed_once() {
     assert_eq!(files.borrow().reloads, 0);
 
     let dir = tempfile::tempdir().unwrap();
-    let watcher = watch::ChangeWatcher::new(&[dir.path()], None).unwrap();
+    crate::test_git::TestRepo::init(dir.path());
+    let repo = deltoids::git::Repo::discover_at(dir.path()).unwrap();
+    let watcher = watch::ChangeWatcher::start(&repo, None).unwrap().unwrap();
     let receiver = watcher.receiver();
     receiver.request_rescan();
     shell.receiver = Some(receiver);

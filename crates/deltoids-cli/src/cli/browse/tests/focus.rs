@@ -61,7 +61,9 @@ fn hidden_windows_retain_changes_and_refresh_on_return() {
     shell.armed = true;
     shell.take_draw_budget();
     let dir = tempfile::tempdir().unwrap();
-    let watcher = watch::ChangeWatcher::new(&[dir.path()], None).unwrap();
+    crate::test_git::TestRepo::init(dir.path());
+    let repo = deltoids::git::Repo::discover_at(dir.path()).unwrap();
+    let watcher = watch::ChangeWatcher::start(&repo, None).unwrap().unwrap();
     let receiver = watcher.receiver();
     shell.receiver = Some(receiver.clone());
     events(&mut shell, &mut mode, vec![Event::FocusLost]);

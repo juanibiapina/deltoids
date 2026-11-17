@@ -3,10 +3,9 @@
 //!
 //! Custom key commands are user-configured keybindings that run a shell
 //! command against the currently-selected file. They come from the
-//! `[[commands]]` array. Each
-//! command binds a single `key` to a shell `command` template. The
-//! template's `{{filename}}` token expands to the shell-quoted absolute
-//! path of the selected file (see [`expand`]).
+//! `[[commands]]` array. Each command binds a single `key` to a shell
+//! `command` template. The template's `{{filename}}` token expands to the
+//! shell-quoted absolute path of the selected file (see [`expand`]).
 //!
 //! Two run modes (chosen per command by the `subprocess` flag):
 //! - background (default): the shell dispatches the command and keeps
@@ -44,15 +43,6 @@ pub(super) struct ShellConfig {
     pub(super) quit_on_esc: bool,
 }
 
-impl Default for ShellConfig {
-    fn default() -> Self {
-        Self {
-            commands: Vec::new(),
-            quit_on_esc: true,
-        }
-    }
-}
-
 /// The CLI's view of `config.toml`: the `[[commands]]` array and the
 /// `[tui]` section. Other sections (`[theme]`, `[lsp.<name>]`) are
 /// ignored by serde, so this parses the same file the library reads for
@@ -67,21 +57,15 @@ struct CliConfig {
 
 /// The `[tui]` section.
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 struct TuiConfig {
-    #[serde(default = "default_quit_on_esc")]
     quit_on_esc: bool,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
-        Self {
-            quit_on_esc: default_quit_on_esc(),
-        }
+        Self { quit_on_esc: true }
     }
-}
-
-fn default_quit_on_esc() -> bool {
-    true
 }
 
 /// A raw `[[commands]]` table before narrowing `key` to a single char.
@@ -100,12 +84,9 @@ struct RawCommand {
 /// A missing file, unreadable file, or parse error yields the defaults
 /// (silent fallback, matching the theme-loading policy).
 pub(super) fn load_config() -> ShellConfig {
-    let Some(path) = deltoids::config::config_file_path() else {
-        return ShellConfig::default();
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return ShellConfig::default();
-    };
+    let text = deltoids::config::config_file_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
     parse_config(&text)
 }
 
@@ -114,9 +95,7 @@ pub(super) fn load_config() -> ShellConfig {
 /// Pure and unit-testable. TOML parse failure yields the defaults.
 /// Commands whose `key` is not exactly one character are dropped.
 fn parse_config(text: &str) -> ShellConfig {
-    let Ok(config) = toml::from_str::<CliConfig>(text) else {
-        return ShellConfig::default();
-    };
+    let config = toml::from_str::<CliConfig>(text).unwrap_or_default();
     ShellConfig {
         commands: custom_commands(config.commands),
         quit_on_esc: config.tui.quit_on_esc,

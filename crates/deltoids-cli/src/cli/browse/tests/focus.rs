@@ -105,13 +105,8 @@ fn a_late_focus_loss_in_the_input_burst_prevents_eager_reload_and_draw() {
 
 #[test]
 fn a_command_does_not_discard_a_later_focus_loss() {
-    let (_, files) = RecordingMode::new();
-    let mut mode = RecordingMode {
-        rec: files,
-        selected: Some(PathBuf::from("/tmp/selected.txt")),
-        capturing: false,
-        esc_at_top: false,
-    };
+    let (mut mode, _) = RecordingMode::new();
+    mode.selected = Some(PathBuf::from("/tmp/selected.txt"));
     let mut shell = shell();
     shell.commands = vec![custom_command('e', "echo selected", false)];
     let command = shell

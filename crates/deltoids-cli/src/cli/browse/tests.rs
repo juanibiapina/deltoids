@@ -462,13 +462,8 @@ fn custom_command(key: char, command: &str, subprocess: bool) -> CustomCommand {
 
 #[test]
 fn custom_key_with_selected_path_returns_run() {
-    let (_, files_rec) = RecordingMode::new();
-    let mut mode = RecordingMode {
-        rec: files_rec.clone(),
-        selected: Some(PathBuf::from("/tmp/a.txt")),
-        capturing: false,
-        esc_at_top: false,
-    };
+    let (mut mode, files_rec) = RecordingMode::new();
+    mode.selected = Some(PathBuf::from("/tmp/a.txt"));
     let mut s = shell();
     s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
 
@@ -486,13 +481,8 @@ fn custom_key_with_selected_path_returns_run() {
 
 #[test]
 fn custom_key_preserves_subprocess_flag() {
-    let (_, files_rec) = RecordingMode::new();
-    let mut mode = RecordingMode {
-        rec: files_rec,
-        selected: Some(PathBuf::from("/tmp/a.txt")),
-        capturing: false,
-        esc_at_top: false,
-    };
+    let (mut mode, _) = RecordingMode::new();
+    mode.selected = Some(PathBuf::from("/tmp/a.txt"));
     let mut s = shell();
     s.commands = vec![custom_command('E', "nvim {{filename}}", true)];
 
@@ -530,13 +520,8 @@ fn unconfigured_key_routes_to_mode() {
 
 #[test]
 fn global_builtins_beat_colliding_custom_binding() {
-    let (_, files_rec) = RecordingMode::new();
-    let mut mode = RecordingMode {
-        rec: files_rec,
-        selected: Some(PathBuf::from("/tmp/a.txt")),
-        capturing: false,
-        esc_at_top: false,
-    };
+    let (mut mode, _) = RecordingMode::new();
+    mode.selected = Some(PathBuf::from("/tmp/a.txt"));
     let mut s = shell();
     // Bind the same keys as the `q` quit and `>` resize globals.
     s.commands = vec![
@@ -575,13 +560,9 @@ fn apply_events_quit_short_circuits() {
 
 #[test]
 fn capturing_mode_receives_every_key_including_globals() {
-    let (_, files_rec) = RecordingMode::new();
-    let mut mode = RecordingMode {
-        rec: files_rec.clone(),
-        selected: Some(PathBuf::from("/tmp/a.txt")),
-        capturing: true,
-        esc_at_top: false,
-    };
+    let (mut mode, files_rec) = RecordingMode::new();
+    mode.selected = Some(PathBuf::from("/tmp/a.txt"));
+    mode.capturing = true;
     let mut s = shell();
     // A custom binding that would otherwise shadow the mode's own keys.
     s.commands = vec![custom_command('e', "nvim {{filename}}", false)];

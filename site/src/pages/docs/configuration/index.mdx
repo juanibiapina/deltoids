@@ -1,7 +1,7 @@
 ---
 layout: "../../../layouts/DocsLayout.astro"
 title: "Configuration"
-description: "Configure deltoids: config file location, theme, custom commands, and language servers."
+description: "Configure deltoids: config file location, theme, TUI behaviour, custom commands, and language servers."
 ---
 
 import Note from "../../../components/docs/Note.astro";
@@ -34,6 +34,16 @@ session. The picker starts from the theme set here.
 You can also override single colors of the interface, such as diff
 backgrounds, borders, and status letters, with hex values in the same
 `[theme]` section.
+
+## TUI
+
+The `[tui]` section configures `deltoids tui` and `deltoids pr`.
+
+```toml
+[tui]
+# Esc quits once there is nothing left to back out of (default: true).
+quit_on_esc = false
+```
 
 ## Custom commands
 

@@ -38,7 +38,7 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         rows: &[
             ("Tab / Shift+Tab", "jump between changes and branches"),
             ("Enter", "open a file's diff, a branch, or a commit"),
-            ("Esc", "back out / close review"),
+            ("Esc", "back out / close review / quit at the top"),
         ],
     },
     HelpSection {
@@ -485,15 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn help_keys_document_q_as_the_only_quit_key() {
+    fn help_keys_document_q_as_a_quit_key() {
         let quit = all_key_rows()
             .find(|(_, d)| d.contains("quit"))
             .expect("help popup must document the quit binding");
         assert_eq!(quit.0, "q");
-        assert!(
-            !all_key_rows().any(|(k, d)| k.contains("Esc") && d.contains("quit")),
-            "Esc must not be documented as a quit key"
-        );
     }
 
     #[test]

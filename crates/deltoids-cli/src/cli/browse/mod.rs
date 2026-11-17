@@ -76,7 +76,7 @@ mod vcs;
 mod watch;
 mod workspace;
 
-use command::{CustomCommand, load_commands};
+use command::{CustomCommand, load_config};
 use events::read_event_burst;
 use files::FilesMode;
 use help::{HelpKey, HelpPopup};
@@ -144,7 +144,9 @@ fn run_mode<M: Mode>(make: impl FnOnce(&Theme, usize) -> M) -> Result<(), String
     let mut mode = make(&theme, initial_diff_width);
 
     let mut shell = Shell::new(sidebar_pref, total_width, theme.syntax_theme_name.clone());
-    shell.commands = load_commands();
+    let config = load_config();
+    shell.commands = config.commands;
+    shell.quit_on_esc = config.quit_on_esc;
 
     let mut vp = Viewport::default();
     loop {
@@ -331,7 +333,7 @@ fn apply_app_command(
             shell.force_full = true;
             shell.repaint = true;
         }
-        AppCommand::Continue => {}
+        AppCommand::Continue | AppCommand::EscapeAtTop => {}
     }
     false
 }
@@ -387,6 +389,9 @@ struct Shell {
     settle_pending: bool,
     /// User-configured custom key commands (from `config.toml`).
     commands: Vec<CustomCommand>,
+    /// Whether `Esc` quits once the mode has nothing left to back out of
+    /// (`[tui] quit_on_esc` in `config.toml`).
+    quit_on_esc: bool,
 }
 
 impl Shell {
@@ -417,6 +422,7 @@ impl Shell {
             repaint: true,
             settle_pending: false,
             commands: Vec::new(),
+            quit_on_esc: true,
         }
     }
 
@@ -653,14 +659,23 @@ impl Shell {
     }
 
     /// Handle a key already in the shell. Global bindings are consumed
-    /// here; everything else routes to the mode.
+    /// here; everything else routes to the mode. An `Esc` the mode had
+    /// nothing to back out of quits when `quit_on_esc` is on.
     fn handle_key(
         &mut self,
         mode: &mut impl Mode,
         event: impl Into<KeyEvent>,
         height: usize,
     ) -> AppCommand {
-        let event = event.into();
+        match self.route_key(mode, event.into(), height) {
+            AppCommand::EscapeAtTop if self.quit_on_esc => AppCommand::Quit,
+            AppCommand::EscapeAtTop => AppCommand::Continue,
+            cmd => cmd,
+        }
+    }
+
+    /// Route a key to the shell's global bindings or to the mode.
+    fn route_key(&mut self, mode: &mut impl Mode, event: KeyEvent, height: usize) -> AppCommand {
         let key = event.code;
         // A mode with an open text editor owns every key, so global
         // bindings and custom-command keys are typed as literal text —

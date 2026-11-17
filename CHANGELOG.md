@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- TUI: `Esc` quits once there is nothing left to back out of. Set `quit_on_esc = false` under `[tui]` in `config.toml` to turn this off.
 - TUI: `f` now hides low-value files and collapses low-value hunks together. `F` no longer has a built-in action, so custom keys can use it.
 
 ### Removed

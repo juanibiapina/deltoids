@@ -32,6 +32,8 @@ struct RecordingMode {
     selected: Option<PathBuf>,
     /// Stands in for a mode with an open text editor.
     capturing: bool,
+    /// Stands in for a mode with nothing left for `Esc` to back out of.
+    esc_at_top: bool,
 }
 
 impl RecordingMode {
@@ -42,6 +44,7 @@ impl RecordingMode {
                 rec: rec.clone(),
                 selected: None,
                 capturing: false,
+                esc_at_top: false,
             },
             rec,
         )
@@ -63,6 +66,9 @@ impl Mode for RecordingMode {
 
     fn handle_key(&mut self, key: KeyCode, _height: usize) -> AppCommand {
         self.rec.borrow_mut().keys.push(key);
+        if key == KeyCode::Esc && self.esc_at_top {
+            return AppCommand::EscapeAtTop;
+        }
         AppCommand::Continue
     }
 
@@ -202,14 +208,41 @@ fn modal_input_blocks_divider_drags() {
 }
 
 #[test]
-fn q_quits_and_esc_routes_to_the_active_mode() {
-    let (mut mode, files_rec) = one_mode();
+fn q_quits() {
+    let (mut mode, _) = one_mode();
     let mut s = shell();
     assert_eq!(
         s.handle_key(&mut mode, KeyCode::Char('q'), 4),
         AppCommand::Quit
     );
-    // Esc is not a quit key outside the help popup: it reaches the mode.
+}
+
+#[test]
+fn esc_with_nothing_to_back_out_of_quits() {
+    let (mut mode, files_rec) = one_mode();
+    mode.esc_at_top = true;
+    let mut s = shell();
+    assert_eq!(s.handle_key(&mut mode, KeyCode::Esc, 4), AppCommand::Quit);
+    assert_eq!(files_rec.borrow().keys, vec![KeyCode::Esc]);
+}
+
+#[test]
+fn esc_with_nothing_to_back_out_of_continues_when_quit_on_esc_is_off() {
+    let (mut mode, files_rec) = one_mode();
+    mode.esc_at_top = true;
+    let mut s = shell();
+    s.quit_on_esc = false;
+    assert_eq!(
+        s.handle_key(&mut mode, KeyCode::Esc, 4),
+        AppCommand::Continue
+    );
+    assert_eq!(files_rec.borrow().keys, vec![KeyCode::Esc]);
+}
+
+#[test]
+fn esc_that_backs_out_of_something_continues() {
+    let (mut mode, files_rec) = one_mode();
+    let mut s = shell();
     assert_eq!(
         s.handle_key(&mut mode, KeyCode::Esc, 4),
         AppCommand::Continue
@@ -238,6 +271,7 @@ fn draw_budget_follows_input_idle() {
 #[test]
 fn question_mark_toggles_help_and_help_swallows_keys() {
     let (mut mode, files_rec) = one_mode();
+    mode.esc_at_top = true;
     let mut s = shell();
     s.handle_key(&mut mode, KeyCode::Char('?'), 4);
     assert!(s.help.is_some());
@@ -278,6 +312,7 @@ fn t_opens_theme_picker_and_picking_applies_and_closes() {
 #[test]
 fn esc_closes_theme_picker_without_applying() {
     let (mut mode, _) = one_mode();
+    mode.esc_at_top = true;
     let mut s = shell();
     s.handle_key(&mut mode, KeyCode::Char('t'), 4);
     assert!(s.theme_picker.is_some());
@@ -432,6 +467,7 @@ fn custom_key_with_selected_path_returns_run() {
         rec: files_rec.clone(),
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: false,
+        esc_at_top: false,
     };
     let mut s = shell();
     s.commands = vec![custom_command('e', "nvim {{filename}}", false)];
@@ -455,6 +491,7 @@ fn custom_key_preserves_subprocess_flag() {
         rec: files_rec,
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: false,
+        esc_at_top: false,
     };
     let mut s = shell();
     s.commands = vec![custom_command('E', "nvim {{filename}}", true)];
@@ -498,6 +535,7 @@ fn global_builtins_beat_colliding_custom_binding() {
         rec: files_rec,
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: false,
+        esc_at_top: false,
     };
     let mut s = shell();
     // Bind the same keys as the `q` quit and `>` resize globals.
@@ -542,6 +580,7 @@ fn capturing_mode_receives_every_key_including_globals() {
         rec: files_rec.clone(),
         selected: Some(PathBuf::from("/tmp/a.txt")),
         capturing: true,
+        esc_at_top: false,
     };
     let mut s = shell();
     // A custom binding that would otherwise shadow the mode's own keys.

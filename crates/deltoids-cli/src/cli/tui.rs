@@ -25,7 +25,7 @@ Keys:
 - Enter:           on a file, focus its diff in the main view; on a
                    commit, review it; on the stacked branch, review all
                    its commits; on another branch, list its commits
-- Esc:             leave the main view, a commit list, or a review
+- Esc:             leave the main view, a commit list, or a review, or quit
 - Tab (main view): switch the staged / unstaged diff
 - Shift+J / K:     scroll the diff pane
 - PgUp / PgDn:     page the focused pane

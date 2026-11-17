@@ -1,7 +1,9 @@
-//! Custom key commands: user-configured keybindings that run a shell
-//! command against the currently-selected file.
+//! The shell's settings from the shared `config.toml`: custom key
+//! commands and the `[tui]` section.
 //!
-//! Loaded from the shared `config.toml` `[[commands]]` array. Each
+//! Custom key commands are user-configured keybindings that run a shell
+//! command against the currently-selected file. They come from the
+//! `[[commands]]` array. Each
 //! command binds a single `key` to a shell `command` template. The
 //! template's `{{filename}}` token expands to the shell-quoted absolute
 //! path of the selected file (see [`expand`]).
@@ -34,13 +36,52 @@ pub(super) struct CustomCommand {
     pub(super) description: String,
 }
 
-/// The CLI's view of `config.toml`: only the `[[commands]]` array. Other
-/// sections (`[theme]`) are ignored by serde, so this parses the same
-/// file the library reads for the theme.
+/// The settings the shell reads from `config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShellConfig {
+    pub(super) commands: Vec<CustomCommand>,
+    /// Whether `Esc` quits once there is nothing left to back out of.
+    pub(super) quit_on_esc: bool,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            commands: Vec::new(),
+            quit_on_esc: true,
+        }
+    }
+}
+
+/// The CLI's view of `config.toml`: the `[[commands]]` array and the
+/// `[tui]` section. Other sections (`[theme]`, `[lsp.<name>]`) are
+/// ignored by serde, so this parses the same file the library reads for
+/// the theme.
 #[derive(Debug, Default, Deserialize)]
 struct CliConfig {
     #[serde(default)]
     commands: Vec<RawCommand>,
+    #[serde(default)]
+    tui: TuiConfig,
+}
+
+/// The `[tui]` section.
+#[derive(Debug, Deserialize)]
+struct TuiConfig {
+    #[serde(default = "default_quit_on_esc")]
+    quit_on_esc: bool,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            quit_on_esc: default_quit_on_esc(),
+        }
+    }
+}
+
+fn default_quit_on_esc() -> bool {
+    true
 }
 
 /// A raw `[[commands]]` table before narrowing `key` to a single char.
@@ -54,32 +95,37 @@ struct RawCommand {
     description: Option<String>,
 }
 
-/// Load the user's custom commands from the shared `config.toml`.
+/// Load the shell's settings from the shared `config.toml`.
 ///
-/// A missing file, unreadable file, parse error, or absent
-/// `[[commands]]` all yield an empty vec (silent fallback, matching the
-/// theme-loading policy).
-pub(super) fn load_commands() -> Vec<CustomCommand> {
+/// A missing file, unreadable file, or parse error yields the defaults
+/// (silent fallback, matching the theme-loading policy).
+pub(super) fn load_config() -> ShellConfig {
     let Some(path) = deltoids::config::config_file_path() else {
-        return Vec::new();
+        return ShellConfig::default();
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return Vec::new();
+        return ShellConfig::default();
     };
-    parse_commands(&text)
+    parse_config(&text)
 }
 
-/// Parse a `config.toml` body into custom commands.
+/// Parse a `config.toml` body into the shell's settings.
 ///
-/// Pure and unit-testable. TOML parse failure yields an empty vec.
+/// Pure and unit-testable. TOML parse failure yields the defaults.
 /// Commands whose `key` is not exactly one character are dropped.
-fn parse_commands(text: &str) -> Vec<CustomCommand> {
+fn parse_config(text: &str) -> ShellConfig {
     let Ok(config) = toml::from_str::<CliConfig>(text) else {
-        return Vec::new();
+        return ShellConfig::default();
     };
-    config
-        .commands
-        .into_iter()
+    ShellConfig {
+        commands: custom_commands(config.commands),
+        quit_on_esc: config.tui.quit_on_esc,
+    }
+}
+
+/// Narrow raw `[[commands]]` tables to single-key custom commands.
+fn custom_commands(raw: Vec<RawCommand>) -> Vec<CustomCommand> {
+    raw.into_iter()
         .filter_map(|raw| {
             let mut chars = raw.key.chars();
             let key = chars.next()?;
@@ -116,6 +162,24 @@ fn shell_quote(s: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn parse_commands(text: &str) -> Vec<CustomCommand> {
+        parse_config(text).commands
+    }
+
+    #[test]
+    fn parse_config_reads_quit_on_esc() {
+        assert!(!parse_config("[tui]\nquit_on_esc = false").quit_on_esc);
+        assert!(parse_config("[tui]\nquit_on_esc = true").quit_on_esc);
+    }
+
+    #[test]
+    fn parse_config_defaults_quit_on_esc_to_true() {
+        assert!(parse_config("").quit_on_esc);
+        assert!(parse_config("[tui]").quit_on_esc);
+        assert!(parse_config("[theme]\nmode = \"dark\"").quit_on_esc);
+        assert!(parse_config("not = valid = toml").quit_on_esc);
+    }
 
     #[test]
     fn parse_commands_reads_a_command_block() {

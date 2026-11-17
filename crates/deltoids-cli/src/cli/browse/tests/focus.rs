@@ -110,6 +110,7 @@ fn a_command_does_not_discard_a_later_focus_loss() {
         rec: files,
         selected: Some(PathBuf::from("/tmp/selected.txt")),
         capturing: false,
+        esc_at_top: false,
     };
     let mut shell = shell();
     shell.commands = vec![custom_command('e', "echo selected", false)];

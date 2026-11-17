@@ -35,6 +35,9 @@ pub(crate) struct CustomRun {
 pub(crate) enum AppCommand {
     Continue,
     Quit,
+    /// `Esc` found nothing to close or leave. The shell quits when
+    /// `quit_on_esc` is on and otherwise continues.
+    EscapeAtTop,
     /// Run a custom command; handled by the `run()` loop since it may need
     /// the `Terminal`.
     Run(CustomRun),
@@ -126,7 +129,7 @@ pub(crate) trait Mode {
 
     /// Whether the mode currently owns raw text input (a modal editor is
     /// open). While this is `true` the shell routes every key straight to
-    /// the mode, so global bindings (`q`, `?`, `<`, `>`, `Esc`)
+    /// the mode, so global bindings (`q`, `?`, `<`, `>`)
     /// and custom-command keys can be typed as text.
     fn captures_text_input(&self) -> bool {
         false

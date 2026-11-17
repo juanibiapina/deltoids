@@ -7,7 +7,7 @@ use deltoids::Theme;
 
 use super::Workspace;
 use crate::cli::browse::files::FilesMode;
-use crate::cli::browse::mode::{Mode, Viewport};
+use crate::cli::browse::mode::{AppCommand, Mode, Viewport};
 use crate::cli::browse::test_screen::{
     LEFT, PANE_HEIGHT, RIGHT, draw, left_focused, left_text, right_focused, right_text,
 };
@@ -619,15 +619,30 @@ fn enter_on_a_branch_lists_its_commits_and_enter_reviews_one_in_files() {
     press(&mut workspace, &[KeyCode::Char('j')]);
     assert!(right_text(&mut workspace).contains("fn feature()"));
 
-    press(&mut workspace, &[KeyCode::Esc]);
+    assert_eq!(esc(&mut workspace), AppCommand::Continue);
     assert!(title(&mut workspace).starts_with(" Commits (feature)"));
     assert_eq!(focused_panel(&mut workspace), Some('2'));
-    press(&mut workspace, &[KeyCode::Esc]);
+    assert_eq!(esc(&mut workspace), AppCommand::Continue);
     assert!(title(&mut workspace).starts_with(" Status"));
     // The branch selection survived the round trip.
     assert!(right_text(&mut workspace).contains("add feature"));
-    press(&mut workspace, &[KeyCode::Esc]);
+    assert_eq!(esc(&mut workspace), AppCommand::EscapeAtTop);
     assert!(title(&mut workspace).starts_with(" Status"));
+}
+
+#[test]
+fn esc_leaves_the_focused_main_view_before_reaching_the_top() {
+    let dir = fixture();
+    let mut workspace = workspace(dir.path());
+    focus_main(&mut workspace);
+
+    assert_eq!(esc(&mut workspace), AppCommand::Continue);
+    assert!(!right_focused(&mut workspace));
+    assert_eq!(esc(&mut workspace), AppCommand::EscapeAtTop);
+}
+
+fn esc(workspace: &mut Workspace) -> AppCommand {
+    workspace.handle_key(KeyCode::Esc, PANE_HEIGHT)
 }
 
 /// [`fixture`] with one more commit on `main` whose message has a

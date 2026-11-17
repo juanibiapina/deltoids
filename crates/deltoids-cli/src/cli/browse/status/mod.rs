@@ -186,7 +186,7 @@ impl StatusPanel {
         }
     }
 
-    fn drilled_in(&self) -> bool {
+    pub(super) fn drilled_in(&self) -> bool {
         self.branches.as_ref().is_some_and(History::drilled_in)
     }
 

@@ -27,12 +27,12 @@ Needs the GitHub CLI, gh, installed and logged in (gh auth login).
 
 From another program: run it in the foreground on the same terminal, with
 the clone as the working directory when you know one. It exits 0 when the
-user quits with q. Errors after startup show in the TUI.
+user quits. Errors after startup show in the TUI.
 
 Keys:
 - j / k:       move through the files (between diff lines in the diff)
 - Enter:       focus the selected file's diff
-- Esc:         leave the diff
+- Esc:         leave the diff, or quit
 - c / d / y:   comment on a diff line, delete it, copy every comment
 - ?:           all keys
 - q:           quit

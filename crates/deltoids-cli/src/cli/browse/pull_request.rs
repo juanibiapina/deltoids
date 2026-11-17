@@ -103,9 +103,13 @@ impl Mode for PullRequestMode {
     fn handle_key(&mut self, key: KeyCode, height: usize) -> AppCommand {
         let height = self.focused_height(height);
         if !self.captures_text_input() && key == KeyCode::Esc {
-            if !self.panel.escape() && self.main_focused {
-                self.focus(false);
+            if self.panel.escape() {
+                return AppCommand::Continue;
             }
+            if !self.main_focused {
+                return AppCommand::EscapeAtTop;
+            }
+            self.focus(false);
             return AppCommand::Continue;
         }
         let command = self.panel.handle_key(key, height);

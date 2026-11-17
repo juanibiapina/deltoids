@@ -202,6 +202,7 @@ impl Mode for Workspace {
                 self.review = None;
                 self.focus(false);
             }
+            KeyCode::Esc if !self.status.drilled_in() => return AppCommand::EscapeAtTop,
             _ => return self.forward_key(key, height),
         }
         AppCommand::Continue

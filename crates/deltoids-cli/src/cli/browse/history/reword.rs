@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
@@ -43,7 +43,6 @@ pub(super) struct RewordPopup {
 }
 
 /// What a key did to the popup.
-#[derive(Debug, PartialEq, Eq)]
 pub(super) enum RewordKey {
     /// Keep the popup open.
     Stay,
@@ -169,32 +168,21 @@ impl RewordPopup {
             Style::default().fg(rgb_to_color(theme.muted)),
         ));
         let block = pane_block_with_title_line(title, pane_border_color(true, theme), Some(footer));
-        let inner = block.inner(popup);
+        let inner = block.inner(popup).inner(Margin {
+            vertical: 0,
+            horizontal: 1,
+        });
         frame.render_widget(Clear, popup);
         frame.render_widget(block, popup);
-        let inner = Rect {
-            x: inner.x.saturating_add(1).min(inner.right()),
-            width: inner.width.saturating_sub(2),
-            ..inner
-        };
         let error = self
             .error
             .as_deref()
             .map_or_else(Vec::new, |err| wrap_text(err, inner.width as usize));
-        let error_rows = (error.len() as u16).clamp(1, inner.height.saturating_sub(1).max(1));
-        let text_rows = inner.height.saturating_sub(error_rows);
-        frame.render_widget(
-            &self.editor,
-            Rect {
-                height: text_rows,
-                ..inner
-            },
-        );
-        let error_area = Rect {
-            y: inner.y + text_rows,
-            height: inner.height - text_rows,
-            ..inner
-        };
+        // The message keeps at least one row; the error takes the rest.
+        let error_rows = u16::try_from(error.len()).unwrap_or(u16::MAX).max(1);
+        let [text_area, error_area] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(error_rows)]).areas(inner);
+        frame.render_widget(&self.editor, text_area);
         let style = Style::default().fg(rgb_to_color(theme.status_deleted));
         let error: Vec<Line<'static>> = error.into_iter().map(Line::from).collect();
         frame.render_widget(Paragraph::new(error).style(style), error_area);

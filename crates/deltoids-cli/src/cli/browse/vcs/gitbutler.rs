@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use deltoids::git::{self, FileStageStatus, StageChange, WorkingTreeSnapshot};
 use serde::Deserialize;
@@ -333,19 +333,42 @@ fn parse<T: for<'de> Deserialize<'de>>(json: &str) -> Result<T, String> {
     serde_json::from_str(json).map_err(|e| format!("Unexpected output from but: {e}"))
 }
 
+/// Replace `commit`'s message with `message`, read by `but` from stdin.
+/// `-F -` over `-m`, which clap may reject when the message starts
+/// with `-`.
+pub(super) fn reword(
+    program: &OsStr,
+    workdir: &Path,
+    commit: &str,
+    message: &str,
+) -> Result<(), String> {
+    run_with_input(
+        program,
+        workdir,
+        &["reword", commit, "-F", "-"],
+        Some(message),
+    )
+    .map(drop)
+}
+
 /// Run `but -C <workdir> --json <args>` and return its stdout.
 fn run(program: &OsStr, workdir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .arg("-C")
-        .arg(workdir)
-        .arg("--json")
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => "GitButler CLI (but) not found".to_string(),
-            _ => format!("Could not run but: {e}"),
-        })?;
+    run_with_input(program, workdir, args, None)
+}
+
+/// [`run`], with `input` on stdin when given.
+fn run_with_input(
+    program: &OsStr,
+    workdir: &Path,
+    args: &[&str],
+    input: Option<&str>,
+) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command.arg("-C").arg(workdir).arg("--json").args(args);
+    let output = super::output_with_input(&mut command, input).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "GitButler CLI (but) not found".to_string(),
+        _ => format!("Could not run but: {e}"),
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if output.status.success() {
         return Ok(stdout);
@@ -363,14 +386,10 @@ fn failure(stdout: &str, stderr: &str) -> String {
     if let Ok(failure) = serde_json::from_str::<Failure>(stdout) {
         return failure.message;
     }
-    stderr
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map_or_else(
-            || "but failed".to_string(),
-            |line| line.trim_start_matches("Error: ").to_string(),
-        )
+    super::first_line(stderr.as_bytes()).map_or_else(
+        || "but failed".to_string(),
+        |line| line.trim_start_matches("Error: ").to_string(),
+    )
 }
 
 #[cfg(test)]

@@ -9,6 +9,26 @@ use signal_hook::consts::{SIGHUP, SIGQUIT, SIGTERM};
 
 const QUIT_SIGNALS: [i32; 3] = [SIGTERM, SIGHUP, SIGQUIT];
 
+/// Ask the terminal to report modified keys unambiguously (the kitty
+/// keyboard protocol), so `Shift+Enter` arrives apart from `Enter`.
+/// A terminal without the protocol ignores the request and keeps
+/// sending legacy keys; asking first would delay the first frame by a
+/// round trip. The alternate screen keeps its own flag stack, so call
+/// this after entering it.
+pub(super) fn push_key_flags() {
+    let _ = crossterm::execute!(
+        io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
+}
+
+/// Undo [`push_key_flags`], before leaving the alternate screen.
+pub(super) fn pop_key_flags() {
+    let _ = crossterm::execute!(io::stdout(), crossterm::event::PopKeyboardEnhancementFlags);
+}
+
 pub struct TerminalSession {
     quit: Arc<AtomicBool>,
     signal_ids: Vec<SigId>,
@@ -39,6 +59,7 @@ impl TerminalSession {
             crossterm::event::EnableFocusChange
         )
         .map_err(|err| format!("failed to enter screen: {err}"))?;
+        push_key_flags();
         Ok(session)
     }
 
@@ -52,6 +73,7 @@ impl Drop for TerminalSession {
         for id in self.signal_ids.drain(..) {
             signal_hook::low_level::unregister(id);
         }
+        pop_key_flags();
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             io::stdout(),

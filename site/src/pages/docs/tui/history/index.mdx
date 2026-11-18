@@ -39,6 +39,26 @@ on the reviewed commit.
 Press `Enter` on your checked-out branch to review all the commits it
 adds since its base as one diff, the way a pull request shows them.
 
+## Reword a commit
+
+Press `r` on a commit to edit its message in a popup.
+
+- `Enter` saves, `Shift+Enter` adds a line, and `Esc` cancels.
+- `Ctrl+g` opens the message in `$EDITOR`. When the editor exits, the
+  popup shows the edited message, and `Enter` saves it.
+
+`Shift+Enter` needs a terminal that supports the
+[kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/),
+such as Ghostty or kitty. Other terminals, and tmux, send it as `Enter`,
+which saves; use `Ctrl+g` there to write a message with more lines.
+
+Saving rewrites the commit and the commits above it on every local
+branch that contains it, then shows the new message on the same row.
+When the reword fails, the popup shows the error and keeps your text.
+
+In plain git this runs `git history reword`, which needs Git 2.54 or
+later.
+
 ## GitButler
 
 deltoids gives every repository that GitButler manages a GitButler view.
@@ -55,3 +75,5 @@ exists.
   author, date, and message.
 - The changed files show all uncommitted changes in one column. Discard
   goes through `but`, so `but undo` brings the changes back.
+- Press `r` on a commit to reword it with `but reword`. `but undo`
+  brings the old message back.

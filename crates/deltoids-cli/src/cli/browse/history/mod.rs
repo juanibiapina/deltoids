@@ -14,7 +14,8 @@
 //! whole column, newest first and loaded a page at a time, and the main
 //! view previews the selected commit's diff. `Esc` steps back up to the
 //! branches, keeping the selection. A double click on a branch or commit
-//! does what `Enter` does on it.
+//! does what `Enter` does on it. `r` on a commit opens
+//! [`reword::RewordPopup`] over the main view to edit its message.
 //!
 //! The lists are a snapshot; [`History::refresh`] re-reads them and keeps
 //! each selection on the same branch or commit.
@@ -41,9 +42,11 @@ use super::status::{self, Section};
 use super::vcs::{Branch, Vcs};
 
 mod cursor;
+mod reword;
 mod tree;
 
 use cursor::Cursor;
+use reword::{RewordKey, RewordPopup};
 use tree::Tree;
 
 /// How many commits one page of a commit list loads.
@@ -140,6 +143,8 @@ pub(super) struct History {
     servers: Option<(crate::lsp::Lsp, std::path::PathBuf)>,
     /// The session's reviewed marks, shared with commit previews.
     review_marks: ReviewMarks,
+    /// The open reword popup, which owns every key.
+    reword: Option<RewordPopup>,
 }
 
 impl History {
@@ -183,6 +188,7 @@ impl History {
             main_rect: Rect::default(),
             servers: None,
             review_marks: ReviewMarks::default(),
+            reword: None,
         }
     }
 
@@ -487,6 +493,31 @@ impl History {
         }
     }
 
+    /// `r`: open the reword popup on the selected commit. Nothing on a
+    /// branch row.
+    fn open_reword(&mut self) {
+        self.reword = self.selected_commit().map(RewordPopup::open);
+    }
+
+    /// A key for the open reword popup. A save re-reads the branches at
+    /// once, so the new message shows without waiting for the watcher.
+    fn reword_key(&mut self, key: KeyEvent) -> AppCommand {
+        let Some(popup) = self.reword.as_mut() else {
+            return AppCommand::Continue;
+        };
+        match popup.handle_key(key, &self.vcs) {
+            RewordKey::Stay => {}
+            RewordKey::Close { saved } => {
+                self.reword = None;
+                if saved {
+                    self.refresh();
+                }
+            }
+            RewordKey::Edit(path) => return AppCommand::Edit(path),
+        }
+        AppCommand::Continue
+    }
+
     fn forward_key(&mut self, key: KeyCode, height: usize) -> AppCommand {
         self.preview().map_or(AppCommand::Continue, |preview| {
             preview.handle_key(key, height)
@@ -591,6 +622,9 @@ impl Panel for History {
                 self.draw_commit_diff(frame, area, focused, theme, budget);
             }
         }
+        if let Some(popup) = self.reword.as_mut() {
+            popup.draw(frame, area, theme);
+        }
     }
 
     fn focus_main(&mut self, main: bool) {
@@ -602,6 +636,9 @@ impl Panel for History {
     }
 
     fn handle_key(&mut self, key: KeyCode, height: usize) -> AppCommand {
+        if self.reword.is_some() {
+            return self.reword_key(KeyEvent::from(key));
+        }
         if self.captures_text_input() {
             return self.forward_key(key, height);
         }
@@ -617,6 +654,7 @@ impl Panel for History {
         match key {
             KeyCode::Esc => self.screen = Screen::Branches,
             KeyCode::Enter => self.open_selected(),
+            KeyCode::Char('r') => self.open_reword(),
             // Shift+J/K scroll the preview, as they scroll the diff from
             // the Files panel.
             KeyCode::Char('J' | 'K') => return self.forward_key(key, height),
@@ -626,6 +664,9 @@ impl Panel for History {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent, height: usize) -> AppCommand {
+        if self.reword.is_some() {
+            return self.reword_key(key);
+        }
         if self.main_focused && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.preview().map_or(AppCommand::Continue, |preview| {
                 preview.handle_key_event(key, height)
@@ -679,18 +720,27 @@ impl Panel for History {
     }
 
     fn reserves_key(&self, key: KeyCode) -> bool {
+        if key == KeyCode::Char('r') && !self.main_focused && self.selected_commit().is_some() {
+            return true;
+        }
         self.preview_ref()
             .filter(|_| self.main_focused)
             .is_some_and(|preview| preview.reserves_key(key))
     }
 
     fn captures_text_input(&self) -> bool {
-        self.preview_ref().is_some_and(Panel::captures_text_input)
+        self.reword.is_some() || self.preview_ref().is_some_and(Panel::captures_text_input)
     }
 
     fn report_copy(&mut self, result: Result<(), String>) {
         if let Some(preview) = self.preview() {
             preview.report_copy(result);
+        }
+    }
+
+    fn report_edit(&mut self, result: Result<(), String>) {
+        if let Some(popup) = self.reword.as_mut() {
+            popup.report_edit(result);
         }
     }
 }

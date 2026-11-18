@@ -40,7 +40,9 @@ pub(in crate::cli::browse) fn fixture(name: &str) -> PathBuf {
 
 /// A `but` stand-in in `dir` that logs each command line to `but.log`,
 /// answers `status` with the JSON at `status`, and `branch list` with
-/// the recorded branch list.
+/// the recorded branch list. `reword` saves its stdin to
+/// `reword-message`, and fails with a JSON error when the message
+/// starts with `fail`.
 #[cfg(unix)]
 pub(in crate::cli::browse) fn stub_but(dir: &Path, status: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -49,8 +51,9 @@ pub(in crate::cli::browse) fn stub_but(dir: &Path, status: &Path) -> PathBuf {
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\nshift 3\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  status) cat '{status}' ;;\n  branch) cat '{branches}' ;;\nesac\n",
+            "#!/bin/sh\nshift 3\necho \"$*\" >> '{log}'\ncase \"$1\" in\n  status) cat '{status}' ;;\n  branch) cat '{branches}' ;;\n  reword)\n    cat > '{message}'\n    case \"$(cat '{message}')\" in\n      fail*) echo '{{\"message\":\"cannot reword this commit\"}}'; exit 1 ;;\n    esac ;;\nesac\n",
             log = log.display(),
+            message = dir.join("reword-message").display(),
             status = status.display(),
             branches = fixture("but-branch-list.json").display(),
         ),

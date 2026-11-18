@@ -181,7 +181,9 @@ impl Mode for Workspace {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent, height: usize) -> AppCommand {
-        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        // An open editor sees every modifier: `Alt+Enter` is not `Enter`.
+        let editing = self.captures_text_input();
+        if !editing && !key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_key(key.code, height);
         }
         let height = self.focused_height(height);
@@ -222,6 +224,10 @@ impl Mode for Workspace {
 
     fn report_copy(&mut self, result: Result<(), String>) {
         self.panel().report_copy(result);
+    }
+
+    fn report_edit(&mut self, result: Result<(), String>) {
+        self.panel().report_edit(result);
     }
 
     /// A click focuses the half under the pointer; the event then goes
@@ -268,7 +274,8 @@ impl Mode for Workspace {
     /// Rebuild the working tree's diff and re-read the branches. Commits
     /// and branches move with the working tree (a commit empties the
     /// index), so this always asks for a frame. Changes on a clean tree
-    /// take the cursor and focus.
+    /// take the cursor and focus, unless an editor is open: moving the
+    /// cursor would hide it and send the next letters to the files.
     fn reload(&mut self, viewport: Viewport, theme: &Theme) -> Result<bool, String> {
         let was_clean = self.status.changes().is_clean();
         let changed = self.status.changes_mut().reload(viewport, theme)?;
@@ -279,7 +286,8 @@ impl Mode for Workspace {
             }
             None => false,
         };
-        if self.review.is_none() && was_clean && !self.status.changes().is_clean() {
+        let takes_cursor = was_clean && !self.status.changes().is_clean();
+        if self.review.is_none() && takes_cursor && !self.captures_text_input() {
             self.status.focus_changes();
             self.main_focused = false;
         } else {

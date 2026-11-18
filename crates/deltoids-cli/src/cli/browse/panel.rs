@@ -93,6 +93,9 @@ pub(super) trait Panel {
     /// The outcome of a clipboard copy this panel asked for.
     fn report_copy(&mut self, _result: Result<(), String>) {}
 
+    /// The outcome of an `$EDITOR` run this panel asked for.
+    fn report_edit(&mut self, _result: Result<(), String>) {}
+
     /// The file on disk the selection points at, for custom commands.
     fn selected_path(&self) -> Option<PathBuf> {
         None

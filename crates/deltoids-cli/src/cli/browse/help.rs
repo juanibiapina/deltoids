@@ -71,6 +71,10 @@ pub(super) const KEY_SECTIONS: &[HelpSection] = &[
         ],
     },
     HelpSection {
+        title: "Branches",
+        rows: &[("r", "edit the selected commit's message")],
+    },
+    HelpSection {
         title: "Diff",
         rows: &[
             ("Tab", "switch staged / unstaged diff"),
@@ -540,7 +544,7 @@ mod tests {
 
     #[test]
     fn a_wide_short_terminal_flows_sections_into_columns() {
-        let screen = screen(220, 40, &commands());
+        let screen = screen(220, 44, &commands());
         for section in help_sections(&commands()) {
             assert!(
                 title_column(&screen, &section.title).is_some(),

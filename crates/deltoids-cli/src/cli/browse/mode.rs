@@ -49,6 +49,10 @@ pub(crate) enum AppCommand {
     /// `run()` loop since it owns the shared [`Theme`]. The name joins every
     /// diff cache's epoch, so the next frame re-highlights live.
     SetSyntaxTheme(&'static str),
+    /// Open this file in `$EDITOR` with the TUI suspended; handled by the
+    /// `run()` loop, which owns the terminal. The outcome comes back
+    /// through [`Mode::report_edit`].
+    Edit(PathBuf),
 }
 
 /// How much work a mode may spend on this frame.
@@ -139,6 +143,11 @@ pub(crate) trait Mode {
     /// performed, so the mode can correct its status message when the copy
     /// failed. Ignored by modes that never request a copy.
     fn report_copy(&mut self, _result: Result<(), String>) {}
+
+    /// Report the outcome of an [`AppCommand::Edit`] the shell performed:
+    /// `Ok` once the editor exited successfully. Ignored by modes that
+    /// never request an edit.
+    fn report_edit(&mut self, _result: Result<(), String>) {}
 
     /// Handle a mouse event already filtered of divider-drag handling.
     /// The mode hit-tests within the left column / right pane using the

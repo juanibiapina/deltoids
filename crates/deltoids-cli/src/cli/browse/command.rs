@@ -133,7 +133,7 @@ pub(super) fn expand(template: &str, file: &Path) -> String {
 }
 
 /// Single-quote a string for a POSIX shell, escaping embedded quotes.
-fn shell_quote(s: &str) -> String {
+pub(super) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

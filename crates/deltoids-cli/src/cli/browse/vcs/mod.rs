@@ -21,7 +21,9 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 
 use deltoids::git;
 
@@ -29,6 +31,35 @@ mod git_writes;
 mod gitbutler;
 #[cfg(test)]
 pub(in crate::cli::browse) mod test_support;
+
+/// Run `command` with its output captured and `input` on stdin, or
+/// none. A tool that exits before reading stdin keeps its own error: the
+/// write's broken pipe is ignored.
+fn output_with_input(command: &mut Command, input: Option<&str>) -> std::io::Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let Some(input) = input else {
+        return command.stdin(Stdio::null()).output();
+    };
+    let mut child = command.stdin(Stdio::piped()).spawn()?;
+    let written = child
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut stdin| stdin.write_all(input.as_bytes()));
+    let output = child.wait_with_output()?;
+    match written {
+        Err(e) if e.kind() != ErrorKind::BrokenPipe => Err(e),
+        _ => Ok(output),
+    }
+}
+
+/// The first non-empty line of a tool's stderr.
+fn first_line(stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
 
 /// Which kind of repository a call found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,6 +377,26 @@ impl Vcs {
             workdir,
             but: self.but.clone(),
         })
+    }
+
+    /// Replace `commit`'s message (a full commit id) with `message` and
+    /// rebase the commits that depend on it, without starting an editor:
+    /// `but reword -F -` in a GitButler workspace, `git history reword`
+    /// otherwise. On failure, the tool's first error line.
+    pub(in crate::cli::browse) fn reword(&self, commit: &str, message: &str) -> Result<(), String> {
+        match self.backend() {
+            Backend::Git => {
+                let dir = self.repo.workdir().unwrap_or_else(|| self.repo.git_dir());
+                git_writes::reword(dir, commit, message)
+            }
+            Backend::GitButler => {
+                let workdir = self
+                    .repo
+                    .workdir()
+                    .ok_or("GitButler needs a working tree to reword")?;
+                gitbutler::reword(&self.but, workdir, commit, message)
+            }
+        }
     }
 
     /// The discard menu's rows before a selection is read: this kind of

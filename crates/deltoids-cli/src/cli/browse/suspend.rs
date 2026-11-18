@@ -6,8 +6,11 @@
 //! [`super::command`] and the shell.
 
 use std::io::{self, Write};
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::{Command, ExitStatus, Stdio};
 
+use super::command::shell_quote;
+use super::terminal::{pop_key_flags, push_key_flags};
 use super::{BrowseTerminal, buffered_backend};
 use crossterm::cursor;
 use crossterm::event::{
@@ -38,15 +41,39 @@ pub(super) fn run_background(command: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The shell line that opens `path` in `$EDITOR`. It runs through the
+/// shell, so `EDITOR="code --wait"` works. With `$EDITOR` unset or
+/// blank, an error: no other variable or fallback editor is read.
+pub(super) fn editor_command(path: &Path) -> Result<String, String> {
+    let editor = std::env::var("EDITOR").unwrap_or_default();
+    if editor.trim().is_empty() {
+        return Err("$EDITOR is not set: set it to open the message in an editor".to_string());
+    }
+    Ok(format!("{editor} {}", shell_quote(&path.to_string_lossy())))
+}
+
+/// Run an [`editor_command`] in the foreground. A non-zero exit is an
+/// error.
+pub(super) fn edit(terminal: &mut BrowseTerminal, command: &str) -> Result<(), String> {
+    if run_foreground(terminal, command)?.success() {
+        Ok(())
+    } else {
+        Err("The editor exited with an error".to_string())
+    }
+}
+
 /// Suspend the TUI, hand the terminal to `command` (inherited stdio), then
-/// restore and force a full repaint.
+/// restore and force a full repaint. Returns the child's exit status.
 ///
 /// The repaint recreates the `Terminal` rather than calling
 /// `Terminal::clear()`: on this ratatui version `clear()` issues an
 /// `ESC[6n` cursor query that busy-spins forever on macOS. A fresh
 /// `Terminal` has empty buffers, so the next `draw` repaints every cell,
 /// identical to the startup path.
-pub(super) fn run_foreground(terminal: &mut BrowseTerminal, command: &str) -> Result<(), String> {
+pub(super) fn run_foreground(
+    terminal: &mut BrowseTerminal,
+    command: &str,
+) -> Result<ExitStatus, String> {
     leave_tui()?;
     let status = Command::new("sh")
         .arg("-c")
@@ -60,12 +87,12 @@ pub(super) fn run_foreground(terminal: &mut BrowseTerminal, command: &str) -> Re
     // the cursor-query hang of `Terminal::clear()`.
     *terminal = Terminal::new(buffered_backend())
         .map_err(|err| format!("failed to restore screen: {err}"))?;
-    status.map_err(|err| format!("failed to run command: {err}"))?;
-    Ok(())
+    status.map_err(|err| format!("failed to run command: {err}"))
 }
 
 /// Leave the TUI: same teardown as `TerminalSession::drop`, in place.
 fn leave_tui() -> Result<(), String> {
+    pop_key_flags();
     disable_raw_mode().map_err(|err| format!("failed to disable raw mode: {err}"))?;
     execute!(
         io::stdout(),
@@ -92,5 +119,6 @@ fn enter_tui() -> Result<(), String> {
         EnableFocusChange
     )
     .map_err(|err| format!("failed to re-enter screen: {err}"))?;
+    push_key_flags();
     Ok(())
 }

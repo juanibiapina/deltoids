@@ -386,6 +386,31 @@ fn git(workdir: &Path, args: &[&str], paths: &BTreeSet<PathBuf>) -> Result<(), S
     }
 }
 
+/// Never found in a message, so `git history reword` keeps lines that
+/// start with `#`: it strips comment lines whatever `commit.cleanup`
+/// says.
+const NO_COMMENT: &str = "core.commentString=deltoids-reword-no-comment";
+
+/// Replace `commit`'s message with `message` through `git history
+/// reword`, which rewrites every branch that contains it. It takes no
+/// message argument, so its editor is `cat >`, which copies stdin into
+/// the message file: no editor starts. `dir` is the work tree, or the
+/// git dir of a bare repository.
+pub(super) fn reword(dir: &Path, commit: &str, message: &str) -> Result<(), String> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", NO_COMMENT, "history", "reword", commit])
+        .env("GIT_EDITOR", "cat >");
+    let output = super::output_with_input(&mut command, Some(message))
+        .map_err(|e| format!("Could not run git: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(super::first_line(&output.stderr).unwrap_or_else(|| "git history reword failed".into()))
+}
+
 fn message(error: impl std::fmt::Display) -> String {
     error.to_string()
 }

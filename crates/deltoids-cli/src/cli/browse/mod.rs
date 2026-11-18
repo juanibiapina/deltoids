@@ -333,6 +333,17 @@ fn apply_app_command(
             shell.force_full = true;
             shell.repaint = true;
         }
+        // An `$EDITOR` run for a panel's text: suspend, edit, restore, and
+        // hand the outcome back so the panel reads the file or keeps its
+        // text.
+        AppCommand::Edit(path) => {
+            let result = suspend::editor_command(&path).and_then(|command| {
+                let result = suspend::edit(terminal, &command);
+                shell.foreground_returned();
+                result
+            });
+            mode.report_edit(result);
+        }
         AppCommand::Continue | AppCommand::EscapeAtTop => {}
     }
     false

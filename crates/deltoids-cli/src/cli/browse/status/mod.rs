@@ -433,6 +433,10 @@ impl Panel for StatusPanel {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent, height: usize) -> AppCommand {
+        // An open editor sees every modifier: `Alt+Enter` is not `Enter`.
+        if self.captures_text_input() {
+            return self.current().handle_key_event(key, height);
+        }
         if !key
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL)
@@ -485,6 +489,10 @@ impl Panel for StatusPanel {
 
     fn report_copy(&mut self, result: Result<(), String>) {
         self.current().report_copy(result);
+    }
+
+    fn report_edit(&mut self, result: Result<(), String>) {
+        self.current().report_edit(result);
     }
 
     fn selected_path(&self) -> Option<PathBuf> {

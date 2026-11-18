@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use deltoids::Theme;
 
@@ -852,6 +852,181 @@ fn h_and_l_are_reserved_over_custom_commands_only_in_the_diff() {
     }
 }
 
+/// Whether this machine's git has `git history reword` (Git 2.54+).
+#[cfg(unix)]
+fn git_has_history_reword() -> bool {
+    let output = std::process::Command::new("git")
+        .args(["history", "-h"])
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    text.contains("git history reword")
+}
+
+/// Send `code` with `modifiers`, as a terminal reports a chord.
+fn chord(workspace: &mut Workspace, code: KeyCode, modifiers: KeyModifiers) -> AppCommand {
+    workspace.handle_key_event(KeyEvent::new(code, modifiers), PANE_HEIGHT)
+}
+
+/// Type `text` one key at a time.
+fn type_text(workspace: &mut Workspace, text: &str) {
+    for c in text.chars() {
+        workspace.handle_key(KeyCode::Char(c), PANE_HEIGHT);
+    }
+}
+
+/// Empty the reword popup's one-line message.
+fn clear_line(workspace: &mut Workspace) {
+    chord(workspace, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    chord(workspace, KeyCode::Char('k'), KeyModifiers::CONTROL);
+}
+
+#[cfg(unix)]
+#[test]
+fn r_rewords_a_commit_in_a_popup_and_the_commits_above_follow() {
+    if !git_has_history_reword() {
+        eprintln!("skipped: this git has no `git history reword` (Git 2.54+)");
+        return;
+    }
+    let dir = fixture();
+    let mut workspace = workspace(dir.path());
+    show(&mut workspace, '2');
+    press(&mut workspace, &[KeyCode::Enter, KeyCode::Char('j')]);
+    assert!(right_text(&mut workspace).contains("add greeting"));
+
+    press(&mut workspace, &[KeyCode::Char('r')]);
+    assert!(workspace.captures_text_input());
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("Reword"), "{popup}");
+    assert!(popup.contains("add greeting"), "{popup}");
+
+    type_text(&mut workspace, " loudly");
+    chord(&mut workspace, KeyCode::Enter, KeyModifiers::SHIFT);
+    chord(&mut workspace, KeyCode::Enter, KeyModifiers::SHIFT);
+    type_text(&mut workspace, "# kept");
+    press(&mut workspace, &[KeyCode::Enter]);
+
+    assert!(!workspace.captures_text_input());
+    let repo = TestRepo::open(dir.path());
+    let reworded = repo.rev("main~1");
+    assert_eq!(
+        repo.git(&["log", "--format=%B", "-1", &reworded]),
+        "add greeting loudly\n\n# kept"
+    );
+    assert_eq!(
+        repo.git(&["log", "--format=%s", "main"]),
+        "shout greeting\nadd greeting loudly"
+    );
+    assert_eq!(repo.rev("feature~1"), reworded);
+    let commits = panel(&mut workspace, '2');
+    assert!(commits.contains("add greeting loudly"), "{commits}");
+    let preview = right_text(&mut workspace);
+    assert!(preview.contains("add greeting loudly"), "{preview}");
+}
+
+#[test]
+fn only_shift_enter_adds_a_line_in_the_reword_popup() {
+    let dir = fixture();
+    let mut workspace = workspace(dir.path());
+    show(&mut workspace, '2');
+    press(
+        &mut workspace,
+        &[KeyCode::Enter, KeyCode::Char('j'), KeyCode::Char('r')],
+    );
+
+    chord(&mut workspace, KeyCode::Enter, KeyModifiers::ALT);
+    chord(&mut workspace, KeyCode::Enter, KeyModifiers::CONTROL);
+    chord(&mut workspace, KeyCode::Char('m'), KeyModifiers::CONTROL);
+    type_text(&mut workspace, "!");
+    chord(&mut workspace, KeyCode::Enter, KeyModifiers::SHIFT);
+    type_text(&mut workspace, "body");
+
+    assert!(workspace.captures_text_input());
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("add greeting!"), "{popup}");
+    assert!(!popup.contains("add greeting!body"), "{popup}");
+    assert!(popup.contains("body"), "{popup}");
+}
+
+#[test]
+fn ctrl_g_hands_the_message_to_the_editor_and_brings_it_back() {
+    let dir = fixture();
+    let mut workspace = workspace(dir.path());
+    show(&mut workspace, '2');
+    press(
+        &mut workspace,
+        &[KeyCode::Enter, KeyCode::Char('j'), KeyCode::Char('r')],
+    );
+
+    let AppCommand::Edit(path) = chord(&mut workspace, KeyCode::Char('g'), KeyModifiers::CONTROL)
+    else {
+        panic!("Ctrl+g asked for no editor");
+    };
+    assert_eq!(path.file_name().unwrap(), "COMMIT_EDITMSG");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "add greeting\n");
+    fs::write(&path, "from editor\n\nbody\n").unwrap();
+    workspace.report_edit(Ok(()));
+
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("from editor"), "{popup}");
+    assert!(popup.contains("body"), "{popup}");
+    assert!(!path.parent().unwrap().exists());
+
+    let AppCommand::Edit(path) = chord(&mut workspace, KeyCode::Char('g'), KeyModifiers::CONTROL)
+    else {
+        panic!("Ctrl+g asked for no editor");
+    };
+    fs::write(&path, "other").unwrap();
+    workspace.report_edit(Err("The editor exited with an error".into()));
+
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("from editor"), "{popup}");
+    assert!(!popup.contains("other"), "{popup}");
+    assert!(popup.contains("The editor exited with an error"), "{popup}");
+    assert!(!path.parent().unwrap().exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reload_that_dirties_a_clean_tree_leaves_the_popup_open() {
+    let dir = clean_fixture();
+    let stubs = tempfile::tempdir().unwrap();
+    let mut workspace = reword_feature(dir.path(), stubs.path());
+
+    edit_unstaged(dir.path());
+    reload(&mut workspace);
+
+    assert!(workspace.captures_text_input());
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("Reword"), "{popup}");
+}
+
+#[test]
+fn r_is_reserved_only_on_a_commit_in_the_side_list() {
+    let dir = fixture();
+    let mut workspace = workspace(dir.path());
+    show(&mut workspace, '2');
+    assert!(!workspace.reserves_key(KeyCode::Char('r')));
+    let before = left_text(&mut workspace);
+    assert_eq!(
+        workspace.handle_key(KeyCode::Char('r'), PANE_HEIGHT),
+        AppCommand::Continue
+    );
+    assert!(!workspace.captures_text_input());
+    assert_eq!(left_text(&mut workspace), before);
+
+    press(&mut workspace, &[KeyCode::Enter]);
+    assert!(workspace.reserves_key(KeyCode::Char('r')));
+
+    focus_main(&mut workspace);
+    right_text(&mut workspace);
+    assert!(workspace.reserves_key(KeyCode::Char('r')));
+}
+
 #[test]
 fn outside_a_repository_the_branches_panel_says_so() {
     let dir = tempfile::tempdir().unwrap();
@@ -1086,6 +1261,71 @@ fn a_commit_row_previews_its_diff_and_enter_reviews_it_in_files() {
     assert_eq!(focused_panel(&mut workspace), Some('2'));
     show(&mut workspace, '1');
     assert!(panel(&mut workspace, '1').contains("greet.rs"));
+}
+
+/// The fixture in a GitButler workspace, with the reword popup open on
+/// `abcd add feature`.
+#[cfg(unix)]
+fn reword_feature(dir: &Path, stubs: &Path) -> Workspace {
+    enter_gitbutler(dir);
+    let status = feature_status(dir);
+    let mut workspace = gitbutler_workspace(dir, stubs, &status);
+    show(&mut workspace, '2');
+    let commit = row_of(&mut workspace, "abcd add feature");
+    click(&mut workspace, 5, commit);
+    press(&mut workspace, &[KeyCode::Char('r')]);
+    assert!(workspace.captures_text_input());
+    workspace
+}
+
+#[cfg(unix)]
+#[test]
+fn enter_rewords_a_workspace_commit_through_but_and_a_failure_keeps_the_popup() {
+    let dir = fixture();
+    let stubs = tempfile::tempdir().unwrap();
+    let mut workspace = reword_feature(dir.path(), stubs.path());
+    clear_line(&mut workspace);
+    type_text(&mut workspace, "reworded");
+    press(&mut workspace, &[KeyCode::Enter]);
+
+    let feature = TestRepo::open(dir.path()).rev("feature");
+    let log = crate::cli::browse::vcs::test_support::but_log(stubs.path());
+    assert!(log.contains(&format!("reword {feature} -F -")), "{log:#?}");
+    let message = fs::read_to_string(stubs.path().join("reword-message")).unwrap();
+    assert_eq!(message, "reworded");
+    assert!(!workspace.captures_text_input());
+
+    press(&mut workspace, &[KeyCode::Char('r')]);
+    clear_line(&mut workspace);
+    type_text(&mut workspace, "fail");
+    press(&mut workspace, &[KeyCode::Enter]);
+
+    assert!(workspace.captures_text_input());
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("cannot reword this commit"), "{popup}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unchanged_or_empty_message_writes_nothing() {
+    let dir = fixture();
+    let stubs = tempfile::tempdir().unwrap();
+    let mut workspace = reword_feature(dir.path(), stubs.path());
+    press(&mut workspace, &[KeyCode::Enter]);
+    assert!(!workspace.captures_text_input());
+
+    press(&mut workspace, &[KeyCode::Char('r')]);
+    clear_line(&mut workspace);
+    press(&mut workspace, &[KeyCode::Enter]);
+
+    assert!(workspace.captures_text_input());
+    let popup = right_text(&mut workspace);
+    assert!(popup.contains("The message is empty"), "{popup}");
+    let log = crate::cli::browse::vcs::test_support::but_log(stubs.path());
+    assert!(
+        !log.iter().any(|line| line.starts_with("reword")),
+        "{log:#?}"
+    );
 }
 
 #[cfg(unix)]

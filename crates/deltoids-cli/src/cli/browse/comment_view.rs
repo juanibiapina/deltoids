@@ -151,7 +151,13 @@ pub(in crate::cli::browse) fn render_comment_editor(
 
 /// Center a `width_pct`-wide, `height`-tall rect inside `area`.
 fn centered_rect(area: Rect, width_pct: u16, height: u16) -> Rect {
-    let popup_width = (area.width * width_pct / 100).max(20).min(area.width);
+    centered_columns(area, (area.width * width_pct / 100).max(20), height)
+}
+
+/// Center a rect `width` columns wide and `height` rows tall inside
+/// `area`, shrunk to fit.
+pub(in crate::cli::browse) fn centered_columns(area: Rect, width: u16, height: u16) -> Rect {
+    let popup_width = width.min(area.width);
     let popup_height = height.min(area.height);
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
